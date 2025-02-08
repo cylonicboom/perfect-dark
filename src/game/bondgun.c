@@ -1303,6 +1303,7 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 				hand->count = 0;
 
 				if (bgunSetState(handnum, HANDSTATE_RELOAD)) {
+					hand->modenext = HANDMODE_NONE;
 					return lvupdate;
 				}
 			}

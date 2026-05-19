@@ -40,54 +40,84 @@ static inline void lerpcoord(struct coord *c, const struct coord *a, const struc
 static void bwalkUpdateRemote(void)
 {
 	struct player *pl = g_Vars.currentplayer;
-	const struct netplayermove *inmove = &pl->client->inmove[0];
-	const struct netplayermove *inmoveprev = &pl->client->inmove[1];
-	struct coord delta;
-	u16 cdtype = CDTYPE_ALL;
-	s32 moveticks = inmove->tick - inmoveprev->tick;
-	if (moveticks > g_NetInterpTicks) {
-		moveticks = g_NetInterpTicks;
-	}
+	struct netclient *cl = pl->client;
 
-	pl->client->inmovetick = inmove->tick;
+	const u32 head = cl->inmove_head;
+	const struct netplayermove *inmove = &cl->inmove[head];
+	const struct netplayermove *inmoveprev = &cl->inmove[(head + NET_SNAPSHOT_COUNT - 1) % NET_SNAPSHOT_COUNT];
+
+	u16 cdtype = CDTYPE_ALL;
+
+	cl->inmovetick = inmove->tick;
 
 	pl->bondshotspeed.x = 0.f;
 	pl->bondshotspeed.y = 0.f;
 	pl->bondshotspeed.z = 0.f;
 	pl->bondbreathing = 0.f;
 
+	// Explicit force or very large drift: snap to server position immediately.
 	const bool forcepos = !inmoveprev->tick ||
 		(inmove->ucmd & UCMD_FL_FORCEPOS) ||
 		(fabsf(pl->prop->pos.x - inmove->pos.x) > 512.f) ||
 		(fabsf(pl->prop->pos.y - inmove->pos.y) > 512.f) ||
 		(fabsf(pl->prop->pos.z - inmove->pos.z) > 512.f);
 
-	delta.x = 0.f;
-	delta.y = 0.f;
-	delta.z = 0.f;
-
-	// extrapolate
+	// Extrapolate movement for the current tick before applying correction
 	bwalk0f0c69b8();
 
- 	if (forcepos) {
-		// no interpolation, set position and lock the lad in place
+	if (forcepos) {
 		pl->prop->pos = inmove->pos;
-		pl->client->lerpticks = g_NetInterpTicks + 1;
-		cdtype = CDTYPE_PLAYERS; // don't get stuck in the local client
-	} else if (!moveticks) {
-		// duplicate move, reposition to correct coords
-		delta.x = inmove->pos.x - pl->prop->pos.x;
-		delta.x = inmove->pos.y - pl->prop->pos.y;
-		delta.x = inmove->pos.z - pl->prop->pos.z;
+		cl->lerpticks = g_NetInterpTicks + 1;
+		cdtype = CDTYPE_PLAYERS;
+	} else {
+		// Entity interpolation: find two snapshots bracketing
+		// (g_NetTick - g_NetInterpTicks) and interpolate between them.
+		const u32 desired_tick = (g_NetTick > g_NetInterpTicks) ? (g_NetTick - g_NetInterpTicks) : 0;
+
+		const struct netplayermove *snap_newer = NULL;
+		const struct netplayermove *snap_older = NULL;
+
+		for (s32 i = 0; i < NET_SNAPSHOT_COUNT; ++i) {
+			const struct netplayermove *s =
+				&cl->inmove[(head + NET_SNAPSHOT_COUNT - i) % NET_SNAPSHOT_COUNT];
+			if (!s->tick) {
+				break; // empty slot, stop searching
+			}
+			if (s->tick >= desired_tick) {
+				snap_newer = s;
+			} else {
+				snap_older = s;
+				break;
+			}
+		}
+
+		struct coord delta = { 0.f, 0.f, 0.f };
+		struct coord target;
+
+		if (snap_newer && snap_older) {
+			// Interpolate between the two bracketing snapshots
+			const u32 span = snap_newer->tick - snap_older->tick;
+			const f32 t = (span > 0) ?
+				(f32)(desired_tick - snap_older->tick) / (f32)span : 1.f;
+			lerpcoord(&target, &snap_older->pos, &snap_newer->pos, t);
+		} else if (snap_newer) {
+			// Only one snapshot available: lerp toward it
+			target = snap_newer->pos;
+		} else {
+			// No usable snapshots yet: stand still
+			return;
+		}
+
+		// Drive toward the interpolated target using the existing collision-
+		// aware walker so we don't phase through walls during corrections.
+		const f32 moveticks = (snap_newer && snap_older) ?
+			(f32)(snap_newer->tick - snap_older->tick) : 1.f;
+		const f32 dt = (moveticks > 0.f) ? (1.f / moveticks) : 1.f;
+		delta.x = g_Vars.lvupdate60freal * (target.x - pl->prop->pos.x) * dt;
+		delta.y = g_Vars.lvupdate60freal * (target.y - pl->prop->pos.y) * dt;
+		delta.z = g_Vars.lvupdate60freal * (target.z - pl->prop->pos.z) * dt;
 		bwalk0f0c63bc(&delta, pl->swaytarget == 0.0f, cdtype);
-	} else if (pl->client->lerpticks <= moveticks) {
-		// lerp towards the correct position
-		const f32 dt = (f32)1.f / (f32)moveticks;
-		delta.x = g_Vars.lvupdate60freal * (inmove->pos.x - pl->prop->pos.x) * dt;
-		delta.y = g_Vars.lvupdate60freal * (inmove->pos.y - pl->prop->pos.y) * dt;
-		delta.z = g_Vars.lvupdate60freal * (inmove->pos.z - pl->prop->pos.z) * dt;
-		bwalk0f0c63bc(&delta, pl->swaytarget == 0.0f, cdtype);
-		pl->client->lerpticks += g_Vars.lvupdate60;
+		cl->lerpticks += g_Vars.lvupdate60;
 	}
 }
 #endif

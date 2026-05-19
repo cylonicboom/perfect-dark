@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 12
+#define NET_PROTOCOL_VER 13
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -16,6 +16,29 @@
 #define NET_BUFSIZE 1440
 
 #define NET_DEFAULT_PORT 27100
+
+// Snapshot ring buffer: stores the last N received moves per remote player for
+// interpolation. Increasing this allows interpolation over a longer history at
+// the cost of more memory per client.
+#define NET_SNAPSHOT_COUNT    8
+
+// Client-side prediction: how many past local positions to remember so we can
+// measure prediction error when the server's authoritative state arrives.
+#define NET_CSP_HISTORY_SIZE  64
+
+// Lag compensation: server-side position history depth per remote client.
+// 120 ticks ≈ 2 seconds at 60 Hz. Shots rewinding further than this will use
+// the oldest available snapshot instead.
+#define NET_LAGCOMP_SIZE      120
+
+// Smooth correction: number of game ticks over which a CSP position error is
+// blended away. Smaller = snappier corrections; larger = smoother but slower.
+#define NET_CSP_CORR_FRAMES   10
+
+// Minimum squared error (in world units) needed to trigger a CSP correction.
+// Below this threshold, tiny server/client divergences are ignored to avoid
+// continuous micro-corrections.
+#define NET_CSP_CORR_THRESH_SQ 625.f  // 25 units
 
 #define NET_NULL_CLIENT 0xFF
 #define NET_NULL_PROP 0
@@ -40,6 +63,9 @@
 #define CLSTATE_LOBBY 3
 #define CLSTATE_GAME 4
 
+// Client flags (netclient.flags)
+#define CLFLAG_SIM (1 << 0) // fake slot for a simulant AI, no ENet peer
+
 #define UCMD_FIRE (1 << 0)
 #define UCMD_ACTIVATE (1 << 1)
 #define UCMD_RELOAD (1 << 2)
@@ -58,6 +84,19 @@
 #define UCMD_FL_FORCEANGLE (1 << 30)
 #define UCMD_FL_FORCEGROUND (1 << 31)
 #define UCMD_FL_FORCEMASK (UCMD_FL_FORCEPOS | UCMD_FL_FORCEANGLE | UCMD_FL_FORCEGROUND)
+
+// One saved local-player position per tick, used by CSP reconciliation.
+struct csp_snapshot {
+	u32 tick;
+	struct coord pos;
+};
+
+// One saved world-space position per tick per remote client, used by the
+// server for lag compensation hit rewinds.
+struct lagcomp_snapshot {
+	u32 tick;
+	struct coord pos;
+};
 
 struct netplayermove {
 	u32 tick; // g_NetTIck value when this struct was written; if 0, this struct is invalid
@@ -93,11 +132,19 @@ struct netclient {
 	u8 playernum;
 
 	struct netplayermove outmove[2]; // last 2 outgoing player inputs, newest one first
-	struct netplayermove inmove[2]; // last 2 incoming player inputs, newest one first
+	// Ring buffer of incoming player moves. inmove_head is the index of the
+	// newest entry; older entries go backwards modulo NET_SNAPSHOT_COUNT.
+	struct netplayermove inmove[NET_SNAPSHOT_COUNT];
+	u32 inmove_head; // index of newest entry in inmove[]
 	u32 inmovetick; // last inmove tick which was applied to the player
 	u32 outmoveack; // last acked outmove tick
 	u32 forcetick; // tick on which the client's position was forced, or 0 if not forcing
 	u32 lerpticks; // how many ticks we've been lerping the position
+
+	// Server-side only: ring buffer of recent world positions for lag
+	// compensation. Written each tick; indexed by lagcomp_head (newest).
+	struct lagcomp_snapshot lagcomp[NET_LAGCOMP_SIZE];
+	u32 lagcomp_head;
 
 	struct netbuf out; // outbound messages are written here, except broadcasts
 	struct netbuf in; // incoming packets are fed here
@@ -123,8 +170,17 @@ extern char g_NetLastJoinAddr[NET_MAX_ADDR + 1];
 
 extern s32 g_NetDebugDraw;
 
+// Client-side prediction: ring buffer of local-player positions, one per tick.
+// Written by the client each frame; read when the server's ack arrives.
+extern struct csp_snapshot g_NetCspHistory[NET_CSP_HISTORY_SIZE];
+extern u32 g_NetCspHead;
+// Pending smooth correction: delta remaining to be applied over g_NetCspCorrFrames ticks.
+extern struct coord g_NetCspCorrDelta;
+extern s32 g_NetCspCorrFrames;
+
 extern s32 g_NetMaxClients;
 extern s32 g_NetNumClients;
+extern s32 g_NetNumSims; // count of fake sim entries in g_NetClients (after human clients)
 extern struct netclient g_NetClients[NET_MAX_CLIENTS + 1]; // last is an extra temporary client
 extern struct netclient *g_NetLocalClient;
 
@@ -157,6 +213,26 @@ void netClientSettingsChanged(void);
 
 void netPlayersAllocate(void);
 void netSyncIdsAllocate(void);
+
+// Client-side prediction: compare server's authoritative position at ack_tick
+// to what the client predicted, and schedule a smooth correction if the error
+// exceeds NET_CSP_CORR_THRESH_SQ.
+void netCspReconcile(u32 ack_tick, const struct coord *server_pos);
+
+// Client-side prediction: apply one tick's worth of the pending smooth
+// correction. Call once per game tick after physics have run.
+void netCspTick(void);
+
+// Lag compensation: snapshot a remote client's current world position.
+// Called by the server each tick for every connected client.
+void netLagCompSave(struct netclient *cl);
+
+// Lag compensation: rewind all remote client positions to what the shooter saw.
+// Must be followed by netLagCompEnd() after hit detection.
+void netLagCompBegin(const struct netclient *shooter);
+
+// Lag compensation: restore all positions modified by netLagCompBegin().
+void netLagCompEnd(void);
 
 Gfx *netDebugRender(Gfx *gdl);
 

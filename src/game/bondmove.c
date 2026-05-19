@@ -116,17 +116,18 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 		return;
 	}
 
-	struct netplayermove *inmove = &pl->client->inmove[0];
-	struct netplayermove *inmoveprev = &pl->client->inmove[1];
+	const u32 head = pl->client->inmove_head;
+	struct netplayermove *inmove = &pl->client->inmove[head];
+	struct netplayermove *inmoveprev = &pl->client->inmove[(head + NET_SNAPSHOT_COUNT - 1) % NET_SNAPSHOT_COUNT];
 	s32 moveticks = inmove->tick - inmoveprev->tick;
-	if (moveticks > g_NetInterpTicks) {
-		moveticks = g_NetInterpTicks;
+	if (moveticks > (s32)g_NetInterpTicks) {
+		moveticks = (s32)g_NetInterpTicks;
 	}
 
 	const bool handled = (pl->client->inmovetick >= inmove->tick);
 
 	if (!inmove->tick) {
-		// no input
+		// no input yet: seed both slots with current state to avoid false lerps
 		inmove->pos = inmoveprev->pos = pl->prop->pos;
 		inmove->angles[0] = inmoveprev->angles[0] = pl->vv_theta;
 		inmove->angles[1] = inmoveprev->angles[1] = pl->vv_verta;
@@ -231,18 +232,49 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 
 	bgunSetSightVisible(GUNSIGHTREASON_NOTAIMING, pl->insightaimmode);
 
-	const bool forcepos = !inmoveprev->tick || !moveticks || (inmove->ucmd & UCMD_FL_FORCEANGLE);
+	// Interpolate angles and speeds using the same ring-buffer bracketing as
+	// position interpolation in bwalkUpdateRemote, so both stay in sync.
+	const u32 desired_tick = (g_NetTick > g_NetInterpTicks) ? (g_NetTick - g_NetInterpTicks) : 0;
 
-	// lerp towards the current speeds and angles
-	const f32 dt = (forcepos ? 1.f : (1.f / (f32)moveticks));
-	f32 t = (forcepos ? 1.f : ((f32)pl->client->lerpticks / (f32)moveticks));
-	if (t > 1.f) {
-		t = 1.f;
+	const struct netplayermove *snap_newer = NULL;
+	const struct netplayermove *snap_older = NULL;
+	for (s32 i = 0; i < NET_SNAPSHOT_COUNT; ++i) {
+		const struct netplayermove *s =
+			&pl->client->inmove[(head + NET_SNAPSHOT_COUNT - i) % NET_SNAPSHOT_COUNT];
+		if (!s->tick) {
+			break;
+		}
+		if (s->tick >= desired_tick) {
+			snap_newer = s;
+		} else {
+			snap_older = s;
+			break;
+		}
 	}
-	pl->speedgo = pl->speedforwards = lerpf(inmoveprev->movespeed[0], inmove->movespeed[0], t);
-	pl->speedstrafe = pl->speedsideways = lerpf(inmoveprev->movespeed[1], inmove->movespeed[1], t);
-	pl->vv_theta = lerpanglef(pl->vv_theta, inmove->angles[0], dt);
-	pl->vv_verta = lerpanglef(pl->vv_verta, inmove->angles[1], dt);
+
+	const bool forceangle = !inmoveprev->tick || !moveticks || (inmove->ucmd & UCMD_FL_FORCEANGLE);
+
+	if (forceangle || !snap_newer) {
+		// Snap angles immediately (force or no usable history)
+		pl->speedgo = pl->speedforwards  = inmove->movespeed[0];
+		pl->speedstrafe = pl->speedsideways = inmove->movespeed[1];
+		pl->vv_theta = inmove->angles[0];
+		pl->vv_verta = inmove->angles[1];
+	} else if (snap_newer && snap_older) {
+		const u32 span = snap_newer->tick - snap_older->tick;
+		const f32 t = (span > 0) ? (f32)(desired_tick - snap_older->tick) / (f32)span : 1.f;
+		pl->speedgo = pl->speedforwards  = lerpf(snap_older->movespeed[0], snap_newer->movespeed[0], t);
+		pl->speedstrafe = pl->speedsideways = lerpf(snap_older->movespeed[1], snap_newer->movespeed[1], t);
+		pl->vv_theta = lerpanglef(snap_older->angles[0], snap_newer->angles[0], t);
+		pl->vv_verta = lerpanglef(snap_older->angles[1], snap_newer->angles[1], t);
+	} else {
+		// Only one snapshot: drive gently toward it
+		const f32 dt = 1.f / (f32)(moveticks > 0 ? moveticks : 1);
+		pl->speedgo = pl->speedforwards  = lerpf(inmoveprev->movespeed[0], inmove->movespeed[0], dt);
+		pl->speedstrafe = pl->speedsideways = lerpf(inmoveprev->movespeed[1], inmove->movespeed[1], dt);
+		pl->vv_theta = lerpanglef(pl->vv_theta, snap_newer->angles[0], dt);
+		pl->vv_verta = lerpanglef(pl->vv_verta, snap_newer->angles[1], dt);
+	}
 
 	if (pl->bondmovemode == MOVEMODE_GRAB) {
 		bgrabUpdateSpeedTheta();

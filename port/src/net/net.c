@@ -23,6 +23,7 @@
 #include "game/mplayer/mplayer.h"
 #include "lib/main.h"
 #include "lib/vi.h"
+#include "lib/model.h"
 #include "config.h"
 #include "system.h"
 #include "console.h"
@@ -59,6 +60,7 @@ u32 g_NetRngLatch = 0;
 
 s32 g_NetMaxClients = NET_MAX_CLIENTS;
 s32 g_NetNumClients = 0;
+s32 g_NetNumSims = 0;
 struct netclient g_NetClients[NET_MAX_CLIENTS + 1]; // last is an extra temporary client
 struct netclient *g_NetLocalClient = &g_NetClients[NET_MAX_CLIENTS];
 
@@ -77,6 +79,21 @@ static u32 g_NetNextUpdate = 0;
 
 static u32 g_NetReliableFrameLen = 0;
 static u32 g_NetUnreliableFrameLen = 0;
+
+// Client-side prediction globals
+struct csp_snapshot g_NetCspHistory[NET_CSP_HISTORY_SIZE];
+u32 g_NetCspHead = 0;
+struct coord g_NetCspCorrDelta;
+s32 g_NetCspCorrFrames = 0;
+
+// Lag compensation: saved client state for restore after hit rewind
+static struct {
+	struct netclient *cl;
+	struct coord pos;
+	f32 rootmtx_xyz[3];
+	s32 has_rootmtx;
+} g_LagCompSaved[NET_MAX_CLIENTS];
+static s32 g_LagCompCount = 0;
 
 static s32 netParseAddr(ENetAddress *out, const char *str)
 {
@@ -208,11 +225,12 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 
 	move->ucmd = pl->ucmd;
 
-	if (g_NetMode == NETMODE_SERVER && pl->isremote && cl->inmove[0].tick) {
+	const struct netplayermove *inmove_newest = &cl->inmove[cl->inmove_head];
+	if (g_NetMode == NETMODE_SERVER && pl->isremote && inmove_newest->tick) {
 		// carry some of the client inputs over to the outmove
-		move->ucmd |= (cl->inmove[0].ucmd & (UCMD_FIRE | UCMD_RELOAD | UCMD_AIMMODE | UCMD_EYESSHUT | UCMD_SELECT | UCMD_SELECT_DUAL));
-		move->crosspos[0] = cl->inmove[0].crosspos[0];
-		move->crosspos[1] = cl->inmove[0].crosspos[1];
+		move->ucmd |= (inmove_newest->ucmd & (UCMD_FIRE | UCMD_RELOAD | UCMD_AIMMODE | UCMD_EYESSHUT | UCMD_SELECT | UCMD_SELECT_DUAL));
+		move->crosspos[0] = inmove_newest->crosspos[0];
+		move->crosspos[1] = inmove_newest->crosspos[1];
 	}
 
 	if (pl->crouchpos == CROUCHPOS_DUCK) {
@@ -254,6 +272,20 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 	if (cl != g_NetLocalClient && !cl->forcetick && (move->ucmd & UCMD_FL_FORCEMASK)) {
 		cl->forcetick = move->tick;
 		sysLogPrintf(LOG_NOTE, "NET: forcing client %u to move at tick %u", cl->id, cl->forcetick);
+	}
+
+	// CSP: save the local player's predicted position each tick so we can
+	// measure prediction error when the server's authoritative state arrives.
+	if (cl == g_NetLocalClient && g_NetMode == NETMODE_CLIENT) {
+		g_NetCspHead = (g_NetCspHead + 1) % NET_CSP_HISTORY_SIZE;
+		g_NetCspHistory[g_NetCspHead].tick = move->tick;
+		g_NetCspHistory[g_NetCspHead].pos = move->pos;
+	}
+
+	// Lag comp: snapshot each remote client's world position on the server
+	// so shots can be rewound to what the shooter saw.
+	if (g_NetMode == NETMODE_SERVER && cl != g_NetLocalClient && cl->player && cl->player->prop) {
+		netLagCompSave(cl);
 	}
 }
 
@@ -610,6 +642,12 @@ s32 netDisconnect(void)
 	g_NetHost = NULL;
 	g_NetMode = NETMODE_NONE;
 
+	// Reset CSP correction state so it doesn't bleed into the next session
+	g_NetCspCorrFrames = 0;
+	g_NetCspHead = 0;
+	memset(g_NetCspHistory, 0, sizeof(g_NetCspHistory));
+	g_NetNumSims = 0;
+
 	sysLogPrintf(LOG_CHAT, "NET: disconnected");
 
 	if (wasingame) {
@@ -902,6 +940,17 @@ void netEndFrame(void)
 					}
 				}
 			}
+#ifndef PLATFORM_N64
+			// broadcast sim (bot) chr positions so clients can position-drive them
+			if (g_Vars.lvmpbotlevel) {
+				for (s32 i = 0; i < g_BotCount; i++) {
+					struct chrdata *chr = g_MpBotChrPtrs[i];
+					if (chr && chr->prop && chr->prop->syncid) {
+						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+					}
+				}
+			}
+#endif
 			if (g_NetNextUpdate <= g_NetTick) {
 				g_NetNextUpdate = g_NetTick + g_NetServerUpdateRate;
 			}
@@ -910,6 +959,12 @@ void netEndFrame(void)
 
 	// send position updates
 	netFlushSendBuffers();
+
+	// CSP: blend the local player toward the server-corrected position one
+	// tick at a time, after all physics have run for this frame.
+	if (g_NetMode == NETMODE_CLIENT) {
+		netCspTick();
+	}
 
 	enet_host_flush(g_NetHost);
 }
@@ -1044,6 +1099,157 @@ void netSyncIdsAllocate(void)
 	}
 
 	sysLogPrintf(LOG_NOTE, "NET: last initial syncid: %u", g_NetNextSyncId);
+}
+
+// --- Client-side prediction ---
+
+void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
+{
+	if (!ack_tick || g_NetCspCorrFrames > 0) {
+		return;
+	}
+
+	// Walk backwards through history looking for the acknowledged tick
+	for (s32 i = 0; i < NET_CSP_HISTORY_SIZE; ++i) {
+		const s32 idx = (g_NetCspHead + NET_CSP_HISTORY_SIZE - i) % NET_CSP_HISTORY_SIZE;
+		const struct csp_snapshot *snap = &g_NetCspHistory[idx];
+		if (snap->tick != ack_tick) {
+			continue;
+		}
+
+		const f32 ex = server_pos->x - snap->pos.x;
+		const f32 ey = server_pos->y - snap->pos.y;
+		const f32 ez = server_pos->z - snap->pos.z;
+		if (ex*ex + ey*ey + ez*ez > NET_CSP_CORR_THRESH_SQ) {
+			g_NetCspCorrDelta.x = ex;
+			g_NetCspCorrDelta.y = ey;
+			g_NetCspCorrDelta.z = ez;
+			g_NetCspCorrFrames = NET_CSP_CORR_FRAMES;
+		}
+		return;
+	}
+}
+
+void netCspTick(void)
+{
+	if (g_NetCspCorrFrames <= 0) {
+		return;
+	}
+	if (!g_NetLocalClient || !g_NetLocalClient->player || !g_NetLocalClient->player->prop) {
+		g_NetCspCorrFrames = 0;
+		return;
+	}
+
+	// Apply one step of the correction additively so it stacks with physics
+	const f32 step = 1.f / (f32)g_NetCspCorrFrames;
+	struct coord *pos = &g_NetLocalClient->player->prop->pos;
+	pos->x += g_NetCspCorrDelta.x * step;
+	pos->y += g_NetCspCorrDelta.y * step;
+	pos->z += g_NetCspCorrDelta.z * step;
+
+	// Reduce remaining delta so the total correction converges to zero
+	g_NetCspCorrDelta.x *= (1.f - step);
+	g_NetCspCorrDelta.y *= (1.f - step);
+	g_NetCspCorrDelta.z *= (1.f - step);
+	--g_NetCspCorrFrames;
+}
+
+// --- Lag compensation ---
+
+void netLagCompSave(struct netclient *cl)
+{
+	if (!cl || !cl->player || !cl->player->prop) {
+		return;
+	}
+	cl->lagcomp_head = (cl->lagcomp_head + 1) % NET_LAGCOMP_SIZE;
+	cl->lagcomp[cl->lagcomp_head].tick = g_NetTick;
+	cl->lagcomp[cl->lagcomp_head].pos  = cl->player->prop->pos;
+}
+
+static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)
+{
+	// Walk backwards from the newest snapshot to find the entry at or just
+	// before the requested tick.
+	for (s32 i = 0; i < NET_LAGCOMP_SIZE; ++i) {
+		const s32 idx = (cl->lagcomp_head + NET_LAGCOMP_SIZE - i) % NET_LAGCOMP_SIZE;
+		if (cl->lagcomp[idx].tick && cl->lagcomp[idx].tick <= target_tick) {
+			return cl->lagcomp[idx].pos;
+		}
+	}
+	// Fallback: oldest snapshot we have
+	return cl->lagcomp[(cl->lagcomp_head + 1) % NET_LAGCOMP_SIZE].pos;
+}
+
+void netLagCompBegin(const struct netclient *shooter)
+{
+	g_LagCompCount = 0;
+
+	if (!shooter || !shooter->peer) {
+		return;
+	}
+
+	// Convert one-way latency (half RTT) to game ticks (60 Hz ≈ 16 ms/tick)
+	const u32 rtt_ms      = enet_peer_get_rtt(shooter->peer);
+	const u32 rewind_ticks = (rtt_ms / 2 + 8) / 16;
+	const u32 target_tick  = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
+
+	for (s32 i = 0; i < g_NetMaxClients; ++i) {
+		struct netclient *cl = &g_NetClients[i];
+		if (cl == shooter || cl->state < CLSTATE_GAME || !cl->player || !cl->player->prop) {
+			continue;
+		}
+		if (g_LagCompCount >= NET_MAX_CLIENTS) {
+			break;
+		}
+
+		struct prop *prop = cl->player->prop;
+		const struct coord lagged_pos = netLagCompLookup(cl, target_tick);
+
+		// Save current state
+		g_LagCompSaved[g_LagCompCount].cl  = cl;
+		g_LagCompSaved[g_LagCompCount].pos = prop->pos;
+		g_LagCompSaved[g_LagCompCount].has_rootmtx = 0;
+
+		// Move the prop to the lagged position
+		prop->pos = lagged_pos;
+
+		// Patch the root model matrix translation so the sphere broad-phase
+		// check in chrTestHit uses the rewound position.
+		if (cl->player->prop->chr && cl->player->prop->chr->model) {
+			Mtxf *rootmtx = modelGetRootMtx(cl->player->prop->chr->model);
+			if (rootmtx) {
+				g_LagCompSaved[g_LagCompCount].rootmtx_xyz[0] = rootmtx->m[3][0];
+				g_LagCompSaved[g_LagCompCount].rootmtx_xyz[1] = rootmtx->m[3][1];
+				g_LagCompSaved[g_LagCompCount].rootmtx_xyz[2] = rootmtx->m[3][2];
+				rootmtx->m[3][0] = lagged_pos.x;
+				rootmtx->m[3][1] = lagged_pos.y;
+				rootmtx->m[3][2] = lagged_pos.z;
+				g_LagCompSaved[g_LagCompCount].has_rootmtx = 1;
+			}
+		}
+
+		++g_LagCompCount;
+	}
+}
+
+void netLagCompEnd(void)
+{
+	for (s32 i = 0; i < g_LagCompCount; ++i) {
+		struct netclient *cl = g_LagCompSaved[i].cl;
+		if (!cl || !cl->player || !cl->player->prop) {
+			continue;
+		}
+		cl->player->prop->pos = g_LagCompSaved[i].pos;
+		if (g_LagCompSaved[i].has_rootmtx && cl->player->prop->chr && cl->player->prop->chr->model) {
+			Mtxf *rootmtx = modelGetRootMtx(cl->player->prop->chr->model);
+			if (rootmtx) {
+				rootmtx->m[3][0] = g_LagCompSaved[i].rootmtx_xyz[0];
+				rootmtx->m[3][1] = g_LagCompSaved[i].rootmtx_xyz[1];
+				rootmtx->m[3][2] = g_LagCompSaved[i].rootmtx_xyz[2];
+			}
+		}
+	}
+	g_LagCompCount = 0;
 }
 
 void netChatPrintf(struct netclient *dst, const char *fmt, ...)

@@ -252,7 +252,7 @@ u32 netmsgClcChatRead(struct netbuf *src, struct netclient *srccl)
 u32 netmsgClcMoveWrite(struct netbuf *dst)
 {
 	netbufWriteU8(dst, CLC_MOVE);
-	netbufWriteU32(dst, g_NetLocalClient->inmove[0].tick);
+	netbufWriteU32(dst, g_NetLocalClient->inmove[g_NetLocalClient->inmove_head].tick);
 	netbufWritePlayerMove(dst, &g_NetLocalClient->outmove[0]);
 	return dst->error;
 }
@@ -289,9 +289,9 @@ u32 netmsgClcMoveRead(struct netbuf *src, struct netclient *srccl)
 				}
 			}
 		}
-		// make space in the move stack
-		memmove(srccl->inmove + 1, srccl->inmove, sizeof(srccl->inmove) - sizeof(*srccl->inmove));
-		srccl->inmove[0] = newmove;
+		// Push into ring buffer: advance head and write newest entry there
+		srccl->inmove_head = (srccl->inmove_head + 1) % NET_SNAPSHOT_COUNT;
+		srccl->inmove[srccl->inmove_head] = newmove;
 		srccl->lerpticks = 0;
 	}
 
@@ -450,6 +450,7 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 			netbufWriteStr(dst, ncl->settings.name);
 			memset(ncl->inmove, 0, sizeof(ncl->inmove));
 			memset(ncl->outmove, 0, sizeof(ncl->outmove));
+			ncl->inmove_head = 0;
 			ncl->lerpticks = 0;
 			ncl->outmoveack = 0;
 			ncl->state = CLSTATE_GAME;
@@ -616,7 +617,7 @@ u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 
 	netbufWriteU8(dst, SVC_PLAYER_MOVE);
 	netbufWriteU8(dst, movecl->id);
-	netbufWriteU32(dst, movecl->inmove[0].tick);
+	netbufWriteU32(dst, movecl->inmove[movecl->inmove_head].tick);
 	netbufWritePlayerMove(dst, &movecl->outmove[0]);
 	if (movecl->outmove[0].ucmd & UCMD_FL_FORCEMASK) {
 		netbufWriteRooms(dst, movecl->player->prop->rooms, ARRAYCOUNT(movecl->player->prop->rooms));
@@ -645,16 +646,23 @@ u32 netmsgSvcPlayerMoveRead(struct netbuf *src, struct netclient *srccl)
 
 	struct netclient *movecl = &g_NetClients[id];
 
-	// make space in the move stack
-	memmove(movecl->inmove + 1, movecl->inmove, sizeof(movecl->inmove) - sizeof(*movecl->inmove));
-	movecl->inmove[0] = newmove;
+	// Push into the snapshot ring buffer
+	movecl->inmove_head = (movecl->inmove_head + 1) % NET_SNAPSHOT_COUNT;
+	movecl->inmove[movecl->inmove_head] = newmove;
 	movecl->outmoveack = outmoveack;
 	movecl->lerpticks = 0;
 
-	if (movecl == g_NetLocalClient && (newmove.ucmd & UCMD_FL_FORCEMASK)) {
-		// server wants to teleport us
-		if (movecl->player && movecl->player->prop) {
-			chrSetPos(movecl->player->prop->chr, &newmove.pos, newrooms, newmove.angles[0], (newmove.ucmd & UCMD_FL_FORCEGROUND) != 0);
+	if (movecl == g_NetLocalClient) {
+		if (newmove.ucmd & UCMD_FL_FORCEMASK) {
+			// Server wants to teleport us; cancel any pending CSP correction
+			g_NetCspCorrFrames = 0;
+			if (movecl->player && movecl->player->prop) {
+				chrSetPos(movecl->player->prop->chr, &newmove.pos, newrooms, newmove.angles[0], (newmove.ucmd & UCMD_FL_FORCEGROUND) != 0);
+			}
+		} else {
+			// Normal authoritative position: check CSP prediction error and
+			// schedule a smooth correction if needed.
+			netCspReconcile(outmoveack, &newmove.pos);
 		}
 	}
 
@@ -791,6 +799,14 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		}
 		if (projectile) {
 			flags |= (1 << 1);
+			// Derive rotation from the projectile's current matrix when not explicitly provided.
+			// Rockets and other physics props set projectile->mtx at spawn from the firing direction;
+			// without this, clients see an identity-matrix (wrong) orientation.
+			struct coord derived_rot = {0, 0, 0};
+			if (!initrot) {
+				mtx4GetRotation(projectile->mtx.m, &derived_rot);
+				initrot = &derived_rot;
+			}
 			if (initrot) {
 				flags |= (1 << 2);
 			}

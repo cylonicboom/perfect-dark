@@ -4778,7 +4778,8 @@ Gfx *playerRenderHud(Gfx *gdl)
 							// Anti
 #ifndef PLATFORM_N64
 							if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
-								if (g_Vars.currentplayer->client->inmove[0].ucmd & UCMD_RESPAWN) {
+								const struct netclient *cl_ = g_Vars.currentplayer->client;
+								if (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) {
 									g_Vars.currentplayer->dostartnewlife = true;
 								}
 							} else if (g_NetMode != NETMODE_CLIENT)
@@ -4798,7 +4799,8 @@ Gfx *playerRenderHud(Gfx *gdl)
 
 #ifndef PLATFORM_N64
 								if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
-									canrestart =  (g_Vars.currentplayer->client->inmove[0].ucmd & UCMD_RESPAWN) != 0;
+									const struct netclient *cl_ = g_Vars.currentplayer->client;
+									canrestart = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
 								} else if (g_NetMode != NETMODE_CLIENT)
 #endif
 								canrestart = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), 0xb000) && !mpIsPaused();
@@ -4909,7 +4911,8 @@ Gfx *playerRenderHud(Gfx *gdl)
 
 #ifndef PLATFORM_N64
 						if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
-							if (!mpIsPaused() && g_NumReasonsToEndMpMatch == 0 && (g_Vars.currentplayer->client->inmove[0].ucmd & UCMD_RESPAWN)) {
+							const struct netclient *cl_ = g_Vars.currentplayer->client;
+							if (!mpIsPaused() && g_NumReasonsToEndMpMatch == 0 && (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN)) {
 								canrestart = true;
 							}
 						} else if (g_NetMode != NETMODE_CLIENT)

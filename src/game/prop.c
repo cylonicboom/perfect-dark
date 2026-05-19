@@ -739,6 +739,16 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 	propptr = g_Vars.endonscreenprops - 1;
 
+#ifndef PLATFORM_N64
+	// Lag compensation: if a remote client fired this shot, temporarily rewind
+	// all other clients to where the shooter saw them. The rewind only patches
+	// prop->pos and the root matrix translation column used by the sphere
+	// broad-phase check; narrow-phase model matrices are left as-is.
+	if (isshooting && g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+		netLagCompBegin(g_Vars.currentplayer->client);
+	}
+#endif
+
 	while (propptr >= g_Vars.onscreenprops) {
 		prop = *propptr;
 
@@ -755,6 +765,12 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 		propptr--;
 	}
+
+#ifndef PLATFORM_N64
+	if (isshooting && g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+		netLagCompEnd();
+	}
+#endif
 
 	hitindex = -1;
 
@@ -2059,7 +2075,10 @@ void propsTickPlayer(bool islastplayer)
 				splatTickChr(prop);
 
 				if (chr1 && chr1->aibot) {
-					op = botTick(prop);
+#ifndef PLATFORM_N64
+					if (g_NetMode != NETMODE_CLIENT)
+#endif
+						op = botTick(prop);
 				} else {
 					op = chrTick(prop);
 				}
@@ -2121,7 +2140,10 @@ void propsTickPlayer(bool islastplayer)
 					splatTickChr(prop);
 
 					if (chr2 && chr2->aibot) {
-						op = botTick(prop);
+#ifndef PLATFORM_N64
+						if (g_NetMode != NETMODE_CLIENT)
+#endif
+							op = botTick(prop);
 					} else {
 						op = chrTick(prop);
 					}

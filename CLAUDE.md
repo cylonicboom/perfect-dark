@@ -54,7 +54,7 @@ CMake with `Unix Makefiles`. Does NOT support Visual Studio. Key flags:
 
 - **Client-server** model. The host is always server; one dedicated listening server, up to `MAX_PLAYERS` (8) clients including the host itself.
 - **Transport**: [ENet](http://enet.bespin.org) — a reliable-UDP library, bundled as `port/external/enet.c` + `port/include/external/enet.h`.
-- Protocol version constant: `NET_PROTOCOL_VER 12`
+- Protocol version constant: `NET_PROTOCOL_VER 12` (bumped to 13 on `port-net-predict`)
 - Default UDP port: **27100** (configurable via `pd.ini` or `--port` CLI arg)
 
 ### Files Added in port-net

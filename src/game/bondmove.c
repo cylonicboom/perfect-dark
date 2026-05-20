@@ -254,26 +254,32 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 
 	const bool forceangle = !inmoveprev->tick || !moveticks || (inmove->ucmd & UCMD_FL_FORCEANGLE);
 
+	// Angles are NOT smoothed across snapshots. The projection matrix built
+	// in playerUpdateShootRot during the render path is derived from these,
+	// and handTickAttack→shotCreate runs against that matrix when the gun
+	// fires. Smoothing them by g_NetInterpTicks (~3 ticks) made shots from
+	// quick-tap aim miss because the matrix reflected aim from ~4 ticks ago;
+	// the host saw near-miss visual feedback but took no damage. Snap to the
+	// latest authoritative angle from the client instead — observing clients
+	// re-smooth on their end via their own inmove ring buffer, so net motion
+	// still looks fluid to non-host viewers.
+	pl->vv_theta = inmove->angles[0];
+	pl->vv_verta = inmove->angles[1];
+
 	if (forceangle || !snap_newer) {
-		// Snap angles immediately (force or no usable history)
+		// Snap speeds immediately (force or no usable history)
 		pl->speedgo = pl->speedforwards  = inmove->movespeed[0];
 		pl->speedstrafe = pl->speedsideways = inmove->movespeed[1];
-		pl->vv_theta = inmove->angles[0];
-		pl->vv_verta = inmove->angles[1];
 	} else if (snap_newer && snap_older) {
 		const u32 span = snap_newer->tick - snap_older->tick;
 		const f32 t = (span > 0) ? (f32)(desired_tick - snap_older->tick) / (f32)span : 1.f;
 		pl->speedgo = pl->speedforwards  = lerpf(snap_older->movespeed[0], snap_newer->movespeed[0], t);
 		pl->speedstrafe = pl->speedsideways = lerpf(snap_older->movespeed[1], snap_newer->movespeed[1], t);
-		pl->vv_theta = lerpanglef(snap_older->angles[0], snap_newer->angles[0], t);
-		pl->vv_verta = lerpanglef(snap_older->angles[1], snap_newer->angles[1], t);
 	} else {
-		// Only one snapshot: drive gently toward it
+		// Only one snapshot: drive speeds gently toward it
 		const f32 dt = 1.f / (f32)(moveticks > 0 ? moveticks : 1);
 		pl->speedgo = pl->speedforwards  = lerpf(inmoveprev->movespeed[0], inmove->movespeed[0], dt);
 		pl->speedstrafe = pl->speedsideways = lerpf(inmoveprev->movespeed[1], inmove->movespeed[1], dt);
-		pl->vv_theta = lerpanglef(pl->vv_theta, snap_newer->angles[0], dt);
-		pl->vv_verta = lerpanglef(pl->vv_verta, snap_newer->angles[1], dt);
 	}
 
 	if (pl->bondmovemode == MOVEMODE_GRAB) {

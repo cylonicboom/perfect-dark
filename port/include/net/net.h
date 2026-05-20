@@ -164,6 +164,12 @@ extern u32 g_NetNextSyncId;
 extern u64 g_NetRngSeeds[2];
 extern u32 g_NetRngLatch;
 
+// Dedicated seed used only by mpChooseTrack so that music selection stays in
+// sync between host and clients. Seeded at stage start from g_RngSeed; only
+// advanced when a new track is picked, so it never drifts due to server-side
+// RNG consumers (AI, sims, particle effects) that the clients don't run.
+extern u64 g_NetMusicRngSeed;
+
 extern u32 g_NetInterpTicks;
 extern u32 g_NetServerPort;
 extern char g_NetLastJoinAddr[NET_MAX_ADDR + 1];

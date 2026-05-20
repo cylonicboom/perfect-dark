@@ -3014,6 +3014,22 @@ s32 mpGetCurrentTrackSlotNum(void)
 	return mpGetTrackSlotIndex(g_BossFile.tracknum);
 }
 
+#ifndef PLATFORM_N64
+// In netplay, advance a dedicated music seed instead of g_RngSeed so that
+// other RNG consumers (AI, sims, particles — which the server runs and the
+// client doesn't) don't drift the host and client out of music sync. Seeded
+// at stage start in netmsgSvcStageStart{Write,Read}.
+static inline u32 mpChooseTrackRng(void)
+{
+	if (g_NetMode) {
+		return rngRotateSeed(&g_NetMusicRngSeed);
+	}
+	return rngRandom();
+}
+#else
+#define mpChooseTrackRng() rngRandom()
+#endif
+
 s32 mpChooseTrack(void)
 {
 	s32 i;
@@ -3031,7 +3047,7 @@ s32 mpChooseTrack(void)
 
 		if (numselected == 0) {
 			do {
-				tracknum = mpGetTrackNumAtSlotIndex(rngRandom() % numunlocked);
+				tracknum = mpGetTrackNumAtSlotIndex(mpChooseTrackRng() % numunlocked);
 			} while (tracknum == g_MpLockInfo.unk04);
 
 			g_MpLockInfo.unk04 = tracknum;
@@ -3041,7 +3057,7 @@ s32 mpChooseTrack(void)
 		}
 
 		do {
-			s32 selectionindex = rngRandom() % numselected;
+			s32 selectionindex = mpChooseTrackRng() % numselected;
 			s32 selectioncount = 0;
 			tracknum = -1;
 
@@ -3075,7 +3091,7 @@ s32 mpChooseTrack(void)
 		s32 numunlocked = mpGetNumUnlockedTracks();
 
 		do {
-			tracknum = mpGetTrackNumAtSlotIndex(rngRandom() % numunlocked);
+			tracknum = mpGetTrackNumAtSlotIndex(mpChooseTrackRng() % numunlocked);
 		} while (tracknum == g_MpLockInfo.unk04);
 
 		g_MpLockInfo.unk04 = tracknum;

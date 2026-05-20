@@ -416,6 +416,11 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU64(dst, g_RngSeed);
 	netbufWriteU64(dst, g_Rng2Seed);
 
+	// Snapshot the music RNG seed so both sides can advance it independently
+	// from now on without drifting. mpChooseTrack consumes from this seed
+	// instead of g_RngSeed so non-music RNG consumers don't desync the music.
+	g_NetMusicRngSeed = g_RngSeed;
+
 	netbufWriteU8(dst, g_StageNum);
 
 	if (g_StageNum == STAGE_TITLE || g_StageNum == STAGE_CITRAINING) {
@@ -472,6 +477,10 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_NetRngSeeds[0] = netbufReadU64(src);
 	g_NetRngSeeds[1] = netbufReadU64(src);
 	g_NetRngLatch = true;
+
+	// Mirror the server's snapshot for music selection so mpChooseTrack stays
+	// in sync; this seed is advanced only by track picks, not by other RNG.
+	g_NetMusicRngSeed = g_NetRngSeeds[0];
 
 	const u8 stagenum = netbufReadU8(src);
 

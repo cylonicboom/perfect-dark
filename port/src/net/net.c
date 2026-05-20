@@ -57,6 +57,7 @@ s32 g_NetDebugDraw = 0;
 
 u64 g_NetRngSeeds[2];
 u32 g_NetRngLatch = 0;
+u64 g_NetMusicRngSeed = 0;
 
 s32 g_NetMaxClients = NET_MAX_CLIENTS;
 s32 g_NetNumClients = 0;

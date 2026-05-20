@@ -11081,6 +11081,18 @@ s32 objTickPlayer(struct prop *prop)
 		struct projectile *projectile = obj->projectile;
 
 		if (projectile->ownerprop && playermgrGetPlayerNumByProp(projectile->ownerprop) >= 0) {
+#ifndef PLATFORM_N64
+			// In netplay, propsTickPlayer only iterates the host's player
+			// (PLAYERCOUNT()==1 on the server) so remote-client-owned
+			// projectiles would have fulltick=false here and projectileTick
+			// below would be skipped — the grenade would stay frozen at the
+			// throw position and explode there instead of where it actually
+			// lands. The server is authoritative for all projectile physics,
+			// so force fulltick for any player-owned projectile.
+			if (g_NetMode == NETMODE_SERVER) {
+				fulltick = true;
+			} else
+#endif
 			fulltick = (projectile->ownerprop == g_Vars.currentplayer->prop);
 		}
 	}

@@ -282,9 +282,11 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 		g_NetCspHistory[g_NetCspHead].pos = move->pos;
 	}
 
-	// Lag comp: snapshot each remote client's world position on the server
-	// so shots can be rewound to what the shooter saw.
-	if (g_NetMode == NETMODE_SERVER && cl != g_NetLocalClient && cl->player && cl->player->prop) {
+	// Lag comp: snapshot every player's world position on the server so shots
+	// can be rewound to what the shooter saw. This includes the host (local
+	// client) — without it the host's lagcomp buffer stays zeroed and remote
+	// bullets move the host's hitbox to world origin, making them unkillable.
+	if (g_NetMode == NETMODE_SERVER && cl->player && cl->player->prop) {
 		netLagCompSave(cl);
 	}
 }
@@ -934,6 +936,13 @@ void netEndFrame(void)
 				struct netclient *cl = &g_NetClients[i];
 				if (cl->state >= CLSTATE_GAME && cl->player) {
 					netClientRecordMove(cl, cl->player);
+					// Respawn/teleport: clear lag comp history so shots fired by
+					// other players immediately after can't rewind this player back
+					// to their pre-death position.
+					if (cl->outmove[0].ucmd & UCMD_FL_FORCEMASK) {
+						memset(cl->lagcomp, 0, sizeof(cl->lagcomp));
+						cl->lagcomp_head = 0;
+					}
 					const bool needrel = netClientNeedReliableMove(cl);
 					if (needrel || netClientNeedMove(cl)) {
 						netmsgSvcPlayerMoveWrite(needrel ? &g_NetMsgRel : &g_NetMsg, cl);
@@ -1105,7 +1114,7 @@ void netSyncIdsAllocate(void)
 
 void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
 {
-	if (!ack_tick || g_NetCspCorrFrames > 0) {
+	if (!ack_tick) {
 		return;
 	}
 
@@ -1121,6 +1130,13 @@ void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
 		const f32 ey = server_pos->y - snap->pos.y;
 		const f32 ez = server_pos->z - snap->pos.z;
 		if (ex*ex + ey*ey + ez*ez > NET_CSP_CORR_THRESH_SQ) {
+			// Retarget: replace any in-flight correction's remaining delta with
+			// the freshest server error and restart the smoothing window.
+			// Previously we dropped new corrections while one was still
+			// smoothing, which at high RTT means several authoritative updates
+			// got ignored back-to-back and the next accepted one was a large
+			// snap. Retargeting lets the player glide toward the latest
+			// authoritative position continuously instead.
 			g_NetCspCorrDelta.x = ex;
 			g_NetCspCorrDelta.y = ey;
 			g_NetCspCorrDelta.z = ez;
@@ -1195,7 +1211,12 @@ void netLagCompBegin(const struct netclient *shooter)
 
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
 		struct netclient *cl = &g_NetClients[i];
-		if (cl == shooter || cl->state < CLSTATE_GAME || !cl->player || !cl->player->prop) {
+		// Skip the shooter (their position is already correct) and the host
+		// (g_NetLocalClient): the host runs at zero lag on the server, so their
+		// current position IS the authoritative position — no rewind needed.
+		// Rewinding them with a one-tick-stale lagcomp entry (or the zeroed
+		// fallback on early frames) moves their hitbox to the wrong place.
+		if (cl == shooter || cl == g_NetLocalClient || cl->state < CLSTATE_GAME || !cl->player || !cl->player->prop) {
 			continue;
 		}
 		if (g_LagCompCount >= NET_MAX_CLIENTS) {

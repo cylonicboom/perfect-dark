@@ -676,6 +676,17 @@ void playerStartNewLife(void)
 	if (g_Vars.currentplayer->prop->chr) {
 		g_Vars.currentplayer->prop->chr->chrflags &= ~CHRCFLAG_HIDDEN;
 	}
+
+#ifndef PLATFORM_N64
+	// Tell the client to hard-snap to this spawn position via chrSetPos on the
+	// next SVC_PLAYER_MOVE. Without this, the client smoothly CSP-corrects from
+	// its (RNG-desynced) locally-chosen spawn to the server's authoritative
+	// spawn over NET_CSP_CORR_FRAMES, while its physics ground state is still
+	// set for the wrong spawn — which makes the player fall through the floor.
+	if (g_NetMode == NETMODE_SERVER) {
+		g_Vars.currentplayer->ucmd |= UCMD_FL_FORCEPOS | UCMD_FL_FORCEANGLE | UCMD_FL_FORCEGROUND;
+	}
+#endif
 }
 
 void playerLoadDefaults(void)

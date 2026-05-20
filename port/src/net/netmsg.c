@@ -652,6 +652,36 @@ u32 netmsgSvcPlayerMoveRead(struct netbuf *src, struct netclient *srccl)
 	movecl->outmoveack = outmoveack;
 	movecl->lerpticks = 0;
 
+	// Teleport/respawn: flood all ring buffer slots with the new position so
+	// entity interpolation can't reach any pre-teleport entry during the interp
+	// window. Without this, desired_tick still points into the death-position era
+	// for g_NetInterpTicks frames and the player appears to warp back to the void.
+	//
+	// Two triggers:
+	//   Force flags   — set for remote-client respawns via chraction.c; also
+	//                   clears lag comp so shots can't rewind to death position.
+	//   Big position jump (>512 units in any axis) — catches the host player's
+	//                   own respawn, which never gets force flags because
+	//                   player->isremote is false on the server.
+	{
+		const struct netplayermove *prev =
+			&movecl->inmove[(movecl->inmove_head + NET_SNAPSHOT_COUNT - 1) % NET_SNAPSHOT_COUNT];
+		const bool big_jump = prev->tick && (
+			fabsf(newmove.pos.x - prev->pos.x) > 512.f ||
+			fabsf(newmove.pos.y - prev->pos.y) > 512.f ||
+			fabsf(newmove.pos.z - prev->pos.z) > 512.f
+		);
+		if ((newmove.ucmd & UCMD_FL_FORCEMASK) || big_jump) {
+			for (s32 i = 0; i < NET_SNAPSHOT_COUNT; ++i) {
+				movecl->inmove[i] = newmove;
+			}
+		}
+		if (newmove.ucmd & UCMD_FL_FORCEMASK) {
+			memset(movecl->lagcomp, 0, sizeof(movecl->lagcomp));
+			movecl->lagcomp_head = 0;
+		}
+	}
+
 	if (movecl == g_NetLocalClient) {
 		if (newmove.ucmd & UCMD_FL_FORCEMASK) {
 			// Server wants to teleport us; cancel any pending CSP correction

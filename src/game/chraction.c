@@ -15477,7 +15477,7 @@ bool chrMoveToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 an
 		}
 
 #ifndef PLATFORM_N64
-		if (g_NetMode == NETMODE_SERVER && player && player->isremote) {
+		if (g_NetMode == NETMODE_SERVER && player) {
 			player->ucmd |= UCMD_FL_FORCEPOS | UCMD_FL_FORCEANGLE | UCMD_FL_FORCEGROUND;
 		}
 #endif

@@ -4,6 +4,16 @@
 
 **Do not build.** This repo only compiles inside an MSYS2 MinGW x64 shell, which isn't reachable from this Claude environment. Never run `make`, `cmake --build`, `ninja`, or any other compile invocation — the user builds externally and reports back. Reading CMake files, headers, and verifying code by inspection is fine.
 
+## Code Writing Guidelines
+
+When writing or modifying code, write notes constantly and review to ensure:
+- The code makes logical sense and is correct for the task
+- No superfluous changes or unnecessary complexity are introduced
+- Changes are minimal and focused on the actual problem
+- Existing patterns and conventions in the codebase are respected
+
+This keeps the work focused and prevents scope creep.
+
 ## Repository Overview
 
 A work-in-progress port of the [Perfect Dark N64 decompilation](https://github.com/n64decomp/perfect_dark) to modern platforms (Windows, Linux, macOS, Nintendo Switch). The source ROM must be provided separately.

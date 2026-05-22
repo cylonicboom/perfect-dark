@@ -1730,6 +1730,11 @@ static struct netkillfeedentry g_NetKillFeed[NET_KILLFEED_MAX];
 #define NET_KILLFEED_COL_SHOOTER 0x33ff33ff  // bright green
 #define NET_KILLFEED_COL_VICTIM  0xff4444ff  // bright red
 #define NET_KILLFEED_COL_PLAIN   0xffffffff  // white separator / "[died]"
+// Outline colour passed as textRender's second colour arg — sets PRIMITIVE in
+// the dual-cycle combiner so character edges (TEXEL1_ALPHA areas) draw black
+// while the body (TEXEL0_ALPHA fill) takes the per-segment colour. Matches the
+// FPS counter's 0x000000a0 so both overlays read with the same outline weight.
+#define NET_KILLFEED_COL_OUTLINE 0x000000a0  // black, alpha 0xa0
 
 static void netKillFeedClear(void)
 {
@@ -1814,28 +1819,35 @@ Gfx *netKillFeedRender(Gfx *gdl)
 
 		if (e->shooter[0]) {
 			// "Shooter > Victim" — three segments, each with its own colour.
-			// textRenderProjected mutates x to the end of the rendered text
-			// so consecutive calls line up without manual width math.
-			gdl = textRenderProjected(gdl, &x, &y, e->shooter,
+			// textRender (vs. textRenderProjected) takes a second colour for the
+			// dual-cycle combiner so we get a black outline around each glyph,
+			// matching the FPS counter. It mutates x to the end of the rendered
+			// text so consecutive calls line up without manual width math.
+			gdl = textRender(gdl, &x, &y, e->shooter,
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_SHOOTER, screenw, screenh, 0, 0);
+					NET_KILLFEED_COL_SHOOTER, NET_KILLFEED_COL_OUTLINE,
+					screenw, screenh, 0, 0);
 
-			gdl = textRenderProjected(gdl, &x, &y, " > ",
+			gdl = textRender(gdl, &x, &y, " > ",
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_PLAIN, screenw, screenh, 0, 0);
+					NET_KILLFEED_COL_PLAIN, NET_KILLFEED_COL_OUTLINE,
+					screenw, screenh, 0, 0);
 
-			gdl = textRenderProjected(gdl, &x, &y, e->victim,
+			gdl = textRender(gdl, &x, &y, e->victim,
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_VICTIM, screenw, screenh, 0, 0);
+					NET_KILLFEED_COL_VICTIM, NET_KILLFEED_COL_OUTLINE,
+					screenw, screenh, 0, 0);
 		} else {
 			// "Victim [died]" — suicide / environment kill.
-			gdl = textRenderProjected(gdl, &x, &y, e->victim,
+			gdl = textRender(gdl, &x, &y, e->victim,
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_VICTIM, screenw, screenh, 0, 0);
+					NET_KILLFEED_COL_VICTIM, NET_KILLFEED_COL_OUTLINE,
+					screenw, screenh, 0, 0);
 
-			gdl = textRenderProjected(gdl, &x, &y, " [died]",
+			gdl = textRender(gdl, &x, &y, " [died]",
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_PLAIN, screenw, screenh, 0, 0);
+					NET_KILLFEED_COL_PLAIN, NET_KILLFEED_COL_OUTLINE,
+					screenw, screenh, 0, 0);
 		}
 
 		++visible;

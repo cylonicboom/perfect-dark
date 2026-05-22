@@ -16,6 +16,11 @@
 #include "bss.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include <stdio.h>
+#include "net/net.h"
+#include "net/netmsg.h"
+#endif
 
 u32 var80070590 = 0x00000000;
 
@@ -234,6 +239,19 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 	s32 prevplayernum;
 	char text[256];
 
+	// On a network client the server owns kill/death counters and broadcasts
+	// them via SVC_SCORE — see netmsgSvcScoreRead. Skipping the local writes
+	// here keeps the client from double-counting (chrDamage runs on both
+	// sides via SVC_CHR_DAMAGE relay so this function fires on both) and
+	// from drifting on dropped packets. The hudmsg "Killed by X" /
+	// "Killed X" lines are still emitted because they're per-local-player
+	// UI feedback, not match state.
+#ifndef PLATFORM_N64
+	const bool ownsStats = (g_NetMode != NETMODE_CLIENT);
+#else
+	const bool ownsStats = true;
+#endif
+
 	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_POPACAP) {
 		pacHandleDeath(aplayernum, vplayernum);
 	}
@@ -257,7 +275,7 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 
 	if (vplayernum >= 0 && aplayernum == vplayernum) {
 		// Player suicide
-		if (vmpchr && vmpindex >= 0) {
+		if (vmpchr && vmpindex >= 0 && ownsStats) {
 			vmpchr->numdeaths++;
 			vmpchr->killcounts[vmpindex]++;
 		}
@@ -271,7 +289,7 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 	} else {
 		// Normal kill
 		if (vplayernum >= 0) {
-			if (vmpchr) {
+			if (vmpchr && ownsStats) {
 				vmpchr->numdeaths++;
 			}
 
@@ -291,7 +309,7 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 			}
 		}
 
-		if (ampchr && vmpindex >= 0) {
+		if (ampchr && vmpindex >= 0 && ownsStats) {
 			ampchr->killcounts[vmpindex]++;
 		}
 
@@ -314,12 +332,13 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 		if (g_Vars.normmplayerisrunning
 				&& aplayernum >= 0
 				&& vplayernum >= PLAYERCOUNT()
-				&& aplayernum != vplayernum) {
+				&& aplayernum != vplayernum
+				&& ownsStats) {
 			g_MpAllChrPtrs[vplayernum]->aibot->lastkilledbyplayernum = aplayernum;
 		}
 	}
 
-	if (g_Vars.normmplayerisrunning && aplayernum >= 0 && g_MpAllChrPtrs[aplayernum]->aibot) {
+	if (g_Vars.normmplayerisrunning && aplayernum >= 0 && g_MpAllChrPtrs[aplayernum]->aibot && ownsStats) {
 		s32 index = mpGetWeaponSlotByWeaponNum(g_MpAllChrPtrs[aplayernum]->aibot->weaponnum);
 
 		if (index >= 0) {
@@ -331,5 +350,60 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 		}
 	}
 
-	g_Vars.totalkills++;
+	if (ownsStats) {
+		g_Vars.totalkills++;
+	}
+
+#ifndef PLATFORM_N64
+	// Kill-feed broadcast + authoritative score sync. Server is the authority
+	// here — it sees the definitive kill once via mpstatsRecordDeath and ships
+	// a pre-formatted line to all clients (including its own host display via
+	// the local netKillFeedAdd call). Clients receive SVC_KILL and only
+	// render; they never broadcast back. Names come from g_MpAllChrConfigPtrs
+	// which is indexed by the same scheme on both sides (players
+	// 0..MAX_PLAYERS-1, then bots), so the server's lookup matches what the
+	// receiver expects.
+	//
+	// Score broadcast: only the attacker and victim mpchrs have changed
+	// stats, so we ship a 1- or 2-entry SVC_SCORE delta immediately. The
+	// client overwrites local mpchrconfig fields with the server's values,
+	// which keeps scoreboards in lockstep even if SVC_CHR_DAMAGE relays
+	// drop or arrive out of order.
+	if (g_NetMode == NETMODE_SERVER) {
+		const char *aName = (aplayernum >= 0 && aplayernum < MAX_MPCHRS
+				&& g_MpAllChrConfigPtrs[aplayernum])
+			? g_MpAllChrConfigPtrs[aplayernum]->name : NULL;
+		const char *vName = (vplayernum >= 0 && vplayernum < MAX_MPCHRS
+				&& g_MpAllChrConfigPtrs[vplayernum])
+			? g_MpAllChrConfigPtrs[vplayernum]->name : NULL;
+
+		if (vName) {
+			// Pass NULL shooter for suicides / environment kills so the
+			// receiver renders "victim [died]" instead of "shooter > victim".
+			const char *shooterPass =
+				(aplayernum < 0 || aplayernum == vplayernum || !aName)
+				? NULL : aName;
+			netKillFeedAdd(shooterPass, vName);
+			netbufStartWrite(&g_NetMsgRel);
+			netmsgSvcKillWrite(&g_NetMsgRel, shooterPass, vName);
+			netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		}
+
+		// Build the score-delta entry list. Skip duplicates so suicides
+		// only ship a single entry instead of the same index twice.
+		s32 score_indexes[2];
+		s32 score_count = 0;
+		if (aplayernum >= 0 && aplayernum < MAX_MPCHRS) {
+			score_indexes[score_count++] = aplayernum;
+		}
+		if (vplayernum >= 0 && vplayernum < MAX_MPCHRS && vplayernum != aplayernum) {
+			score_indexes[score_count++] = vplayernum;
+		}
+		if (score_count > 0) {
+			netbufStartWrite(&g_NetMsgRel);
+			netmsgSvcScoreWrite(&g_NetMsgRel, score_indexes, score_count);
+			netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		}
+	}
+#endif
 }

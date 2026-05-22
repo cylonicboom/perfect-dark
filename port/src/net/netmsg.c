@@ -6,6 +6,7 @@
 #include "lib/main.h"
 #include "lib/mtx.h"
 #include "lib/model.h"
+#include "lib/anim.h"
 #include "game/mplayer/mplayer.h"
 #include "game/chr.h"
 #include "game/chraction.h"
@@ -93,6 +94,8 @@ static inline u32 netbufWritePlayerMove(struct netbuf *buf, const struct netplay
 	netbufWriteF32(buf, in->crosspos[1]);
 	netbufWriteS8(buf, in->weaponnum);
 	netbufWriteCoord(buf, &in->pos);
+	netbufWriteS16(buf, in->animnum);
+	netbufWriteS16(buf, in->animframe);
 	if (in->ucmd & UCMD_AIMMODE) {
 		netbufWriteF32(buf, in->zoomfov);
 	}
@@ -113,6 +116,8 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 	in->crosspos[1] = netbufReadF32(buf);
 	in->weaponnum = netbufReadS8(buf);
 	netbufReadCoord(buf, &in->pos);
+	in->animnum = netbufReadS16(buf);
+	in->animframe = netbufReadS16(buf);
 	if (in->ucmd & UCMD_AIMMODE) {
 		in->zoomfov = netbufReadF32(buf);
 	} else {
@@ -289,7 +294,14 @@ u32 netmsgClcMoveRead(struct netbuf *src, struct netclient *srccl)
 				}
 			}
 		}
-		// Push into ring buffer: advance head and write newest entry there
+		// RING BUFFER PUSH: advance head to the next slot and store the newest
+		// move there; head wraps modulo NET_SNAPSHOT_COUNT (8). The buffer
+		// powers entity interpolation: bwalkUpdateRemote and bmoveProcessRemoteInput
+		// find two snapshots bracketing (g_NetTick - g_NetInterpTicks) and lerp
+		// position / speeds between them, smoothing out the discrete arrival
+		// cadence of SVC_PLAYER_MOVE packets. When the buffer is full the oldest
+		// snapshot is overwritten — depth limits how far back we can lerp, which
+		// also caps the maximum useful g_NetInterpTicks.
 		srccl->inmove_head = (srccl->inmove_head + 1) % NET_SNAPSHOT_COUNT;
 		srccl->inmove[srccl->inmove_head] = newmove;
 		srccl->lerpticks = 0;
@@ -462,6 +474,22 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 		}
 	}
 
+	// Sim bot configs — without these the client's g_BotConfigsArray stays
+	// default and botmgrAllocateBot picks default heads/bodies on the
+	// client side, so sims show up wearing the wrong models/colors. Send
+	// all MAX_BOTS slots so the array is fully reconstructable; difficulty
+	// is what gates which slots actually spawn so it has to come along too.
+	netbufWriteU8(dst, MAX_BOTS);
+	for (s32 i = 0; i < MAX_BOTS; ++i) {
+		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
+		netbufWriteU8(dst, bot->base.mpheadnum);
+		netbufWriteU8(dst, bot->base.mpbodynum);
+		netbufWriteU8(dst, bot->base.team);
+		netbufWriteU8(dst, bot->type);
+		netbufWriteU8(dst, bot->difficulty);
+		netbufWriteStr(dst, bot->base.name);
+	}
+
 	return dst->error;
 }
 
@@ -563,6 +591,36 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 			}
 			g_PlayerConfigsArray[playernum].base.team = ncl->settings.team;
 		}
+	}
+
+	// Sim bot configs. Must be read here, before mpStartMatch, because that's
+	// what spawns the bots — and botmgrAllocateBot copies from
+	// g_BotConfigsArray to pick each bot's head, body, team, type, difficulty,
+	// and name. Without this read the client uses its default array (whatever
+	// the local "Combat Sim" menu was last set to) so sims show up with the
+	// wrong models and names. Must match the write in netmsgSvcStageStartWrite.
+	const u8 numbots = netbufReadU8(src);
+	if (src->error || numbots != MAX_BOTS) {
+		sysLogPrintf(LOG_WARNING, "NET: malformed SVC_STAGE bot config block from server (got %u, want %d)", numbots, MAX_BOTS);
+		return 4;
+	}
+	for (s32 i = 0; i < numbots; ++i) {
+		struct mpbotconfig *bot = &g_BotConfigsArray[i];
+		bot->base.mpheadnum = netbufReadU8(src);
+		bot->base.mpbodynum = netbufReadU8(src);
+		bot->base.team = netbufReadU8(src);
+		bot->type = netbufReadU8(src);
+		bot->difficulty = netbufReadU8(src);
+		char *name = netbufReadStr(src);
+		if (name) {
+			strncpy(bot->base.name, name, sizeof(bot->base.name) - 1);
+			bot->base.name[sizeof(bot->base.name) - 1] = '\0';
+		}
+	}
+
+	if (src->error) {
+		sysLogPrintf(LOG_WARNING, "NET: malformed SVC_STAGE bot configs from server");
+		return 5;
 	}
 
 	g_NetNumClients = numplayers;
@@ -827,10 +885,21 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 
 u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *initrot)
 {
-	u8 flags = (prop->obj != NULL);
+	// prop->obj, prop->chr, prop->door etc. all alias the same union slot, so
+	// `prop->obj != NULL` is meaninglessly true for any prop that has chr/door
+	// data instead of an obj. This caused a past crash: netEndFrame broadcasts
+	// SVC_PROP_MOVE for sim props (PROPTYPE_CHR), and the old code didn't check
+	// prop->type, so it read random chr-struct bytes as OBJHFLAG_PROJECTILE and
+	// dereferenced a junk pointer inside mtx4GetRotation. Now we gate the
+	// obj/projectile path strictly on prop->type, avoiding the misread.
+	const bool has_obj = (prop->type == PROPTYPE_OBJ
+			|| prop->type == PROPTYPE_WEAPON
+			|| prop->type == PROPTYPE_DOOR)
+		&& prop->obj != NULL;
+	u8 flags = has_obj ? 1 : 0;
 
 	struct projectile *projectile = NULL;
-	if (prop->obj) {
+	if (has_obj) {
 		if (prop->obj->hidden & OBJHFLAG_EMBEDDED) {
 			projectile = prop->obj->embedment->projectile;
 		} else if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
@@ -838,9 +907,14 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		}
 		if (projectile) {
 			flags |= (1 << 1);
-			// Derive rotation from the projectile's current matrix when not explicitly provided.
-			// Rockets and other physics props set projectile->mtx at spawn from the firing direction;
-			// without this, clients see an identity-matrix (wrong) orientation.
+			// AUTO-DERIVE PROJECTILE ROTATION when the caller didn't supply one.
+			// Most callers pass initrot=NULL because they don't track rotation
+			// directly. Without bit 2 set, the read side leaves projectile->mtx
+			// at whatever it was after allocation, so rockets that should be
+			// pointing along their flight path render as if they'd been spawned
+			// at their default pose. Extract the rotation from the projectile's
+			// current matrix and ship it on every move so visual orientation
+			// matches what the server is rendering.
 			struct coord derived_rot = {0, 0, 0};
 			if (!initrot) {
 				mtx4GetRotation(projectile->mtx.m, &derived_rot);
@@ -853,6 +927,19 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 				flags |= (1 << 3);
 			}
 		}
+	}
+
+	// BIT 4: CHR-STATE EXTENSION. For PROPTYPE_CHR we append yrot, animation
+	// state, anim speed, held weapons, and aim properties. Clients don't run
+	// botTick (sim AI is server-only), so none of these update on their own:
+	// without the block, sims end up stuck in their spawn anim (often a T-pose
+	// because the bot AI normally drives the first modelSetAnimation), facing
+	// their spawn direction, with empty hands and rigid posture. actiontype is
+	// included in the wire format for compatibility but is discarded on read
+	// (see read side for the union-data crash rationale).
+	const bool wantChrState = (prop->type == PROPTYPE_CHR) && prop->chr;
+	if (wantChrState) {
+		flags |= (1 << 4);
 	}
 
 	netbufWriteU8(dst, SVC_PROP_MOVE);
@@ -880,6 +967,63 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		}
 	}
 
+	if (wantChrState) {
+		struct chrdata *chr = prop->chr;
+		// ACTIONTYPE: intentionally NOT USED on the client. See netmsgSvcPropMoveRead
+		// for rationale (it would crash due to uninitialized action-state union data).
+		netbufWriteS8(dst, chr->actiontype);
+		// BODY ROTATION: yrot for view direction. The server derives this from AI
+		// decisions; clients apply it directly in modelSetChrRotY so the chr's body
+		// faces the right direction.
+		netbufWriteF32(dst, chrGetRotY(chr));
+		// ANIMATION: animnum, current frame index, and playback speed. anim->speed
+		// is set on the server by playerChooseThirdPersonAnimation (called via
+		// botApplyMovement) and scales the cycle to match the chr's actual
+		// movement rate — fast strafe-run, slow walk, etc. Without syncing it
+		// the client's sim would keep whatever speed was last assigned (typically
+		// the value from the last modelSetAnimation call) and the running cycle
+		// would no longer line up with how fast the body is actually traversing
+		// world units. animnum=0 is the sentinel for "anim not yet allocated";
+		// the read side leaves the chr's current anim untouched in that case.
+		if (chr->model && chr->model->anim) {
+			netbufWriteS16(dst, chr->model->anim->animnum);
+			netbufWriteS16(dst, chr->model->anim->framea);
+			netbufWriteF32(dst, chr->model->anim->speed);
+		} else {
+			netbufWriteS16(dst, 0);
+			netbufWriteS16(dst, 0);
+			netbufWriteF32(dst, 1.0f);
+		}
+		// HELD WEAPONS: per-hand weaponnum (or -1 if unarmed). The client doesn't
+		// run bot AI (which controls weapon swaps via chrGiveWeapon when
+		// changeguntimer60 elapses), so sims have no weapon props on the client
+		// side. Send the server's current choices so the client can spawn/sync
+		// matching weapon props to render in the chr's hands. These are local
+		// client-side props (syncid=0, no network references) that attach to hand
+		// bones and get cleaned up when the sync message changes the weaponnum.
+		for (s32 h = 0; h < 2; ++h) {
+			s8 wn = -1;
+			if (chr->weapons_held[h] && chr->weapons_held[h]->obj
+					&& chr->weapons_held[h]->obj->type == OBJTYPE_WEAPON
+					&& chr->weapons_held[h]->weapon) {
+				wn = (s8)chr->weapons_held[h]->weapon->weaponnum;
+			}
+			netbufWriteS8(dst, wn);
+		}
+		// AIM PROPERTIES: drive the chr's upper-body pose (shoulders, waist rotation).
+		// chrHandleJointPositioned uses these in rendering: shoulders pivot on
+		// aimuplshoulder/aimuprshoulder, waist xrot on aimupback, waist yrot on
+		// aimsideback+angleoffset. Without these, sims on the client keep their
+		// arms pointed straight forward regardless of target/aim direction, making
+		// the held weapon not align with the chr's actual aim. angleoffset is
+		// aibot-specific (AI angle offset from target); non-aibots send 0.
+		netbufWriteF32(dst, chr->aimupback);
+		netbufWriteF32(dst, chr->aimsideback);
+		netbufWriteF32(dst, chr->aimuplshoulder);
+		netbufWriteF32(dst, chr->aimuprshoulder);
+		netbufWriteF32(dst, chr->aibot ? chr->aibot->angleoffset : 0.f);
+	}
+
 	return dst->error;
 }
 
@@ -898,6 +1042,10 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		return 1;
 	}
 
+	// Save the pre-update position so the chr-state block can blend toward
+	// the wire pos instead of snapping. Projectiles still hard-snap below.
+	const struct coord oldpos = prop->pos;
+
 	prop->pos = pos;
 
 	if (!propRoomsEqual(rooms, prop->rooms)) {
@@ -910,56 +1058,222 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		}
 	}
 
-	if (!(flags & (1 << 0))) {
-		return src->error;
+	// obj / projectile section — present only when bit 0 is set
+	if (flags & (1 << 0)) {
+		if (!prop->obj) {
+			sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't", prop->syncid);
+			return 1;
+		}
+
+		if (flags & (1 << 1)) {
+			// create a projectile for this prop if it isn't already there
+			func0f0685e4(prop);
+
+			struct projectile *projectile = NULL;
+			if (prop->obj->hidden & OBJHFLAG_EMBEDDED) {
+				projectile = prop->obj->embedment->projectile;
+			} else if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
+				projectile = prop->obj->projectile;
+			}
+
+			if (!projectile) {
+				sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have a projectile, but doesn't", prop->syncid);
+				return 1;
+			}
+
+			netbufReadCoord(src, &projectile->speed);
+			projectile->unk0dc = netbufReadF32(src);
+			projectile->flags = netbufReadU32(src);
+			projectile->bouncecount = netbufReadS8(src);
+			projectile->ownerprop = netbufReadPropPtr(src);
+			projectile->targetprop = netbufReadPropPtr(src);
+
+			if (flags & (1 << 2)) {
+				struct coord initrot; netbufReadCoord(src, &initrot);
+				mtx4LoadRotation(&initrot, &projectile->mtx);
+			}
+
+			if (flags & (1 << 3)) {
+				projectile->unk08c = netbufReadF32(src);
+				projectile->unk098 = netbufReadF32(src);
+				projectile->unk0e0 = netbufReadF32(src);
+				projectile->unk0e4 = netbufReadF32(src);
+				projectile->unk0ec = netbufReadF32(src);
+				projectile->unk0f0 = netbufReadF32(src);
+			}
+
+			prop->pos = pos;
+		}
 	}
 
-	if (!prop->obj) {
-		sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't", prop->syncid);
-		return 1;
+	// CHR-STATE BLOCK: present when bit 4 is set, used for PROPTYPE_CHR props
+	// (sims/NPCs). Contains orientation, animation, aim, and weapons. We READ
+	// actiontype from the wire but intentionally DISCARD it — see the comment
+	// below on why actiontype can't be safely applied on the client.
+	if (flags & (1 << 4)) {
+		// ACTIONTYPE: discarded, not applied. Reason: most action states
+		// (ACT_GOPOS, ACT_ATTACK, ACT_PATROL, ACT_THROWGRENADE, etc.) store
+		// per-state data in the chr->act_* union. The matching chrTick* functions
+		// blindly dereference this union without null-checking, assuming the AI
+		// properly initialized it. The server populates the union as the AI
+		// transitions states. The client doesn't receive union data, so applying
+		// the server's actiontype would leave the union zero-init'd: calling
+		// chrTickGoPos with uninitialized waypoint data, or chrTickAttack with
+		// uninitialized target data, crashes inside e.g. chrGoPosGetCurWaypointInfoWithFlags
+		// (chraction.c:5448, seen in the wild). Safer to force ACT_STAND, which
+		// only calls chrTickStand — a no-op with zero-init data. The visible
+		// animation is still correct because animnum below drives the skeletal
+		// anim, so attack/run anims play correctly, just without the matching
+		// ai-tick logic. Better than T-pose and safe from crashes.
+		(void)netbufReadS8(src); // received actiontype, intentionally discarded
+		const f32 yrot = netbufReadF32(src);
+		const s16 animnum = netbufReadS16(src);
+		const s16 animframe = netbufReadS16(src);
+		const f32 animspeed = netbufReadF32(src);
+		const s8 weapon_r = netbufReadS8(src);
+		const s8 weapon_l = netbufReadS8(src);
+		const f32 aimupback = netbufReadF32(src);
+		const f32 aimsideback = netbufReadF32(src);
+		const f32 aimuplshoulder = netbufReadF32(src);
+		const f32 aimuprshoulder = netbufReadF32(src);
+		const f32 angleoffset = netbufReadF32(src);
+		if (prop->chr) {
+			struct chrdata *chr = prop->chr;
+			chr->actiontype = ACT_STAND;
+
+			// POSITION SMOOTHING: under packet loss or low update rate, the chr
+			// would snap between server positions on each catch-up packet (visible
+			// jitter / teleport). Blend by moving 50% of the way from the last
+			// received pos toward the new one, so the chr glides over a couple of
+			// receives instead of stepping. Skip the blend if the per-receive
+			// delta exceeds 80 units in any axis combined (sqrt(6400)) — that's
+			// above what AI movement can produce in one server update, so it's
+			// almost certainly a respawn / kill-plane drop and blending would
+			// stretch the chr across the map for a frame.
+			struct coord smoothpos = pos;
+			const f32 dx = pos.x - oldpos.x;
+			const f32 dy = pos.y - oldpos.y;
+			const f32 dz = pos.z - oldpos.z;
+			const f32 dist_sq = dx*dx + dy*dy + dz*dz;
+			if (dist_sq < 80.f * 80.f) {
+				const f32 alpha = 0.5f;
+				smoothpos.x = oldpos.x + dx * alpha;
+				smoothpos.y = oldpos.y + dy * alpha;
+				smoothpos.z = oldpos.z + dz * alpha;
+				prop->pos = smoothpos;
+			}
+
+			// POSITION TO MODEL: setting prop->pos alone isn't enough. Rendering
+			// reads rwdata->chrinfo.pos (the model's internal root), not prop->pos.
+			// modelSetRootPosition writes it. Without this call, the sim's running
+			// animation plays in place — the model root never moves to the new
+			// world position. This mirrors what botApplyMovement does server-side.
+			if (chr->model) {
+				modelSetRootPosition(chr->model, &smoothpos);
+			}
+
+			// ROTATION: apply yrot to BOTH chr->aibot->roty (via chrSetRotY) AND
+			// the model's chrinfo yrot (via modelSetChrRotY). These must stay
+			// synced: rendering uses chrinfo.yrot, and AI-facing accessors like
+			// chrGetRotY return aibot->roty. chrSetRotY alone doesn't propagate
+			// to chrinfo for aibots, so without the explicit modelSetChrRotY call,
+			// sims stay facing their spawn direction. The server keeps them in
+			// sync because botApplyMovement calls modelSetChrRotY directly after
+			// moving them — we replicate that here on the client.
+			chrSetRotY(chr, yrot);
+			if (chr->model) {
+				modelSetChrRotY(chr->model, yrot);
+			}
+
+			// ANIMATION: snap when animnum diverges from current. Guard against
+			// invalid ids first: out-of-range animnums index past g_Anims and
+			// crash inside animLoadHeader. animHasFrames filters sentinel 0,
+			// negatives, and anything beyond g_NumAnims.
+			//
+			// Two paths once validated:
+			//   - Different anim: full modelSetAnimation, which resets frame
+			//     counters to animframe and applies the server's speed. Pass a
+			//     small merge time (0.0625) so the changeover blends out the
+			//     previous anim's pose over the next tick instead of popping.
+			//   - Same anim: just poke anim->speed so modelTickAnim picks up
+			//     the new playback rate. Re-calling modelSetAnimation here would
+			//     reset framea/frameb to animframe and visibly snap the cycle
+			//     backward whenever the server's frame index trailed ours.
+			if (animnum > 0 && animHasFrames(animnum) && chr->model && chr->model->anim) {
+				if (chr->model->anim->animnum != animnum) {
+					modelSetAnimation(chr->model, animnum, chr->model->anim->flip, (f32)animframe, animspeed, 0.0625f);
+				} else {
+					chr->model->anim->speed = animspeed;
+				}
+			}
+
+			// AIM PROPERTIES: drive upper-body joint rotations in chrHandleJointPositioned:
+			// shoulders (aimuplshoulder/aimuprshoulder), waist rotation (aimupback +
+			// aimsideback + angleoffset). Without these, the chr's arms point
+			// straight forward regardless of aim direction, so the held weapon
+			// doesn't align with actual firing direction. We also set aimend*
+			// fields to the current values and zero aimendcount so that
+			// chrUpdateAimProperties (called on each fulltick) snaps aim* to
+			// aimend* immediately instead of slowly interpolating back to some
+			// previous AI state (which we don't receive on the client). This
+			// ensures the sim's posture matches the server immediately.
+			chr->aimupback = aimupback;
+			chr->aimsideback = aimsideback;
+			chr->aimuplshoulder = aimuplshoulder;
+			chr->aimuprshoulder = aimuprshoulder;
+			chr->aimendback = aimupback;
+			chr->aimendsideback = aimsideback;
+			chr->aimendlshoulder = aimuplshoulder;
+			chr->aimendrshoulder = aimuprshoulder;
+			chr->aimendcount = 0;
+			if (chr->aibot) {
+				// angleoffset: added to waist yrot in chrHandleJointPositioned,
+				// used by botApplyMovement to decouple body-facing from animation
+				// direction during strafe runs (so the chr can fire left while
+				// running forward). Syncing it is essential for the weapon to
+				// align with the server's upper-body orientation.
+				chr->aibot->angleoffset = angleoffset;
+			}
+
+			// HELD WEAPONS: sync per-hand weapon choices. The server's bot AI
+			// spawns weapon props via chrGiveWeapon when changeguntimer60 elapses
+			// (bot.c). That loop is gated to server-only on the client, so sims
+			// have no weapon props locally — the chr animation plays the armed
+			// pose, but with nothing in hand. This sync fixes that: for each hand,
+			// compare the wire weaponnum (-1 if empty) to the current held weapon.
+			// If different, delete the old one and spawn a new one via
+			// chrGiveWeapon. New weapon props get syncid=0 (client-allocated,
+			// propAllocate) so they're not referenced by any network messages —
+			// the chr->weapons_held[] link is enough to keep them positioned and
+			// rendered attached to hand bones. This gives the sim visible guns
+			// matching the server without needing per-weapon network sync.
+			static const u32 hand_flags[2] = { 0, OBJFLAG_WEAPON_LEFTHANDED };
+			const s8 want_weapon[2] = { weapon_r, weapon_l };
+			for (s32 h = 0; h < 2; ++h) {
+				const s32 want = want_weapon[h];
+				const s32 cur = (chr->weapons_held[h] && chr->weapons_held[h]->obj
+						&& chr->weapons_held[h]->obj->type == OBJTYPE_WEAPON
+						&& chr->weapons_held[h]->weapon)
+					? (s32)chr->weapons_held[h]->weapon->weaponnum : -1;
+				if (want == cur) {
+					continue;
+				}
+				// Mismatch: delete old, spawn new
+				if (chr->weapons_held[h]) {
+					if (chr->weapons_held[h]->obj) {
+						chr->weapons_held[h]->obj->hidden |= OBJHFLAG_DELETING;
+					}
+					chr->weapons_held[h] = NULL;
+				}
+				if (want >= 0) {
+					const s32 modelnum = playermgrGetModelOfWeapon(want);
+					if (modelnum >= 0) {
+						chrGiveWeapon(chr, modelnum, want, hand_flags[h]);
+					}
+				}
+			}
+		}
 	}
-
-	if (!(flags & (1 << 1))) {
-		return src->error;
-	}
-
-	// create a projectile for this prop if it isn't already there
-	func0f0685e4(prop);
-
-	struct projectile *projectile = NULL;
-	if (prop->obj->hidden & OBJHFLAG_EMBEDDED) {
-		projectile = prop->obj->embedment->projectile;
-	} else if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
-		projectile = prop->obj->projectile;
-	}
-
-	if (!projectile) {
-		sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have a projectile, but doesn't", prop->syncid);
-		return 1;
-	}
-
-	netbufReadCoord(src, &projectile->speed);
-	projectile->unk0dc = netbufReadF32(src);
-	projectile->flags = netbufReadU32(src);
-	projectile->bouncecount = netbufReadS8(src);
-	projectile->ownerprop = netbufReadPropPtr(src);
-	projectile->targetprop = netbufReadPropPtr(src);
-
-	if (flags & (1 << 2)) {
-		struct coord initrot; netbufReadCoord(src, &initrot);
-		mtx4LoadRotation(&initrot, &projectile->mtx);
-	}
-
-	if (flags & (1 << 3)) {
-		projectile->unk08c = netbufReadF32(src);
-		projectile->unk098 = netbufReadF32(src);
-		projectile->unk0e0 = netbufReadF32(src);
-		projectile->unk0e4 = netbufReadF32(src);
-		projectile->unk0ec = netbufReadF32(src);
-		projectile->unk0f0 = netbufReadF32(src);
-	}
-
-	prop->pos = pos;
 
 	return src->error;
 }
@@ -1633,5 +1947,174 @@ u32 netmsgSvcChrDisarmRead(struct netbuf *src, struct netclient *srccl)
 
 	setCurrentPlayerNum(prevplayernum);
 
+	return src->error;
+}
+
+// Sim chr fired its weapon. The client doesn't run sim AI (chrTick is gated in
+// prop.c) so it never plays the local shoot sound or muzzle-flash. The server
+// emits one of these on every sim shot so clients can play a positional sound
+// and flag the chr as gunfire-visible for the matching held weapon prop.
+u32 netmsgSvcChrFireWrite(struct netbuf *dst, struct chrdata *chr, u8 handnum, u16 soundnum)
+{
+	if (!chr || !chr->prop || !chr->prop->syncid) {
+		return dst->error;
+	}
+	netbufWriteU8(dst, SVC_CHR_FIRE);
+	netbufWritePropPtr(dst, chr->prop);
+	netbufWriteU8(dst, handnum);
+	netbufWriteU16(dst, soundnum);
+	return dst->error;
+}
+
+u32 netmsgSvcChrFireRead(struct netbuf *src, struct netclient *srccl)
+{
+	struct prop *chrprop = netbufReadPropPtr(src);
+	const u8 handnum = netbufReadU8(src);
+	const u16 soundnum = netbufReadU16(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	if (!chrprop || !chrprop->chr) {
+		return src->error;
+	}
+
+	// Positional shoot sound at the chr's current world position. Using
+	// PSTYPE_CHRSHOOT so the channel manager evicts the chr's prior shoot
+	// channel when they fire again, matching server-side behavior.
+	if (soundnum) {
+		psCreate(NULL, chrprop, soundnum, -1, -1, PSFLAG_0400, PSFLAG2_PRINTABLE, PSTYPE_CHRSHOOT,
+			NULL, -1.f, NULL, -1, -1.f, -1.f, -1.f);
+	}
+
+	// Brief muzzle-flash hint: enable gunfire-visible on the chr's currently
+	// held weapon for this hand. The state will be reset on the next fire
+	// event or when the chr stops firing on the server (sent as soundnum=0).
+	// Guard handnum (untrusted u8 from wire) against the chr->weapons_held[3]
+	// bound before calling chrGetHeldProp, and check weaponprop->obj since
+	// weaponSetGunfireVisible derefs it without its own null guard.
+	if (handnum < 2) {
+		struct prop *weaponprop = chrGetHeldProp(chrprop->chr, handnum);
+		if (weaponprop && weaponprop->obj) {
+			weaponSetGunfireVisible(weaponprop, soundnum != 0, chrprop->rooms[0]);
+		}
+	}
+
+	return src->error;
+}
+
+// Kill feed entry. The server ships shooter + victim names from its
+// g_MpAllChrConfigPtrs lookups directly, avoiding any client-vs-server
+// mp-chr index mapping drift (netPlayersAllocate swaps the local client to
+// slot 0 on the client, while the server keeps the original slot numbering).
+// Two strings on the wire so the client renderer can colour each side
+// independently (shooter green, victim red). An empty shooter string means
+// the victim died alone (suicide / environment). Reliable channel so kills
+// can't get dropped under packet loss.
+u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *victim)
+{
+	netbufWriteU8(dst, SVC_KILL);
+	netbufWriteStr(dst, shooter ? shooter : "");
+	netbufWriteStr(dst, victim ? victim : "");
+	return dst->error;
+}
+
+u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl)
+{
+	const char *shooter = netbufReadStr(src);
+	const char *victim = netbufReadStr(src);
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+	if (victim && victim[0]) {
+		netKillFeedAdd(shooter, victim);
+	}
+	return src->error;
+}
+
+// Server-authoritative scoreboard update. The host owns the kill/death
+// counters in g_MpAllChrConfigPtrs (g_PlayerConfigsArray for human slots,
+// g_BotConfigsArray for sims). Clients used to compute their own from the
+// chrDamage relay, which drifted under packet loss / timing skew because
+// each mpstats increment ran independently on each side. Now the server
+// gates the writes (see mpstatsRecordDeath ifdef) and ships authoritative
+// deltas via this message — typically just the attacker and victim entries
+// per kill, but the writer accepts a list so we can do bulk syncs on
+// stage start / late-join in the future.
+u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count)
+{
+	if (count <= 0 || !mpchrindexes) {
+		return dst->error;
+	}
+	if (count > MAX_MPCHRS) {
+		count = MAX_MPCHRS;
+	}
+	netbufWriteU8(dst, SVC_SCORE);
+	netbufWriteU8(dst, (u8)count);
+	for (s32 i = 0; i < count; ++i) {
+		const s32 idx = mpchrindexes[i];
+		if (idx < 0 || idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[idx]) {
+			// write a sentinel so the reader can skip — keep the message
+			// alignment regardless of which slots are populated.
+			netbufWriteU8(dst, 0xff);
+			netbufWriteS16(dst, 0);
+			netbufWriteS16(dst, 0);
+			netbufWriteS8(dst, 0);
+			netbufWriteS32(dst, 0);
+			for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+				netbufWriteS16(dst, 0);
+			}
+			continue;
+		}
+		const struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[idx];
+		netbufWriteU8(dst, (u8)idx);
+		netbufWriteS16(dst, mpchr->numdeaths);
+		netbufWriteS16(dst, mpchr->numpoints);
+		netbufWriteS8(dst, mpchr->placement);
+		netbufWriteS32(dst, mpchr->rankablescore);
+		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+			netbufWriteS16(dst, mpchr->killcounts[k]);
+		}
+	}
+	return dst->error;
+}
+
+u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 count = netbufReadU8(src);
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+	if (count > MAX_MPCHRS) {
+		// Malformed — bail rather than overrun the wire.
+		return 1;
+	}
+	for (s32 i = 0; i < count; ++i) {
+		const u8 idx = netbufReadU8(src);
+		const s16 numdeaths = netbufReadS16(src);
+		const s16 numpoints = netbufReadS16(src);
+		const s8 placement = netbufReadS8(src);
+		const s32 rankablescore = netbufReadS32(src);
+		s16 killcounts[MAX_MPCHRS];
+		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+			killcounts[k] = netbufReadS16(src);
+		}
+		if (src->error) {
+			return src->error;
+		}
+		// 0xff sentinel = server skipped this entry (no mpchr at that slot).
+		if (idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[idx]) {
+			continue;
+		}
+		struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[idx];
+		mpchr->numdeaths = numdeaths;
+		mpchr->numpoints = numpoints;
+		mpchr->placement = placement;
+		mpchr->rankablescore = rankablescore;
+		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+			mpchr->killcounts[k] = killcounts[k];
+		}
+	}
 	return src->error;
 }

@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 13
+#define NET_PROTOCOL_VER 21
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -40,6 +40,42 @@
 // continuous micro-corrections.
 #define NET_CSP_CORR_THRESH_SQ 625.f  // 25 units
 
+// Maximum plausible per-tick movement for a player, used as the "this is a
+// teleport, not a smooth-correctible drift" threshold. Beyond this the CSP
+// path hard-snaps to the server position and cancels any in-flight smooth
+// correction, instead of trying to interpolate over many frames (which is
+// what produces visible pinballing when corrections keep retargeting).
+//
+// Derivation (see player movement notes in bondwalk.c):
+//   diagonal strafe-run max normalized speed = sqrt(1.08^2 + 1.0^2) ≈ 1.47
+//   with MPOPTION_FASTMOVEMENT eye-height multiplier (1.25x): ≈ 1.84
+//   estimated world units per tick at peak: ~25 horizontal, ~50 vertical
+//   plus ~50% running-down-ramp gravity boost and a safety buffer
+//
+// 120 world-units total magnitude covers strafe-run + fastmovement + ramp +
+// fall combined; anything past that is not physically reachable in a single
+// tick and is treated as a teleport / network glitch. Squared so the CSP
+// reconcile can compare against err_sq without a sqrt.
+#define NET_CSP_TELEPORT_THRESH_SQ 14400.f  // 120 units
+
+// Kill feed: rolling list of recent eliminations shown top-left. New entries
+// land at index 0 and older ones shift down. Tuned so a 4-way deathmatch keeps
+// most of the action visible without flooding.
+//
+// Entries store shooter and victim names separately rather than a pre-formatted
+// string so the renderer can colour each name independently (shooter green,
+// victim red, separator white). An empty shooter name means "self-kill" — the
+// victim died from suicide, environment damage, or unknown.
+#define NET_KILLFEED_MAX            5
+#define NET_KILLFEED_DURATION_TICKS (60 * 6)  // 6 seconds at 60Hz
+#define NET_KILLFEED_NAME           24
+
+struct netkillfeedentry {
+	u32 expire_tick;
+	char shooter[NET_KILLFEED_NAME];
+	char victim[NET_KILLFEED_NAME];
+};
+
 #define NET_NULL_CLIENT 0xFF
 #define NET_NULL_PROP 0
 
@@ -62,9 +98,6 @@
 #define CLSTATE_AUTH 2
 #define CLSTATE_LOBBY 3
 #define CLSTATE_GAME 4
-
-// Client flags (netclient.flags)
-#define CLFLAG_SIM (1 << 0) // fake slot for a simulant AI, no ENet peer
 
 #define UCMD_FIRE (1 << 0)
 #define UCMD_ACTIVATE (1 << 1)
@@ -109,13 +142,14 @@ struct netplayermove {
 	f32 crosspos[2]; // crosshair position in aiming mode; normalized to default aspect ratio
 	s8 weaponnum; // switch to this weapon if UCMD_SELECT is set
 	struct coord pos; // player position at g_NetTick == tick
+	s16 animnum; // chr->model->anim->animnum at write time, 0 if unknown
+	s16 animframe; // integer frame index of the active animation (chr->model->anim->framea)
 };
 
 struct netclient {
 	struct _ENetPeer *peer;
 	u32 id; // remote client number, server is always 0, even on clients
 	u32 state; // CLSTATE_
-	u32 flags; // CLFLAG_
 
 	struct {
 		char name[NET_MAX_NAME];
@@ -186,7 +220,6 @@ extern s32 g_NetCspCorrFrames;
 
 extern s32 g_NetMaxClients;
 extern s32 g_NetNumClients;
-extern s32 g_NetNumSims; // count of fake sim entries in g_NetClients (after human clients)
 extern struct netclient g_NetClients[NET_MAX_CLIENTS + 1]; // last is an extra temporary client
 extern struct netclient *g_NetLocalClient;
 
@@ -204,6 +237,17 @@ s32 netStartServer(u16 port, s32 maxclients);
 s32 netStartClient(const char *addr);
 
 u32 netSend(struct netclient *dstcl, struct netbuf *buf, const s32 reliable, const s32 chan);
+
+// Console command handler — returns 1 if the line was consumed as a netplay
+// command (and shouldn't be relayed as chat), 0 otherwise. Lines beginning
+// with '/' are commands; everything else is regular chat. Implemented in
+// net.c so the command set lives alongside the state it manipulates.
+s32 netConsoleCommand(const char *line);
+
+// Simulated outgoing latency in ms. When > 0 every outbound packet (chat
+// included) is queued and released after the requested delay. Set via
+// '/lag <ms>' in the console.
+extern s32 g_NetSimLagMs;
 
 void netChat(struct netclient *dst, const char *text);
 void netChatPrintf(struct netclient *dst, const char *fmt, ...);
@@ -241,5 +285,15 @@ void netLagCompBegin(const struct netclient *shooter);
 void netLagCompEnd(void);
 
 Gfx *netDebugRender(Gfx *gdl);
+
+// Kill feed: append an entry to the on-screen elimination list. The server
+// calls this directly on the host (where it also generates the broadcast),
+// and the client calls it from SVC_KILL receive. Pass an empty or NULL
+// shooter to mark a self-kill (suicide / environmental death).
+void netKillFeedAdd(const char *shooter, const char *victim);
+
+// Kill feed: render the rolling list of recent eliminations in the top-right.
+// Returns the updated display list pointer.
+Gfx *netKillFeedRender(Gfx *gdl);
 
 #endif // _IN_NET_H

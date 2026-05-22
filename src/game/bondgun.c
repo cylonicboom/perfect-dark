@@ -200,6 +200,35 @@ char var800700bc[][10] = {
 
 #ifndef PLATFORM_N64
 s32 g_BgunGeMuzzleFlashes = false;
+
+// Route a first-person gun sound through the 3D positional channel when the
+// firing player is remote. In netplay, every player's bgunTick runs on every
+// machine — remote players' tick is driven by their incoming move messages
+// after setCurrentPlayerNum(remote_id). The original code calls sndStart for
+// the shoot/reload/empty SFX, which is non-positional ("in your head"). That
+// is correct for the local listener but wrong for remote players: their shots
+// played at full volume as if the local player fired them.
+//
+// Detect remote currentplayer and route through psCreate (3D positional,
+// pans/attenuates by listener distance) instead. The local player keeps the
+// sndStart path so their own sounds stay up-close and can be pitch-shifted.
+//
+// Returns the sndstate handle for the local path; the positional path returns
+// NULL because psCreate gives back a channel index, not a struct sndstate*.
+// Pitch and loop effects that need that handle (e.g., mauler charge) are
+// therefore skipped for remote players — a minor cosmetic loss.
+static struct sndstate *bgunPlayGunSound(s16 soundnum, struct sndstate **handle_out, s32 pstype)
+{
+	struct player *pl = g_Vars.currentplayer;
+	if (pl && pl->isremote && pl->prop) {
+		psCreate(NULL, pl->prop, soundnum, -1, -1, PSFLAG_0400, 0, pstype, NULL, -1.f, NULL, -1, -1.f, -1.f, -1.f);
+		if (handle_out) {
+			*handle_out = NULL;
+		}
+		return NULL;
+	}
+	return sndStart(var80095200, soundnum, handle_out, -1, -1, -1, -1, -1);
+}
 #endif
 
 #if !MATCHING || VERSION >= VERSION_NTSC_1_0
@@ -840,6 +869,16 @@ void bgun0f0981e8(struct hand *hand, struct modeldef *modeldef)
 						if (s2 >= cmd->unk02 && s4 < cmd->unk02 && s4 < s2) {
 							switch (cmd->type) {
 							case GUNCMD_PLAYSOUND:
+#ifndef PLATFORM_N64
+								// Remote players' animation-triggered gun sounds
+								// (cocks, reload clicks etc.) need to play at the
+								// remote player's position rather than first-person.
+								if (g_Vars.currentplayer && g_Vars.currentplayer->isremote && g_Vars.currentplayer->prop) {
+									psCreate(NULL, g_Vars.currentplayer->prop, cmd->unk04, -1, -1, PSFLAG_0400, 0, PSTYPE_NONE, NULL, -1.f, NULL, -1, -1.f, -1.f, -1.f);
+									hasspeed = false;
+									break;
+								}
+#endif
 #if VERSION >= VERSION_NTSC_1_0
 								if (hasspeed) {
 									snd00010718(0, 0, AL_VOL_FULL, AL_PAN_CENTER, cmd->unk04, speed, 1, -1, 1);
@@ -1684,7 +1723,11 @@ s32 bgunTickIncReload(struct handweaponinfo *info, s32 handnum, struct hand *han
 					// No reload sound
 					break;
 				default:
+#ifndef PLATFORM_N64
+					bgunPlayGunSound(SFX_RELOAD_DEFAULT, NULL, PSTYPE_NONE);
+#else
 					sndStart(var80095200, SFX_RELOAD_DEFAULT, 0, -1, -1, -1, -1, -1);
+#endif
 					break;
 				}
 			}
@@ -2000,11 +2043,19 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 			if (gsetGetSingleShootSound(&hand->gset)) {
 				struct sndstate *handle = NULL;
 
+#ifndef PLATFORM_N64
+				if (hand->audiohandle2 == NULL) {
+					handle = bgunPlayGunSound(gsetGetSingleShootSound(&hand->gset), &hand->audiohandle2, PSTYPE_CHRSHOOT);
+				} else if (hand->audiohandle3 == NULL) {
+					handle = bgunPlayGunSound(gsetGetSingleShootSound(&hand->gset), &hand->audiohandle3, PSTYPE_CHRSHOOT);
+				}
+#else
 				if (hand->audiohandle2 == NULL) {
 					handle = sndStart(var80095200, gsetGetSingleShootSound(&hand->gset), &hand->audiohandle2, -1, -1, -1, -1, -1);
 				} else if (hand->audiohandle3 == NULL) {
 					handle = sndStart(var80095200, gsetGetSingleShootSound(&hand->gset), &hand->audiohandle3, -1, -1, -1, -1, -1);
 				}
+#endif
 
 				hand->lastshootframe60 = g_Vars.lvframe60;
 
@@ -2634,7 +2685,11 @@ s32 bgunTickIncAttackEmpty(struct handweaponinfo *info, s32 handnum, struct hand
 				struct sndstate *handle;
 #endif
 
+#ifndef PLATFORM_N64
+				handle = bgunPlayGunSound(SFX_HIT_WATER, NULL, PSTYPE_NONE);
+#else
 				handle = sndStart(var80095200, SFX_HIT_WATER, NULL, -1, -1, -1, -1, -1);
+#endif
 
 				if (handle) {
 					audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32 *)&speed);
@@ -2660,7 +2715,11 @@ s32 bgunTickIncAttackEmpty(struct handweaponinfo *info, s32 handnum, struct hand
 				struct sndstate *handle;
 #endif
 
+#ifndef PLATFORM_N64
+				handle = bgunPlayGunSound(SFX_FIREEMPTY, NULL, PSTYPE_NONE);
+#else
 				handle = sndStart(var80095200, SFX_FIREEMPTY, NULL, -1, -1, -1, -1, -1);
+#endif
 
 				if (handle) {
 					audioPostEvent(handle, AL_SNDP_PITCH_EVT, *(s32 *)&speed);
@@ -2683,7 +2742,11 @@ s32 bgunTickIncAttackEmpty(struct handweaponinfo *info, s32 handnum, struct hand
 			break;
 		default:
 			// Default click sound effect
+#ifndef PLATFORM_N64
+			bgunPlayGunSound(SFX_FIREEMPTY, NULL, PSTYPE_NONE);
+#else
 			sndStart(var80095200, SFX_FIREEMPTY, NULL, -1, -1, -1, -1, -1);
+#endif
 			break;
 		}
 	}
@@ -7037,6 +7100,15 @@ void bgunUpdateReaper(struct hand *hand, struct modeldef *modeldef)
 	var8009d140 = hand->matmot1;
 
 	if (hand->audiohandle == NULL && hand->matmot3 > 0.1f && g_Vars.lvupdate240 != 0) {
+#ifndef PLATFORM_N64
+		// Skip Reaper spin-up sound entirely for remote players. It's a
+		// continuous sound that stores hand->audiohandle for ongoing
+		// volume/pitch control — psCreate doesn't return a compatible
+		// handle, and looping psCreate every tick would spam-overlap. The
+		// remote player's actual SHOT sound still plays positionally via
+		// the bgunPlayGunSound path when the trigger fires.
+		if (!(g_Vars.currentplayer && g_Vars.currentplayer->isremote))
+#endif
 		sndStart(var80095200, SFX_805E, &hand->audiohandle, -1, -1, -1.0f, -1, -1);
 	}
 
@@ -7196,6 +7268,12 @@ void bgunUpdateLaser(struct hand *hand)
 {
 	if (hand->firing && hand->gset.weaponfunc == FUNC_SECONDARY) {
 		if (hand->audiohandle == NULL && g_Vars.lvupdate240 != 0) {
+#ifndef PLATFORM_N64
+			// Continuous laser stream sound — skip for remote players (see
+			// SFX_805E case for rationale). The fire/hit sounds still play
+			// positionally.
+			if (!(g_Vars.currentplayer && g_Vars.currentplayer->isremote))
+#endif
 			sndStart(var80095200, SFX_LASER_STREAM, &hand->audiohandle, -1, -1, -1, -1, -1);
 		}
 
@@ -8218,6 +8296,11 @@ void bgunTickMaulerCharge(void)
 					&& hand->matmot1 > 0.1f
 					&& charging
 					&& g_Vars.lvupdate240 != 0) {
+#ifndef PLATFORM_N64
+				// Mauler charge-up — skip for remote players (continuous
+				// pitch/volume sound, same rationale as SFX_805E).
+				if (!(g_Vars.currentplayer && g_Vars.currentplayer->isremote))
+#endif
 				sndStart(var80095200, SFX_MAULER_CHARGE, &hand->audiohandle, -1, -1, -1, -1, -1);
 			}
 

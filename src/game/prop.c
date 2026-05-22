@@ -2076,12 +2076,15 @@ void propsTickPlayer(bool islastplayer)
 
 				if (chr1 && chr1->aibot) {
 #ifndef PLATFORM_N64
-					// Sim AI runs server-side only. On the client we still
-					// need a tick to load the model, advance animations and
-					// keep the chr visible — without one the sim sits in a
-					// zero-state and never renders. chrTick handles
-					// animation/render without the bot AI decisions, which
-					// are driven by SVC_PROP_MOVE position updates instead.
+					// SIMULANT TICK ROUTING. Sim AI (target selection, weapon
+					// changes, navigation) is server-authoritative — we run
+					// botTick on the server and broadcast the resulting state
+					// via SVC_PROP_MOVE's chr-state block. Clients still need
+					// to tick the chr each frame for animation advance and
+					// render setup, but must NOT call botTick: it would let
+					// the client's bot AI rerun and overwrite the server-synced
+					// animnum / actiontype / aim. Drop to plain chrTick so the
+					// chr renders correctly while staying position-driven.
 					if (g_NetMode == NETMODE_CLIENT) {
 						op = chrTick(prop);
 					} else
@@ -2149,10 +2152,9 @@ void propsTickPlayer(bool islastplayer)
 
 					if (chr2 && chr2->aibot) {
 #ifndef PLATFORM_N64
-						// Same rationale as the foreground branch above:
-						// run chrTick on the client so the sim's model and
-						// animation tick, while AI decisions stay
-						// server-authoritative and position is driven by
+						// SIMULANT TICK ROUTING (background prop path). Mirror
+						// the foreground branch above: client → chrTick (render
+						// only), server → botTick (AI). Position/anim come from
 						// SVC_PROP_MOVE.
 						if (g_NetMode == NETMODE_CLIENT) {
 							op = chrTick(prop);

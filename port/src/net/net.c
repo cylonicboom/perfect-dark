@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <string.h>
+#include <math.h>
 #include "platform.h"
 #include "net/netenet.h"
 #include "net/net.h"
@@ -53,7 +54,98 @@ u32 g_NetTick = 0;
 u32 g_NetNextSyncId = 1;
 
 s32 g_NetSimPacketLoss = 0;
+s32 g_NetSimLagMs = 0;
 s32 g_NetDebugDraw = 0;
+
+// Forward declarations for the lag-sim helpers below, which reference state
+// (g_NetHost) declared further down the file.
+static ENetHost *g_NetHost;
+
+// --- Outgoing latency simulator ---
+// When g_NetSimLagMs > 0, netSend creates the ENet packet immediately but
+// holds it in this queue and delays the actual peer_send / host_broadcast
+// until the requested delay has elapsed. Drained from netStartFrame each
+// tick. Lets you reproduce high-ping CSP / interp / lag-comp behavior on a
+// LAN test rig without needing an external network shaper.
+#define NET_LAG_QUEUE_SIZE 512
+struct net_lag_entry {
+	u64 send_at_us;     // 0 means slot is free
+	struct _ENetPeer *peer;       // NULL for broadcast
+	s32 chan;
+	struct _ENetPacket *packet;   // owns a reference until sent
+};
+static struct net_lag_entry g_NetLagQueue[NET_LAG_QUEUE_SIZE];
+static s32 g_NetLagQueueDropped = 0;
+
+static void netLagQueuePush(ENetPeer *peer, s32 chan, ENetPacket *p, u32 delay_ms)
+{
+	const u64 now_us = sysGetMicroseconds();
+	for (s32 i = 0; i < NET_LAG_QUEUE_SIZE; ++i) {
+		if (g_NetLagQueue[i].send_at_us == 0) {
+			g_NetLagQueue[i].send_at_us = now_us + (u64)delay_ms * 1000ULL;
+			g_NetLagQueue[i].peer = peer;
+			g_NetLagQueue[i].chan = chan;
+			g_NetLagQueue[i].packet = p;
+			return;
+		}
+	}
+	// Queue full — drop the packet rather than block or allocate more memory.
+	// Caller doesn't retry; the ENet packet is owned by us at this point, so
+	// destroying it here returns the buffer to ENet's internal pool. The
+	// dropped count is exposed via g_NetLagQueueDropped for the F9 overlay.
+	enet_packet_destroy(p);
+	++g_NetLagQueueDropped;
+}
+
+static void netLagQueueDrain(void)
+{
+	if (!g_NetHost) {
+		return;
+	}
+	const u64 now_us = sysGetMicroseconds();
+	for (s32 i = 0; i < NET_LAG_QUEUE_SIZE; ++i) {
+		struct net_lag_entry *e = &g_NetLagQueue[i];
+		if (e->send_at_us == 0 || e->send_at_us > now_us) {
+			continue;
+		}
+		if (e->peer) {
+			enet_peer_send(e->peer, e->chan, e->packet);
+		} else {
+			enet_host_broadcast(g_NetHost, e->chan, e->packet);
+		}
+		e->send_at_us = 0;
+		e->peer = NULL;
+		e->packet = NULL;
+	}
+}
+
+static void netLagQueueClear(void)
+{
+	for (s32 i = 0; i < NET_LAG_QUEUE_SIZE; ++i) {
+		if (g_NetLagQueue[i].packet) {
+			enet_packet_destroy(g_NetLagQueue[i].packet);
+		}
+	}
+	memset(g_NetLagQueue, 0, sizeof(g_NetLagQueue));
+}
+
+// Drop queued packets targeting a specific peer that's about to be torn down.
+// Called from the disconnect path so we don't try to send into a dead peer.
+// Broadcast entries (peer==NULL) are left alone — they're safe regardless.
+static void netLagQueueDropPeer(ENetPeer *peer)
+{
+	if (!peer) {
+		return;
+	}
+	for (s32 i = 0; i < NET_LAG_QUEUE_SIZE; ++i) {
+		if (g_NetLagQueue[i].packet && g_NetLagQueue[i].peer == peer) {
+			enet_packet_destroy(g_NetLagQueue[i].packet);
+			g_NetLagQueue[i].packet = NULL;
+			g_NetLagQueue[i].peer = NULL;
+			g_NetLagQueue[i].send_at_us = 0;
+		}
+	}
+}
 
 u64 g_NetRngSeeds[2];
 u32 g_NetRngLatch = 0;
@@ -61,7 +153,6 @@ u64 g_NetMusicRngSeed = 0;
 
 s32 g_NetMaxClients = NET_MAX_CLIENTS;
 s32 g_NetNumClients = 0;
-s32 g_NetNumSims = 0;
 struct netclient g_NetClients[NET_MAX_CLIENTS + 1]; // last is an extra temporary client
 struct netclient *g_NetLocalClient = &g_NetClients[NET_MAX_CLIENTS];
 
@@ -72,7 +163,8 @@ static u8 g_NetMsgRelBuf[NET_BUFSIZE * 4]; // reliable buffer can be reliably fr
 struct netbuf g_NetMsgRel = { .data = g_NetMsgRelBuf, .size = sizeof(g_NetMsgRelBuf) };
 
 static s32 g_NetInit = false;
-static ENetHost *g_NetHost;
+// g_NetHost is forward-declared near the top of the file because the lag-sim
+// helpers reference it.
 static ENetAddress g_NetLocalAddr;
 static ENetAddress g_NetRemoteAddr;
 
@@ -87,7 +179,67 @@ u32 g_NetCspHead = 0;
 struct coord g_NetCspCorrDelta;
 s32 g_NetCspCorrFrames = 0;
 
-// Lag compensation: saved client state for restore after hit rewind
+// --- Diagnostic logging ---
+// Writes per-event CSV lines to a file when Net.Debug.LogPath is set in
+// pd.ini. Designed to be greppable: `tick,realtime_s,event,key=val,...`.
+// Open the resulting file in a text editor or `tail -f` it during play to
+// see what's happening in real time. Per-tick position dumps are gated by
+// Net.Debug.LogRate (default 6 ticks ≈ 10 Hz) to keep file size sane.
+static FILE *g_NetDiagFile = NULL;
+static u64 g_NetDiagStartUs = 0;
+char g_NetDiagPath[256] = "";
+u32 g_NetDiagDumpRate = 6;
+
+static void netDiagClose(void)
+{
+	if (g_NetDiagFile) {
+		fclose(g_NetDiagFile);
+		g_NetDiagFile = NULL;
+	}
+}
+
+static void netDiagOpen(void)
+{
+	netDiagClose();
+	if (!g_NetDiagPath[0]) {
+		return;
+	}
+	g_NetDiagFile = fopen(g_NetDiagPath, "w");
+	if (!g_NetDiagFile) {
+		sysLogPrintf(LOG_WARNING, "NET: could not open diag log '%s'", g_NetDiagPath);
+		return;
+	}
+	g_NetDiagStartUs = sysGetMicroseconds();
+	fprintf(g_NetDiagFile, "# tick,realtime_s,event,fields...\n");
+	fflush(g_NetDiagFile);
+	sysLogPrintf(LOG_NOTE, "NET: diag log -> %s", g_NetDiagPath);
+}
+
+static void netDiagLogf(const char *event, const char *fmt, ...)
+{
+	if (!g_NetDiagFile) {
+		return;
+	}
+	const f32 rt = (f32)(sysGetMicroseconds() - g_NetDiagStartUs) / 1000000.f;
+	fprintf(g_NetDiagFile, "%u,%.3f,%s,", g_NetTick, rt, event);
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(g_NetDiagFile, fmt, ap);
+	va_end(ap);
+	fputc('\n', g_NetDiagFile);
+	// Flush every line so a crash doesn't lose the last few events that
+	// would otherwise sit in the stdio buffer.
+	fflush(g_NetDiagFile);
+}
+
+// Lag compensation: saved client state for restore after hit rewind.
+// We translate prop->pos and the root bone matrix only. A broader translation
+// across the whole chr->model->matrices array was attempted but reverted: the
+// matrices pointer is allocated each frame from the per-frame graphics heap
+// (gfxAllocate) and may point to stale or already-reused memory by the time
+// shotCalculateHits runs, so writing past matrix[0] risks corrupting whatever
+// the heap has handed out since. Narrow-phase hits therefore still test
+// against bones at the current world pose, just like before.
 static struct {
 	struct netclient *cl;
 	struct coord pos;
@@ -95,6 +247,16 @@ static struct {
 	s32 has_rootmtx;
 } g_LagCompSaved[NET_MAX_CLIENTS];
 static s32 g_LagCompCount = 0;
+// Debug-overlay diagnostics: snapshots of the most-recent lag-comp event so
+// the F9 panel can report what was rewound on the last shot. Not used by the
+// hit-test code itself.
+static s32 g_LagCompLastCount = 0;
+static u32 g_LagCompLastRewindTicks = 0;
+
+// Forward declaration: the kill-feed buffer and its clear helper live below,
+// near the render code, but netDisconnect needs to wipe the feed on session
+// teardown — declare it here so the dispatch order doesn't break.
+static void netKillFeedClear(void);
 
 static s32 netParseAddr(ENetAddress *out, const char *str)
 {
@@ -226,6 +388,17 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 
 	move->ucmd = pl->ucmd;
 
+	// Capture chr model animation state so remote viewers can keep
+	// non-input-driven anims (hit reactions, pickups, special transitions)
+	// in sync. Pure walk/run anims would converge from synced inputs alone,
+	// but anything event-triggered by the server can otherwise diverge.
+	move->animnum = 0;
+	move->animframe = 0;
+	if (pl->prop && pl->prop->chr && pl->prop->chr->model && pl->prop->chr->model->anim) {
+		move->animnum = pl->prop->chr->model->anim->animnum;
+		move->animframe = pl->prop->chr->model->anim->framea;
+	}
+
 	const struct netplayermove *inmove_newest = &cl->inmove[cl->inmove_head];
 	if (g_NetMode == NETMODE_SERVER && pl->isremote && inmove_newest->tick) {
 		// carry some of the client inputs over to the outmove
@@ -311,9 +484,15 @@ static inline s32 netClientNeedMove(const struct netclient *cl)
 	if (move->tick && cl->outmoveack >= move->tick) {
 		return false;
 	}
+	// Exclude the trailing anim fields from the change detection: animframe
+	// usually ticks every frame, which would otherwise force a send on every
+	// tick and undo the update-rate gating above. The anim fields piggyback
+	// on whatever sends we do make for genuine input/position changes, which
+	// is sufficient for keeping remote chr animations in rough sync.
 	const u8 *cmpa = (const u8 *)move + sizeof(move->tick);
 	const u8 *cmpb = (const u8 *)moveprev + sizeof(move->tick);
-	return (memcmp(cmpa, cmpb, sizeof(*move) - sizeof(move->tick)) != 0);
+	const size_t tail = sizeof(move->animnum) + sizeof(move->animframe);
+	return (memcmp(cmpa, cmpb, sizeof(*move) - sizeof(move->tick) - tail) != 0);
 }
 
 static inline void netClientReadConfig(struct netclient *cl, const s32 playernum)
@@ -510,6 +689,9 @@ s32 netStartServer(u16 port, s32 maxclients)
 	sysLogPrintf(LOG_NOTE, "NET: using protocol version %d", NET_PROTOCOL_VER);
 	sysLogPrintf(LOG_NOTE, "NET: created server on port %u", port);
 
+	netDiagOpen();
+	netDiagLogf("server_start", "port=%u maxclients=%d protocol=%d", port, maxclients, NET_PROTOCOL_VER);
+
 	return 0;
 }
 
@@ -532,6 +714,8 @@ void netServerStageStart(void)
 	netbufStartWrite(&g_NetMsgRel);
 	netmsgSvcStageStartWrite(&g_NetMsgRel);
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+
+	netDiagLogf("stage_start", "stage=%u clients=%d sims=%d", g_StageNum, g_NetNumClients, g_BotCount);
 }
 
 void netServerStageEnd(void)
@@ -545,6 +729,8 @@ void netServerStageEnd(void)
 	netbufStartWrite(&g_NetMsgRel);
 	netmsgSvcStageEndWrite(&g_NetMsgRel);
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+
+	netDiagLogf("stage_end", "");
 }
 
 void netServerKick(struct netclient *cl, const u32 reason)
@@ -611,6 +797,9 @@ s32 netStartClient(const char *addr)
 
 	sysLogPrintf(LOG_NOTE, "NET: waiting for response from %s...", addr);
 
+	netDiagOpen();
+	netDiagLogf("client_start", "addr=%s protocol=%d", addr, NET_PROTOCOL_VER);
+
 	return 0;
 }
 
@@ -649,7 +838,19 @@ s32 netDisconnect(void)
 	g_NetCspCorrFrames = 0;
 	g_NetCspHead = 0;
 	memset(g_NetCspHistory, 0, sizeof(g_NetCspHistory));
-	g_NetNumSims = 0;
+
+	// Clear the kill feed so a fresh session starts with a clean panel.
+	netKillFeedClear();
+
+	// Free any packets still sitting in the lag-sim queue (they'll never be
+	// sent since the peers are gone). Keep g_NetSimLagMs / g_NetSimPacketLoss
+	// configured across sessions so the user can host → /lag 100 → disconnect
+	// → host again without re-issuing the command.
+	netLagQueueClear();
+	g_NetLagQueueDropped = 0;
+
+	netDiagLogf("disconnect", "wasingame=%d", (int)wasingame);
+	netDiagClose();
 
 	sysLogPrintf(LOG_CHAT, "NET: disconnected");
 
@@ -724,6 +925,9 @@ static void netServerEvDisconnect(struct netclient *cl)
 	sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: disconnect event from %s", netFormatClientAddr(cl));
 
 	if (cl->peer) {
+		// Discard any packets the lag-sim is holding for this peer before
+		// the peer object is freed by enet_peer_reset.
+		netLagQueueDropPeer(cl->peer);
 		enet_peer_reset(cl->peer);
 	}
 
@@ -806,6 +1010,9 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_PROP_LIFT: rc = netmsgSvcPropLiftRead(&cl->in, cl); break;
 			case SVC_CHR_DAMAGE: rc = netmsgSvcChrDamageRead(&cl->in, cl); break;
 			case SVC_CHR_DISARM: rc = netmsgSvcChrDisarmRead(&cl->in, cl); break;
+			case SVC_CHR_FIRE: rc = netmsgSvcChrFireRead(&cl->in, cl); break;
+			case SVC_KILL: rc = netmsgSvcKillRead(&cl->in, cl); break;
+			case SVC_SCORE: rc = netmsgSvcScoreRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -846,6 +1053,13 @@ void netStartFrame(void)
 	}
 
 	++g_NetTick;
+
+	// Release any artificially-delayed packets whose hold time has elapsed.
+	// Has to happen before ENet services its socket so newly-due packets are
+	// actually transmitted this frame instead of waiting another tick.
+	if (g_NetSimLagMs > 0 || g_NetLagQueueDropped > 0) {
+		netLagQueueDrain();
+	}
 
 	const bool isClient = (g_NetMode == NETMODE_CLIENT);
 	s32 polled = false;
@@ -976,6 +1190,39 @@ void netEndFrame(void)
 		netCspTick();
 	}
 
+	// Diagnostic dump of every player + sim position so the log can be
+	// post-processed to find teleports, desync drift, or stuck sims.
+	// Rate-limited so the file stays small. One dump per N ticks; default 6
+	// ticks ≈ 10 Hz which is dense enough to spot teleports but not so chatty
+	// that a 5-minute match produces gigabytes.
+	if (g_NetDiagFile && g_NetDiagDumpRate > 0 && (g_NetTick % g_NetDiagDumpRate) == 0) {
+		for (s32 i = 0; i < g_NetMaxClients; ++i) {
+			const struct netclient *cl = &g_NetClients[i];
+			if (cl->state < CLSTATE_GAME || !cl->player || !cl->player->prop) {
+				continue;
+			}
+			const struct coord *p = &cl->player->prop->pos;
+			const u32 ping = cl->peer ? enet_peer_get_rtt(cl->peer) : 0;
+			netDiagLogf("pos_cl", "id=%u name=%s x=%.1f y=%.1f z=%.1f ping=%u theta=%.2f verta=%.2f",
+				cl->id, cl->settings.name, p->x, p->y, p->z, ping,
+				cl->player->vv_theta, cl->player->vv_verta);
+		}
+#ifndef PLATFORM_N64
+		if (g_Vars.lvmpbotlevel) {
+			for (s32 i = 0; i < g_BotCount; ++i) {
+				const struct chrdata *chr = g_MpBotChrPtrs[i];
+				if (!chr || !chr->prop) {
+					continue;
+				}
+				const struct coord *p = &chr->prop->pos;
+				netDiagLogf("pos_sim", "id=%d sid=%u x=%.1f y=%.1f z=%.1f act=%d hp=%.0f",
+					i, chr->prop->syncid, p->x, p->y, p->z,
+					chr->actiontype, chr->maxdamage - chr->damage);
+			}
+		}
+#endif
+	}
+
 	enet_host_flush(g_NetHost);
 }
 
@@ -1001,7 +1248,12 @@ u32 netSend(struct netclient *dstcl, struct netbuf *buf, const s32 reliable, con
 			return 0;
 		}
 
-		if (dstcl == NULL) {
+		if (g_NetSimLagMs > 0) {
+			// Hold the packet for the requested delay before letting ENet see
+			// it. We still create it now so the source buffer can be reused
+			// immediately (ENet copies the data on create).
+			netLagQueuePush(dstcl ? dstcl->peer : NULL, chan, p, (u32)g_NetSimLagMs);
+		} else if (dstcl == NULL) {
 			enet_host_broadcast(g_NetHost, chan, p);
 		} else {
 			enet_peer_send(dstcl->peer, chan, p);
@@ -1119,7 +1371,11 @@ void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
 		return;
 	}
 
-	// Walk backwards through history looking for the acknowledged tick
+	// Walk backwards through history looking for the snapshot we recorded at
+	// ack_tick. ack_tick is the most recent client tick the server has received
+	// and processed (read from SVC_PLAYER_MOVE's outmoveack field). It's at most
+	// ~RTT-worth of ticks behind the newest CSP snapshot we've recorded, so
+	// starting at head and walking back is the fastest lookup.
 	for (s32 i = 0; i < NET_CSP_HISTORY_SIZE; ++i) {
 		const s32 idx = (g_NetCspHead + NET_CSP_HISTORY_SIZE - i) % NET_CSP_HISTORY_SIZE;
 		const struct csp_snapshot *snap = &g_NetCspHistory[idx];
@@ -1130,18 +1386,45 @@ void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
 		const f32 ex = server_pos->x - snap->pos.x;
 		const f32 ey = server_pos->y - snap->pos.y;
 		const f32 ez = server_pos->z - snap->pos.z;
-		if (ex*ex + ey*ey + ez*ez > NET_CSP_CORR_THRESH_SQ) {
-			// Retarget: replace any in-flight correction's remaining delta with
-			// the freshest server error and restart the smoothing window.
-			// Previously we dropped new corrections while one was still
-			// smoothing, which at high RTT means several authoritative updates
-			// got ignored back-to-back and the next accepted one was a large
-			// snap. Retargeting lets the player glide toward the latest
-			// authoritative position continuously instead.
+		const f32 err_sq = ex*ex + ey*ey + ez*ez;
+
+		// Teleport threshold: divergence above this magnitude (~120 units) can't
+		// result from player input alone — it indicates respawn, kill plane, or
+		// network desync. Smooth-correcting a large error causes visible pinballing:
+		// each fresh ack retargets the correction mid-smooth, so local pos zig-zags
+		// between old and new targets. Instead, hard-snap and discard any pending
+		// smooth correction (the pinballing at high ping is worse than one frame snap).
+		if (err_sq > NET_CSP_TELEPORT_THRESH_SQ) {
+			g_NetCspCorrFrames = 0;
+			g_NetCspCorrDelta.x = 0.f;
+			g_NetCspCorrDelta.y = 0.f;
+			g_NetCspCorrDelta.z = 0.f;
+			if (g_NetLocalClient && g_NetLocalClient->player && g_NetLocalClient->player->prop) {
+				g_NetLocalClient->player->prop->pos = *server_pos;
+			}
+			netDiagLogf("csp_snap", "ack=%u err=%.1f dx=%.1f dy=%.1f dz=%.1f",
+				ack_tick, sqrtf(err_sq), ex, ey, ez);
+			return;
+		}
+
+		if (err_sq > NET_CSP_CORR_THRESH_SQ) {
+			// Smooth correction: retarget to the freshest server error and
+			// restart the smoothing window. Earlier approaches tried history-shift
+			// ("input replay") and error-magnitude-scaled windows — both reverted
+			// for causing exponential teleporting at high ping:
+			// - History shift: modifying entries from ack_tick forward desync the
+			//   next ack comparison, triggering another shift, another snap, etc.
+			// - Variable window: large errors snap aggressively in 2–5 frames,
+			//   creating fast-motion "teleport" feel instead of smooth correction.
+			// Simple retarget+fixed-window is stable: each ack moves us toward
+			// the server position over NET_CSP_CORR_FRAMES (~10 ticks), converging
+			// smoothly even at high latency.
 			g_NetCspCorrDelta.x = ex;
 			g_NetCspCorrDelta.y = ey;
 			g_NetCspCorrDelta.z = ez;
 			g_NetCspCorrFrames = NET_CSP_CORR_FRAMES;
+			netDiagLogf("csp_recon", "ack=%u err=%.1f dx=%.1f dy=%.1f dz=%.1f",
+				ack_tick, sqrtf(err_sq), ex, ey, ez);
 		}
 		return;
 	}
@@ -1157,14 +1440,23 @@ void netCspTick(void)
 		return;
 	}
 
-	// Apply one step of the correction additively so it stacks with physics
+	// Apply 1/N of the remaining delta and then scale the delta down by
+	// (N-1)/N. Because frames_remaining is also decremented each tick, the
+	// recomputed step (1 / new frames_remaining) cancels out and the actual
+	// amount applied per tick is constant — delta_orig / initial_frames each
+	// time. e.g. delta_orig=100 over 10 frames adds 10/frame for 10 frames.
+	//
+	// We store it as a shrinking delta rather than a fixed per-frame amount
+	// because netCspReconcile may retarget mid-correction: a fresh server ack
+	// just replaces delta and resets frames_remaining, and the math keeps
+	// converging on the new target without bookkeeping the leftover from the
+	// previous correction.
 	const f32 step = 1.f / (f32)g_NetCspCorrFrames;
 	struct coord *pos = &g_NetLocalClient->player->prop->pos;
 	pos->x += g_NetCspCorrDelta.x * step;
 	pos->y += g_NetCspCorrDelta.y * step;
 	pos->z += g_NetCspCorrDelta.z * step;
 
-	// Reduce remaining delta so the total correction converges to zero
 	g_NetCspCorrDelta.x *= (1.f - step);
 	g_NetCspCorrDelta.y *= (1.f - step);
 	g_NetCspCorrDelta.z *= (1.f - step);
@@ -1178,6 +1470,10 @@ void netLagCompSave(struct netclient *cl)
 	if (!cl || !cl->player || !cl->player->prop) {
 		return;
 	}
+	// Record the client's position each frame into a ring buffer. This gives us
+	// a history of positions to rewind to when running hit tests. Called once per
+	// client per frame in netEndFrame so we have snapshots of every client's
+	// authoritative position throughout the game.
 	cl->lagcomp_head = (cl->lagcomp_head + 1) % NET_LAGCOMP_SIZE;
 	cl->lagcomp[cl->lagcomp_head].tick = g_NetTick;
 	cl->lagcomp[cl->lagcomp_head].pos  = cl->player->prop->pos;
@@ -1185,15 +1481,17 @@ void netLagCompSave(struct netclient *cl)
 
 static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)
 {
-	// Walk backwards from the newest snapshot to find the entry at or just
-	// before the requested tick.
+	// Retrieve the position snapshot at or just before the requested tick.
+	// Walk backwards from the most-recent snapshot (head) since target_tick is
+	// typically close to the current tick.
 	for (s32 i = 0; i < NET_LAGCOMP_SIZE; ++i) {
 		const s32 idx = (cl->lagcomp_head + NET_LAGCOMP_SIZE - i) % NET_LAGCOMP_SIZE;
 		if (cl->lagcomp[idx].tick && cl->lagcomp[idx].tick <= target_tick) {
 			return cl->lagcomp[idx].pos;
 		}
 	}
-	// Fallback: oldest snapshot we have
+	// Fallback on buffer underflow (early frames before history fills up):
+	// use the oldest position we have. Not ideal, but better than uninitialized.
 	return cl->lagcomp[(cl->lagcomp_head + 1) % NET_LAGCOMP_SIZE].pos;
 }
 
@@ -1205,10 +1503,19 @@ void netLagCompBegin(const struct netclient *shooter)
 		return;
 	}
 
-	// Convert one-way latency (half RTT) to game ticks (60 Hz ≈ 16 ms/tick)
+	// Rewind remote players to where they were when the shooter fired, so
+	// hit-tests reflect what the shooter saw on their screen rather than the
+	// current server-authoritative pose. The rewind amount is approximated as
+	// one-way latency (RTT/2). Math: ms→ticks at 60 Hz is /16, the +8 rounds
+	// to the nearest tick. Doesn't account for the client's interp delay
+	// (g_NetInterpTicks) — close-range hits at high ping may still miss.
 	const u32 rtt_ms      = enet_peer_get_rtt(shooter->peer);
 	const u32 rewind_ticks = (rtt_ms / 2 + 8) / 16;
 	const u32 target_tick  = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
+
+	g_LagCompLastRewindTicks = rewind_ticks;
+
+	netDiagLogf("lagcomp", "shooter=%u rtt=%u rewind_ticks=%u", shooter->id, rtt_ms, rewind_ticks);
 
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
 		struct netclient *cl = &g_NetClients[i];
@@ -1227,7 +1534,7 @@ void netLagCompBegin(const struct netclient *shooter)
 		struct prop *prop = cl->player->prop;
 		const struct coord lagged_pos = netLagCompLookup(cl, target_tick);
 
-		// Save current state
+		// Save current state so netLagCompEnd can restore after the hit-test
 		g_LagCompSaved[g_LagCompCount].cl  = cl;
 		g_LagCompSaved[g_LagCompCount].pos = prop->pos;
 		g_LagCompSaved[g_LagCompCount].has_rootmtx = 0;
@@ -1235,8 +1542,14 @@ void netLagCompBegin(const struct netclient *shooter)
 		// Move the prop to the lagged position
 		prop->pos = lagged_pos;
 
-		// Patch the root model matrix translation so the sphere broad-phase
-		// check in chrTestHit uses the rewound position.
+		// Patch only the root model matrix translation so the sphere broad-phase
+		// check in chrTestHit uses the rewound position. Writing the whole
+		// matrices array is unsafe — chr->model->matrices is allocated each frame
+		// from the per-frame graphics heap (gfxAllocate) and may point to stale or
+		// already-reused memory by the time shotCalculateHits runs, so writing
+		// past matrix[0] risks corrupting vertex buffers or other heap allocations.
+		// Narrow-phase hits (bone raycast) still test against the current frame's
+		// matrices, so those remain server-authoritative only — a safer tradeoff.
 		if (cl->player->prop->chr && cl->player->prop->chr->model) {
 			Mtxf *rootmtx = modelGetRootMtx(cl->player->prop->chr->model);
 			if (rootmtx) {
@@ -1256,6 +1569,9 @@ void netLagCompBegin(const struct netclient *shooter)
 
 void netLagCompEnd(void)
 {
+	// Capture for the F9 debug overlay before we zero the count.
+	g_LagCompLastCount = g_LagCompCount;
+
 	for (s32 i = 0; i < g_LagCompCount; ++i) {
 		struct netclient *cl = g_LagCompSaved[i].cl;
 		if (!cl || !cl->player || !cl->player->prop) {
@@ -1309,9 +1625,230 @@ void netChat(struct netclient *dst, const char *text)
 	}
 }
 
+// Local-only console commands. Available any time the in-game chat console
+// is open (~). Lines starting with '/' are routed here instead of being
+// broadcast as chat. Each command prints feedback via sysLogPrintf so the
+// result is visible in the console output area.
+s32 netConsoleCommand(const char *line)
+{
+	if (!line || line[0] != '/') {
+		return 0;
+	}
+
+	// Split into command word + remainder. Cmd word is the first whitespace-
+	// delimited token after the leading '/'.
+	char cmd[32] = { 0 };
+	const char *p = line + 1;
+	s32 ci = 0;
+	while (*p && *p != ' ' && *p != '\t' && ci < (s32)sizeof(cmd) - 1) {
+		cmd[ci++] = (char)tolower((unsigned char)*p);
+		++p;
+	}
+	cmd[ci] = '\0';
+	while (*p == ' ' || *p == '\t') {
+		++p;
+	}
+	const char *arg = p; // may be ""
+
+	if (strcmp(cmd, "lag") == 0) {
+		if (*arg) {
+			const s32 ms = atoi(arg);
+			g_NetSimLagMs = (ms < 0) ? 0 : (ms > 5000 ? 5000 : ms);
+			if (g_NetSimLagMs == 0) {
+				netLagQueueClear();
+				sysLogPrintf(LOG_CHAT, "NET: fake lag disabled");
+			} else {
+				sysLogPrintf(LOG_CHAT, "NET: fake outgoing lag = %d ms", g_NetSimLagMs);
+			}
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: fake lag is %d ms (usage: /lag <ms>)", g_NetSimLagMs);
+		}
+	} else if (strcmp(cmd, "loss") == 0) {
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetSimPacketLoss = (n < 0) ? 0 : n;
+			if (g_NetSimPacketLoss == 0) {
+				sysLogPrintf(LOG_CHAT, "NET: packet loss sim disabled");
+			} else {
+				sysLogPrintf(LOG_CHAT, "NET: dropping ~1 in %d unreliable packets", g_NetSimPacketLoss);
+			}
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: packet loss = 1/%d (usage: /loss <N>, 0=off)", g_NetSimPacketLoss);
+		}
+	} else if (strcmp(cmd, "diag") == 0) {
+		if (*arg) {
+			strncpy(g_NetDiagPath, arg, sizeof(g_NetDiagPath) - 1);
+			g_NetDiagPath[sizeof(g_NetDiagPath) - 1] = '\0';
+			netDiagOpen();
+		} else {
+			netDiagClose();
+			g_NetDiagPath[0] = '\0';
+			sysLogPrintf(LOG_CHAT, "NET: diag log closed");
+		}
+	} else if (strcmp(cmd, "diagrate") == 0) {
+		if (*arg) {
+			const s32 r = atoi(arg);
+			g_NetDiagDumpRate = (r < 0) ? 0 : (r > 600 ? 600 : r);
+			sysLogPrintf(LOG_CHAT, "NET: diag log pos-dump rate = every %u ticks", g_NetDiagDumpRate);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: diag log rate = %u (usage: /diagrate <ticks>)", g_NetDiagDumpRate);
+		}
+	} else if (strcmp(cmd, "netinfo") == 0) {
+		sysLogPrintf(LOG_CHAT, "NET: tick=%u mode=%s clients=%d sims=%d lag=%dms loss=1/%d diag='%s'",
+			g_NetTick,
+			g_NetMode == NETMODE_SERVER ? "SERVER" : g_NetMode == NETMODE_CLIENT ? "CLIENT" : "NONE",
+			g_NetNumClients, g_BotCount, g_NetSimLagMs, g_NetSimPacketLoss,
+			g_NetDiagPath[0] ? g_NetDiagPath : "(off)");
+	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
+		sysLogPrintf(LOG_CHAT, "NET commands:");
+		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
+		sysLogPrintf(LOG_CHAT, "  /loss <N>        drop ~1 in N unreliable packets (0 = off)");
+		sysLogPrintf(LOG_CHAT, "  /diag <path>     start diag log to file (no arg = stop)");
+		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
+		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state");
+	} else {
+		sysLogPrintf(LOG_CHAT, "NET: unknown command /%s (try /help)", cmd);
+	}
+
+	return 1;
+}
+
+// --- Kill feed ---
+// Rolling list of recent eliminations shown top-left. New entries go to slot 0
+// and older ones shift down toward NET_KILLFEED_MAX-1; entries past their
+// expire_tick are skipped at render time and overwritten by the next addition.
+//
+// Each entry stores shooter and victim names separately so the renderer can
+// colour each side independently. An empty shooter[0] means the victim died
+// alone (suicide / environment); in that case the line renders as
+// "victim [died]" with the victim in red and "[died]" in white.
+static struct netkillfeedentry g_NetKillFeed[NET_KILLFEED_MAX];
+
+// Colour palette — keep saturated so each name reads at a glance even at
+// extra-small console-font size. Alpha 0xff: the feed is short-lived so
+// fading is unnecessary.
+#define NET_KILLFEED_COL_SHOOTER 0x33ff33ff  // bright green
+#define NET_KILLFEED_COL_VICTIM  0xff4444ff  // bright red
+#define NET_KILLFEED_COL_PLAIN   0xffffffff  // white separator / "[died]"
+
+static void netKillFeedClear(void)
+{
+	memset(g_NetKillFeed, 0, sizeof(g_NetKillFeed));
+}
+
+// Copy at most NET_KILLFEED_NAME-1 chars into dst, stopping at the first '\n'
+// because chr-config names embed it as a width marker for the in-game HUD
+// font and that leaks ugly box-drawing characters into the feed otherwise.
+static void killFeedCopyName(char *dst, const char *src)
+{
+	dst[0] = '\0';
+	if (!src) {
+		return;
+	}
+	s32 i;
+	for (i = 0; i < NET_KILLFEED_NAME - 1; ++i) {
+		const char c = src[i];
+		if (c == '\0' || c == '\n') {
+			break;
+		}
+		dst[i] = c;
+	}
+	dst[i] = '\0';
+}
+
+void netKillFeedAdd(const char *shooter, const char *victim)
+{
+	if (!victim || !victim[0]) {
+		return;
+	}
+
+	// Shift older entries down, freshest goes at index 0.
+	for (s32 i = NET_KILLFEED_MAX - 1; i > 0; --i) {
+		g_NetKillFeed[i] = g_NetKillFeed[i - 1];
+	}
+
+	g_NetKillFeed[0].expire_tick = g_NetTick + NET_KILLFEED_DURATION_TICKS;
+	killFeedCopyName(g_NetKillFeed[0].shooter, shooter);
+	killFeedCopyName(g_NetKillFeed[0].victim, victim);
+}
+
+Gfx *netKillFeedRender(Gfx *gdl)
+{
+	if (!g_NetMode) {
+		return gdl;
+	}
+
+	// Match the console (~) font so the two HUD overlays read as part of the
+	// same surface. Falls back silently if the font assets haven't loaded.
+	if (!g_CharsHandelGothicXs || !g_FontHandelGothicXs) {
+		return gdl;
+	}
+
+	gdl = text0f153628(gdl);
+	// Anchor to the left edge — matters in widescreen so the feed hugs the
+	// HUD edge instead of floating in from the letterbox. Same flag the
+	// console uses for its top-left message strip.
+	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_LEFT_EXT);
+
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
+	const s32 lineHeight = 9;
+	const s32 leftMargin = 4;
+	const s32 topMargin = 4;
+
+	s32 visible = 0;
+	for (s32 i = 0; i < NET_KILLFEED_MAX; ++i) {
+		struct netkillfeedentry *e = &g_NetKillFeed[i];
+		if (!e->victim[0]) {
+			continue;
+		}
+		if (g_NetTick >= e->expire_tick) {
+			// Expired — clear so it doesn't get re-rendered after a wraparound.
+			e->victim[0] = '\0';
+			e->shooter[0] = '\0';
+			continue;
+		}
+
+		s32 x = leftMargin;
+		s32 y = topMargin + visible * lineHeight;
+
+		if (e->shooter[0]) {
+			// "Shooter > Victim" — three segments, each with its own colour.
+			// textRenderProjected mutates x to the end of the rendered text
+			// so consecutive calls line up without manual width math.
+			gdl = textRenderProjected(gdl, &x, &y, e->shooter,
+					g_CharsHandelGothicXs, g_FontHandelGothicXs,
+					NET_KILLFEED_COL_SHOOTER, screenw, screenh, 0, 0);
+
+			gdl = textRenderProjected(gdl, &x, &y, " > ",
+					g_CharsHandelGothicXs, g_FontHandelGothicXs,
+					NET_KILLFEED_COL_PLAIN, screenw, screenh, 0, 0);
+
+			gdl = textRenderProjected(gdl, &x, &y, e->victim,
+					g_CharsHandelGothicXs, g_FontHandelGothicXs,
+					NET_KILLFEED_COL_VICTIM, screenw, screenh, 0, 0);
+		} else {
+			// "Victim [died]" — suicide / environment kill.
+			gdl = textRenderProjected(gdl, &x, &y, e->victim,
+					g_CharsHandelGothicXs, g_FontHandelGothicXs,
+					NET_KILLFEED_COL_VICTIM, screenw, screenh, 0, 0);
+
+			gdl = textRenderProjected(gdl, &x, &y, " [died]",
+					g_CharsHandelGothicXs, g_FontHandelGothicXs,
+					NET_KILLFEED_COL_PLAIN, screenw, screenh, 0, 0);
+		}
+
+		++visible;
+	}
+
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+	gdl = text0f153780(gdl);
+	return gdl;
+}
+
 Gfx *netDebugRender(Gfx *gdl)
 {
-	char tmp[384];
+	char tmp[2048];
 
 	if (!g_NetMode || !g_NetDebugDraw) {
 		return gdl;
@@ -1321,15 +1858,164 @@ Gfx *netDebugRender(Gfx *gdl)
 		return gdl;
 	}
 
+	// Compute kB/s bandwidth on a rolling 1-second window so the panel shows
+	// a useful rate instead of an ever-growing total.
+	static u32 lastSampleTick = 0;
+	static u32 lastSentBytes = 0;
+	static u32 lastRecvBytes = 0;
+	static f32 sentKBps = 0.f;
+	static f32 recvKBps = 0.f;
+	const u32 curSent = enet_host_get_bytes_sent(g_NetHost);
+	const u32 curRecv = enet_host_get_bytes_received(g_NetHost);
+	const u32 dt_ticks = g_NetTick - lastSampleTick;
+	if (dt_ticks >= 60 || !lastSampleTick) {
+		const f32 secs = dt_ticks > 0 ? (f32)dt_ticks / 60.f : 1.f;
+		sentKBps = (f32)(curSent - lastSentBytes) / secs / 1024.f;
+		recvKBps = (f32)(curRecv - lastRecvBytes) / secs / 1024.f;
+		lastSentBytes = curSent;
+		lastRecvBytes = curRecv;
+		lastSampleTick = g_NetTick;
+	}
+
 	gdl = text0f153628(gdl);
 	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_LEFT_EXT);
 
+	const char *modeStr = (g_NetMode == NETMODE_SERVER) ? "SERVER" : "CLIENT";
+	const u32 ownPing = g_NetLocalClient->peer ? enet_peer_get_rtt(g_NetLocalClient->peer) : 0;
+
+	// ENet's RTT measurement is at the protocol layer and doesn't see our
+	// app-level lag queue, so /lag never shows up in the raw ping field.
+	// Compose an "eff=Nms" suffix to make the user-perceived RTT visible.
+	char effSuffix[32] = "";
+	if (g_NetSimLagMs > 0) {
+		snprintf(effSuffix, sizeof(effSuffix), " eff=%ums", ownPing + (u32)g_NetSimLagMs);
+	}
+
+	// Header: connection summary + bandwidth + sim/client counts. Includes a
+	// "** SIM ACTIVE **" line whenever fake lag/loss is set so the user
+	// doesn't forget the slowdown is artificial.
+	s32 off = snprintf(tmp, sizeof(tmp),
+		"%s id=%u/%u  tick=%u  ping=%ums%s\n"
+		"tx=%.1f kB/s  rx=%.1f kB/s\n"
+		"frame: %uR %uU bytes  total=%u/%u\n"
+		"clients=%d/%d  sims=%d  interp=%ut\n",
+		modeStr, g_NetLocalClient->id, g_NetLocalClient->playernum,
+		g_NetTick, ownPing, effSuffix,
+		sentKBps, recvKBps,
+		g_NetReliableFrameLen, g_NetUnreliableFrameLen,
+		curSent, curRecv,
+		g_NetNumClients, g_NetMaxClients, g_BotCount, g_NetInterpTicks);
+
+	if (g_NetSimLagMs > 0 || g_NetSimPacketLoss > 0 || g_NetLagQueueDropped > 0) {
+		off += snprintf(tmp + off, sizeof(tmp) - off,
+			"** SIM ACTIVE ** lag=%dms loss=1/%d qdrop=%d\n"
+			"   ENet ping does not include /lag — check /netinfo on each side\n",
+			g_NetSimLagMs, g_NetSimPacketLoss, g_NetLagQueueDropped);
+	}
+
+	// CSP correction state — only meaningful on the client where reconcile runs
+	if (g_NetMode == NETMODE_CLIENT) {
+		off += snprintf(tmp + off, sizeof(tmp) - off,
+			"CSP: %df  delta=(%.1f,%.1f,%.1f)\n",
+			g_NetCspCorrFrames,
+			g_NetCspCorrDelta.x, g_NetCspCorrDelta.y, g_NetCspCorrDelta.z);
+	}
+
+	// Lag-comp activity — only the server runs it
+	if (g_NetMode == NETMODE_SERVER) {
+		off += snprintf(tmp + off, sizeof(tmp) - off,
+			"lagcomp: last=%d rewinds  ticks=%u\n",
+			g_LagCompLastCount, g_LagCompLastRewindTicks);
+	}
+
+	// Per-client list: pos, ping, last-tick lag, animnum, key ucmd bits.
+	// Position is read from the player prop (the authoritative live world
+	// position) — falling back to the inmove snapshot only for clients we
+	// haven't fully resolved yet. The local client never receives its own
+	// moves so its inmove ring stays empty, which was showing as 0,0,0.
+	for (s32 i = 0; i < g_NetMaxClients; ++i) {
+		const struct netclient *cl = &g_NetClients[i];
+		if (cl->state < CLSTATE_LOBBY) {
+			continue;
+		}
+		if (off >= (s32)sizeof(tmp) - 128) {
+			break; // out of buffer
+		}
+
+		const struct netplayermove *m = &cl->inmove[cl->inmove_head];
+		const u32 ping = cl->peer ? enet_peer_get_rtt(cl->peer) : 0;
+		const u32 inLag = (m->tick && g_NetTick > m->tick) ? (g_NetTick - m->tick) : 0;
+		const u32 outAckLag = (cl->outmove[0].tick && cl->outmove[0].tick > cl->outmoveack)
+			? (cl->outmove[0].tick - cl->outmoveack) : 0;
+
+		// Prefer the live prop position over the snapshot — works for the
+		// local client and stays current on remotes once their first move
+		// has been applied.
+		struct coord livepos = { 0.f, 0.f, 0.f };
+		if (cl->player && cl->player->prop) {
+			livepos = cl->player->prop->pos;
+		} else {
+			livepos = m->pos;
+		}
+
+		char flags[8] = "....";
+		flags[0] = (m->ucmd & UCMD_FIRE)    ? 'F' : '.';
+		flags[1] = (m->ucmd & UCMD_AIMMODE) ? 'A' : '.';
+		flags[2] = (m->ucmd & UCMD_RELOAD)  ? 'R' : '.';
+		flags[3] = (m->ucmd & (UCMD_DUCK|UCMD_SQUAT)) ? 'D' : '.';
+		flags[4] = '\0';
+
+		const char *stateStr = "??";
+		switch (cl->state) {
+			case CLSTATE_CONNECTING: stateStr = "CON"; break;
+			case CLSTATE_AUTH:       stateStr = "AUTH"; break;
+			case CLSTATE_LOBBY:      stateStr = "LOBBY"; break;
+			case CLSTATE_GAME:       stateStr = "GAME"; break;
+		}
+
+		const char *youTag = (cl == g_NetLocalClient) ? "*" : " ";
+		const char *name = cl->settings.name[0] ? cl->settings.name : "<?>";
+
+		off += snprintf(tmp + off, sizeof(tmp) - off,
+			"%s[%u] %-8.8s %s p=%ums in-%u out-%u lerp=%u\n"
+			"   pos=(%.0f,%.0f,%.0f) a=%d/%d [%s]\n",
+			youTag, cl->id, name, stateStr,
+			ping, inLag, outAckLag, cl->lerpticks,
+			livepos.x, livepos.y, livepos.z,
+			m->animnum, m->animframe, flags);
+	}
+
+	// Sim (AI bot) list: not in g_NetClients but they're the other half of
+	// what needs syncing. Show each bot's syncid, world pos, current weapon,
+	// damage taken, and which player they're attacking.
+	s32 numSims = 0;
+	if (g_Vars.lvmpbotlevel) {
+		for (s32 i = 0; i < g_BotCount; ++i) {
+			const struct chrdata *chr = g_MpBotChrPtrs[i];
+			if (!chr || !chr->prop) {
+				continue;
+			}
+			if (off >= (s32)sizeof(tmp) - 96) {
+				break;
+			}
+			const struct coord *p = &chr->prop->pos;
+			const s32 weapon = chr->aibot ? chr->aibot->weaponnum : -1;
+			const s32 target = chr->aibot ? chr->aibot->attackingplayernum : -1;
+			off += snprintf(tmp + off, sizeof(tmp) - off,
+				" <b%d> sid=%u pos=(%.0f,%.0f,%.0f) w=%d tgt=%d hp=%.0f\n",
+				i, chr->prop->syncid, p->x, p->y, p->z,
+				weapon, target, chr->maxdamage - chr->damage);
+			++numSims;
+		}
+	}
+
+	// Position the panel from the bottom — leave enough room for the maximum
+	// possible content (header + CSP/lagcomp + up to 8 clients × 2 lines +
+	// up to MAX_BOTS sim lines).
+	const s32 lineCount = 4 + 1 + (g_NetMaxClients * 2) + numSims + 1;
 	s32 x = 2;
-	s32 y = viGetHeight() - 1 - 6*8;
-	snprintf(tmp, sizeof(tmp), "Nettick: %u\nPing: %u\nSent: %u\nRecv: %u\nReliable frame: %u\nUnreliable frame: %u\n",
-		g_NetTick, g_NetLocalClient->peer ? enet_peer_get_rtt(g_NetLocalClient->peer) : 0,
-		enet_host_get_bytes_sent(g_NetHost), enet_host_get_bytes_received(g_NetHost),
-		g_NetReliableFrameLen, g_NetUnreliableFrameLen);
+	s32 y = viGetHeight() - 1 - (lineCount * 8);
+	if (y < 8) y = 8;
 	gdl = textRenderProjected(gdl, &x, &y, tmp, g_CharsHandelGothicXs, g_FontHandelGothicXs, 0x00ff00ff, viGetWidth(), viGetHeight(), 0, 0);
 
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
@@ -1352,4 +2038,7 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.OutRate", &g_NetServerOutRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
+
+	configRegisterString("Net.Debug.LogPath", g_NetDiagPath, sizeof(g_NetDiagPath) - 1);
+	configRegisterUInt("Net.Debug.LogRate", &g_NetDiagDumpRate, 0, 600);
 }

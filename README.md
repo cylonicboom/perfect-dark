@@ -1,5 +1,41 @@
 # Perfect Dark port (`port-net`)
 
+> ### Branch review aid — `port-net-predict` (Claude-touched files)
+>
+> This fork branch builds on `port-net` and adds entity interpolation, client-side
+> prediction (CSP), lag compensation, sim chr sync, positional weapon sounds,
+> server-authoritative kill/score feed, an outgoing-latency simulator, a
+> diagnostic CSV log, and `/lag` / `/loss` / `/diag` console commands. Full
+> design notes, rationale, and known limitations are in [CLAUDE.md](CLAUDE.md).
+>
+> **Added on this branch:**
+> - `CLAUDE.md` — netplay design notes, branch state, environment + code-writing guidelines
+>
+> **Modified — network core (`port/`):**
+> - `port/include/net/net.h` — new structs (`csp_snapshot`, `lagcomp_snapshot`, `netkillfeedentry`), `inmove[]` ring buffer in `netclient`, CSP / lag-comp / console-cmd / kill-feed API, `NET_PROTOCOL_VER 21`
+> - `port/include/net/netmsg.h` — `SVC_CHR_FIRE` / `SVC_KILL` / `SVC_SCORE` IDs and read/write prototypes
+> - `port/src/net/net.c` — CSP reconcile + tick, lag-comp save / begin / end, sim-chr broadcast in `netEndFrame`, outgoing-latency queue, `/lag` / `/loss` / `/diag` / `/netinfo` console commands, diagnostic CSV log infra, expanded F9 debug overlay
+> - `port/src/net/netmsg.c` — `inmove` ring-buffer push, chr-state block on `SVC_PROP_MOVE` (yrot + animation + held weapons + aim), projectile rotation auto-derive, bot configs synced in `SVC_STAGE_START`, `SVC_CHR_FIRE` / `SVC_KILL` / `SVC_SCORE` read/write
+> - `port/src/console.c` — route `/`-prefixed chat lines to `netConsoleCommand`
+> - `port/src/crash.c` — `addr2line` fallback when DbgHelp lacks symbols on MinGW DWARF builds
+> - `port/src/pdmain.c` — `netInit` placement
+>
+> **Modified — game logic (`src/game/`):**
+> - `src/game/bondwalk.c` — `bwalkUpdateRemote` rewritten for 8-snapshot ring-buffer position interpolation
+> - `src/game/bondmove.c` — `bmoveProcessRemoteInput` uses ring buffer; speeds lerp, angles snap, animation snaps when server diverges
+> - `src/game/bondgun.c` — `bgunPlayGunSound` routes remote players' weapon sounds through `psCreate` (positional) instead of `sndStart`
+> - `src/game/chraction.c` — `SVC_CHR_FIRE` broadcast at sim shot on/off transitions, sim action-tick skipped on client
+> - `src/game/prop.c` — sims tick via `chrTick` (not `botTick`) on client, lag-compensation hooks in `shotCalculateHits`
+> - `src/game/propobj.c` — tick remote-client projectiles on the server
+> - `src/game/player.c` — `inmove[0]` → `inmove[inmove_head]` fixes for respawn logic
+> - `src/game/mplayer/mplayer.c` — dedicated RNG seed for `mpChooseTrack` to keep music in sync
+> - `src/game/mpstats.c` — gate `mpchrconfig` stat writes to server only, broadcast `SVC_KILL` / `SVC_SCORE`
+>
+> Inline comments throughout these files explain the WHY — constraints, tradeoffs,
+> past failures — not the WHAT. Where an approach was tried and reverted (e.g. CSP
+> history-shift, full-array bone-matrix lag-comp), the comment records why.
+
+
 ## Experimental netplay branch
 
 This branch of the port contains an **extremely** early and experimental implementation of network play.  

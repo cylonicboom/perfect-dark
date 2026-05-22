@@ -36,6 +36,7 @@
 #include "lib/rng.h"
 #include "lib/mtx.h"
 #include "lib/anim.h"
+#include "lib/model.h"
 #include "data.h"
 #include "types.h"
 #ifndef PLATFORM_N64
@@ -109,6 +110,16 @@ static void bgunProcessInputAltButton(struct movedata *data, s8 contpad, s32 i)
 	}
 }
 
+// Apply the most-recent incoming snapshot for a remote player and run the
+// per-frame derived state (crouch, aim/zoom, weapon switch, fire, reload).
+// Reads from pl->client->inmove[head] (newest) and inmove[head-1] (previous),
+// pulled from the NET_SNAPSHOT_COUNT ring buffer that SVC_PLAYER_MOVE writes.
+// Position lerping is done separately in bwalkUpdateRemote; this function
+// handles input-derived state plus lerps movespeed and snaps view angles —
+// see the comment block on the angle assignment below for why angles aren't
+// lerped. The animation block at the end is a client-only animnum snap so
+// server-driven animation events (hit reactions, pickups, etc.) propagate
+// despite the local chrTick picking its own anim from synced inputs.
 static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 {
 	struct player *pl = g_Vars.currentplayer;
@@ -232,8 +243,9 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 
 	bgunSetSightVisible(GUNSIGHTREASON_NOTAIMING, pl->insightaimmode);
 
-	// Interpolate angles and speeds using the same ring-buffer bracketing as
-	// position interpolation in bwalkUpdateRemote, so both stay in sync.
+	// INTERPOLATION: find two snapshots in the ring buffer bracketing the desired
+	// interpolation point (g_NetTick - g_NetInterpTicks), then lerp angles/speeds
+	// between them. Ensures smooth motion despite discrete packet arrivals.
 	const u32 desired_tick = (g_NetTick > g_NetInterpTicks) ? (g_NetTick - g_NetInterpTicks) : 0;
 
 	const struct netplayermove *snap_newer = NULL;
@@ -254,15 +266,17 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 
 	const bool forceangle = !inmoveprev->tick || !moveticks || (inmove->ucmd & UCMD_FL_FORCEANGLE);
 
-	// Angles are NOT smoothed across snapshots. The projection matrix built
-	// in playerUpdateShootRot during the render path is derived from these,
-	// and handTickAttack→shotCreate runs against that matrix when the gun
-	// fires. Smoothing them by g_NetInterpTicks (~3 ticks) made shots from
-	// quick-tap aim miss because the matrix reflected aim from ~4 ticks ago;
-	// the host saw near-miss visual feedback but took no damage. Snap to the
-	// latest authoritative angle from the client instead — observing clients
-	// re-smooth on their end via their own inmove ring buffer, so net motion
-	// still looks fluid to non-host viewers.
+	// ANGLE SNAPPING (NOT lerped, unlike position/speeds below). The snapshot
+	// we're applying drives the server's bgunTick for this remote player,
+	// including the shot-direction ray that shotCreate fires through the
+	// playerUpdateShootRot matrix. Lerping angles backward by g_NetInterpTicks
+	// (~3 ticks) to match the position lerp caused quick-tap shots that the
+	// shooter saw clearly land to graze on the server and register no damage:
+	// the hit-test ray was ~3 ticks behind the aim the player actually had
+	// when they pulled the trigger. Snap to inmove->angles so the hit test
+	// uses the authoritative aim from the move that contained the FIRE bit.
+	// Spectator-visible gun direction snaps step-wise as a result, but that's
+	// preferable to phantom misses on inputs the shooter knows landed.
 	pl->vv_theta = inmove->angles[0];
 	pl->vv_verta = inmove->angles[1];
 
@@ -297,6 +311,27 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 		pl->speedmaxtime60 += g_Vars.lvupdate60;
 	} else {
 		pl->speedmaxtime60 = 0;
+	}
+
+	// ANIMATION SYNC (client-side only). The server captures animnum/animframe
+	// in the move it ships back to the originating client and broadcasts to
+	// observers. Each viewer's local chrTick for the remote player picks its
+	// own anim from the synced input state, so walk/run cycles converge
+	// naturally — but server-driven events (hit reactions, pickups, death,
+	// scripted transitions) don't, because those decisions live entirely on
+	// the server. Snap to the server's animnum whenever it differs from what
+	// the local chrTick currently has. Same-animnum ticks fall through so the
+	// local frame advance continues — calling modelSetAnimation every frame
+	// would reset framea/frameb and visibly snap the cycle backward.
+	// Guards: animnum==0 means the server's chr wasn't loaded when the move
+	// was captured (no usable value), and animHasFrames protects animLoadHeader
+	// from out-of-range ids that would crash inside the anim table lookup.
+	if (g_NetMode == NETMODE_CLIENT && inmove->animnum > 0 && animHasFrames(inmove->animnum) &&
+			pl->prop && pl->prop->chr && pl->prop->chr->model && pl->prop->chr->model->anim) {
+		struct anim *anim = pl->prop->chr->model->anim;
+		if (anim->animnum != inmove->animnum) {
+			modelSetAnimation(pl->prop->chr->model, inmove->animnum, anim->flip, (f32)inmove->animframe, 1.0f, 0.0625f);
+		}
 	}
 }
 

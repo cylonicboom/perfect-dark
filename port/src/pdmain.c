@@ -570,6 +570,7 @@ void mainTick(void)
 			}
 
 			gdl = conRender(gdl);
+			gdl = netKillFeedRender(gdl);
 			gdl = netDebugRender(gdl);
 
 			gDPFullSync(gdl++);

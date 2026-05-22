@@ -8905,6 +8905,17 @@ void chrUpdateFireslot(struct chrdata *chr, s32 handnum, bool withsound, bool wi
 
 				if (chr);
 #endif
+#ifndef PLATFORM_N64
+				// ON-TRANSITION broadcast: tell clients that a sim just fired.
+				// Clients gate botTick to server-only (sim AI doesn't run on
+				// clients), so without this message they get no muzzle flash
+				// and no positional shot sound. Sent on the reliable channel
+				// (g_NetMsgRel) so the matching OFF message in chrTickShoot
+				// can't outpace this one and leave the gunfire visual stuck on.
+				if (g_NetMode == NETMODE_SERVER && chr->aibot && chr->prop && chr->prop->syncid) {
+					netmsgSvcChrFireWrite(&g_NetMsgRel, chr, (u8)handnum, soundnum);
+				}
+#endif
 			}
 
 			if (withbeam) {
@@ -10563,6 +10574,25 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 				osSyncPrintf("numshots(%d) = %d", handnum, chr->aibot->loadedammo[handnum]);
 			}
 
+#ifndef PLATFORM_N64
+			// OFF-TRANSITION broadcast: tell clients to clear the sim's muzzle
+			// flash when firing stops. The matching on-transition is sent from
+			// chrUpdateFireslot above (with soundnum>0). Compare the current
+			// gunfire-visible state (`was`) against the value chrSetFiring is
+			// about to set (`will`); only send when transitioning visible→hidden,
+			// otherwise we'd flood the reliable channel with redundant zeros.
+			// Use g_NetMsgRel so an on→off pair can't be dropped out of order.
+			// Defensive: weaponIsGunfireVisible derefs heldprop->obj without
+			// null-checking, so guard both pointers explicitly.
+			if (g_NetMode == NETMODE_SERVER && chr->prop && chr->prop->syncid) {
+				struct prop *heldprop = chrGetHeldProp(chr, handnum);
+				const bool was = (heldprop && heldprop->obj) ? weaponIsGunfireVisible(heldprop) : false;
+				const bool will = firingthisframe && normalshoot;
+				if (was && !will) {
+					netmsgSvcChrFireWrite(&g_NetMsgRel, chr, (u8)handnum, 0);
+				}
+			}
+#endif
 			chrSetFiring(chr, handnum, firingthisframe && normalshoot);
 		} else {
 			chrSetFiring(chr, handnum, firingthisframe);
@@ -13433,7 +13463,22 @@ void chraTick(struct chrdata *chr)
 				case ACT_ANIM:   chrTickAnim(chr);   break;
 				case ACT_PATROL: chrTickPatrol(chr); pass = false; break;
 				}
-			} else {
+			}
+#ifndef PLATFORM_N64
+			// Skip the per-action tick for sim bots on a network client. The
+			// server's actiontype isn't synced (would crash because the
+			// chr->act_* union data isn't synced either — see
+			// netmsgSvcPropMoveRead chr-state block), and running chrTickStand
+			// here every frame would clobber the synced anim/yrot from
+			// SVC_PROP_MOVE bit-4 with stand-pose defaults. The model anim
+			// frame still advances during render via modelTickAnim, so
+			// skipping the action tick is purely a positive: no overwrite of
+			// synced state, no crash from missing union data.
+			else if (g_NetMode == NETMODE_CLIENT && chr->aibot) {
+				// intentionally empty — anim/orientation come from net sync
+			}
+#endif
+			else {
 				switch (chr->actiontype) {
 				case ACT_STAND:           chrTickStand(chr);           break;
 				case ACT_KNEEL:           chrTickKneel(chr);           break;

@@ -24,8 +24,13 @@
 #include <inttypes.h>
 #include <excpt.h>
 
-// NOTE: game builds with gcc, which means we have no PDBs for the windows version
-// this means that you generally won't get any symbol names in the main executable
+// Game builds with gcc, which emits DWARF debug info. Windows DbgHelp only
+// understands PDB, so SymFromAddr returns nothing useful for our exe. As a
+// fallback we shell out to addr2line (ships with MinGW binutils, available
+// in any MSYS2 environment that built the game) to resolve module-relative
+// offsets into function names + file:line via the DWARF data already
+// embedded in the debug exe. Result is appended below the raw offset line
+// so the existing dump format is preserved.
 
 static LPTOP_LEVEL_EXCEPTION_FILTER prevExFilter;
 
@@ -34,6 +39,95 @@ static void *crashGetModuleBase(const void *addr)
 	HMODULE h = NULL;
 	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, addr, &h);
 	return (void *)h;
+}
+
+static const char *crashGetMainExePath(void)
+{
+	static char path[MAX_PATH] = "";
+	static int tried = 0;
+	if (!tried) {
+		tried = 1;
+		const DWORD n = GetModuleFileNameA(NULL, path, sizeof(path));
+		if (n == 0 || n >= sizeof(path)) {
+			path[0] = '\0';
+		}
+	}
+	return path[0] ? path : NULL;
+}
+
+// On Windows, addr2line wants addresses keyed to the binary's *preferred*
+// image base (from the PE header), not the runtime load address. With ASLR
+// the runtime base differs every launch. Read the linker-recorded image
+// base from the in-memory PE header so we can convert a module offset into
+// the address addr2line actually expects.
+static ULONGLONG crashGetPreferredImageBase(void)
+{
+	static ULONGLONG cached = 0;
+	static int tried = 0;
+	if (tried) {
+		return cached;
+	}
+	tried = 1;
+	HMODULE h = GetModuleHandleA(NULL);
+	if (!h) {
+		return 0;
+	}
+	PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)h;
+	if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+		return 0;
+	}
+	PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE *)h + dos->e_lfanew);
+	if (nt->Signature != IMAGE_NT_SIGNATURE) {
+		return 0;
+	}
+	cached = nt->OptionalHeader.ImageBase;
+	return cached;
+}
+
+// Try to resolve a main-exe module offset using addr2line. Appends one or
+// more "      function at file:line" lines (one per inline expansion level)
+// into the crash message buffer. Silently no-ops if addr2line isn't on PATH
+// or if the offset can't be resolved (no debug info compiled in).
+static void crashAppendDwarf(char *msg, DWORD *msglenp, uintptr_t modofs)
+{
+	const char *exe = crashGetMainExePath();
+	if (!exe) {
+		return;
+	}
+
+	// addr2line wants linker-base + offset, not the bare module offset.
+	const ULONGLONG imageBase = crashGetPreferredImageBase();
+	const unsigned long long dwarfAddr = (unsigned long long)imageBase + (unsigned long long)modofs;
+
+	char cmd[1024];
+	// -f function names, -p one-line pretty print, -i include inline chain.
+	// Redirect stderr so a missing tool / bad path doesn't pollute the dump.
+	snprintf(cmd, sizeof(cmd), "addr2line -e \"%s\" -f -p -i 0x%llx 2>NUL",
+		exe, dwarfAddr);
+
+	FILE *p = _popen(cmd, "r");
+	if (!p) {
+		return;
+	}
+
+	char line[512];
+	while (fgets(line, sizeof(line), p)) {
+		size_t len = strlen(line);
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+			line[--len] = '\0';
+		}
+		// addr2line emits "?? at ??:0" for unresolvable addresses — skip those.
+		if (len == 0 || strncmp(line, "??", 2) == 0) {
+			continue;
+		}
+		DWORD msglen = *msglenp;
+		if (msglen < CRASH_MAX_MSG) {
+			msglen += snprintf(msg + msglen, CRASH_MAX_MSG - msglen, "      %s\n", line);
+			*msglenp = msglen;
+		}
+	}
+
+	_pclose(p);
 }
 
 static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
@@ -77,11 +171,20 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 
 	CRASH_MSG("EXCEPTION: 0x%08lx\n", exinfo->ExceptionRecord->ExceptionCode);
 	CRASH_MSG("PC: %p", exinfo->ExceptionRecord->ExceptionAddress);
-	if (SymGetLineFromAddr64(process, (uintptr_t)exinfo->ExceptionRecord->ExceptionAddress, &disp, &line)) {
+	const BOOL pcHasLine = SymGetLineFromAddr64(process, (uintptr_t)exinfo->ExceptionRecord->ExceptionAddress, &disp, &line);
+	if (pcHasLine) {
 		CRASH_MSG(": %s:%lu+%lu", line.FileName, line.LineNumber, disp);
 	}
-	CRASH_MSG("\nMODULE: [%p]\n", crashGetModuleBase(exinfo->ExceptionRecord->ExceptionAddress));
-	CRASH_MSG("MAIN MODULE: [%p]\n", crashGetModuleBase(crashInit));
+	const void *pcModBase = crashGetModuleBase(exinfo->ExceptionRecord->ExceptionAddress);
+	const void *mainModBase = crashGetModuleBase(crashInit);
+	CRASH_MSG("\nMODULE: [%p]\n", pcModBase);
+	CRASH_MSG("MAIN MODULE: [%p]\n", mainModBase);
+	// If DbgHelp didn't give us a file:line and the PC is in our own exe, try
+	// addr2line for the DWARF symbols MinGW emits.
+	if (!pcHasLine && pcModBase == mainModBase && pcModBase) {
+		const uintptr_t pcOfs = (uintptr_t)exinfo->ExceptionRecord->ExceptionAddress - (uintptr_t)pcModBase;
+		crashAppendDwarf(msg, &msglen, pcOfs);
+	}
 	CRASH_MSG("\nBACKTRACE:\n");
 
 	char symbuf[sizeof(SYMBOL_INFO) + CRASH_MAX_SYM * sizeof(TCHAR)];
@@ -98,19 +201,27 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 
 		CRASH_MSG("#%02d: %p", i, (void *)(uintptr_t)stackframe.AddrPC.Offset);
 
-		if (SymFromAddr(process, stackframe.AddrPC.Offset, &disp64, sym)) {
+		const BOOL hasName = SymFromAddr(process, stackframe.AddrPC.Offset, &disp64, sym);
+		const uintptr_t frameModBase = (uintptr_t)crashGetModuleBase((void *)(uintptr_t)stackframe.AddrPC.Offset);
+		const uintptr_t frameModOfs = (uintptr_t)stackframe.AddrPC.Offset - frameModBase;
+
+		if (hasName) {
 			CRASH_MSG(": %s+%llu", sym->Name, disp64);
-		} else if (process, stackframe.AddrPC.Offset) {
-			const uintptr_t modbase = (uintptr_t)crashGetModuleBase((void *)(uintptr_t)stackframe.AddrPC.Offset);
-			const uintptr_t modofs = (uintptr_t)stackframe.AddrPC.Offset - modbase;
-			CRASH_MSG(": [%p]+%p", (void *)modbase, (void *)modofs);
+		} else if (stackframe.AddrPC.Offset) {
+			CRASH_MSG(": [%p]+%p", (void *)frameModBase, (void *)frameModOfs);
 		}
 
-		if(SymGetLineFromAddr64(process, stackframe.AddrPC.Offset, &disp, &line)) {
+		if (SymGetLineFromAddr64(process, stackframe.AddrPC.Offset, &disp, &line)) {
 			CRASH_MSG(" (%s:%lu+%lu)", line.FileName, line.LineNumber, disp);
 		}
 
 		CRASH_MSG("\n");
+
+		// DWARF fallback for frames inside our own exe — DbgHelp can't read
+		// MinGW's debug info but addr2line can.
+		if (!hasName && (void *)frameModBase == mainModBase && frameModBase) {
+			crashAppendDwarf(msg, &msglen, frameModOfs);
+		}
 	}
 
 	if (i <= 1) {

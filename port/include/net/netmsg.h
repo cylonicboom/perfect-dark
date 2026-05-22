@@ -23,6 +23,9 @@
 #define SVC_PROP_LIFT     0x36 // lift state changed
 #define SVC_CHR_DAMAGE    0x42 // chr was damaged
 #define SVC_CHR_DISARM    0x43 // chr's weapons were dropped
+#define SVC_CHR_FIRE      0x44 // sim chr fired its weapon (sound + animation cue)
+#define SVC_KILL          0x45 // kill-feed entry ("Shooter > Victim")
+#define SVC_SCORE         0x46 // server-authoritative scoreboard deltas
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -70,5 +73,11 @@ u32 netmsgSvcChrDamageWrite(struct netbuf *dst, struct chrdata *chr, f32 damage,
 u32 netmsgSvcChrDamageRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcChrDisarmWrite(struct netbuf *dst, struct chrdata *chr, struct prop *attacker, u8 weaponnum, f32 wpndamage, struct coord *wpnpos);
 u32 netmsgSvcChrDisarmRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcChrFireWrite(struct netbuf *dst, struct chrdata *chr, u8 handnum, u16 soundnum);
+u32 netmsgSvcChrFireRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *victim);
+u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count);
+u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl);
 
 #endif

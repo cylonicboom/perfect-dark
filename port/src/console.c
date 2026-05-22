@@ -205,7 +205,12 @@ void conTick(void)
 
 	if (conOpen) {
 		if (inputTextHandler(conInput, CON_COLS, &conInputCol, false)) {
-			if (g_NetMode) {
+			// Lines starting with '/' are local netplay/debug commands,
+			// not chat. Handled even outside a net session so the user can
+			// pre-configure things like /lag before connecting.
+			if (conInput[0] == '/') {
+				netConsoleCommand(conInput);
+			} else if (g_NetMode) {
 				netChat(NULL, conInput);
 			}
 			conInput[0] = '\0';

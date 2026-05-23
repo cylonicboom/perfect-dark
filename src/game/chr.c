@@ -2390,6 +2390,43 @@ s32 chrTick(struct prop *prop)
 		prop->flags &= ~PROPFLAG_NOTYETTICKED;
 	}
 
+#ifndef PLATFORM_N64
+	// Client-only safety: defer chrTick for any sim bot until the server's
+	// first SVC_PROP_MOVE chr-state block has installed a real animation
+	// (animnum > 0). The chrTick code does `model->anim->average = false`
+	// and chr0f0220ec → modelTickAnimQuarterSpeed at multiple call sites
+	// (the actiontype branches at chr.c:2558 ACT_STAND, :2603 PLAYER+mp,
+	// :2611 fallthrough). Several of those reads aren't null-guarded and
+	// dereference anim fields that haven't been initialised on a freshly-
+	// spawned sim — anim itself is allocated by modelmgrInstantiateModelWithAnim
+	// but animnum / framea / speed stay zero until botApplyMovement (on
+	// the host) or modelSetAnimation (on the client via SVC_PROP_MOVE)
+	// pokes them. On the host botTick → botApplyMovement runs first; on
+	// the client we route sims straight through chrTick, so the very first
+	// frame on a freshly-loaded stage sees the dangerous read pattern.
+	//
+	// Defer until animnum > 0. The chr-state block on the first sim
+	// SVC_PROP_MOVE arrival sets animnum + ACT_STAND, so the guard
+	// quenches naturally within ~1 tick of the first server broadcast.
+	if (g_NetMode == NETMODE_CLIENT && chr->aibot
+			&& (!chr->model || !chr->model->anim || chr->model->anim->animnum == 0)) {
+		// Diagnostic: log first few defers so we can confirm this path
+		// is actually being taken. Capped low — the guard quenches
+		// after the first SVC_PROP_MOVE arrives.
+		static u32 defer_logged = 0;
+		if (defer_logged < 10u) {
+			netDiagLogf("simdefer", "syncid=%u body=%d hasanim=%d animnum=%d act=%d",
+				(u32)(prop ? prop->syncid : 0),
+				(s32)chr->bodynum,
+				(s32)(chr->model && chr->model->anim ? 1 : 0),
+				(s32)(chr->model && chr->model->anim ? chr->model->anim->animnum : -1),
+				(s32)chr->actiontype);
+			defer_logged++;
+		}
+		return TICKOP_NONE;
+	}
+#endif
+
 	if (fulltick) {
 #if VERSION >= VERSION_NTSC_1_0
 		if (chr->goposhitcount > 0 && (chr->hidden & CHRHFLAG_BLOCKINGDOOR) == 0) {
@@ -2592,8 +2629,17 @@ s32 chrTick(struct prop *prop)
 			&& (g_Vars.mplayerisrunning
 				|| (player = g_Vars.players[playermgrGetPlayerNumByProp(prop)], player->cameramode == CAMERAMODE_EYESPY)
 				|| (player->cameramode == CAMERAMODE_THIRDPERSON && player->visionmode == VISIONMODE_SLAYERROCKET))) {
-		model->anim->average = false;
-		chr0f0220ec(chr, lvupdate240, true);
+		// fulltick guard mirrors every other branch in this if/else chain:
+		// propsTickPlayer is called once per viewport (PLAYERCOUNT() times)
+		// per game frame, and only the first call sets PROPFLAG_NOTYETTICKED.
+		// Without this gate, modelTickAnimQuarterSpeed advanced player chr
+		// animations PLAYERCOUNT()× per frame — visible as host "physics at
+		// 2× speed" with one remote client and worse with more (matches the
+		// chr0f0220ec gate pattern in every other branch above and below).
+		if (fulltick) {
+			model->anim->average = false;
+			chr0f0220ec(chr, lvupdate240, true);
+		}
 		needsupdate = func0f08e8ac(prop, &prop->pos, modelGetEffectiveScale(model), true);
 	} else {
 		isrepeatframe2 = false;
@@ -4660,6 +4706,26 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 		func0f0341dc(chr, gsetGetDamage(&shotdata->gset), &shotdata->gundir3d, &shotdata->gset,
 				g_Vars.currentplayer->prop, hit->hitpart, hit->prop, hit->bboxnode,
 				hit->model, hit->hitthing.unk28 / 2, sp90);
+
+#ifndef PLATFORM_N64
+		// Client-side hit prediction: func0f0341dc above early-returns on
+		// NETMODE_CLIENT (server is the damage authority), which means the
+		// chr never visibly flinches until SVC_CHR_DAMAGE relays back ~RTT
+		// later. Locally apply the cosmetic flinch so the shooter gets
+		// instant feedback that they connected — flinchcnt is rendered-only
+		// and gets overwritten by the server's authoritative chrDamage when
+		// the relay arrives, so it doesn't desync state. The sparks +
+		// positional hit sound from earlier in this function already fire
+		// locally; this adds the chr reaction to round out the cue.
+		//
+		// Also record lastattacker so splatTickChr can spawn blood the
+		// same way it would server-side. lastattacker is otherwise only
+		// set inside chrDamage which doesn't run here for clients.
+		if (g_NetMode == NETMODE_CLIENT && !ismelee) {
+			chrFlinchBody(chr);
+			chr->lastattacker = g_Vars.currentplayer->prop->chr;
+		}
+#endif
 
 		if (g_Vars.antiplayernum >= 0
 				&& PLAYER_IS_ANTI(g_Vars.currentplayer)

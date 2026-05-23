@@ -4252,6 +4252,14 @@ void animInit(struct anim *anim)
 	anim->speed2 = 1;
 	anim->playspeed = 1;
 	anim->animscale = 1;
+	// Reset flip to 0 (right-handed). modelmgrInstantiateAnim recycles slots
+	// from g_AnimSlots — without this clear, a fresh sim inherits whatever
+	// flip value the slot's previous owner left behind. If that prior chr
+	// was left-strafing (flip=1) the new sim spawns with its right-hand
+	// bone data rendered at the left-hand position, so its weapon ends up
+	// in the wrong hand. Every other anim field in this init is reset
+	// explicitly; flip was the only stale-state escapee.
+	anim->flip = 0;
 }
 
 void modelAttachHead(struct model *bodymode, struct modeldef *bodymodeldef, struct modelnode *headspotnode, struct modeldef *headmodeldef)

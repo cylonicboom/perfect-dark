@@ -76,6 +76,7 @@
 #include "input.h"
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "mpsetups.h"
 #endif
 
 s32 g_DefaultWeapons[2];
@@ -1246,6 +1247,20 @@ void playerChooseBodyAndHead(s32 *bodynum, s32 *headnum, s32 *arg2)
 		*headnum = HEAD_ELVIS;
 		return;
 	}
+
+#ifndef PLATFORM_N64
+	// Surprise: in the CI training "title screen" scene, swap Joanna with the
+	// player's Combat Sim profile head/body when a profile is loaded. CI
+	// training is the background stage that runs while the Combat Simulator
+	// main menu (and the Joanna-at-laptop sequence) is on screen.
+	if (g_Vars.stagenum == STAGE_CITRAINING
+			&& g_MpProfileHead >= 0
+			&& g_MpProfileBody >= 0) {
+		*headnum = mpGetHeadId((u8)g_MpProfileHead);
+		*bodynum = mpGetBodyId((u8)g_MpProfileBody);
+		return;
+	}
+#endif
 
 	if (g_Vars.stagenum == STAGE_VILLA && lvGetDifficulty() >= DIFF_PA) {
 		outfit = OUTFIT_NEGOTIATOR;

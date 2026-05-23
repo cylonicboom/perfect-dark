@@ -15,6 +15,7 @@
 #include "bss.h"
 #include "game/hudmsg.h"
 #include "game/playermgr.h"
+#include "game/player.h"
 #include "game/bondgun.h"
 #include "game/game_1531a0.h"
 #include "game/game_0b0fd0.h"
@@ -22,6 +23,8 @@
 #include "game/menu.h"
 #include "game/pdmode.h"
 #include "game/mplayer/mplayer.h"
+#include "game/chraction.h"
+#include "game/chr.h"
 #include "lib/main.h"
 #include "lib/vi.h"
 #include "lib/model.h"
@@ -48,6 +51,17 @@ u32 g_NetClientInRate = 128 * 1024;
 u32 g_NetClientOutRate = 128 * 1024;
 
 u32 g_NetInterpTicks = 3;
+
+// Live-tunable CSP / interp / snapshot knobs. Were #defines in net.h;
+// promoted to globals so console commands (/cspframes, /cspcorr, /cspteleport,
+// /stale) and config keys can adjust them at runtime. Defaults match the
+// pre-promotion #define values so the hot-path behaviour is unchanged out
+// of the box.
+u32 g_NetCspCorrFramesMax     = 10;
+f32 g_NetCspCorrThreshSq      = 625.f;    //  25 units squared
+f32 g_NetCspTeleportThreshSq  = 14400.f;  // 120 units squared
+u32 g_NetStaleSnapshotTicks   = 30;       // ~500ms at 60Hz
+
 char g_NetLastJoinAddr[NET_MAX_ADDR + 1] = "127.0.0.1:27100";
 
 u32 g_NetTick = 0;
@@ -162,6 +176,13 @@ struct netbuf g_NetMsg = { .data = g_NetMsgBuf, .size = sizeof(g_NetMsgBuf) };
 static u8 g_NetMsgRelBuf[NET_BUFSIZE * 4]; // reliable buffer can be reliably fragmented
 struct netbuf g_NetMsgRel = { .data = g_NetMsgRelBuf, .size = sizeof(g_NetMsgRelBuf) };
 
+// Spectate target: when non-NULL, netSpectateApply rides the local camera on
+// this chr each tick. /spec console commands set/clear it; netSpectateCycle
+// walks the live players-then-sims list. Cleared automatically by
+// netSpectateApply if the chr disappears (round ends, sim removed) so callers
+// don't have to bookkeep it.
+struct chrdata *g_NetSpectateChr = NULL;
+
 static s32 g_NetInit = false;
 // g_NetHost is forward-declared near the top of the file because the lag-sim
 // helpers reference it.
@@ -215,7 +236,10 @@ static void netDiagOpen(void)
 	sysLogPrintf(LOG_NOTE, "NET: diag log -> %s", g_NetDiagPath);
 }
 
-static void netDiagLogf(const char *event, const char *fmt, ...)
+// Non-static so netmsg.c (and other TUs that need diag tracing) can call it
+// without each file open-coding the same fprintf / fflush boilerplate. The
+// declaration lives in net.h.
+void netDiagLogf(const char *event, const char *fmt, ...)
 {
 	if (!g_NetDiagFile) {
 		return;
@@ -1054,6 +1078,18 @@ void netStartFrame(void)
 
 	++g_NetTick;
 
+	// Heartbeat for crash hunts. Logs every 6 ticks (~100ms at 60Hz) so the
+	// diag file shows progress through gameplay with fine enough granularity
+	// to bracket a crash to ≤6 frames. Pairs with the existing pos_cl /
+	// pos_sim dumps (same rate) so a missing tick line implies the crash
+	// landed inside that 100ms window. Lifetime cost is minor — one fprintf
+	// per 6 frames is well under the diag log's existing event rate.
+	if ((g_NetTick % 6u) == 0u) {
+		netDiagLogf("tick", "stage=%u clstate=%u",
+			(u32)g_StageNum,
+			(u32)(g_NetLocalClient ? g_NetLocalClient->state : 0));
+	}
+
 	// Release any artificially-delayed packets whose hold time has elapsed.
 	// Has to happen before ENet services its socket so newly-due packets are
 	// actually transmitted this frame instead of waiting another tick.
@@ -1120,12 +1156,36 @@ void netStartFrame(void)
 
 	netbufStartWrite(&g_NetMsg);
 	netbufStartWrite(&g_NetMsgRel);
+
+	// Crash-hunt diagnostic: ns_exit / ne_enter / ne_exit bracket the main
+	// game-tick gap. With per-tick TU-static counters capped at 30 we get
+	// visibility on the first 30 ticks of each PROCESS run without flooding
+	// the log forever (g_NetTick on the client doesn't reset on stage
+	// change — it carries the server's tick number — so a tick-value cap
+	// like "tick < 30" would never fire mid-match).
+	//
+	// Trail: ns_exit → ne_enter → ne_exit each frame. Last line before
+	// the crash tells you which phase died.
+	static u32 ns_exit_count = 0;
+	if (ns_exit_count < 30u) {
+		netDiagLogf("ns_exit", "tick=%u", g_NetTick);
+		ns_exit_count++;
+	}
 }
 
 void netEndFrame(void)
 {
 	if (!g_NetMode) {
 		return;
+	}
+
+	// Companion to ns_exit. Missing ne_enter ⇒ crash in mainTick (game
+	// render / physics / sim chrTick path); missing ne_exit / pos_cl ⇒
+	// crash in netEndFrame's send / CSP / diag block.
+	static u32 ne_enter_count = 0;
+	if (ne_enter_count < 30u) {
+		netDiagLogf("ne_enter", "tick=%u", g_NetTick);
+		ne_enter_count++;
 	}
 
 	g_NetReliableFrameLen = 0;
@@ -1215,8 +1275,20 @@ void netEndFrame(void)
 					continue;
 				}
 				const struct coord *p = &chr->prop->pos;
-				netDiagLogf("pos_sim", "id=%d sid=%u x=%.1f y=%.1f z=%.1f act=%d hp=%.0f",
+				// yrot = body facing direction (radians). For sim debugging
+				// it lets you cross-reference the orientation broadcast in
+				// SVC_PROP_MOVE's chr-state block against what the server
+				// thought the bot was doing — useful when chasing "sim
+				// facing the wrong way after respawn" or strafe-related
+				// glitches. Speed prints the anim cycle playback rate set
+				// by playerChooseThirdPersonAnimation so you can correlate
+				// stuck/slow anims with the bot's actual movement.
+				const f32 yrot = chrGetRotY((struct chrdata *)chr);
+				const s16 animnum = (chr->model && chr->model->anim) ? chr->model->anim->animnum : 0;
+				const f32 animspeed = (chr->model && chr->model->anim) ? chr->model->anim->speed : 0.f;
+				netDiagLogf("pos_sim", "id=%d sid=%u x=%.1f y=%.1f z=%.1f yrot=%.3f anim=%d aspd=%.2f act=%d hp=%.0f",
 					i, chr->prop->syncid, p->x, p->y, p->z,
+					yrot, (s32)animnum, animspeed,
 					chr->actiontype, chr->maxdamage - chr->damage);
 			}
 		}
@@ -1224,6 +1296,15 @@ void netEndFrame(void)
 	}
 
 	enet_host_flush(g_NetHost);
+
+	// netEndFrame complete. If ne_enter fired but ne_exit didn't, the
+	// crash is in the move/send/CSP/diag block between them. Capped at
+	// 30 to match the other bracket logs.
+	static u32 ne_exit_count = 0;
+	if (ne_exit_count < 30u) {
+		netDiagLogf("ne_exit", "tick=%u", g_NetTick);
+		ne_exit_count++;
+	}
 }
 
 u32 netSend(struct netclient *dstcl, struct netbuf *buf, const s32 reliable, const s32 chan)
@@ -1365,7 +1446,7 @@ void netSyncIdsAllocate(void)
 
 // --- Client-side prediction ---
 
-void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
+void netCspReconcile(u32 ack_tick, const struct coord *server_pos, f32 server_theta)
 {
 	if (!ack_tick) {
 		return;
@@ -1394,13 +1475,32 @@ void netCspReconcile(u32 ack_tick, const struct coord *server_pos)
 		// each fresh ack retargets the correction mid-smooth, so local pos zig-zags
 		// between old and new targets. Instead, hard-snap and discard any pending
 		// smooth correction (the pinballing at high ping is worse than one frame snap).
+		//
+		// chrSetPos (not a bare prop->pos write) is required: it re-derives ground
+		// height and floor room from the new position and — critically for PLAYER
+		// props — overwrites player->vv_manground / vv_ground / vv_theta. Without
+		// that, the next bondmovePlayer tick sees the new pos but the OLD ground
+		// reference and clamps the player back to the old floor, producing an
+		// "I keep snapping but never sticking" loop visible in the diag log as
+		// many csp_snap entries with growing err.
+		//
+		// We reuse the chr's current rooms array as the input to chrSetPos: it's
+		// slightly stale (the chr hasn't physically moved yet) but cdFindGroundInfoAtCyl
+		// walks the portal graph from there to find the right floor, which handles
+		// snap distances up to a few hundred units. Theta from the wire is the
+		// server's view of our look angle and is what chrSetPos expects (degrees).
+		// findground=true so the chr's ground is actually re-derived (the whole
+		// point of switching off the bare-write).
 		if (err_sq > NET_CSP_TELEPORT_THRESH_SQ) {
 			g_NetCspCorrFrames = 0;
 			g_NetCspCorrDelta.x = 0.f;
 			g_NetCspCorrDelta.y = 0.f;
 			g_NetCspCorrDelta.z = 0.f;
-			if (g_NetLocalClient && g_NetLocalClient->player && g_NetLocalClient->player->prop) {
-				g_NetLocalClient->player->prop->pos = *server_pos;
+			if (g_NetLocalClient && g_NetLocalClient->player && g_NetLocalClient->player->prop
+					&& g_NetLocalClient->player->prop->chr) {
+				struct chrdata *chr = g_NetLocalClient->player->prop->chr;
+				struct coord snap_pos = *server_pos;
+				chrSetPos(chr, &snap_pos, chr->prop->rooms, server_theta, true);
 			}
 			netDiagLogf("csp_snap", "ack=%u err=%.1f dx=%.1f dy=%.1f dz=%.1f",
 				ack_tick, sqrtf(err_sq), ex, ey, ez);
@@ -1625,6 +1725,149 @@ void netChat(struct netclient *dst, const char *text)
 	}
 }
 
+// Build the ordered list of valid spectate targets: live remote players
+// followed by live sims, in mpchr index order. Used by both the cycle and
+// the safety check on resume. Returns the number filled in `out`; caller
+// passes an array sized at least MAX_MPCHRS.
+static s32 netSpectateGatherTargets(struct chrdata **out, s32 cap)
+{
+	s32 n = 0;
+	if (!g_NetMode) {
+		return 0;
+	}
+	const struct chrdata *localchr = (g_NetLocalClient && g_NetLocalClient->player && g_NetLocalClient->player->prop)
+		? g_NetLocalClient->player->prop->chr : NULL;
+	// Humans first (mpchr 0..MAX_PLAYERS-1), then sims (>=MAX_PLAYERS). Skip
+	// the local player and anything that's hidden / dead / unspawned.
+	for (s32 i = 0; i < MAX_MPCHRS && n < cap; ++i) {
+		struct chrdata *chr = g_MpAllChrPtrs[i];
+		if (!chr || !chr->prop || chr == localchr) {
+			continue;
+		}
+		if (chr->chrflags & CHRCFLAG_HIDDEN) {
+			continue;
+		}
+		if (chrIsDead(chr)) {
+			continue;
+		}
+		out[n++] = chr;
+	}
+	return n;
+}
+
+void netSpectateStop(void)
+{
+	if (g_NetSpectateChr) {
+		sysLogPrintf(LOG_CHAT, "NET: spectate off");
+	}
+	g_NetSpectateChr = NULL;
+}
+
+void netSpectateCycle(s32 direction)
+{
+	struct chrdata *targets[MAX_MPCHRS];
+	const s32 n = netSpectateGatherTargets(targets, ARRAYCOUNT(targets));
+	if (n <= 0) {
+		netSpectateStop();
+		sysLogPrintf(LOG_CHAT, "NET: no valid spectate targets");
+		return;
+	}
+	s32 current = -1;
+	for (s32 i = 0; i < n; ++i) {
+		if (targets[i] == g_NetSpectateChr) {
+			current = i;
+			break;
+		}
+	}
+	s32 next;
+	if (current < 0) {
+		// Not currently spectating: start at first (next direction) or last (prev).
+		next = (direction >= 0) ? 0 : (n - 1);
+	} else {
+		// Modular cycle; +n keeps it positive after subtracting 1.
+		next = ((current + (direction >= 0 ? 1 : -1)) + n) % n;
+	}
+	g_NetSpectateChr = targets[next];
+	const char *name = "?";
+	if (g_NetSpectateChr) {
+		const s32 mpidx = mpPlayerGetIndex(g_NetSpectateChr);
+		if (mpidx >= 0 && mpidx < MAX_MPCHRS && g_MpAllChrConfigPtrs[mpidx]) {
+			name = g_MpAllChrConfigPtrs[mpidx]->name;
+		}
+	}
+	sysLogPrintf(LOG_CHAT, "NET: spectating %s", name);
+}
+
+void netSpectateApply(void)
+{
+	if (!g_NetMode || !g_NetSpectateChr) {
+		return;
+	}
+	// Target validation: chr may have been freed (round end, sim removed),
+	// died (mid-spectate KO), or hidden. Clear silently in those cases —
+	// the user can re-/spec to pick someone else.
+	struct chrdata *t = g_NetSpectateChr;
+	if (!t->prop || (t->chrflags & CHRCFLAG_HIDDEN) || chrIsDead(t)) {
+		g_NetSpectateChr = NULL;
+		return;
+	}
+	struct player *pl = g_NetLocalClient ? g_NetLocalClient->player : NULL;
+	if (!pl || !pl->prop) {
+		return;
+	}
+	// Gated to isdead so the spectate cam doesn't fight live first-person
+	// physics. Local player stays "alive" until the server confirms death
+	// via SVC_PLAYER_STATS, so /spec next pre-death is a no-op visually
+	// (state is set; cam swap kicks in the moment isdead flips).
+	if (!pl->isdead) {
+		return;
+	}
+	// Override the CAMERA only — leave prop->pos alone so the corpse stays
+	// where it died. The renderer's view matrix reads cam_pos / cam_look /
+	// cam_up (set up at the top of playerAllocateMatrices), so populating
+	// those is enough to move the viewpoint without dragging the body.
+	// cam_room drives room visibility, which has to match the spectated
+	// chr's location or rendering culls everything beyond the corpse's
+	// rooms and you see geometry pop in.
+	//
+	// chrGetInverseTheta returns radians; convert to degrees-from-CCW for
+	// vv_theta downstream. TWO_PI literal so this TU doesn't need to pull
+	// in the game's math.h on top of <math.h>.
+	const f32 TWO_PI = 6.2831853071795865f;
+	const f32 thetaRad = TWO_PI - chrGetInverseTheta(t);
+
+	// Eye height: prop->pos is roughly at the chr's feet so lift the cam
+	// up to head height for a sensible first-person ride-along. 150 ≈
+	// stock human eye; Skedar / Mini-Skedar look off but acceptable.
+	struct coord eyepos = t->prop->pos;
+	eyepos.y += 150.f;
+
+	// Look direction: forward vector derived from yaw. cam_up is world up.
+	const f32 sinT = sinf(thetaRad);
+	const f32 cosT = cosf(thetaRad);
+	struct coord camlook = { -sinT, 0.f, cosT };
+	struct coord camup = { 0.f, 1.f, 0.f };
+
+	// Push into the camera. We have to call setCurrentPlayer because
+	// playerSetCamProperties* writes to g_Vars.currentplayer, not the pl
+	// pointer directly. Save/restore so we don't trample the caller's
+	// notion of which player slot is "current" — lvTickPlayer is the one
+	// who set currentplayer to the local pawn before invoking us, but the
+	// general contract for this helper is "leave globals as you found them".
+	const s32 prev = g_Vars.currentplayernum;
+	setCurrentPlayerNum(g_NetLocalClient->playernum);
+	const RoomNum camroom = t->prop->rooms[0];
+	playerSetCamPropertiesWithRoom(&eyepos, &camup, &camlook, camroom);
+	setCurrentPlayerNum(prev);
+
+	// vv_theta / vv_verta drive any code that still reads "where is the
+	// player facing" (HUD compass, third-person model orientation, etc.)
+	// — sync them so those overlays match the spectated view direction.
+	// vv_theta is degrees in the game's convention.
+	pl->vv_theta = thetaRad * 360.0f / TWO_PI;
+	pl->vv_verta = 0.f;
+}
+
 // Local-only console commands. Available any time the in-game chat console
 // is open (~). Lines starting with '/' are routed here instead of being
 // broadcast as chat. Each command prints feedback via sysLogPrintf so the
@@ -1699,13 +1942,146 @@ s32 netConsoleCommand(const char *line)
 			g_NetMode == NETMODE_SERVER ? "SERVER" : g_NetMode == NETMODE_CLIENT ? "CLIENT" : "NONE",
 			g_NetNumClients, g_BotCount, g_NetSimLagMs, g_NetSimPacketLoss,
 			g_NetDiagPath[0] ? g_NetDiagPath : "(off)");
+		sysLogPrintf(LOG_CHAT, "NET: interp=%u stale=%u svc-update=%u clc-update=%u",
+			g_NetInterpTicks, g_NetStaleSnapshotTicks,
+			g_NetServerUpdateRate, g_NetClientUpdateRate);
+		sysLogPrintf(LOG_CHAT, "NET: csp frames=%u corr_thresh=%.1fu teleport_thresh=%.1fu",
+			g_NetCspCorrFramesMax,
+			sqrtf(g_NetCspCorrThreshSq),
+			sqrtf(g_NetCspTeleportThreshSq));
+	} else if (strcmp(cmd, "interp") == 0) {
+		// /interp <ticks> — entity interpolation lag. Higher = smoother
+		// remote players under jitter but more visible latency; lower =
+		// snappier but more jittery if packets arrive unevenly. Default 3.
+		// Clamped to [0, 60] — beyond a second of lag the ring buffer
+		// can't hold enough snapshots anyway.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetInterpTicks = (u32)((n < 0) ? 0 : (n > 60 ? 60 : n));
+			sysLogPrintf(LOG_CHAT, "NET: interp ticks = %u", g_NetInterpTicks);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: interp ticks = %u (usage: /interp <ticks>)", g_NetInterpTicks);
+		}
+	} else if (strcmp(cmd, "stale") == 0) {
+		// /stale <ticks> — how old the newest snapshot can be before
+		// bwalkUpdateRemote hard-snaps instead of lerping between stale
+		// entries. Default 30 (~500ms). Bump for sparse update rates,
+		// lower for tighter desync recovery.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetStaleSnapshotTicks = (u32)((n < 0) ? 0 : (n > 600 ? 600 : n));
+			sysLogPrintf(LOG_CHAT, "NET: stale-snapshot threshold = %u ticks", g_NetStaleSnapshotTicks);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: stale-snapshot threshold = %u ticks (usage: /stale <ticks>)", g_NetStaleSnapshotTicks);
+		}
+	} else if (strcmp(cmd, "svcrate") == 0) {
+		// /svcrate <N> — server-side update interval. 1 = send every tick
+		// (max bandwidth, smoothest). Larger = bandwidth saving but
+		// snapshot ring fills slower, more lerp jitter.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetServerUpdateRate = (u32)((n < 1) ? 1 : (n > 60 ? 60 : n));
+			sysLogPrintf(LOG_CHAT, "NET: server update interval = every %u ticks", g_NetServerUpdateRate);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: server update interval = %u (usage: /svcrate <ticks>)", g_NetServerUpdateRate);
+		}
+	} else if (strcmp(cmd, "clcrate") == 0) {
+		// /clcrate <N> — client-side input send interval. Same trade-off:
+		// 1 = every tick, larger = less bandwidth but worse server-side
+		// hit reg and latency.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetClientUpdateRate = (u32)((n < 1) ? 1 : (n > 60 ? 60 : n));
+			sysLogPrintf(LOG_CHAT, "NET: client update interval = every %u ticks", g_NetClientUpdateRate);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: client update interval = %u (usage: /clcrate <ticks>)", g_NetClientUpdateRate);
+		}
+	} else if (strcmp(cmd, "cspframes") == 0) {
+		// /cspframes <N> — ticks the smooth CSP correction spreads error
+		// over. Smaller = snappier; larger = smoother but slower. Default 10.
+		// Sets the *initial* window (g_NetCspCorrFramesMax); the in-flight
+		// countdown (g_NetCspCorrFrames) reloads from this on the next ack.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetCspCorrFramesMax = (u32)((n < 1) ? 1 : (n > 120 ? 120 : n));
+			sysLogPrintf(LOG_CHAT, "NET: CSP correction window = %u ticks", g_NetCspCorrFramesMax);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: CSP correction window = %u ticks (usage: /cspframes <ticks>)", g_NetCspCorrFramesMax);
+		}
+	} else if (strcmp(cmd, "cspcorr") == 0) {
+		// /cspcorr <units> — minimum prediction error (in world units)
+		// before smooth correction kicks in. Below this, divergences are
+		// ignored to avoid jitter from sub-noise drift. Stored squared
+		// internally; the user enters / sees plain units. Default 25.
+		if (*arg) {
+			const f32 u = (f32)atof(arg);
+			const f32 clamped = (u < 0.f) ? 0.f : (u > 1000.f ? 1000.f : u);
+			g_NetCspCorrThreshSq = clamped * clamped;
+			sysLogPrintf(LOG_CHAT, "NET: CSP correction threshold = %.1fu (sq=%.1f)", clamped, g_NetCspCorrThreshSq);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: CSP correction threshold = %.1fu (usage: /cspcorr <units>)",
+				sqrtf(g_NetCspCorrThreshSq));
+		}
+	} else if (strcmp(cmd, "cspteleport") == 0 || strcmp(cmd, "cspport") == 0) {
+		// /cspteleport <units> — above this prediction error the CSP path
+		// hard-snaps instead of smooth-correcting. Default 120u covers max
+		// strafe-run + fastmovement + ramp + fall combined; anything past
+		// that is treated as a teleport / network glitch. Should always be
+		// > /cspcorr (otherwise no smooth correction window exists).
+		if (*arg) {
+			const f32 u = (f32)atof(arg);
+			const f32 clamped = (u < 0.f) ? 0.f : (u > 10000.f ? 10000.f : u);
+			g_NetCspTeleportThreshSq = clamped * clamped;
+			sysLogPrintf(LOG_CHAT, "NET: CSP teleport threshold = %.1fu (sq=%.1f)", clamped, g_NetCspTeleportThreshSq);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: CSP teleport threshold = %.1fu (usage: /cspteleport <units>)",
+				sqrtf(g_NetCspTeleportThreshSq));
+		}
+	} else if (strcmp(cmd, "spec") == 0 || strcmp(cmd, "spectate") == 0) {
+		// /spec — cycle to next live target
+		// /spec next | /spec prev — cycle direction
+		// /spec off | /spec stop — clear and return to first-person
+		if (!*arg || strcmp(arg, "next") == 0) {
+			netSpectateCycle(+1);
+		} else if (strcmp(arg, "prev") == 0 || strcmp(arg, "previous") == 0) {
+			netSpectateCycle(-1);
+		} else if (strcmp(arg, "off") == 0 || strcmp(arg, "stop") == 0 || strcmp(arg, "none") == 0) {
+			netSpectateStop();
+		} else {
+			// Treat anything else as a name lookup against g_MpAllChrConfigPtrs.
+			// Case-sensitive prefix match keeps things predictable when the host
+			// has named bots with the dictionary scheme ("BobSim", "AliceSim").
+			struct chrdata *match = NULL;
+			const size_t arglen = strlen(arg);
+			for (s32 i = 0; i < MAX_MPCHRS; ++i) {
+				if (!g_MpAllChrPtrs[i] || !g_MpAllChrConfigPtrs[i]) continue;
+				if (strncmp(g_MpAllChrConfigPtrs[i]->name, arg, arglen) == 0) {
+					match = g_MpAllChrPtrs[i];
+					break;
+				}
+			}
+			if (match) {
+				g_NetSpectateChr = match;
+				sysLogPrintf(LOG_CHAT, "NET: spectating %s", g_MpAllChrConfigPtrs[mpPlayerGetIndex(match)]->name);
+			} else {
+				sysLogPrintf(LOG_CHAT, "NET: no chr matching '%s'", arg);
+			}
+		}
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
 		sysLogPrintf(LOG_CHAT, "  /loss <N>        drop ~1 in N unreliable packets (0 = off)");
 		sysLogPrintf(LOG_CHAT, "  /diag <path>     start diag log to file (no arg = stop)");
 		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
-		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state");
+		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
+		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
+		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
+		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");
+		sysLogPrintf(LOG_CHAT, "  /svcrate <n>     server update interval, ticks (default 1)");
+		sysLogPrintf(LOG_CHAT, "  /clcrate <n>     client update interval, ticks (default 1)");
+		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
+		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
+		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");
 	} else {
 		sysLogPrintf(LOG_CHAT, "NET: unknown command /%s (try /help)", cmd);
 	}
@@ -1726,7 +2102,10 @@ static struct netkillfeedentry g_NetKillFeed[NET_KILLFEED_MAX];
 
 // Colour palette — keep saturated so each name reads at a glance even at
 // extra-small console-font size. Alpha 0xff: the feed is short-lived so
-// fading is unnecessary.
+// fading is unnecessary. SHOOTER/VICTIM colours are FALLBACKS used when a
+// team is unknown (0xff) — when a team is present, netKillFeedTeamColor
+// substitutes the matching g_TeamColours entry so the feed visually agrees
+// with radar / on-chr highlights.
 #define NET_KILLFEED_COL_SHOOTER 0x33ff33ff  // bright green
 #define NET_KILLFEED_COL_VICTIM  0xff4444ff  // bright red
 #define NET_KILLFEED_COL_PLAIN   0xffffffff  // white separator / "[died]"
@@ -1735,6 +2114,24 @@ static struct netkillfeedentry g_NetKillFeed[NET_KILLFEED_MAX];
 // while the body (TEXEL0_ALPHA fill) takes the per-segment colour. Matches the
 // FPS counter's 0x000000a0 so both overlays read with the same outline weight.
 #define NET_KILLFEED_COL_OUTLINE 0x000000a0  // black, alpha 0xa0
+
+// Map a team index to a renderable RGBA colour. g_TeamColours is RGB0-format
+// (alpha byte = 0 because it's authored for the radar's RGB combiner that
+// supplies alpha elsewhere), so OR in 0xff for text rendering. team==0xff
+// is the "unknown / no team" sentinel — return the supplied fallback.
+static inline u32 netKillFeedTeamColor(u8 team, u32 fallback)
+{
+	if (team == 0xff) {
+		return fallback;
+	}
+	// g_TeamColours has 8 entries (one per MPTEAM). Out-of-range teams
+	// (corrupt wire data, future expansion) fall back rather than
+	// indexing past the array.
+	if (team >= 8) {
+		return fallback;
+	}
+	return g_TeamColours[team] | 0xffu;
+}
 
 static void netKillFeedClear(void)
 {
@@ -1761,7 +2158,7 @@ static void killFeedCopyName(char *dst, const char *src)
 	dst[i] = '\0';
 }
 
-void netKillFeedAdd(const char *shooter, const char *victim)
+void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8 victim_team)
 {
 	if (!victim || !victim[0]) {
 		return;
@@ -1775,6 +2172,8 @@ void netKillFeedAdd(const char *shooter, const char *victim)
 	g_NetKillFeed[0].expire_tick = g_NetTick + NET_KILLFEED_DURATION_TICKS;
 	killFeedCopyName(g_NetKillFeed[0].shooter, shooter);
 	killFeedCopyName(g_NetKillFeed[0].victim, victim);
+	g_NetKillFeed[0].shooter_team = shooter_team;
+	g_NetKillFeed[0].victim_team = victim_team;
 }
 
 Gfx *netKillFeedRender(Gfx *gdl)
@@ -1817,6 +2216,9 @@ Gfx *netKillFeedRender(Gfx *gdl)
 		s32 x = leftMargin;
 		s32 y = topMargin + visible * lineHeight;
 
+		const u32 shooter_col = netKillFeedTeamColor(e->shooter_team, NET_KILLFEED_COL_SHOOTER);
+		const u32 victim_col = netKillFeedTeamColor(e->victim_team, NET_KILLFEED_COL_VICTIM);
+
 		if (e->shooter[0]) {
 			// "Shooter > Victim" — three segments, each with its own colour.
 			// textRender (vs. textRenderProjected) takes a second colour for the
@@ -1825,7 +2227,7 @@ Gfx *netKillFeedRender(Gfx *gdl)
 			// text so consecutive calls line up without manual width math.
 			gdl = textRender(gdl, &x, &y, e->shooter,
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_SHOOTER, NET_KILLFEED_COL_OUTLINE,
+					shooter_col, NET_KILLFEED_COL_OUTLINE,
 					screenw, screenh, 0, 0);
 
 			gdl = textRender(gdl, &x, &y, " > ",
@@ -1835,13 +2237,13 @@ Gfx *netKillFeedRender(Gfx *gdl)
 
 			gdl = textRender(gdl, &x, &y, e->victim,
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_VICTIM, NET_KILLFEED_COL_OUTLINE,
+					victim_col, NET_KILLFEED_COL_OUTLINE,
 					screenw, screenh, 0, 0);
 		} else {
 			// "Victim [died]" — suicide / environment kill.
 			gdl = textRender(gdl, &x, &y, e->victim,
 					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_VICTIM, NET_KILLFEED_COL_OUTLINE,
+					victim_col, NET_KILLFEED_COL_OUTLINE,
 					screenw, screenh, 0, 0);
 
 			gdl = textRender(gdl, &x, &y, " [died]",

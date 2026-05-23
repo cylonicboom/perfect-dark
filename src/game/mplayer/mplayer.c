@@ -223,7 +223,13 @@ void mpStartMatch(void)
 	{
 #ifndef PLATFORM_N64
 		if (g_MpSetup.options & MPOPTION_AUTORANDOMWEAPON_START) {
-			if (g_MpWeaponSetNum == WEAPONSET_RANDOM || g_MpWeaponSetNum == WEAPONSET_RANDOMFIVE) {
+			// Re-roll on match start. WEAPONSET_RANDOMPRESET joins the two
+			// existing random modes so "Random Preset" also picks a fresh
+			// preset every match rather than sticking with the first roll
+			// for the whole session.
+			if (g_MpWeaponSetNum == WEAPONSET_RANDOM
+					|| g_MpWeaponSetNum == WEAPONSET_RANDOMFIVE
+					|| g_MpWeaponSetNum == WEAPONSET_RANDOMPRESET) {
 				mpApplyWeaponSet();
 			}
 		}
@@ -1139,7 +1145,12 @@ s32 func0f188f9c(s32 arg0)
 
 s32 func0f189058(bool full)
 {
-	return mpCountWeaponSetThing(full ? ARRAYCOUNT(g_MpWeaponSets) + 3 : ARRAYCOUNT(g_MpWeaponSets));
+	// +3 originally accounted for RandomFive / Random / Custom appended after
+	// the unlocked-presets list. Bumped to +4 so the WEAPONSET_RANDOMPRESET
+	// entry shows up as the last item in the dropdown — picks a random named
+	// preset each apply, rather than rolling each slot independently like
+	// WEAPONSET_RANDOM does.
+	return mpCountWeaponSetThing(full ? ARRAYCOUNT(g_MpWeaponSets) + 4 : ARRAYCOUNT(g_MpWeaponSets));
 }
 
 s32 func0f189088(void)
@@ -1150,6 +1161,16 @@ s32 func0f189088(void)
 char *mpGetWeaponSetName(s32 index)
 {
 	index = func0f188f9c(index);
+
+	// New "Random Preset" entry. Goes ABOVE the Custom fallback so it gets
+	// matched explicitly — the original code returns "Custom" for anything
+	// >= ARRAYCOUNT+2, which would swallow our new index otherwise. Literal
+	// (not langGet) because adding a new L_MPWEAPONS_* entry requires
+	// touching every locale json + regenerating the headers; the literal
+	// keeps the change local to this TU.
+	if (index == ARRAYCOUNT(g_MpWeaponSets) + 3) {
+		return "Random Preset\n";
+	}
 
 	if (index < 0 || index >= ARRAYCOUNT(g_MpWeaponSets) + 2) {
 		return langGet(L_MPWEAPONS_041); // "Custom"
@@ -1312,6 +1333,55 @@ void mpApplyWeaponSet(void)
 #endif
 
 		mpSetWeaponSlot(i, mpGetNumWeaponOptions() - 1);
+	} else if (g_MpWeaponSetNum == WEAPONSET_RANDOMPRESET) {
+		// Roll a random preset out of the unlocked entries in g_MpWeaponSets.
+		// Walks the array twice: first to count how many are unlocked (so the
+		// modulo divides by the right denominator), then to walk again and
+		// pick the Nth unlocked slot. Two-pass instead of building a temp
+		// array keeps the code dependency-free and the array is tiny (12
+		// entries) so the cost is negligible.
+		//
+		// Recursively dispatches into mpApplyWeaponSet via the temporary
+		// g_MpWeaponSetNum reassignment so the chosen preset goes through
+		// the SAME challenge-feature / fallback logic as a manual selection
+		// — picking "Heavy" via random hits the same SUPERDRAGON / MAULER /
+		// K7AVENGER / REAPER unlock checks. We restore RANDOMPRESET after
+		// so the menu still shows the random label and re-rolls next match.
+		s32 unlocked = 0;
+		for (i = 0; i < (s32)ARRAYCOUNT(g_MpWeaponSets); i++) {
+			if (challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[0])
+					&& challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[1])
+					&& challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[2])
+					&& challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[3])) {
+				unlocked++;
+			} else if (g_MpWeaponSets[i].unk0c != WEAPON_DISABLED) {
+				// Fallback weapons configured — preset still applicable
+				// even when challenge unlock isn't met (mpApplyWeaponSet
+				// will route to the .unk0c list at apply time).
+				unlocked++;
+			}
+		}
+		if (unlocked > 0) {
+			s32 target = (s32)(rngRandom() % (u32)unlocked);
+			s32 chosen = 0;
+			for (i = 0; i < (s32)ARRAYCOUNT(g_MpWeaponSets); i++) {
+				const bool full_unlock =
+					challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[0])
+					&& challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[1])
+					&& challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[2])
+					&& challengeIsFeatureUnlocked(g_MpWeaponSets[i].requirefeatures[3]);
+				if (full_unlock || g_MpWeaponSets[i].unk0c != WEAPON_DISABLED) {
+					if (target == 0) {
+						chosen = i;
+						break;
+					}
+					target--;
+				}
+			}
+			g_MpWeaponSetNum = chosen;
+			mpApplyWeaponSet();
+			g_MpWeaponSetNum = WEAPONSET_RANDOMPRESET;
+		}
 	}
 }
 
@@ -2575,8 +2645,12 @@ void mpEndMatch(void)
 #ifndef PLATFORM_N64
 	if (g_NetMode != NETMODE_CLIENT) {
 		if (g_MpSetup.options & MPOPTION_AUTORANDOMWEAPON_END) {
+			// Re-roll on match end too — matches the menu's two existing
+			// auto-random modes (every-start, every-end). RANDOMPRESET
+			// picks a fresh preset for the next match start.
 			if (g_MpWeaponSetNum == WEAPONSET_RANDOM
-					|| g_MpWeaponSetNum == WEAPONSET_RANDOMFIVE) {
+					|| g_MpWeaponSetNum == WEAPONSET_RANDOMFIVE
+					|| g_MpWeaponSetNum == WEAPONSET_RANDOMPRESET) {
 				mpApplyWeaponSet();
 			}
 		}
@@ -3358,12 +3432,78 @@ s32 mpFindBotProfile(s32 type, s32 difficulty)
 	return i;
 }
 
+#ifndef PLATFORM_N64
+// Dictionary of first names for auto-generated sim names. Picked so each name
+// fits in MAX_PLAYERNAME (15) once "Sim" is appended — keep the longest stem
+// at 11 chars or less so a ":N" disambiguation suffix still fits when two
+// sims happen to land on the same slot index. Intentionally mixes proper
+// names, archaic / playful options and a couple of in-universe references
+// so the lobby reads as varied rather than focus-grouped.
+static const char *g_MpBotNameDict[] = {
+	"Bob",     "Alice",   "Carlos",  "Dana",
+	"Eve",     "Felix",   "Greta",   "Hank",
+	"Ivy",     "Jorge",   "Kira",    "Liam",
+	"Mira",    "Nico",    "Otis",    "Pia",
+	"Quinn",   "Rosa",    "Sven",    "Tara",
+	"Uma",     "Vega",    "Wade",    "Xan",
+	"Yuki",    "Zane",    "Bishop",  "Cinder",
+	"Drift",   "Echo",    "Frost",   "Gunner",
+	"Hex",     "Iris",    "Jett",    "Kit",
+};
+
+// Set true (default) to apply the dictionary names; clear to keep the
+// original "MeatSim:N" / "TurtleSim:N" profile-based naming. Registered as
+// MP.AutoRenameSims in pd.ini.
+s32 g_MpAutoRenameSims = 1;
+
+static void mpGenerateBotNamesDictionary(void)
+{
+	char name[16];
+	u8 used[ARRAYCOUNT(g_MpBotNameDict)] = { 0 };
+	// Walk slot indices in order so the assignment is deterministic per
+	// match setup — restarting the same lobby (or hosting → client view)
+	// yields the same name for the same slot. We rotate through the
+	// dictionary by slot, then duplicate-check the chosen entry against
+	// `used` so two enabled sims in the same match never collide.
+	const s32 dict_len = (s32)ARRAYCOUNT(g_MpBotNameDict);
+	for (s32 slot = 0; slot < MAX_BOTS; slot++) {
+		const s32 mpchrIdx = MAX_PLAYERS + slot;
+		if (!(g_MpSetup.chrslots & (1 << mpchrIdx))) {
+			continue;
+		}
+		s32 pick = slot % dict_len;
+		// Scan forward for the first unused entry. dict_len > MAX_BOTS so
+		// this always finds one — we never need a numeric suffix.
+		for (s32 step = 0; step < dict_len; step++) {
+			s32 candidate = (pick + step) % dict_len;
+			if (!used[candidate]) {
+				pick = candidate;
+				used[candidate] = 1;
+				break;
+			}
+		}
+		// '\n' terminator matches what the original profile-name path
+		// emits — the game treats it as an end-of-name marker for HUD
+		// rendering and several substring searches.
+		snprintf(name, sizeof(name), "%sSim\n", g_MpBotNameDict[pick]);
+		strcpy(g_BotConfigsArray[slot].base.name, name);
+	}
+}
+#endif
+
 void mpGenerateBotNames(void)
 {
 	s32 counts[ARRAYCOUNT(g_BotProfiles)];
 	s32 profilenum;
 	s32 i;
 	char name[16];
+
+#ifndef PLATFORM_N64
+	if (g_MpAutoRenameSims) {
+		mpGenerateBotNamesDictionary();
+		return;
+	}
+#endif
 
 	for (i = 0; i < ARRAYCOUNT(g_BotProfiles); i++) {
 		counts[i] = 0;

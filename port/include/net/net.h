@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 21
+#define NET_PROTOCOL_VER 25
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -31,32 +31,38 @@
 // the oldest available snapshot instead.
 #define NET_LAGCOMP_SIZE      120
 
-// Smooth correction: number of game ticks over which a CSP position error is
-// blended away. Smaller = snappier corrections; larger = smoother but slower.
-#define NET_CSP_CORR_FRAMES   10
-
-// Minimum squared error (in world units) needed to trigger a CSP correction.
-// Below this threshold, tiny server/client divergences are ignored to avoid
-// continuous micro-corrections.
-#define NET_CSP_CORR_THRESH_SQ 625.f  // 25 units
-
-// Maximum plausible per-tick movement for a player, used as the "this is a
-// teleport, not a smooth-correctible drift" threshold. Beyond this the CSP
-// path hard-snaps to the server position and cancels any in-flight smooth
-// correction, instead of trying to interpolate over many frames (which is
-// what produces visible pinballing when corrections keep retargeting).
+// Live-tunable CSP / interp knobs. Were #define constants; converted to
+// globals so the in-game /csp* and /stale console commands can adjust them
+// at runtime without a rebuild. The CORR / TELEPORT thresholds are stored
+// squared so the hot path comparison in netCspReconcile stays a single
+// multiply + compare. Externs (rather than the original #defines) so call
+// sites read the current values each frame.
 //
-// Derivation (see player movement notes in bondwalk.c):
-//   diagonal strafe-run max normalized speed = sqrt(1.08^2 + 1.0^2) ≈ 1.47
-//   with MPOPTION_FASTMOVEMENT eye-height multiplier (1.25x): ≈ 1.84
-//   estimated world units per tick at peak: ~25 horizontal, ~50 vertical
-//   plus ~50% running-down-ramp gravity boost and a safety buffer
-//
-// 120 world-units total magnitude covers strafe-run + fastmovement + ramp +
-// fall combined; anything past that is not physically reachable in a single
-// tick and is treated as a teleport / network glitch. Squared so the CSP
-// reconcile can compare against err_sq without a sqrt.
-#define NET_CSP_TELEPORT_THRESH_SQ 14400.f  // 120 units
+// NET_CSP_CORR_FRAMES — ticks the CSP smooth correction spreads an error
+// over. Smaller = snappier; larger = smoother but slower convergence.
+// (g_NetCspCorrFrames itself is the *remaining* countdown — declared further
+// down — so the tunable max lives in its own global.)
+extern u32 g_NetCspCorrFramesMax;
+#define NET_CSP_CORR_FRAMES ((s32)g_NetCspCorrFramesMax)
+
+// NET_CSP_CORR_THRESH_SQ — minimum squared world-unit error before a CSP
+// correction kicks in. Below it tiny server/client divergences are ignored
+// to avoid continuous micro-corrections.
+extern f32 g_NetCspCorrThreshSq;
+#define NET_CSP_CORR_THRESH_SQ (g_NetCspCorrThreshSq)
+
+// NET_CSP_TELEPORT_THRESH_SQ — squared distance above which the CSP path
+// hard-snaps to the server position rather than smooth-correcting. Default
+// 14400 (120 world units) covers max strafe-run + fastmovement + ramp +
+// fall combined; anything beyond that is treated as a teleport / network
+// glitch (smoothing it would chase a moving target and pinball).
+extern f32 g_NetCspTeleportThreshSq;
+#define NET_CSP_TELEPORT_THRESH_SQ (g_NetCspTeleportThreshSq)
+
+// How many ticks the newest snapshot can lag behind g_NetTick before
+// bwalkUpdateRemote hard-snaps to it instead of lerping between stale
+// entries. Default 30 (~500ms) tolerates UpdateFrames=2..3 + jitter.
+extern u32 g_NetStaleSnapshotTicks;
 
 // Kill feed: rolling list of recent eliminations shown top-left. New entries
 // land at index 0 and older ones shift down. Tuned so a 4-way deathmatch keeps
@@ -74,6 +80,11 @@ struct netkillfeedentry {
 	u32 expire_tick;
 	char shooter[NET_KILLFEED_NAME];
 	char victim[NET_KILLFEED_NAME];
+	// MPTEAM index for each side, or 0xff for "no team / unknown". Render uses
+	// these to colour the names from g_TeamColours[] so the feed visually
+	// matches radar / on-chr highlights instead of always going green/red.
+	u8 shooter_team;
+	u8 victim_team;
 };
 
 #define NET_NULL_CLIENT 0xFF
@@ -214,7 +225,8 @@ extern s32 g_NetDebugDraw;
 // Written by the client each frame; read when the server's ack arrives.
 extern struct csp_snapshot g_NetCspHistory[NET_CSP_HISTORY_SIZE];
 extern u32 g_NetCspHead;
-// Pending smooth correction: delta remaining to be applied over g_NetCspCorrFrames ticks.
+// Pending smooth correction: g_NetCspCorrFrames counts down each tick from
+// g_NetCspCorrFramesMax (NET_CSP_CORR_FRAMES); the per-tick step is delta/frames.
 extern struct coord g_NetCspCorrDelta;
 extern s32 g_NetCspCorrFrames;
 
@@ -267,7 +279,7 @@ void netSyncIdsAllocate(void);
 // Client-side prediction: compare server's authoritative position at ack_tick
 // to what the client predicted, and schedule a smooth correction if the error
 // exceeds NET_CSP_CORR_THRESH_SQ.
-void netCspReconcile(u32 ack_tick, const struct coord *server_pos);
+void netCspReconcile(u32 ack_tick, const struct coord *server_pos, f32 server_theta);
 
 // Client-side prediction: apply one tick's worth of the pending smooth
 // correction. Call once per game tick after physics have run.
@@ -290,10 +302,35 @@ Gfx *netDebugRender(Gfx *gdl);
 // calls this directly on the host (where it also generates the broadcast),
 // and the client calls it from SVC_KILL receive. Pass an empty or NULL
 // shooter to mark a self-kill (suicide / environmental death).
-void netKillFeedAdd(const char *shooter, const char *victim);
+void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8 victim_team);
 
 // Kill feed: render the rolling list of recent eliminations in the top-right.
 // Returns the updated display list pointer.
 Gfx *netKillFeedRender(Gfx *gdl);
+
+// Spectate mode. When non-NULL, the local player's first-person camera is
+// overridden to ride along with the target chr (player or sim). Cleared by
+// /spec off or when the target disappears. Drive it from the /spec console
+// command, or set directly from a HUD binding. Render hook lives in
+// playerTick (see netSpectateApply).
+extern struct chrdata *g_NetSpectateChr;
+
+// Cycle the spectate target. direction: +1 = next, -1 = prev. Selects from
+// live players and sims (skips the local player and dead targets). Sets
+// g_NetSpectateChr to the chosen chr, or NULL if no valid target.
+void netSpectateCycle(s32 direction);
+
+// Clear the spectate override and restore normal first-person view.
+void netSpectateStop(void);
+
+// Per-frame hook: when g_NetSpectateChr is set, override the local player's
+// camera pose to follow the target. Called from playerTick after physics so
+// it has the final-for-this-frame pos to read.
+void netSpectateApply(void);
+
+// Append one line to the active diagnostic log if /diag has opened one.
+// Format is "<tick>,<realtime_s>,<event>,<formatted args>". No-op when the
+// log isn't open, so call sites can sprinkle these without guarding.
+void netDiagLogf(const char *event, const char *fmt, ...);
 
 #endif // _IN_NET_H

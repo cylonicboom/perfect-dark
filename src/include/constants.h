@@ -2922,6 +2922,13 @@
 #define MPOPTION_AUTORANDOMWEAPON_END   0x01000000
 #define MPOPTION_FRIENDLYFIRE           0x02000000
 #define MPOPTION_NOPLAYERONRADAR        0x04000000
+// Controllers-only input mode. When set, the input layer drops keyboard /
+// mouse presses so every player has to use a gamepad — keeps lobbies fair
+// when the host wants to rule out KBM-only advantages (precise mouse aim,
+// instant key strafes). Shipped in g_MpSetup.options so SVC_STAGE_START
+// propagates the setting to every client; each client gates its own input
+// reads against the bit.
+#define MPOPTION_CONTROLLERS_ONLY       0x08000000
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1
@@ -4549,9 +4556,14 @@ enum weaponnum {
 #define WEAPONFLAG_AIMTRACK          0x40000000 // Allow drawing red box around targets in aim mode
 #define WEAPONFLAG_FIRETOACTIVATE    0x80000000 // For devices/gadgets
 
-#define WEAPONSET_RANDOMFIVE 0x0c
-#define WEAPONSET_RANDOM     0x0d
-#define WEAPONSET_CUSTOM     0x0e
+#define WEAPONSET_RANDOMFIVE   0x0c
+#define WEAPONSET_RANDOM       0x0d
+#define WEAPONSET_CUSTOM       0x0e
+// Picks a random preset (Pistols / Heavy / Power / ...) from
+// g_MpWeaponSets at apply time, instead of rolling each slot
+// independently like WEAPONSET_RANDOM does. Set fresh each match when
+// MPOPTION_AUTORANDOMWEAPON_END / _START is on.
+#define WEAPONSET_RANDOMPRESET 0x0f
 
 #define WEATHERTYPE_RAIN 0
 #define WEATHERTYPE_SNOW 1

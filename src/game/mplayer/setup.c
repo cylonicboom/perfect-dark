@@ -1357,8 +1357,15 @@ MenuItemHandlerResult menuhandlerMpAutoRandomWeapon(s32 operation, struct menuit
 	switch (operation) {
 	case MENUOP_CHECKDISABLED:
 	case MENUOP_CHECKHIDDEN:
+		// Show the auto-reroll dropdown for any random-source mode so the
+		// host can pick Off / Start / End for RANDOMPRESET too. The
+		// "Select Random Weapons..." menu above stays gated to the
+		// per-weapon random modes (it filters individual weapons that
+		// WEAPONSET_RANDOM* draws from — RANDOMPRESET draws from whole
+		// presets so the filter doesn't apply to it).
 		if (g_MpWeaponSetNum == WEAPONSET_RANDOM
-				|| g_MpWeaponSetNum == WEAPONSET_RANDOMFIVE) {
+				|| g_MpWeaponSetNum == WEAPONSET_RANDOMFIVE
+				|| g_MpWeaponSetNum == WEAPONSET_RANDOMPRESET) {
 			return false;
 		}
 		return true;
@@ -5450,9 +5457,23 @@ MenuDialogHandlerResult menudialogCombatSimulator(s32 operation, struct menudial
 		g_Vars.waitingtojoin[2] = false;
 		g_Vars.waitingtojoin[3] = false;
 
+#ifndef PLATFORM_N64
+		// Netplay host: only reload setup + reset bot configs on the first
+		// menu open (netStartServer path in netmenu.c does its own reload).
+		// Without this guard the host had to re-add every sim before each
+		// round — mpsetupCopyAllFromPak calls mpInit(false) which wipes
+		// g_BotConfigsArray[*].difficulty back to BOTDIFF_DISABLED, so
+		// re-entering this menu between matches drops all the simulants
+		// the host configured before the previous match started.
+		if (g_NetMode == NETMODE_SERVER) {
+			return false;
+		}
+#endif
+
 		// load the setup file when entering the Combat Simulator
 		mpsetupCopyAllFromPak();
 		mpsetupLoadCurrentFile();
+		mpProfileLoadFromPak();
 	}
 
 	if (g_Menus[g_MpPlayerNum].curdialog

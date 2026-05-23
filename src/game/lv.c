@@ -2487,6 +2487,18 @@ void lvTickPlayer(void)
 	zdiff = g_Vars.currentplayer->prop->pos.z - g_Vars.currentplayer->bondprevpos.z;
 
 	g_Vars.currentplayerstats->distance += sqrtf(xdiff * xdiff + zdiff * zdiff);
+
+#ifndef PLATFORM_N64
+	// Spectate camera override. Runs once per local-player tick after physics
+	// so we read the final-for-this-frame prop->pos / vv_theta from the target
+	// rather than a stale value. Gated to the local netclient — remote chrs
+	// hit lvTickPlayer too on the server side (per-player iteration) and we
+	// don't want to stomp their state. netSpectateApply itself bails if no
+	// target is set, so the cost when not spectating is one branch.
+	if (g_NetMode && g_NetLocalClient && g_Vars.currentplayer == g_NetLocalClient->player) {
+		netSpectateApply();
+	}
+#endif
 }
 
 void lvStop(void)

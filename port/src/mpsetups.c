@@ -9,6 +9,7 @@
 #include <string.h>
 #include "fs.h"
 #include "system.h"
+#include "config.h"
 #include "mpsetups.h"
 
 /*
@@ -893,4 +894,95 @@ void mpsetupCopyAllFromPak(void)
 
 	// to reset the mp setup
 	mpInit(false);
+}
+
+extern char g_MpProfileName[];
+
+// Persist player 0's Combat Sim profile name to pd.ini. Called only from the
+// "Load Player" success path so we never overwrite the ini with an mpInit
+// default (e.g. "Player 1") from the Agent file picker.
+void mpProfileSave(void)
+{
+	const struct mpplayerconfig *cfg = &g_PlayerConfigsArray[0];
+	if (cfg->base.name[0] == '\0') {
+		return;
+	}
+	strncpy(g_MpProfileName, cfg->base.name, MAX_PLAYERNAME - 1);
+	g_MpProfileName[MAX_PLAYERNAME - 1] = '\0';
+	size_t len = strlen(g_MpProfileName);
+	if (len > 0 && g_MpProfileName[len - 1] == '\n') {
+		g_MpProfileName[len - 1] = '\0';
+	}
+	g_MpProfileHead = cfg->base.mpheadnum;
+	g_MpProfileBody = cfg->base.mpbodynum;
+	configSave(CONFIG_PATH);
+}
+
+void mpProfileLoadFromPak(void)
+{
+	if (!g_MpProfileName[0]) {
+		return;
+	}
+
+	// Skip if the profile is already loaded — fileguid being set means a real
+	// pak load has happened and the runtime config is still valid. If mpInit
+	// has cleared it (Agent file picker, etc.), fileguid drops to 0 and we
+	// re-enumerate / reload on the next menu open.
+	if (g_PlayerConfigsArray[0].fileguid.fileid != 0) {
+		return;
+	}
+
+	filelistCreate(2, FILETYPE_MPPLAYER);
+	filelistsTick();
+
+	struct filelist *list = g_FileLists[2];
+	if (!list || list->numfiles <= 0) {
+		return;
+	}
+
+	for (int i = 0; i < list->numfiles; ++i) {
+		struct filelistfile *file = &list->files[i];
+		s32 device = pakFindBySerial(file->deviceserial);
+		if (device < 0) {
+			continue;
+		}
+
+		// file->name holds the first 16 bytes of the pak file body (populated
+		// by filelistUpdate during filelistsTick). mpplayerfileGetOverview
+		// decodes the player name from those bytes.
+		char namebuf[MAX_PLAYERNAME];
+		u32 playtime;
+		mpplayerfileGetOverview(file->name, namebuf, &playtime);
+
+		// Strip the trailing \n delimiter the game appends to all player names.
+		size_t len = strlen(namebuf);
+		if (len > 0 && namebuf[len - 1] == '\n') {
+			namebuf[len - 1] = '\0';
+		}
+
+		if (strcmp(namebuf, g_MpProfileName) == 0) {
+			// Use the same load path as the in-game "Load Player" menu so the
+			// loaded profile (handicap, fileguid, etc.) is set up identically.
+			if (mpplayerfileLoad(0, device, file->fileid, file->deviceserial) == 0) {
+				const u8 newhead = g_PlayerConfigsArray[0].base.mpheadnum;
+				const u8 newbody = g_PlayerConfigsArray[0].base.mpbodynum;
+				// Persist head/body to pd.ini so the title-screen laptop scene
+				// can render the player's character on the very first frame
+				// of the next session (before this hook has a chance to run).
+				// Only writes when the cached values actually change to avoid
+				// hammering the ini on every main-menu re-entry.
+				if (g_MpProfileHead != (s32)newhead || g_MpProfileBody != (s32)newbody) {
+					g_MpProfileHead = newhead;
+					g_MpProfileBody = newbody;
+					configSave(CONFIG_PATH);
+				}
+				sysLogPrintf(LOG_NOTE, "mp profile '%s' auto-loaded (head=%d body=%d)",
+						g_MpProfileName, g_MpProfileHead, g_MpProfileBody);
+			}
+			return;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "mp profile '%s' not found in pak (%d files scanned)",
+			g_MpProfileName, list->numfiles);
 }

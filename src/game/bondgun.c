@@ -3107,7 +3107,15 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 					prevpri1 = osGetThreadPri(0);
 					osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
 #endif
-					handle1 = sndStart(var80095200, SFX_EQUIP_HORIZONSCANNER, 0, -1, -1, -1, -1, -1);
+					// Weapon swap / equip SFX. Without bgunPlayGunSound the
+					// remote player's equip sound played non-positionally for
+					// everyone (full volume regardless of distance) — same
+					// failure mode the shoot / reload paths had. Pitch shifts
+					// via audioPostEvent only land on the local player's
+					// sndStart path because psCreate hands back a channel
+					// index, not an sndstate*; remote listeners get the SFX
+					// at default pitch but at the right world position.
+					handle1 = bgunPlayGunSound(SFX_EQUIP_HORIZONSCANNER, NULL, PSTYPE_NONE);
 
 					if (handle1) {
 						audioPostEvent(handle1, AL_SNDP_PITCH_EVT, *(s32 *)&speed1);
@@ -3118,14 +3126,14 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 #endif
 					break;
 				case WEAPON_LASER:
-					sndStart(var80095200, SFX_PICKUP_LASER, 0, -1, -1, -1, -1, -1);
+					bgunPlayGunSound(SFX_PICKUP_LASER, NULL, PSTYPE_NONE);
 					break;
 				case WEAPON_COMBATKNIFE:
-					sndStart(var80095200, SFX_PICKUP_KNIFE, 0, -1, -1, -1, -1, -1);
+					bgunPlayGunSound(SFX_PICKUP_KNIFE, NULL, PSTYPE_NONE);
 					break;
 				case WEAPON_REMOTEMINE:
 					if (handnum == HAND_RIGHT) {
-						sndStart(var80095200, SFX_PICKUP_MINE, 0, -1, -1, -1, -1, -1);
+						bgunPlayGunSound(SFX_PICKUP_MINE, NULL, PSTYPE_NONE);
 					}
 					break;
 				case WEAPON_TIMEDMINE:
@@ -3139,7 +3147,7 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 				case WEAPON_COMMSRIDER:
 				case WEAPON_TRACERBUG:
 				case WEAPON_TARGETAMPLIFIER:
-					sndStart(var80095200, SFX_PICKUP_MINE, 0, -1, -1, -1, -1, -1);
+					bgunPlayGunSound(SFX_PICKUP_MINE, NULL, PSTYPE_NONE);
 					break;
 				case WEAPON_TRANQUILIZER:
 				case WEAPON_PSYCHOSISGUN:
@@ -3150,7 +3158,7 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 					osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
 #endif
 
-					handle2 = sndStart(var80095200, SFX_PICKUP_GUN, 0, -1, -1, -1, -1, -1);
+					handle2 = bgunPlayGunSound(SFX_PICKUP_GUN, NULL, PSTYPE_NONE);
 
 					if (handle2) {
 						audioPostEvent(handle2, AL_SNDP_PITCH_EVT, *(s32 *)&speed2);
@@ -3168,7 +3176,7 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 					osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
 #endif
 
-					handle3 = sndStart(var80095200, SFX_PICKUP_GUN, 0, -1, -1, -1, -1, -1);
+					handle3 = bgunPlayGunSound(SFX_PICKUP_GUN, NULL, PSTYPE_NONE);
 
 					if (handle3) {
 						audioPostEvent(handle3, AL_SNDP_PITCH_EVT, *(s32 *)&speed3);
@@ -3208,7 +3216,7 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 					// No equip sound
 					break;
 				default:
-					sndStart(var80095200, SFX_PICKUP_GUN, 0, -1, -1, -1, -1, -1);
+					bgunPlayGunSound(SFX_PICKUP_GUN, NULL, PSTYPE_NONE);
 					break;
 				}
 			}
@@ -7101,30 +7109,47 @@ void bgunUpdateReaper(struct hand *hand, struct modeldef *modeldef)
 
 	if (hand->audiohandle == NULL && hand->matmot3 > 0.1f && g_Vars.lvupdate240 != 0) {
 #ifndef PLATFORM_N64
-		// Skip Reaper spin-up sound entirely for remote players. It's a
-		// continuous sound that stores hand->audiohandle for ongoing
-		// volume/pitch control — psCreate doesn't return a compatible
-		// handle, and looping psCreate every tick would spam-overlap. The
-		// remote player's actual SHOT sound still plays positionally via
-		// the bgunPlayGunSound path when the trigger fires.
-		if (!(g_Vars.currentplayer && g_Vars.currentplayer->isremote))
+		// Reaper spin-up. Local player stores hand->audiohandle for ongoing
+		// volume / pitch control further down; psCreate returns a channel
+		// index instead, so for remote players we play a one-shot positional
+		// sound and use hand->audiohandle as a sentinel to suppress re-trigger
+		// on subsequent ticks (cleared further down once matmot3 drops back
+		// below 0.1). Distance attenuation handles "fading out" — we lose
+		// the volume ramp / pitch shaping for remote spin-ups, but the sound
+		// no longer blasts every listener at full volume.
+		if (g_Vars.currentplayer && g_Vars.currentplayer->isremote && g_Vars.currentplayer->prop) {
+			psCreate(NULL, g_Vars.currentplayer->prop, SFX_805E, -1, -1, PSFLAG_0400, 0, PSTYPE_NONE, NULL, -1.f, NULL, -1, -1.f, -1.f, -1.f);
+			hand->audiohandle = (struct sndstate *)(uintptr_t)1; // sentinel, NOT a real handle
+		} else
 #endif
 		sndStart(var80095200, SFX_805E, &hand->audiohandle, -1, -1, -1.0f, -1, -1);
 	}
 
 	if (hand->audiohandle != NULL) {
-		f32 sp34 = hand->matmot3 / 0.50f + 0.4f;
-		s32 volume = AL_VOL_FULL;
-
-		if (hand->matmot3 < 0.1f) {
-			audioStop(hand->audiohandle);
-		} else {
-			if (hand->matmot3 < 0.6f) {
-				volume = (hand->matmot3 - 0.1f) * AL_VOL_FULL / 0.5f;
+#ifndef PLATFORM_N64
+		// Remote sentinel: skip audioStop / audioPostEvent (would crash on the
+		// fake pointer) and clear back to NULL when the spin actually stops
+		// so the next spin-up can re-trigger.
+		if (g_Vars.currentplayer && g_Vars.currentplayer->isremote) {
+			if (hand->matmot3 < 0.1f) {
+				hand->audiohandle = NULL;
 			}
+		} else
+#endif
+		{
+			f32 sp34 = hand->matmot3 / 0.50f + 0.4f;
+			s32 volume = AL_VOL_FULL;
 
-			audioPostEvent(hand->audiohandle, AL_SNDP_VOL_EVT, volume);
-			audioPostEvent(hand->audiohandle, AL_SNDP_PITCH_EVT, *(s32 *)&sp34);
+			if (hand->matmot3 < 0.1f) {
+				audioStop(hand->audiohandle);
+			} else {
+				if (hand->matmot3 < 0.6f) {
+					volume = (hand->matmot3 - 0.1f) * AL_VOL_FULL / 0.5f;
+				}
+
+				audioPostEvent(hand->audiohandle, AL_SNDP_VOL_EVT, volume);
+				audioPostEvent(hand->audiohandle, AL_SNDP_PITCH_EVT, *(s32 *)&sp34);
+			}
 		}
 	}
 

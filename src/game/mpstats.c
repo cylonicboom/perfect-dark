@@ -383,9 +383,16 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 			const char *shooterPass =
 				(aplayernum < 0 || aplayernum == vplayernum || !aName)
 				? NULL : aName;
-			netKillFeedAdd(shooterPass, vName);
+			// Team bytes for kill-feed colouring. 0xff = unknown — render falls
+			// back to the green/red palette. Mpchrconfig stores team as 0..7
+			// for MPTEAM_1..MPTEAM_8, which maps directly to g_TeamColours[].
+			const u8 vTeam = g_MpAllChrConfigPtrs[vplayernum]->team;
+			const u8 aTeam = (shooterPass && aplayernum >= 0 && aplayernum < MAX_MPCHRS
+					&& g_MpAllChrConfigPtrs[aplayernum])
+				? g_MpAllChrConfigPtrs[aplayernum]->team : 0xff;
+			netKillFeedAdd(shooterPass, vName, aTeam, vTeam);
 			netbufStartWrite(&g_NetMsgRel);
-			netmsgSvcKillWrite(&g_NetMsgRel, shooterPass, vName);
+			netmsgSvcKillWrite(&g_NetMsgRel, shooterPass, vName, aTeam, vTeam);
 			netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
 		}
 

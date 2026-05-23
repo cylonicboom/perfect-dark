@@ -88,6 +88,19 @@ struct menuitem g_MpCombatOptionsMenuItems[] = {
 		MPOPTION_NOPLAYERONRADAR,
 		menuhandlerMpCheckboxOption,
 	},
+	{
+		// Forces controller-only input for every connected machine. The
+		// option lives in g_MpSetup.options so it ships in SVC_STAGE_START
+		// — every client honours the host's setting via the gate in the
+		// input layer. Useful for "fair" lobbies that want to rule out
+		// mouse-aim and instant keyboard strafes.
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Controllers Only",
+		MPOPTION_CONTROLLERS_ONLY,
+		menuhandlerMpCheckboxOption,
+	},
 #endif
 	{
 		MENUITEMTYPE_SEPARATOR,

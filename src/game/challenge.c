@@ -711,6 +711,25 @@ s32 challengeRemovePlayerLock(void)
 
 void challengeLoadAndStoreCurrent(u8 *buffer, s32 len)
 {
+#ifndef PLATFORM_N64
+	// Combat Challenge menus call this with menumodel.allocstart / .alloclen,
+	// but those are only populated when the menu is rendering a model preview.
+	// Combat Challenges has no model preview, so allocstart is NULL and the
+	// load silently produces an empty mpconfigfull — the "Reimplement Challenge
+	// description text" bug. Fall back to an internal static buffer so the
+	// load always has somewhere to land.
+	//
+	// challengeLoadConfig stores the loaded mpconfig directly in the buffer and
+	// the returned pointer aliases the buffer (g_MpCurrentChallengeConfig
+	// points into it). Static storage is fine because only one challenge is
+	// ever loaded at a time — challengeUnsetCurrent clears the pointer when
+	// the menu closes.
+	static u8 s_ChallengeBuffer[sizeof(struct mpconfig) + 32];
+	if (!buffer || len < (s32) sizeof(s_ChallengeBuffer)) {
+		buffer = s_ChallengeBuffer;
+		len = sizeof(s_ChallengeBuffer);
+	}
+#endif
 	g_MpCurrentChallengeConfig = challengeLoadCurrent(buffer, len);
 }
 

@@ -11081,18 +11081,20 @@ s32 objTickPlayer(struct prop *prop)
 		struct projectile *projectile = obj->projectile;
 
 		if (projectile->ownerprop && playermgrGetPlayerNumByProp(projectile->ownerprop) >= 0) {
-#ifndef PLATFORM_N64
-			// In netplay, propsTickPlayer only iterates the host's player
-			// (PLAYERCOUNT()==1 on the server) so remote-client-owned
-			// projectiles would have fulltick=false here and projectileTick
-			// below would be skipped — the grenade would stay frozen at the
-			// throw position and explode there instead of where it actually
-			// lands. The server is authoritative for all projectile physics,
-			// so force fulltick for any player-owned projectile.
-			if (g_NetMode == NETMODE_SERVER) {
-				fulltick = true;
-			} else
-#endif
+			// fulltick is set when the owner is the currentplayer for THIS
+			// iteration of the per-player propsTickPlayer loop. Because the
+			// loop iterates every player in g_Vars.players[] (host + remotes
+			// on the server), every player-owned projectile gets exactly one
+			// iteration where its owner == currentplayer — so projectileTick
+			// runs exactly once per game frame for each projectile.
+			//
+			// An earlier patch forced fulltick=true on NETMODE_SERVER under
+			// the false premise that PLAYERCOUNT()==1 on the server. It's
+			// not — playerGetCount() counts every g_Vars.players[] entry,
+			// remote pawns included, so PLAYERCOUNT() equals total players.
+			// Forcing fulltick=true made projectileTick run PLAYERCOUNT()×
+			// per frame (rockets / grenades flew at 2× speed at 2 players,
+			// 3× at 3, etc. — the "host physics 2× speed" report).
 			fulltick = (projectile->ownerprop == g_Vars.currentplayer->prop);
 		}
 	}

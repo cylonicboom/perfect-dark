@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <PR/ultratypes.h>
 #include <PR/ultrasched.h>
 #include <PR/os_message.h>
@@ -43,6 +44,18 @@ s32 g_TickExtraSleep = true;
 s32 g_SkipIntro = false;
 
 s32 g_FileAutoSelect = -1;
+
+// Saved Combat Sim player profile name. Stored in pd.ini so we can look up
+// the player's pak file by name when entering Combat Simulator each session.
+char g_MpProfileName[MAX_PLAYERNAME] = "";
+
+// Cached head/body from the loaded Combat Sim profile. Refreshed whenever
+// a profile is loaded (mpProfileLoadFromPak) or explicitly selected via the
+// Combat Simulator "Load Player" dialog (mpProfileSave). Used to swap the
+// default Joanna disguise model on the inventory menu with the player's
+// chosen character. -1 means "no profile loaded — fall back to defaults".
+s32 g_MpProfileHead = -1;
+s32 g_MpProfileBody = -1;
 
 extern s32 g_StageNum;
 
@@ -143,6 +156,19 @@ int main(int argc, const char **argv)
 
 	g_FileAutoSelect = sysArgGetInt("--profile", -1);
 
+	// --mpprofile <name> overrides the Combat Sim profile name loaded from
+	// pd.ini. The actual pak lookup runs from menudialogMainMenu MENUOP_OPEN
+	// (and the Combat Sim hook as a fallback), where mema is initialised and
+	// the pak system is online.
+	{
+		const char *mpprofile = sysArgGetString("--mpprofile");
+		if (mpprofile != NULL && mpprofile[0]) {
+			strncpy(g_MpProfileName, mpprofile, MAX_PLAYERNAME - 1);
+			g_MpProfileName[MAX_PLAYERNAME - 1] = '\0';
+			sysLogPrintf(LOG_NOTE, "mp profile override: %s", g_MpProfileName);
+		}
+	}
+
 	if (g_StageNum == STAGE_TITLE && (sysArgCheck("--skip-intro") || g_SkipIntro)) {
 		// shorthand for --boot-stage 0x26
 		g_StageNum = STAGE_CITRAINING;
@@ -200,4 +226,23 @@ PD_CONSTRUCTOR static void gameConfigInit(void)
 		configRegisterInt(strFmt("Game.Player%d.CrosshairHealth", i), &g_PlayerExtCfg[j].crosshairhealth, 0, CROSSHAIR_HEALTH_ON_WHITE);
 		configRegisterInt(strFmt("Game.Player%d.UseKeyReloads", i), &g_PlayerExtCfg[j].usereloads, 0, false);
 	}
+
+	// Combat Sim player profile name — used to look up the player's pak file
+	// on the next session so they don't have to re-select their character.
+	configRegisterString("MP.Profile.Name", g_MpProfileName, MAX_PLAYERNAME);
+
+	// Cached head/body from the last loaded profile, persisted so the CI
+	// training "title screen" sequence can render the player's chosen
+	// character on the first frame — before mpProfileLoadFromPak runs at
+	// main-menu open. -1 means "no profile saved yet, use default Joanna".
+	configRegisterInt("MP.Profile.Head", &g_MpProfileHead, -1, 255);
+	configRegisterInt("MP.Profile.Body", &g_MpProfileBody, -1, 255);
+
+	// When set, mpGenerateBotNames picks from a fixed dictionary of fun
+	// first names ("BobSim", "AliceSim", ...) instead of the profile-based
+	// "MeatSim:N" scheme. Set to 0 in pd.ini to restore the original
+	// behaviour. The name is broadcast in SVC_STAGE_START's bot config
+	// block, so clients see whatever the host has configured.
+	extern s32 g_MpAutoRenameSims;
+	configRegisterInt("MP.AutoRenameSims", &g_MpAutoRenameSims, 0, 1);
 }

@@ -35,6 +35,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "mpsetups.h"
 #endif
 
 u8 g_InventoryWeapon;
@@ -4052,11 +4053,18 @@ void func0f105948(s32 weaponnum)
 
 		// These indexes correspond to WEAPON_DISGUISE40 and WEAPON_DISGUISE41
 		if (wantindex == 0x3e || wantindex == 0x3f) {
-			if ((u32)wantindex == 0x3e) {
-				g_Menus[g_MpPlayerNum].menumodel.newparams = MENUMODELPARAMS_SET_MP_HEADBODY(MPHEAD_DARK_FROCK, MPBODY_DARKLAB);
-			} else {
-				g_Menus[g_MpPlayerNum].menumodel.newparams = MENUMODELPARAMS_SET_MP_HEADBODY(MPHEAD_DARK_COMBAT, MPBODY_DARK_AF1);
+			u8 mpheadnum = ((u32)wantindex == 0x3e) ? MPHEAD_DARK_FROCK : MPHEAD_DARK_COMBAT;
+			u8 mpbodynum = ((u32)wantindex == 0x3e) ? MPBODY_DARKLAB    : MPBODY_DARK_AF1;
+#ifndef PLATFORM_N64
+			// Surprise: when the player has a Combat Sim profile loaded,
+			// substitute their chosen head/body for the default Joanna so
+			// they see themselves in the inventory disguise preview.
+			if (g_MpProfileHead >= 0 && g_MpProfileBody >= 0) {
+				mpheadnum = (u8)g_MpProfileHead;
+				mpbodynum = (u8)g_MpProfileBody;
 			}
+#endif
+			g_Menus[g_MpPlayerNum].menumodel.newparams = MENUMODELPARAMS_SET_MP_HEADBODY(mpheadnum, mpbodynum);
 
 			g_Menus[g_MpPlayerNum].menumodel.partvisibility = NULL;
 			g_Menus[g_MpPlayerNum].menumodel.removingpiece = false;
@@ -4998,6 +5006,10 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 		if (g_NetMode) {
 			netDisconnect();
 		}
+		// Auto-load the saved Combat Sim profile on the first title-menu open
+		// each session. By this point mema is reset and paks are online, so
+		// the pak lookup is safe.
+		mpProfileLoadFromPak();
 #endif
 		break;
 	case MENUOP_TICK:

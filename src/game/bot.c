@@ -33,6 +33,10 @@
 #include "lib/anim.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#include "net/netmsg.h"
+#endif
 
 #define PICKUPCRITERIA_DEFAULT  0
 #define PICKUPCRITERIA_CRITICAL 1
@@ -311,6 +315,36 @@ u32 botPickupProp(struct prop *prop, struct chrdata *chr)
 	if (1);
 
 	obj->flags3 &= ~OBJFLAG3_ISFETCHTARGET;
+
+#ifndef PLATFORM_N64
+	// Tell clients to remove the prop. The picking-up branches below all
+	// terminate in objFree — without this broadcast clients retain the
+	// crate / weapon / shield as a still-renderable, still-walk-over-able
+	// world prop forever (a "ghost" pickup that the host already deleted).
+	// NULL actcl tells SvcPropPickupRead to skip the player-attribution
+	// path and just execute TICKOP_FREE locally. Must fire before objFree
+	// so prop->syncid is still dereferenceable for netbufWritePropPtr.
+	//
+	// Restricted to the obj types this function actually frees (matches the
+	// switch below); OBJTYPE_BASIC / GLASS / AUTOGUN / TINTEDGLASS fall
+	// through with no pickup, so broadcasting for those would delete the
+	// prop on the client while the server still owns it.
+	if (g_NetMode == NETMODE_SERVER && prop && prop->syncid
+			&& (obj->type == OBJTYPE_KEY
+				|| obj->type == OBJTYPE_AMMOCRATE
+				|| obj->type == OBJTYPE_MULTIAMMOCRATE
+				|| obj->type == OBJTYPE_WEAPON
+				|| obj->type == OBJTYPE_SHIELD)) {
+		// Append to the reliable buffer — netEndFrame's netFlushSendBuffers
+		// ships it on NETCHAN_DEFAULT alongside the SVC_PROP_MOVE messages
+		// that were queued in the same tick. Do NOT call netbufStartWrite
+		// or netSend here: those would wipe any pending content (player
+		// moves, prop moves, chr damage) accumulated by earlier code paths
+		// in this same tick, and route this entry to a separate ENet send
+		// that races with the channel-ordered flush.
+		netmsgSvcPropPickupWrite(&g_NetMsgRel, NULL, prop, TICKOP_FREE);
+	}
+#endif
 
 	switch (obj->type) {
 	case OBJTYPE_KEY:

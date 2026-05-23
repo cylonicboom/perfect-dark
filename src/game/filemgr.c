@@ -19,6 +19,9 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "mpsetups.h"
+#endif
 
 // bss
 struct fileguid g_FilemgrFileToCopy;
@@ -833,6 +836,13 @@ bool filemgrAttemptOperation(s32 device, bool closeonsuccess)
 				device,
 				g_Menus[g_MpPlayerNum].fm.fileid,
 				g_Menus[g_MpPlayerNum].fm.deviceserial);
+#ifndef PLATFORM_N64
+		// Persist player 0's Combat Sim profile name so the next session can
+		// auto-load it. This is the only place that writes MP.Profile.Name.
+		if (errnum == 0 && (s32) g_Menus[g_MpPlayerNum].fm.unke44 == 0) {
+			mpProfileSave();
+		}
+#endif
 		break;
 	case FILEOP_READ_GAME:
 	case FILEOP_READ_MPSETUP:

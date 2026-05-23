@@ -492,31 +492,67 @@ void mainLoop(void)
 			mpReset();
 		}
 
+		// Per-subsystem reset trail. lvReset is the heaviest (loads stage
+		// geometry, pads, props, scenarios) and the most likely candidate
+		// for a Skedar-specific crash; the others are quick struct resets.
+		// Each step gets its own log so we can isolate which one blows up.
+		netDiagLogf("ml_init_pre", "stage=%u", (u32)g_StageNum);
 		gfxReset();
 		joyReset();
 		dhudReset();
 		zbufReset(g_StageNum);
+		netDiagLogf("ml_lvreset_pre", "stage=%u", (u32)g_StageNum);
 		lvReset(g_StageNum);
+		netDiagLogf("ml_lvreset_post", "stage=%u", (u32)g_StageNum);
 		viReset(g_StageNum);
 		frametimeCalculate();
 		profileReset();
+		netDiagLogf("ml_init_post", "stage=%u", (u32)g_StageNum);
 
-		while (g_MainChangeToStageNum < 0) {
-			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
-			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
-				schedStartFrame(&g_Sched);
-				mainTick();
-				schedEndFrame(&g_Sched);
-			}
-			if (g_TickExtraSleep) {
-				sysSleep(EXTRA_SLEEP_TIME);
+		// Outer loop start: stage init has run (memaReset / lvReset etc).
+		// Bracket the outer game loop with diag logs so a crash during the
+		// FIRST mainTick on a freshly-loaded stage is visible — the crash
+		// pattern "stage_start_post then nothing" we keep seeing on Skedar
+		// is consistent with the very first render frame on the new stage
+		// hitting something un-loaded (Skedar BG model, etc.).
+		netDiagLogf("ml_loop_enter", "stage=%u", (u32)g_StageNum);
+
+		{
+			// Per-call bracket inside the per-frame loop so we can tell
+			// exactly which of schedStartFrame / mainTick / schedEndFrame
+			// crashed on the first iteration. Capped at 10 to avoid
+			// flooding the diag log past the initial-frame visibility.
+			u32 ml_inner_logged = 0;
+			while (g_MainChangeToStageNum < 0) {
+				const s32 cycles = osGetCount() - g_Vars.thisframestartt;
+				if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
+					const bool ml_log = (ml_inner_logged < 10u);
+					if (ml_log) { netDiagLogf("ml_sched_start_pre", ""); }
+					schedStartFrame(&g_Sched);
+					if (ml_log) { netDiagLogf("ml_sched_start_post", ""); }
+					if (ml_log) { netDiagLogf("ml_main_tick_pre", ""); }
+					mainTick();
+					if (ml_log) { netDiagLogf("ml_main_tick_post", ""); }
+					if (ml_log) { netDiagLogf("ml_sched_end_pre", ""); }
+					schedEndFrame(&g_Sched);
+					if (ml_log) { netDiagLogf("ml_sched_end_post", ""); ml_inner_logged++; }
+				}
+				if (g_TickExtraSleep) {
+					sysSleep(EXTRA_SLEEP_TIME);
+				}
 			}
 		}
 
+		// Stage change requested. Trail through cleanup so a crash inside
+		// lvStop / memp pool tear-down / file close becomes locatable.
+		netDiagLogf("ml_loop_exit", "from=%u to=%d", (u32)g_StageNum, g_MainChangeToStageNum);
+
 		lvStop();
+		netDiagLogf("ml_lvstop_done", "");
 		mempDisablePool(MEMPOOL_STAGE);
 		mempDisablePool(MEMPOOL_7);
 		filesStop(4);
+		netDiagLogf("ml_cleanup_done", "");
 		viBlack(true);
 		pak0f116994();
 
@@ -527,10 +563,36 @@ void mainLoop(void)
 
 void mainTick(void)
 {
+	// Crash-hunt: mt_entry0 BEFORE any local variable declarations / function
+	// prologue work so a crash in the prologue itself is visible. Placed
+	// before the OSScMsg struct init in case that's the trigger. Static
+	// counter capped at 10 to keep the diag log readable.
+	{
+		static u32 entry0_logged = 0;
+		if (entry0_logged < 10u) {
+			netDiagLogf("mt_entry0", "stagechg=%d gle=%d numbots=%d numchrs=%d",
+				g_MainChangeToStageNum, (s32)g_MainGameLogicEnabled,
+				(s32)g_BotCount, (s32)g_MpNumChrs);
+			entry0_logged++;
+		}
+	}
+
 	Gfx *gdl = NULL;
 	Gfx *gdlstart = NULL;
 	OSScMsg msg = {OS_SC_DONE_MSG};
 	s32 i;
+
+	// Crash-hunt: mainTick entered. Cap at 10 fires so the diag log stays
+	// readable. If we see ml_loop_enter but no mt_entry, the crash is in
+	// schedStartFrame / videoStartFrame between the loop entry and here.
+	{
+		static u32 entry_logged = 0;
+		if (entry_logged < 10u) {
+			netDiagLogf("mt_entry", "stagechg=%d gle=%d",
+				g_MainChangeToStageNum, (s32)g_MainGameLogicEnabled);
+			entry_logged++;
+		}
+	}
 
 	if (g_MainChangeToStageNum < 0) {
 		frametimeCalculate();
@@ -545,8 +607,22 @@ void mainTick(void)
 			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
 			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_4b, 0, 0x0100, 6, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
 
+			// First-mainTick crash-hunt trail. The sims-in-Skedar crash
+			// pattern points at the per-player propsTickPlayer pass: lvTick
+			// resets per-frame state, the per-player loop runs lvTickPlayer
+			// (physics + handsTickAttack), then lvRender does the actual
+			// propsTickPlayer that ticks sim chrs via chrTick on the
+			// client (per the bot/chrtick routing in prop.c). One log per
+			// subsystem call so the last line tells you which one died.
+			// Each one is capped at 10 fires so the diag log doesn't
+			// flood after the first match of gameplay.
+			static u32 mt_logged = 0;
+			const bool mt_log = (mt_logged < 10u);
+			if (mt_log) { netDiagLogf("mt_lvtick_pre", ""); }
 			lvTick();
+			if (mt_log) { netDiagLogf("mt_lvtick_post", ""); }
 			playermgrShuffle();
+			if (mt_log) { netDiagLogf("mt_shuffle_post", ""); }
 
 			if (g_StageNum < STAGE_TITLE) {
 				for (i = 0; i < PLAYERCOUNT(); i++) {
@@ -559,11 +635,18 @@ void mainTick(void)
 								g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
 					}
 
+					if (mt_log) { netDiagLogf("mt_lvtickplayer_pre", "i=%d cp=%d", i, g_Vars.currentplayernum); }
 					lvTickPlayer();
+					if (mt_log) { netDiagLogf("mt_lvtickplayer_post", "i=%d", i); }
 				}
 			}
 
+			if (mt_log) { netDiagLogf("mt_lvrender_pre", ""); }
 			gdl = lvRender(gdl);
+			if (mt_log) {
+				netDiagLogf("mt_lvrender_post", "");
+				mt_logged++;
+			}
 
 			if (debugGetProfileMode() >= 2) {
 				gdl = profileRender(gdl);

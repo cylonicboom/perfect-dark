@@ -37,6 +37,19 @@ static inline void lerpcoord(struct coord *c, const struct coord *a, const struc
 	c->z = lerpf(a->z, b->z, t);
 }
 
+// Stale-snapshot threshold lives in net.c as g_NetStaleSnapshotTicks (was
+// a local #define here originally) so the /stale console command can tune
+// it at runtime. Default 30 ticks (~500ms) tolerates UpdateFrames=2..3 +
+// jitter without false snapping; bump higher for very sparse update rates.
+//
+// Symptom this fixes: with default UpdateFrames or a brief drop, the
+// snapshot ring fills with old entries, the lerp keeps converging on the
+// SAME pair of pre-stall snapshots, and the remote chr looks frozen on
+// the client. The frozen player has to physically move to push a fresh
+// outmove out, which then unsticks the lerp. With this fallback the
+// chr instead snaps to the newest known position once snapshots go stale,
+// so a temporary network hiccup doesn't leave the local view glued to a
+// past pose.
 static void bwalkUpdateRemote(void)
 {
 	struct player *pl = g_Vars.currentplayer;
@@ -55,9 +68,23 @@ static void bwalkUpdateRemote(void)
 	pl->bondshotspeed.z = 0.f;
 	pl->bondbreathing = 0.f;
 
+	// Stale-snapshot detection: if the newest snapshot we have is older
+	// than BWALK_STALE_SNAPSHOT_TICKS ticks behind g_NetTick, the lerp
+	// path below would just keep converging toward the same out-of-date
+	// pair of snapshots. Promote this to a forcepos so we hard-snap to
+	// the newest known position and reset the interp window — fresh
+	// snapshots that arrive later will resume normal lerp from there.
+	// Guard against inmove->tick == 0 (slot still empty, no snapshots
+	// received yet) — that's handled by the !inmoveprev->tick branch in
+	// the regular forcepos check below.
+	const bool stale_snapshot = (inmove->tick != 0)
+		&& (g_NetTick > inmove->tick)
+		&& ((g_NetTick - inmove->tick) > g_NetStaleSnapshotTicks);
+
 	// Explicit force or very large drift: snap to server position immediately.
 	const bool forcepos = !inmoveprev->tick ||
 		(inmove->ucmd & UCMD_FL_FORCEPOS) ||
+		stale_snapshot ||
 		(fabsf(pl->prop->pos.x - inmove->pos.x) > 512.f) ||
 		(fabsf(pl->prop->pos.y - inmove->pos.y) > 512.f) ||
 		(fabsf(pl->prop->pos.z - inmove->pos.z) > 512.f);

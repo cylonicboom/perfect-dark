@@ -75,7 +75,7 @@ u32 netmsgSvcChrDisarmWrite(struct netbuf *dst, struct chrdata *chr, struct prop
 u32 netmsgSvcChrDisarmRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcChrFireWrite(struct netbuf *dst, struct chrdata *chr, u8 handnum, u16 soundnum);
 u32 netmsgSvcChrFireRead(struct netbuf *src, struct netclient *srccl);
-u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *victim);
+u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *victim, u8 shooter_team, u8 victim_team);
 u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count);
 u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl);

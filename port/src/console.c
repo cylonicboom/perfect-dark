@@ -36,6 +36,28 @@ static s32 conInputCol = 0;
 static u32 conTextColour = 0x00ff00ff;
 static s32 conOpen = 0;
 static s32 conButton = 0;
+// Scrollback offset in rows. 0 = pinned to the live tail (newest line at the
+// bottom). Positive values pan back through the ring buffer. PageUp/PageDown
+// move it by CON_SCROLLSTEP. Capped so we never wrap past the oldest valid
+// row of the ring.
+#define CON_SCROLLSTEP (CON_VISROWS / 2)
+#define CON_SCROLLMAX  (CON_ROWS - CON_VISROWS)
+static s32 conScrollOfs = 0;
+
+// Recompute conVisRows from the current conScrollOfs. vis[0] is the newest
+// visible completed line; vis[CON_VISROWS-1] is the oldest. The row currently
+// being written into (conPrintRow itself) is excluded since the prompt line
+// already shows in-progress input.
+static void conRebuildVisRows(void)
+{
+	for (s32 i = 0; i < CON_VISROWS; ++i) {
+		s32 row = conPrintRow - i - 1 - conScrollOfs;
+		while (row < 0) {
+			row += CON_ROWS;
+		}
+		conVisRows[i] = &conBuf[row][0];
+	}
+}
 
 void conInit(void)
 {
@@ -47,6 +69,7 @@ void conInit(void)
 	conMsgRows = 0;
 	conMsgTimer = 0.0f;
 	conInputCol = 0;
+	conScrollOfs = 0;
 }
 
 void conPrint(s32 showmsg, const char *str)
@@ -83,21 +106,25 @@ void conPrint(s32 showmsg, const char *str)
 	}
 
 	if (conPrintRow != oldRow) {
-		// scroll time
-		for (s32 i = 0; i < ARRAYCOUNT(conVisRows); ++i) {
-			s32 row = conPrintRow - i - 1;
-			if (row < 0) {
-				row = CON_ROWS + row;
+		const s32 advanced = (conPrintRow > oldRow)
+			? (conPrintRow - oldRow)
+			: (conPrintRow + (CON_ROWS - oldRow));
+
+		// Keep the user's scrolled view anchored to the same absolute rows
+		// while new lines pile on at the live tail. When pinned to the tail
+		// (conScrollOfs == 0) we naturally show the new lines instead.
+		if (conScrollOfs > 0) {
+			conScrollOfs += advanced;
+			if (conScrollOfs > CON_SCROLLMAX) {
+				conScrollOfs = CON_SCROLLMAX;
 			}
-			conVisRows[i] = &conBuf[row][0];
 		}
+
+		conRebuildVisRows();
+
 		if (showmsg) {
 			if (conMsgRows < CON_MSGROWS) {
-				if (conPrintRow > oldRow) {
-					conMsgRows += conPrintRow - oldRow;
-				} else {
-					conMsgRows += conPrintRow + (CON_ROWS - oldRow);
-				}
+				conMsgRows += advanced;
 			}
 			conMsgTimer = sysGetSeconds() + CON_MSGTIMER;
 		}
@@ -173,8 +200,14 @@ Gfx *conRender(Gfx *gdl)
 				gdl = textRenderProjected(gdl, &x, &y, s, g_CharsHandelGothicXs, g_FontHandelGothicXs, conTextColour, viGetWidth(), viGetHeight(), 0, 0);
 			}
 		}
-		char tmp[CON_COLS + 3];
-		snprintf(tmp, sizeof(tmp), "> %s", conInput);
+		char tmp[CON_COLS + 24];
+		if (conScrollOfs > 0) {
+			// Indicate scrollback position so the user remembers PgDn/End
+			// puts them back at live output.
+			snprintf(tmp, sizeof(tmp), "[-%d] > %s", conScrollOfs, conInput);
+		} else {
+			snprintf(tmp, sizeof(tmp), "> %s", conInput);
+		}
 		x = 18;
 		y = 4 + 8 * CON_VISROWS;
 		gdl = textRenderProjected(gdl, &x, &y, tmp, g_CharsHandelGothicXs, g_FontHandelGothicXs, conTextColour, viGetWidth(), viGetHeight(), 0, 0);
@@ -198,12 +231,41 @@ void conTick(void)
 			inputStartTextInput();
 		} else {
 			inputStopTextInput();
+			// Snap back to the live tail when closing so the next open
+			// shows the latest output instead of resuming a stale view.
+			if (conScrollOfs != 0) {
+				conScrollOfs = 0;
+				conRebuildVisRows();
+			}
 		}
 	}
 
 	conButton = button;
 
 	if (conOpen) {
+		// PageUp/PageDown scroll the buffer. Edge-triggered so a held key
+		// doesn't fly through the ring; the user can tap to step. Home/End
+		// jump to the top of the scrollback / live tail respectively.
+		s32 newOfs = conScrollOfs;
+		if (inputKeyJustPressed(VK_PAGEUP)) {
+			newOfs += CON_SCROLLSTEP;
+		}
+		if (inputKeyJustPressed(VK_PAGEDOWN)) {
+			newOfs -= CON_SCROLLSTEP;
+		}
+		if (inputKeyJustPressed(VK_HOME)) {
+			newOfs = CON_SCROLLMAX;
+		}
+		if (inputKeyJustPressed(VK_END)) {
+			newOfs = 0;
+		}
+		if (newOfs < 0) newOfs = 0;
+		if (newOfs > CON_SCROLLMAX) newOfs = CON_SCROLLMAX;
+		if (newOfs != conScrollOfs) {
+			conScrollOfs = newOfs;
+			conRebuildVisRows();
+		}
+
 		if (inputTextHandler(conInput, CON_COLS, &conInputCol, false)) {
 			// Lines starting with '/' are local netplay/debug commands,
 			// not chat. Handled even outside a net session so the user can
@@ -215,6 +277,12 @@ void conTick(void)
 			}
 			conInput[0] = '\0';
 			conInputCol = 0;
+			// Submitting a command implies the user wants to see its output;
+			// jump back to the live tail.
+			if (conScrollOfs != 0) {
+				conScrollOfs = 0;
+				conRebuildVisRows();
+			}
 		}
 	}
 }

@@ -627,8 +627,18 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 
 	sysLogPrintf(LOG_NOTE, "NET: SVC_STAGE from server: going to stage 0x%02x with %u players", g_MpSetup.stagenum, numplayers);
 
+	// Diagnostic: log right before AND after mpStartMatch so a crash inside
+	// stage init shows up as the "_pre" line being the last entry in the
+	// diag log. Originally only the server logged stage_start, which made
+	// "client crashes on Skedar" invisible — nothing between client_start
+	// and the actual segfault.
+	netDiagLogf("stage_start_pre", "stage=%u numplayers=%u numbots=%u",
+		(u32)g_MpSetup.stagenum, (u32)numplayers, (u32)numbots);
+
 	mpStartMatch();
 	menuStop();
+
+	netDiagLogf("stage_start_post", "stage=%u", (u32)g_MpSetup.stagenum);
 
 	return 0;
 }
@@ -758,8 +768,10 @@ u32 netmsgSvcPlayerMoveRead(struct netbuf *src, struct netclient *srccl)
 			}
 		} else {
 			// Normal authoritative position: check CSP prediction error and
-			// schedule a smooth correction if needed.
-			netCspReconcile(outmoveack, &newmove.pos);
+			// schedule a smooth correction if needed. Theta is passed so the
+			// snap branch can call chrSetPos and re-derive ground/rooms (a bare
+			// prop->pos write gets clamped back by the next local physics tick).
+			netCspReconcile(outmoveack, &newmove.pos, newmove.angles[0]);
 		}
 	}
 
@@ -861,13 +873,34 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 
 	const bool newisdead = (flags & (1 << 0)) != 0;
 	if (!pl->isdead && newisdead) {
-		s16 shooter;
-		if (pl->prop->chr->lastshooter >= 0 && pl->prop->chr->timeshooter > 0) {
-			shooter = pl->prop->chr->lastshooter;
-		} else {
+		// SVC_PLAYER_STATS marks the player dead but no prior SVC_CHR_DAMAGE
+		// killed them locally — fall damage / drown / off-map, or chrDamage
+		// applied but didn't drop bondhealth to zero on the client (lag /
+		// state desync). Look at chr->lastattacker (set inside chrDamage on
+		// both sides) to find the killer. If there's no attacker, this is
+		// genuinely a self/env death so suicide attribution is correct.
+		// lastshooter is dead code — never written anywhere — so it was
+		// always falling through to currentplayernum and the victim was
+		// being credited as their own killer (kill went to wrong player,
+		// "Suicide count: N" hudmsg on respawn).
+		s32 shooter = -1;
+		struct chrdata *attacker = pl->prop->chr->lastattacker;
+		if (attacker && attacker->prop) {
+			if (attacker->prop->type == PROPTYPE_PLAYER) {
+				shooter = playermgrGetPlayerNumByProp(attacker->prop);
+			} else if (attacker->prop->type == PROPTYPE_CHR && attacker->aibot) {
+				// Bot killer — mpPlayerGetIndex returns the mpchr index;
+				// playerDieByShooter forwards it as the "shooter" playernum
+				// and mpstatsRecordDeath uses func0f18d074 to bring it back
+				// to the same mpchr index for ampchr lookup.
+				shooter = mpPlayerGetIndex(attacker);
+			}
+		}
+		if (shooter < 0) {
+			// Genuine env/self death — fall back to victim → suicide branch.
 			shooter = g_Vars.currentplayernum;
 		}
-		playerDieByShooter(shooter, true);
+		playerDieByShooter((u32)shooter, true);
 	} else if (pl->isdead && !newisdead) {
 		playerStartNewLife();
 	}
@@ -989,6 +1022,22 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 			netbufWriteS16(dst, chr->model->anim->animnum);
 			netbufWriteS16(dst, chr->model->anim->framea);
 			netbufWriteF32(dst, chr->model->anim->speed);
+			// FLIP was tried here and reverted: the goal was to fix sims
+			// appearing left-handed when the server played a flipped variant
+			// (e.g. left-strafe), but syncing the bit broke Skedar and other
+			// maps. Two failure modes were hit when the client called
+			// modelSetAnimation with the wire flip:
+			//   1. Skedar bot models don't have the same flipped-bone remap
+			//      that humans do, so the skeleton ended up referencing parts
+			//      that don't exist for that race.
+			//   2. anim->flip toggles frequently for strafing bots; every flip
+			//      transition tripped the "anim differs → modelSetAnimation"
+			//      path on the read side, which resets frame counters, so the
+			//      anim cycle constantly restarted and locked / jittered.
+			// Better to ship without flip sync (sim's left/right hand may be
+			// cosmetically wrong during strafes) than break entire stages.
+			// If revisited, gate by chr race / model skel and don't trigger
+			// modelSetAnimation purely on a flip change.
 		} else {
 			netbufWriteS16(dst, 0);
 			netbufWriteS16(dst, 0);
@@ -1111,6 +1160,20 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 	// actiontype from the wire but intentionally DISCARD it — see the comment
 	// below on why actiontype can't be safely applied on the client.
 	if (flags & (1 << 4)) {
+		// Crash-hunt diagnostic: log first N chr-state arrivals after match
+		// start. Lets us tell whether the client got as far as processing a
+		// sim's chr-state block before crashing. Static counter resets each
+		// run (it's a TU-local, only meaningful for the current process).
+		// Capped low (20) so a healthy match doesn't pollute the diag log
+		// past the initial-frame visibility we actually want.
+		static u32 chrstate_logged = 0;
+		if (chrstate_logged < 20u && prop && prop->chr) {
+			netDiagLogf("chrstate_enter", "sid=%u race=%d body=%d",
+				(u32)prop->syncid,
+				(s32)(prop->chr ? (s32)prop->chr->race : -1),
+				(s32)(prop->chr ? (s32)prop->chr->bodynum : -1));
+			chrstate_logged++;
+		}
 		// ACTIONTYPE: discarded, not applied. Reason: most action states
 		// (ACT_GOPOS, ACT_ATTACK, ACT_PATROL, ACT_THROWGRENADE, etc.) store
 		// per-state data in the chr->act_* union. The matching chrTick* functions
@@ -1130,6 +1193,9 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		const s16 animnum = netbufReadS16(src);
 		const s16 animframe = netbufReadS16(src);
 		const f32 animspeed = netbufReadF32(src);
+		// flip byte was removed — see Write side. The client keeps whatever
+		// flip the local chrTick happened to set; better than the maps
+		// breaking when we tried to sync it.
 		const s8 weapon_r = netbufReadS8(src);
 		const s8 weapon_l = netbufReadS8(src);
 		const f32 aimupback = netbufReadF32(src);
@@ -1163,12 +1229,21 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				prop->pos = smoothpos;
 			}
 
+			// Crash-hunt: one shared counter gates all per-step diagnostic
+			// logs in this block. Limits total volume so the diag log stays
+			// readable while still bracketing the crash to a specific step
+			// (rootpos / rotY / setAnim / give-weapon).
+			static u32 chrstate_step_logged = 0;
+			const bool log_steps = (chrstate_step_logged < 60u);
+			if (log_steps) chrstate_step_logged++;
+
 			// POSITION TO MODEL: setting prop->pos alone isn't enough. Rendering
 			// reads rwdata->chrinfo.pos (the model's internal root), not prop->pos.
 			// modelSetRootPosition writes it. Without this call, the sim's running
 			// animation plays in place — the model root never moves to the new
 			// world position. This mirrors what botApplyMovement does server-side.
 			if (chr->model) {
+				if (log_steps) netDiagLogf("step_rootpos", "sid=%u", (u32)prop->syncid);
 				modelSetRootPosition(chr->model, &smoothpos);
 			}
 
@@ -1180,6 +1255,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// sims stay facing their spawn direction. The server keeps them in
 			// sync because botApplyMovement calls modelSetChrRotY directly after
 			// moving them — we replicate that here on the client.
+			if (log_steps) netDiagLogf("step_rotY", "sid=%u", (u32)prop->syncid);
 			chrSetRotY(chr, yrot);
 			if (chr->model) {
 				modelSetChrRotY(chr->model, yrot);
@@ -1200,8 +1276,20 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			//     reset framea/frameb to animframe and visibly snap the cycle
 			//     backward whenever the server's frame index trailed ours.
 			if (animnum > 0 && animHasFrames(animnum) && chr->model && chr->model->anim) {
+				// Force flip=0 on the client (right-handed). The server
+				// may pick flip=1 for some animations (left-strafe etc.),
+				// but we deliberately don't sync that bit (it broke Skedar
+				// maps when we tried — see netmsgSvcPropMoveWrite's FLIP
+				// comment). Instead we lock the client to right-handed
+				// always, matching the user-visible expectation that every
+				// chr is right-handed. Without this, anim slots recycled
+				// from a previously left-handed chr leak flip=1 and the
+				// sim's weapon appears in the wrong hand.
+				chr->model->anim->flip = 0;
 				if (chr->model->anim->animnum != animnum) {
-					modelSetAnimation(chr->model, animnum, chr->model->anim->flip, (f32)animframe, animspeed, 0.0625f);
+					if (log_steps) netDiagLogf("step_setanim", "sid=%u animnum=%d body=%d",
+							(u32)prop->syncid, (s32)animnum, (s32)chr->bodynum);
+					modelSetAnimation(chr->model, animnum, 0, (f32)animframe, animspeed, 0.0625f);
 				} else {
 					chr->model->anim->speed = animspeed;
 				}
@@ -1268,7 +1356,25 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				if (want >= 0) {
 					const s32 modelnum = playermgrGetModelOfWeapon(want);
 					if (modelnum >= 0) {
+						// Crash-hunt diagnostic: log first N weapon-give
+						// attempts so we can tell if the chrGiveWeapon
+						// path is the one that crashes. _pre fires
+						// before the call; _post fires after. If we see
+						// _pre with no matching _post, the crash is
+						// inside chrGiveWeapon (Skedar models on
+						// human-weapon bones are a known suspect).
+						static u32 giveweap_logged = 0;
+						const bool log_this = (giveweap_logged < 30u);
+						if (log_this) {
+							netDiagLogf("giveweap_pre", "sid=%u h=%d wpn=%d model=%d body=%d",
+								(u32)prop->syncid, h, want, modelnum,
+								(s32)(chr ? chr->bodynum : -1));
+						}
 						chrGiveWeapon(chr, modelnum, want, hand_flags[h]);
+						if (log_this) {
+							netDiagLogf("giveweap_post", "sid=%u h=%d", (u32)prop->syncid, h);
+							giveweap_logged++;
+						}
 					}
 				}
 			}
@@ -1566,7 +1672,11 @@ u32 netmsgSvcPropDamageRead(struct netbuf *src, struct netclient *srccl)
 u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop)
 {
 	netbufWriteU8(dst, SVC_PROP_PICKUP);
-	netbufWriteU8(dst, actcl->id);
+	// 0xff = sim/AI pickup with no human attribution. The reader skips the
+	// player-side bookkeeping (propPickupByPlayer / setCurrentPlayerNum) and
+	// just runs the tickop so the prop disappears locally — matches the
+	// server, which freed it via botPickupProp's objFree call.
+	netbufWriteU8(dst, actcl ? actcl->id : 0xff);
 	netbufWriteS8(dst, tickop);
 	netbufWritePropPtr(dst, prop);
 	return dst->error;
@@ -1581,6 +1691,21 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	if (clid == 0xff) {
+		// Sim pickup: no human player to attribute. Just execute the tickop
+		// (typically TICKOP_FREE) so the weapon / ammo crate disappears from
+		// the client's world to mirror the server. Skipping propPickupByPlayer
+		// avoids dereferencing a NULL currentplayer for inventory updates the
+		// client doesn't care about anyway — sims are server-authoritative.
+		if (tickop != TICKOP_NONE) {
+			propExecuteTickOperation(prop, tickop);
+		}
+		return src->error;
+	}
+
+	if (clid >= NET_MAX_CLIENTS) {
+		return src->error;
+	}
 	struct netclient *actcl = g_NetClients + clid;
 
 	const s32 prevplayernum = g_Vars.currentplayernum;
@@ -2012,11 +2137,16 @@ u32 netmsgSvcChrFireRead(struct netbuf *src, struct netclient *srccl)
 // independently (shooter green, victim red). An empty shooter string means
 // the victim died alone (suicide / environment). Reliable channel so kills
 // can't get dropped under packet loss.
-u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *victim)
+u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *victim, u8 shooter_team, u8 victim_team)
 {
 	netbufWriteU8(dst, SVC_KILL);
 	netbufWriteStr(dst, shooter ? shooter : "");
 	netbufWriteStr(dst, victim ? victim : "");
+	// Team bytes let the receiver render names in team colours via
+	// g_TeamColours. 0xff = "unknown team" (env death, no shooter, etc.) —
+	// receiver falls back to the generic green/red palette in that case.
+	netbufWriteU8(dst, shooter_team);
+	netbufWriteU8(dst, victim_team);
 	return dst->error;
 }
 
@@ -2024,11 +2154,13 @@ u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl)
 {
 	const char *shooter = netbufReadStr(src);
 	const char *victim = netbufReadStr(src);
+	const u8 shooter_team = netbufReadU8(src);
+	const u8 victim_team = netbufReadU8(src);
 	if (src->error || srccl->state < CLSTATE_GAME) {
 		return src->error;
 	}
 	if (victim && victim[0]) {
-		netKillFeedAdd(shooter, victim);
+		netKillFeedAdd(shooter, victim, shooter_team, victim_team);
 	}
 	return src->error;
 }
@@ -2042,8 +2174,31 @@ u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl)
 // deltas via this message — typically just the attacker and victim entries
 // per kill, but the writer accepts a list so we can do bulk syncs on
 // stage start / late-join in the future.
+// Helper: find the netclient ID whose server-side playernum equals `slot`.
+// Returns -1 if no netclient claims that slot. On the server side cl->playernum
+// is sequentially assigned == cl->id, but we look it up properly so this works
+// even if the assignment changes in the future.
+static s32 netScoreNetIdForSlot(s32 slot)
+{
+	for (s32 i = 0; i < g_NetMaxClients; ++i) {
+		const struct netclient *cl = &g_NetClients[i];
+		if (cl->state >= CLSTATE_GAME && cl->playernum == slot) {
+			return (s32)cl->id;
+		}
+	}
+	return -1;
+}
+
 u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count)
 {
+	// Wire schema: each entry's idx and the per-entry killcounts[0..MAX_PLAYERS-1]
+	// are addressed by NETCLIENT ID for human slots, not by server-side mpchr
+	// index. That decouples the wire format from netPlayersAllocate's local-only
+	// slot swap (see comment near the swap in net.c): on a client the same
+	// netclient may live at a different g_Vars.players[] slot than on the
+	// server, so a raw mpchr index would land on the wrong row of the local
+	// scoreboard. Bot slots (mpchr index >= MAX_PLAYERS) are deterministic on
+	// both sides via shared RNG + setup, so those keep their direct mpchr index.
 	if (count <= 0 || !mpchrindexes) {
 		return dst->error;
 	}
@@ -2068,12 +2223,33 @@ u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count)
 			continue;
 		}
 		const struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[idx];
-		netbufWriteU8(dst, (u8)idx);
+		// Translate entry idx: humans → netclient ID (so the receiver can map
+		// to its local slot); bots → mpchr index unchanged.
+		u8 wireidx;
+		if (idx < MAX_PLAYERS) {
+			s32 cl_id = netScoreNetIdForSlot(idx);
+			wireidx = (cl_id >= 0 && cl_id < MAX_PLAYERS) ? (u8)cl_id : 0xff;
+		} else {
+			wireidx = (u8)idx;
+		}
+		netbufWriteU8(dst, wireidx);
 		netbufWriteS16(dst, mpchr->numdeaths);
 		netbufWriteS16(dst, mpchr->numpoints);
 		netbufWriteS8(dst, mpchr->placement);
 		netbufWriteS32(dst, mpchr->rankablescore);
-		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+		// Killcounts: write [0..MAX_PLAYERS-1] in netclient ID order — entry k
+		// is "kills against netclient k". The receiver translates back through
+		// its own netclient → slot map. Bot entries follow at the same mpchr
+		// index on both sides.
+		for (s32 k = 0; k < MAX_PLAYERS; ++k) {
+			const struct netclient *cl = &g_NetClients[k];
+			if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
+				netbufWriteS16(dst, mpchr->killcounts[cl->playernum]);
+			} else {
+				netbufWriteS16(dst, 0);
+			}
+		}
+		for (s32 k = MAX_PLAYERS; k < MAX_MPCHRS; ++k) {
 			netbufWriteS16(dst, mpchr->killcounts[k]);
 		}
 	}
@@ -2091,29 +2267,58 @@ u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl)
 		return 1;
 	}
 	for (s32 i = 0; i < count; ++i) {
-		const u8 idx = netbufReadU8(src);
+		const u8 wireidx = netbufReadU8(src);
 		const s16 numdeaths = netbufReadS16(src);
 		const s16 numpoints = netbufReadS16(src);
 		const s8 placement = netbufReadS8(src);
 		const s32 rankablescore = netbufReadS32(src);
-		s16 killcounts[MAX_MPCHRS];
+		// Killcounts arrive with positions 0..MAX_PLAYERS-1 indexed by
+		// netclient ID, MAX_PLAYERS..MAX_MPCHRS-1 indexed by mpchr index
+		// (bots). Translate the human slice to LOCAL mpchr slots before
+		// applying — see SvcScoreWrite for the rationale.
+		s16 wire_killcounts[MAX_MPCHRS];
 		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
-			killcounts[k] = netbufReadS16(src);
+			wire_killcounts[k] = netbufReadS16(src);
 		}
 		if (src->error) {
 			return src->error;
 		}
-		// 0xff sentinel = server skipped this entry (no mpchr at that slot).
-		if (idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[idx]) {
+		// 0xff sentinel = server skipped this entry.
+		if (wireidx == 0xff) {
 			continue;
 		}
-		struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[idx];
+		// Translate wireidx: humans → look up the netclient and use its
+		// LOCAL playernum; bots → mpchr index directly.
+		s32 local_idx;
+		if (wireidx < MAX_PLAYERS) {
+			const struct netclient *cl = &g_NetClients[wireidx];
+			if (cl->state < CLSTATE_GAME || cl->playernum < 0 || cl->playernum >= MAX_MPCHRS) {
+				continue;
+			}
+			local_idx = cl->playernum;
+		} else {
+			local_idx = wireidx;
+		}
+		if (local_idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[local_idx]) {
+			continue;
+		}
+		struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[local_idx];
 		mpchr->numdeaths = numdeaths;
 		mpchr->numpoints = numpoints;
 		mpchr->placement = placement;
 		mpchr->rankablescore = rankablescore;
-		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
-			mpchr->killcounts[k] = killcounts[k];
+		// Map wire killcounts back to local mpchr index. Human positions
+		// (0..MAX_PLAYERS-1) are keyed by netclient ID; each maps to the
+		// LOCAL slot via g_NetClients[k].playernum. Bot positions index
+		// directly.
+		for (s32 k = 0; k < MAX_PLAYERS; ++k) {
+			const struct netclient *cl = &g_NetClients[k];
+			if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
+				mpchr->killcounts[cl->playernum] = wire_killcounts[k];
+			}
+		}
+		for (s32 k = MAX_PLAYERS; k < MAX_MPCHRS; ++k) {
+			mpchr->killcounts[k] = wire_killcounts[k];
 		}
 	}
 	return src->error;

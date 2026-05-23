@@ -11,6 +11,13 @@
 #include "utils.h"
 #include "system.h"
 #include "fs.h"
+// Needed for the MPOPTION_CONTROLLERS_ONLY gate below — pulls in g_Vars and
+// g_MpSetup so we can drop kbd/mouse input mid-match when the host (or any
+// client) flips the option.
+#include "bss.h"
+#include "data.h"
+#include "constants.h"
+#include "types.h"
 
 #if !SDL_VERSION_ATLEAST(2, 0, 14)
 // this was added in 2.0.14
@@ -748,13 +755,35 @@ s32 inputInit(void)
 	return connectedMask;
 }
 
+// True while the active match has MPOPTION_CONTROLLERS_ONLY set. Gates the
+// per-controller bind reads (so kbd/mouse bound to a CK is ignored) and the
+// mouse delta accessors (so mouse aim is suppressed). Only takes effect
+// during a running match — pre-match menus still accept kbd/mouse so the
+// host can flip the option in the first place. Each machine reads its own
+// local g_MpSetup, but the option is synced via SVC_STAGE_START so every
+// client honours the host's choice once the match starts.
+static inline bool inputControllersOnlyActive(void)
+{
+	return g_Vars.mplayerisrunning && (g_MpSetup.options & MPOPTION_CONTROLLERS_ONLY);
+}
+
 static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 {
+	const bool ctrlOnly = inputControllersOnlyActive();
 	for (s32 i = 0; i < INPUT_MAX_BINDS; ++i) {
-		if (binds[idx][ck][i]) {
-			if (inputKeyPressed(binds[idx][ck][i])) {
-				return 1;
-			}
+		const u32 vk = binds[idx][ck][i];
+		if (!vk) {
+			continue;
+		}
+		// In controllers-only mode, ignore any bind that's a keyboard or
+		// mouse key. Joystick binds live at vk >= VK_JOY_BEGIN, so this
+		// preserves the controller-side of every CK even when a CK has
+		// mixed kbd+controller binds.
+		if (ctrlOnly && vk < VK_JOY_BEGIN) {
+			continue;
+		}
+		if (inputKeyPressed(vk)) {
+			return 1;
 		}
 	}
 	return 0;
@@ -1243,7 +1272,11 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 {
 		f32 mdx = 0.f, mdy = 0.f;
 
-		if (mouseLocked) {
+		// Suppress mouse aim when controllers-only mode is on; gameplay
+		// callers (bondmove camera, eyespy, etc.) read zeros and fall back
+		// to the right stick. Done here rather than at the call sites so
+		// every consumer is covered without per-site edits.
+		if (mouseLocked && !inputControllersOnlyActive()) {
 				mdx = mouseSensX * ((f32)mouseDX / 3.5f) * 0.022f;
 				mdy = mouseSensY * ((f32)mouseDY / 3.5f) * 0.022f;
 		}
@@ -1255,7 +1288,7 @@ void inputMouseGetAbsScaledDelta(f32* dx, f32* dy)
 {
 		f32 mdx = 0.f, mdy = 0.f;
 
-		if (mouseLocked) {
+		if (mouseLocked && !inputControllersOnlyActive()) {
 				mdx = fabsf(mouseSensX) * ((f32)mouseDX / 3.5f) * 0.022f;
 				mdy = fabsf(mouseSensY) * ((f32)mouseDY / 3.5f) * 0.022f;
 		}

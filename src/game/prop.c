@@ -803,7 +803,17 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 				}
 
 				if (root->type == PROPTYPE_CHR || root->type == PROPTYPE_PLAYER) {
+#ifndef PLATFORM_N64
+					// CLC_HIT handles chr damage for remote player shots so the
+					// hit is evaluated at the client's aim tick, not the server's
+					// lag-comp approximation. Skip chrHit here to avoid applying
+					// damage twice.
+					if (g_NetMode != NETMODE_SERVER || !g_Vars.currentplayer->isremote) {
+						chrHit(&shotdata, &shotdata.hits[i]);
+					}
+#else
 					chrHit(&shotdata, &shotdata.hits[i]);
+#endif
 				} else if (hitprop->type == PROPTYPE_OBJ || hitprop->type == PROPTYPE_WEAPON || hitprop->type == PROPTYPE_DOOR) {
 					objHit(&shotdata, &shotdata.hits[i]);
 				}

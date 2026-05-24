@@ -4145,7 +4145,14 @@ void func0f0341dc(struct chrdata *chr, f32 damage, struct coord *vector, struct 
 {
 #ifndef PLATFORM_N64
 	if (g_NetMode == NETMODE_CLIENT) {
-		// don't do anything if we're not the authority
+		// Report the hit to the server. It runs chrDamage there and broadcasts
+		// SVC_CHR_DAMAGE back to all clients. Only send if the target has a
+		// syncid — unsynced props (e.g. local-only debris) have none.
+		if (chr->prop && chr->prop->syncid) {
+			netbufStartWrite(&g_NetMsgRel);
+			netmsgClcHitWrite(&g_NetMsgRel, chr, damage, vector, gset, (s16)hitpart, (s16)side, arg10);
+			netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		}
 		return;
 	}
 #endif
@@ -5176,6 +5183,17 @@ void chrDie(struct chrdata *chr, s32 aplayernum)
 		chr->aioffset = 0;
 
 		mpstatsRecordDeath(aplayernum, mpPlayerGetIndex(chr));
+#ifndef PLATFORM_N64
+		// On a net client the server is authoritative for sim deaths and
+		// respawns. Calling botinvDropAll here marks the held weapon props
+		// OBJHFLAG_DELETING (via botinvSwitchToWeapon) which frees them and
+		// clears their syncids. Any in-flight SVC_PROP_MOVE for a projectile
+		// the sim just fired still references the weapon's syncid as ownerprop
+		// — that lookup then fails ("prop with syncid N does not exist"). Keep
+		// the weapons alive; the server's SVC_PROP_MOVE chr-state block will
+		// drive the weapon change when botSpawn runs server-side.
+		if (g_NetMode != NETMODE_CLIENT) {
+#endif
 		botinvDropAll(chr, chr->aibot->weaponnum);
 
 #if VERSION >= VERSION_NTSC_1_0
@@ -5184,6 +5202,9 @@ void chrDie(struct chrdata *chr, s32 aplayernum)
 		chr->aibot->unk04c_04 = false;
 		chr->aibot->unk04c_03 = false;
 		chr->aibot->hasuplink = false;
+#endif
+#ifndef PLATFORM_N64
+		}
 #endif
 	}
 }

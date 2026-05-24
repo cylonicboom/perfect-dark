@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 25
+#define NET_PROTOCOL_VER 26
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -85,6 +85,47 @@ struct netkillfeedentry {
 	// matches radar / on-chr highlights instead of always going green/red.
 	u8 shooter_team;
 	u8 victim_team;
+};
+
+// Lobby state: cached locally by the client when in CLSTATE_LOBBY.
+// Populated from SVC_LOBBY_STATE broadcasts sent by the server every ~1s.
+// Cleared on disconnect. Display strings are pre-resolved server-side so
+// the render path can display them directly.
+#define NET_LOBBY_TEAMNAME_LEN   12
+#define NET_LOBBY_ARENANAME_LEN  32
+#define NET_LOBBY_SCENNAME_LEN   32
+#define NET_LOBBY_WPNSETNAME_LEN 32
+#define NET_LOBBY_WPNNAME_LEN    24
+
+struct netlobbyclient {
+	char name[NET_MAX_NAME];
+	u16 ping;
+	u8 team;
+};
+
+struct netlobbybot {
+	char name[NET_MAX_NAME];
+	u8 team;
+	u8 difficulty;
+};
+
+struct netlobbystate {
+	u8 valid;
+	u8 scenario;
+	u8 stagenum;
+	u32 options;
+	u8 scorelimit;
+	u8 timelimit;
+	u16 teamscorelimit;
+	u8 num_clients;
+	struct netlobbyclient clients[NET_MAX_CLIENTS];
+	u8 num_bots;
+	struct netlobbybot bots[MAX_BOTS];
+	char teamnames[MAX_TEAMS][NET_LOBBY_TEAMNAME_LEN];
+	char arena_name[NET_LOBBY_ARENANAME_LEN];
+	char scenario_name[NET_LOBBY_SCENNAME_LEN];
+	char weaponset_name[NET_LOBBY_WPNSETNAME_LEN];
+	char weapon_names[NUM_MPWEAPONSLOTS][NET_LOBBY_WPNNAME_LEN];
 };
 
 #define NET_NULL_CLIENT 0xFF
@@ -238,6 +279,8 @@ extern struct netclient *g_NetLocalClient;
 extern struct netbuf g_NetMsg;
 extern struct netbuf g_NetMsgRel;
 
+extern struct netlobbystate g_NetLobbyState;
+
 const char *netFormatClientAddr(const struct netclient *cl);
 
 void netInit(void);
@@ -332,5 +375,14 @@ void netSpectateApply(void);
 // Format is "<tick>,<realtime_s>,<event>,<formatted args>". No-op when the
 // log isn't open, so call sites can sprinkle these without guarding.
 void netDiagLogf(const char *event, const char *fmt, ...);
+
+// Server-side deferred hit processing: called from netmsgClcHitRead instead
+// of chrDamage directly. Queues the hit for processing in netEndFrame, after
+// the send buffers have been reset but before the first flush. This ensures
+// SVC_CHR_DAMAGE (and SVC_KILL / SVC_SCORE on kill) lands in a fresh buffer
+// and is actually broadcast to clients.
+void netServerEnqueueHit(struct prop *target, f32 damage, const struct coord *vector,
+        const struct gset *gset, s16 hitpart, s16 side, const s16 *arg10,
+        s32 playernum, struct prop *shooter_prop);
 
 #endif // _IN_NET_H

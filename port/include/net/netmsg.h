@@ -26,6 +26,9 @@
 #define SVC_CHR_FIRE      0x44 // sim chr fired its weapon (sound + animation cue)
 #define SVC_KILL          0x45 // kill-feed entry ("Shooter > Victim")
 #define SVC_SCORE         0x46 // server-authoritative scoreboard deltas
+#define SVC_KOH_STATE    0x47 // King of the Hill authoritative hill position/state
+#define SVC_EXPLOSION    0x48 // explosion visual effect (for timer-detonated networked props)
+#define SVC_LOBBY_STATE  0x49 // lobby info broadcast to clients waiting for game start
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -33,6 +36,7 @@
 #define CLC_CHAT     0x03 // chat message
 #define CLC_MOVE     0x04 // player input
 #define CLC_SETTINGS 0x05 // player settings changed
+#define CLC_HIT      0x06 // client-reported chr hit; server validates and applies damage
 
 u32 netmsgClcAuthWrite(struct netbuf *dst);
 u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl);
@@ -42,6 +46,8 @@ u32 netmsgClcMoveWrite(struct netbuf *dst);
 u32 netmsgClcMoveRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcSettingsWrite(struct netbuf *dst);
 u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgClcHitWrite(struct netbuf *dst, struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset, s16 hitpart, s16 side, s16 *arg10);
+u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);
@@ -79,5 +85,11 @@ u32 netmsgSvcKillWrite(struct netbuf *dst, const char *shooter, const char *vict
 u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count);
 u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcKohStateWrite(struct netbuf *dst);
+u32 netmsgSvcKohStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcExplosionWrite(struct netbuf *dst, s32 exptype, const struct coord *pos, const RoomNum *rooms);
+u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcLobbyStateWrite(struct netbuf *dst);
+u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl);
 
 #endif

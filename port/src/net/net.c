@@ -863,8 +863,9 @@ s32 netDisconnect(void)
 	g_NetCspHead = 0;
 	memset(g_NetCspHistory, 0, sizeof(g_NetCspHistory));
 
-	// Clear the kill feed so a fresh session starts with a clean panel.
+	// Clear the kill feed and lobby state so a fresh session starts clean.
 	netKillFeedClear();
+	g_NetLobbyState.valid = 0;
 
 	// Free any packets still sitting in the lag-sim queue (they'll never be
 	// sent since the peers are gone). Keep g_NetSimLagMs / g_NetSimPacketLoss
@@ -980,6 +981,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_CHAT: rc = netmsgClcChatRead(&cl->in, cl); break;
 			case CLC_MOVE: rc = netmsgClcMoveRead(&cl->in, cl); break;
 			case CLC_SETTINGS: rc = netmsgClcSettingsRead(&cl->in, cl); break;
+			case CLC_HIT: rc = netmsgClcHitRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1037,6 +1039,9 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_FIRE: rc = netmsgSvcChrFireRead(&cl->in, cl); break;
 			case SVC_KILL: rc = netmsgSvcKillRead(&cl->in, cl); break;
 			case SVC_SCORE: rc = netmsgSvcScoreRead(&cl->in, cl); break;
+			case SVC_KOH_STATE: rc = netmsgSvcKohStateRead(&cl->in, cl); break;
+			case SVC_EXPLOSION: rc = netmsgSvcExplosionRead(&cl->in, cl); break;
+			case SVC_LOBBY_STATE: rc = netmsgSvcLobbyStateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1068,6 +1073,49 @@ void netClientSettingsChanged(void)
 	netbufStartWrite(&g_NetMsgRel);
 	netmsgClcSettingsWrite(&g_NetMsgRel);
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
+// Deferred CLC_HIT queue. CLC_HIT arrives during netStartFrame event processing,
+// but netStartFrame resets g_NetMsgRel immediately after. If chrDamage were called
+// then, the SVC_CHR_DAMAGE it writes would be discarded before netFlushSendBuffers
+// ever runs. Instead, netmsgClcHitRead calls netServerEnqueueHit to stage the hit,
+// and netEndFrame drains the queue before its first flush so broadcasts go through.
+#define NET_PENDING_HITS_MAX 16
+
+struct net_pending_hit {
+	struct prop *target;
+	struct prop *shooter_prop;
+	struct coord vector;
+	struct gset gset;
+	f32 damage;
+	s32 playernum;
+	s16 hitpart;
+	s16 side;
+	s16 arg10[3];
+};
+
+static struct net_pending_hit g_NetPendingHits[NET_PENDING_HITS_MAX];
+static s32 g_NetPendingHitCount = 0;
+
+void netServerEnqueueHit(struct prop *target, f32 damage, const struct coord *vector,
+		const struct gset *gset, s16 hitpart, s16 side, const s16 *arg10,
+		s32 playernum, struct prop *shooter_prop)
+{
+	if (g_NetPendingHitCount >= NET_PENDING_HITS_MAX) {
+		return;
+	}
+	struct net_pending_hit *ph = &g_NetPendingHits[g_NetPendingHitCount++];
+	ph->target = target;
+	ph->shooter_prop = shooter_prop;
+	ph->vector = *vector;
+	ph->gset = *gset;
+	ph->damage = damage;
+	ph->playernum = playernum;
+	ph->hitpart = hitpart;
+	ph->side = side;
+	ph->arg10[0] = arg10 ? arg10[0] : 0;
+	ph->arg10[1] = arg10 ? arg10[1] : 0;
+	ph->arg10[2] = arg10 ? arg10[2] : 0;
 }
 
 void netStartFrame(void)
@@ -1191,6 +1239,28 @@ void netEndFrame(void)
 	g_NetReliableFrameLen = 0;
 	g_NetUnreliableFrameLen = 0;
 
+	// Drain deferred CLC_HIT entries. chrDamage here writes SVC_CHR_DAMAGE
+	// (and SVC_KILL / SVC_SCORE on a kill) into g_NetMsgRel, which was reset
+	// by netStartFrame. The flush below picks them all up.
+	if (g_NetPendingHitCount > 0 && g_NetMode == NETMODE_SERVER) {
+		const s32 prevplayernum = g_Vars.currentplayernum;
+		for (s32 i = 0; i < g_NetPendingHitCount; ++i) {
+			const struct net_pending_hit *ph = &g_NetPendingHits[i];
+			if (!ph->target || !ph->target->chr) {
+				continue;
+			}
+			if (ph->playernum >= 0) {
+				setCurrentPlayerNum(ph->playernum);
+			}
+			chrDamage(ph->target->chr, ph->damage, (struct coord *)&ph->vector,
+					(struct gset *)&ph->gset, ph->shooter_prop,
+					ph->hitpart, true, ph->target, NULL, NULL,
+					ph->side, (s16 *)ph->arg10, false, NULL);
+		}
+		setCurrentPlayerNum(prevplayernum);
+		g_NetPendingHitCount = 0;
+	}
+
 	// send whatever messages have accumulated so far
 	netFlushSendBuffers();
 
@@ -1234,6 +1304,13 @@ void netEndFrame(void)
 					}
 				}
 			}
+			// King of the Hill: keep clients' hill state in sync. Broadcast
+			// every ~60 ticks (~1 second) as a keep-alive; on-change broadcasts
+			// come from kohTick (kingofthehill.inc) immediately after hill selection.
+			if (g_MpSetup.scenario == MPSCENARIO_KINGOFTHEHILL
+					&& (g_NetTick % 60u) == 0u) {
+				netmsgSvcKohStateWrite(&g_NetMsgRel);
+			}
 #endif
 			if (g_NetNextUpdate <= g_NetTick) {
 				g_NetNextUpdate = g_NetTick + g_NetServerUpdateRate;
@@ -1243,6 +1320,24 @@ void netEndFrame(void)
 
 	// send position updates
 	netFlushSendBuffers();
+
+#ifndef PLATFORM_N64
+	// Lobby state: broadcast to waiting clients after the main send flush so
+	// g_NetMsgRel is empty. Runs during lobby phase (g_NetLocalClient is
+	// CLSTATE_LOBBY on the server) so there are no player-move messages to
+	// clobber. Only sent every ~60 ticks when at least one remote client is
+	// still in CLSTATE_LOBBY (skipped once all clients have started the game).
+	if (g_NetMode == NETMODE_SERVER && (g_NetTick % 60u) == 30u) {
+		for (s32 _li = 0; _li < g_NetMaxClients; _li++) {
+			if (g_NetClients[_li].state == CLSTATE_LOBBY
+					&& g_NetClients[_li].peer != NULL) {
+				netmsgSvcLobbyStateWrite(&g_NetMsgRel);
+				netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+				break;
+			}
+		}
+	}
+#endif
 
 	// CSP: blend the local player toward the server-corrected position one
 	// tick at a time, after all physics have run for this frame.
@@ -1441,7 +1536,14 @@ void netSyncIdsAllocate(void)
 		g_NetLocalClient->player->prop->syncid = sid;
 	}
 
-	sysLogPrintf(LOG_NOTE, "NET: last initial syncid: %u", g_NetNextSyncId);
+	// g_NetNextSyncId now holds the highest syncid assigned above. propAllocate
+	// does syncid = g_NetNextSyncId++ (post-increment), so without this bump the
+	// first dynamic allocation would get the same syncid as the highest static
+	// prop — a collision that sends two props with the same syncid to clients.
+	g_NetNextSyncId++;
+
+	sysLogPrintf(LOG_NOTE, "NET: last initial syncid: %u, next dynamic: %u",
+			g_NetNextSyncId - 1, g_NetNextSyncId);
 }
 
 // --- Client-side prediction ---
@@ -1755,11 +1857,30 @@ static s32 netSpectateGatherTargets(struct chrdata **out, s32 cap)
 	return n;
 }
 
+// Show or hide the local player's chr body for spectate mode. While
+// spectating, the body is hidden so the player can spectate from any point
+// (not just during the death animation). Cleared on spectate stop so the
+// chr reappears when the player resumes normal play.
+static void netSpectateHideLocal(bool hide)
+{
+	struct player *pl = g_NetLocalClient ? g_NetLocalClient->player : NULL;
+	if (!pl || !pl->prop || !pl->prop->chr) {
+		return;
+	}
+	struct chrdata *chr = pl->prop->chr;
+	if (hide) {
+		chr->chrflags |= CHRCFLAG_HIDDEN;
+	} else {
+		chr->chrflags &= ~CHRCFLAG_HIDDEN;
+	}
+}
+
 void netSpectateStop(void)
 {
 	if (g_NetSpectateChr) {
 		sysLogPrintf(LOG_CHAT, "NET: spectate off");
 	}
+	netSpectateHideLocal(false);
 	g_NetSpectateChr = NULL;
 }
 
@@ -1795,6 +1916,7 @@ void netSpectateCycle(s32 direction)
 			name = g_MpAllChrConfigPtrs[mpidx]->name;
 		}
 	}
+	netSpectateHideLocal(true);
 	sysLogPrintf(LOG_CHAT, "NET: spectating %s", name);
 }
 
@@ -1804,22 +1926,16 @@ void netSpectateApply(void)
 		return;
 	}
 	// Target validation: chr may have been freed (round end, sim removed),
-	// died (mid-spectate KO), or hidden. Clear silently in those cases —
-	// the user can re-/spec to pick someone else.
+	// or hidden. Clear silently in those cases — user can re-/spec to pick
+	// someone else. Dead targets are still valid spectate subjects.
 	struct chrdata *t = g_NetSpectateChr;
-	if (!t->prop || (t->chrflags & CHRCFLAG_HIDDEN) || chrIsDead(t)) {
+	if (!t->prop || (t->chrflags & CHRCFLAG_HIDDEN)) {
+		netSpectateHideLocal(false);
 		g_NetSpectateChr = NULL;
 		return;
 	}
 	struct player *pl = g_NetLocalClient ? g_NetLocalClient->player : NULL;
 	if (!pl || !pl->prop) {
-		return;
-	}
-	// Gated to isdead so the spectate cam doesn't fight live first-person
-	// physics. Local player stays "alive" until the server confirms death
-	// via SVC_PLAYER_STATS, so /spec next pre-death is a no-op visually
-	// (state is set; cam swap kicks in the moment isdead flips).
-	if (!pl->isdead) {
 		return;
 	}
 	// Override the CAMERA only — leave prop->pos alone so the corpse stays
@@ -1836,11 +1952,9 @@ void netSpectateApply(void)
 	const f32 TWO_PI = 6.2831853071795865f;
 	const f32 thetaRad = TWO_PI - chrGetInverseTheta(t);
 
-	// Eye height: prop->pos is roughly at the chr's feet so lift the cam
-	// up to head height for a sensible first-person ride-along. 150 ≈
-	// stock human eye; Skedar / Mini-Skedar look off but acceptable.
+	// For PROPTYPE_PLAYER, prop->pos.y is set by bondmovePlayer to
+	// groundy + vv_eyeheight — already at eye level. No Y offset needed.
 	struct coord eyepos = t->prop->pos;
-	eyepos.y += 150.f;
 
 	// Look direction: forward vector derived from yaw. cam_up is world up.
 	const f32 sinT = sinf(thetaRad);
@@ -2099,6 +2213,7 @@ s32 netConsoleCommand(const char *line)
 // alone (suicide / environment); in that case the line renders as
 // "victim [died]" with the victim in red and "[died]" in white.
 static struct netkillfeedentry g_NetKillFeed[NET_KILLFEED_MAX];
+struct netlobbystate g_NetLobbyState;
 
 // Colour palette — keep saturated so each name reads at a glance even at
 // extra-small console-font size. Alpha 0xff: the feed is short-lived so
@@ -2216,8 +2331,15 @@ Gfx *netKillFeedRender(Gfx *gdl)
 		s32 x = leftMargin;
 		s32 y = topMargin + visible * lineHeight;
 
-		const u32 shooter_col = netKillFeedTeamColor(e->shooter_team, NET_KILLFEED_COL_SHOOTER);
-		const u32 victim_col = netKillFeedTeamColor(e->victim_team, NET_KILLFEED_COL_VICTIM);
+		// Local player appears red; everyone else appears green. Team games
+		// override with team colours regardless of local/remote.
+		const char *myname = g_NetLocalClient ? g_NetLocalClient->settings.name : NULL;
+		const u32 shooter_fallback = (myname && strcmp(e->shooter, myname) == 0)
+				? NET_KILLFEED_COL_VICTIM : NET_KILLFEED_COL_SHOOTER;
+		const u32 victim_fallback = (myname && strcmp(e->victim, myname) == 0)
+				? NET_KILLFEED_COL_VICTIM : NET_KILLFEED_COL_SHOOTER;
+		const u32 shooter_col = netKillFeedTeamColor(e->shooter_team, shooter_fallback);
+		const u32 victim_col = netKillFeedTeamColor(e->victim_team, victim_fallback);
 
 		if (e->shooter[0]) {
 			// "Shooter > Victim" — three segments, each with its own colour.
@@ -2323,7 +2445,7 @@ Gfx *netDebugRender(Gfx *gdl)
 	if (g_NetSimLagMs > 0 || g_NetSimPacketLoss > 0 || g_NetLagQueueDropped > 0) {
 		off += snprintf(tmp + off, sizeof(tmp) - off,
 			"** SIM ACTIVE ** lag=%dms loss=1/%d qdrop=%d\n"
-			"   ENet ping does not include /lag — check /netinfo on each side\n",
+			"   ENet ping does not include /lag - check /netinfo on each side\n",
 			g_NetSimLagMs, g_NetSimPacketLoss, g_NetLagQueueDropped);
 	}
 
@@ -2420,6 +2542,14 @@ Gfx *netDebugRender(Gfx *gdl)
 				i, chr->prop->syncid, p->x, p->y, p->z,
 				weapon, target, chr->maxdamage - chr->damage);
 			++numSims;
+		}
+	}
+
+	// Strip non-ASCII bytes — textRenderProjected on NTSC treats them as JPN
+	// multibyte codepoints, which crashes on non-JPN builds.
+	for (s32 i = 0; i < off; ++i) {
+		if ((u8)tmp[i] >= 0x80) {
+			tmp[i] = '?';
 		}
 	}
 

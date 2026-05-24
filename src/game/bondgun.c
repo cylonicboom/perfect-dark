@@ -2363,12 +2363,23 @@ bool bgunTickIncAttackingThrow(s32 handnum, struct hand *hand)
 			}
 
 			if (func->base.fire_animation) {
+#ifndef PLATFORM_N64
+				// Remote players have their animation driven by received state;
+				// calling bgunStartAnimation for them crashes because their
+				// weapon gset may be partially synced, leaving fire_animation
+				// pointing at unmapped memory.
+				if (!g_Vars.currentplayer->isremote)
+#endif
 				bgunStartAnimation(func->base.fire_animation, handnum, hand);
 				hand->unk0cc8_01 = true;
 			}
 		}
 
-		if (func->base.fire_animation) {
+		if (func->base.fire_animation
+#ifndef PLATFORM_N64
+				&& !g_Vars.currentplayer->isremote
+#endif
+		) {
 			if (hand->triggerreleased) {
 				hand->unk0cc8_01 = false;
 			}

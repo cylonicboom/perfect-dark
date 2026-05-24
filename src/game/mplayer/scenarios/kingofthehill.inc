@@ -309,6 +309,17 @@ void kohTick(void)
 			padnum = 0;
 
 			if (g_ScenarioData.koh.hillcount >= 2) {
+#ifndef PLATFORM_N64
+				// Client: wait for SVC_KOH_STATE from the server to learn the
+				// new hill. Using rngRandom here would diverge from the server
+				// because both sides have consumed different amounts of RNG
+				// since stage start. Keep movehill=true and return; kohTick
+				// will spin here harmlessly until the server's state arrives
+				// and clears movehill.
+				if (g_NetMode == NETMODE_CLIENT) {
+					return;
+				}
+#endif
 				previndex = g_ScenarioData.koh.hillindex;
 
 				do {
@@ -336,6 +347,13 @@ void kohTick(void)
 			g_ScenarioData.koh.occupiedteam = -1;
 			g_ScenarioData.koh.elapsed240 = 0;
 			g_ScenarioData.koh.movehill = false;
+#ifndef PLATFORM_N64
+			// Push the new hill state to all clients immediately so they can
+			// highlight the correct room without waiting for the periodic sync.
+			if (g_NetMode == NETMODE_SERVER) {
+				netmsgSvcKohStateWrite(&g_NetMsgRel);
+			}
+#endif
 		}
 	} else {
 		// The hill is not moving on this frame

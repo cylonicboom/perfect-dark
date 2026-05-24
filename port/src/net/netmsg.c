@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include "net/netenet.h"
 #include "types.h"
 #include "data.h"
 #include "bss.h"
@@ -12,6 +13,9 @@
 #include "game/chraction.h"
 #include "game/prop.h"
 #include "game/propobj.h"
+#include "game/explosions.h"
+#include "game/dlights.h"
+#include "game/lang.h"
 #include "game/player.h"
 #include "game/playermgr.h"
 #include "game/bondgun.h"
@@ -347,6 +351,69 @@ u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl)
 	srccl->settings.headnum = headnum;
 	srccl->settings.fovy = fovy;
 	srccl->settings.fovzoommult = fovzoommult;
+
+	return src->error;
+}
+
+u32 netmsgClcHitWrite(struct netbuf *dst, struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset, s16 hitpart, s16 side, s16 *arg10)
+{
+	netbufWriteU8(dst, CLC_HIT);
+	netbufWriteU32(dst, g_NetTick);
+	netbufWriteU32(dst, chr->prop->syncid);
+	netbufWriteF32(dst, damage);
+	netbufWriteCoord(dst, vector);
+	netbufWriteGset(dst, gset);
+	netbufWriteS16(dst, hitpart);
+	netbufWriteS16(dst, side);
+	netbufWriteS16(dst, arg10 ? arg10[0] : 0);
+	netbufWriteS16(dst, arg10 ? arg10[1] : 0);
+	netbufWriteS16(dst, arg10 ? arg10[2] : 0);
+	return dst->error;
+}
+
+u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u32 tick          = netbufReadU32(src);
+	const u32 target_syncid = netbufReadU32(src);
+	const f32 damage        = netbufReadF32(src);
+	struct coord vector; netbufReadCoord(src, &vector);
+	struct gset gset; netbufReadGset(src, &gset);
+	const s16 hitpart = netbufReadS16(src);
+	const s16 side    = netbufReadS16(src);
+	s16 arg10[3];
+	arg10[0] = netbufReadS16(src);
+	arg10[1] = netbufReadS16(src);
+	arg10[2] = netbufReadS16(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME || g_NetMode != NETMODE_SERVER) {
+		return src->error;
+	}
+
+	// Reject hits whose tick falls outside the lag-compensation buffer.
+	if (g_NetTick > tick && g_NetTick - tick > NET_LAGCOMP_SIZE) {
+		return src->error;
+	}
+
+	// Find the target chr prop by syncid.
+	struct prop *target = NULL;
+	for (s32 i = 0; i < g_Vars.maxprops && !target; ++i) {
+		if (g_Vars.props[i].syncid == target_syncid &&
+				(g_Vars.props[i].type == PROPTYPE_CHR || g_Vars.props[i].type == PROPTYPE_PLAYER)) {
+			target = &g_Vars.props[i];
+		}
+	}
+
+	if (!target || !target->chr) {
+		return src->error;
+	}
+
+	// Enqueue for chrDamage in netEndFrame (after buffer reset, before flush)
+	// so SVC_CHR_DAMAGE is actually broadcast to clients. Calling chrDamage
+	// here during event processing would have it write to g_NetMsgRel just
+	// before netStartFrame resets the buffer, discarding the broadcast.
+	netServerEnqueueHit(target, damage, &vector, &gset, hitpart, side, arg10,
+			(srccl->playernum < MAX_PLAYERS) ? (s32)srccl->playernum : -1,
+			srccl->player ? srccl->player->prop : NULL);
 
 	return src->error;
 }
@@ -692,12 +759,28 @@ u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 		return dst->error;
 	}
 
+	const struct netplayermove *inmove = &movecl->inmove[movecl->inmove_head];
+	const bool has_force = (movecl->outmove[0].ucmd & UCMD_FL_FORCEMASK) != 0;
+
 	netbufWriteU8(dst, SVC_PLAYER_MOVE);
 	netbufWriteU8(dst, movecl->id);
-	netbufWriteU32(dst, movecl->inmove[movecl->inmove_head].tick);
-	netbufWritePlayerMove(dst, &movecl->outmove[0]);
-	if (movecl->outmove[0].ucmd & UCMD_FL_FORCEMASK) {
-		netbufWriteRooms(dst, movecl->player->prop->rooms, ARRAYCOUNT(movecl->player->prop->rooms));
+	netbufWriteU32(dst, inmove->tick);
+
+	if (!has_force && inmove->tick) {
+		// Echo the client's own last CLC_MOVE back. The client's netCspReconcile
+		// compares this against its self-recorded CSP history at inmove->tick —
+		// the values are identical so error = 0 and no correction fires.
+		// Sending outmove[0] (server extrapolation) instead causes CSP to see
+		// large positional drift at high latency (21 ticks at 350ms), firing a
+		// hard snap every frame and producing the slide/snap-back behaviour.
+		netbufWritePlayerMove(dst, inmove);
+	} else {
+		// Force correction (respawn, kill plane, initial state) or no CLC_MOVE
+		// received yet (server's own player). Send the authoritative server state.
+		netbufWritePlayerMove(dst, &movecl->outmove[0]);
+		if (has_force) {
+			netbufWriteRooms(dst, movecl->player->prop->rooms, ARRAYCOUNT(movecl->player->prop->rooms));
+		}
 	}
 
 	return dst->error;
@@ -852,18 +935,34 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 	pl->bondhealth = newhealth;
 	pl->bondshotspeed = newshotspeed;
 
+	// Skip applying ammo to the local player. The client already decrements
+	// ammo when it fires locally, so the server's reply — delayed by RTT —
+	// arrives carrying the pre-shot value and bounces the counter back up.
+	// Health/damage/shield above are still applied because those are fully
+	// server-authoritative (the client doesn't predict them). Ammo from
+	// pickups and reloads stays correct because the local game code runs
+	// those same paths on the client.
+	const bool islocal = (actcl == g_NetLocalClient);
+
 	for (s32 i = 0; i < 2; ++i) {
 		if (handused[i]) {
-			pl->hands[i].loadedammo[0] = netbufReadS16(src);
-			pl->hands[i].loadedammo[1] = netbufReadS16(src);
+			const s16 ammo0 = netbufReadS16(src);
+			const s16 ammo1 = netbufReadS16(src);
+			if (!islocal) {
+				pl->hands[i].loadedammo[0] = ammo0;
+				pl->hands[i].loadedammo[1] = ammo1;
+			}
 		}
 	}
 
 	const u32 ammomask = netbufReadU32(src);
 	for (s32 i = 0; i < ARRAYCOUNT(pl->ammoheldarr); ++i) {
 		if (i >= 32 || (ammomask & (1 << i))) {
-			pl->ammoheldarr[i] = netbufReadS16(src);
-		} else {
+			const s16 ammo = netbufReadS16(src);
+			if (!islocal) {
+				pl->ammoheldarr[i] = ammo;
+			}
+		} else if (!islocal) {
 			pl->ammoheldarr[i] = 0;
 		}
 	}
@@ -1959,6 +2058,10 @@ u32 netmsgSvcChrDamageRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	if (!chrprop || !chrprop->chr) {
+		return src->error;
+	}
+
 	const bool damageshield = (flags & (1 << 0)) != 0;
 	const bool explosion = (flags & (1 << 1)) != 0;
 
@@ -2322,4 +2425,306 @@ u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl)
 		}
 	}
 	return src->error;
+}
+
+// SVC_KOH_STATE: server broadcasts the authoritative King of the Hill state so
+// clients track the same hill position, occupying team, and timer. Sent on
+// every hill change and periodically as a keep-alive. The color-tween fracs
+// are NOT sent — clients derive them locally from occupiedteam, which is
+// enough for them to converge on the right room tint.
+u32 netmsgSvcKohStateWrite(struct netbuf *dst)
+{
+	const struct scenariodata_koh *koh = &g_ScenarioData.koh;
+	netbufWriteU8(dst, SVC_KOH_STATE);
+	netbufWriteS16(dst, koh->hillindex);
+	netbufWriteS16(dst, koh->hillrooms[0]);
+	netbufWriteS16(dst, koh->hillrooms[1]);
+	netbufWriteCoord(dst, &koh->hillpos);
+	netbufWriteU8(dst, koh->movehill ? 1 : 0);
+	netbufWriteS16(dst, koh->occupiedteam);
+	netbufWriteS16(dst, koh->elapsed240);
+	return dst->error;
+}
+
+u32 netmsgSvcKohStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	const s16 hillindex  = netbufReadS16(src);
+	const s16 hillroom0  = netbufReadS16(src);
+	const s16 hillroom1  = netbufReadS16(src);
+	struct coord hillpos;
+	netbufReadCoord(src, &hillpos);
+	const u8 movehill      = netbufReadU8(src);
+	const s16 occupiedteam = netbufReadS16(src);
+	const s16 elapsed240   = netbufReadS16(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+	if (g_MpSetup.scenario != MPSCENARIO_KINGOFTHEHILL) {
+		return 0;
+	}
+
+	struct scenariodata_koh *koh = &g_ScenarioData.koh;
+
+	// Only touch room lighting when the hill position actually changes.
+	// During a movehill transition the light ops are handled by kohTick's
+	// color-fade path; we only apply HIGHLIGHT when the new hill lands.
+	const s16 old_room = koh->hillrooms[0];
+	const bool room_changed = (hillroom0 != old_room);
+
+	koh->hillindex    = hillindex;
+	koh->hillrooms[0] = hillroom0;
+	koh->hillrooms[1] = hillroom1;
+	koh->hillpos      = hillpos;
+	koh->movehill     = movehill;
+	koh->occupiedteam = occupiedteam;
+	koh->elapsed240   = elapsed240;
+
+	if (!movehill && room_changed) {
+		// Old room reverts to natural; new room highlighted.
+		if (old_room >= 0) {
+			roomSetLightOp(old_room, LIGHTOP_NONE, 0, 0, 0);
+		}
+		if (hillroom0 >= 0) {
+			roomSetLightOp(hillroom0, LIGHTOP_HIGHLIGHT, 0, 0, 0);
+		}
+	}
+
+	return src->error;
+}
+
+// SVC_EXPLOSION: server notifies clients of an explosion visual at a world
+// position. Used when a timer-detonated networked prop (phoenix secondary,
+// grenade, etc.) explodes — the weapon's propExplode runs server-side only,
+// so clients need an explicit event to spawn the local particle effect.
+u32 netmsgSvcExplosionWrite(struct netbuf *dst, s32 exptype, const struct coord *pos, const RoomNum *rooms)
+{
+	netbufWriteU8(dst, SVC_EXPLOSION);
+	netbufWriteS16(dst, (s16)exptype);
+	netbufWriteCoord(dst, pos);
+	netbufWriteS16(dst, rooms[0]);
+	return dst->error;
+}
+
+u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl)
+{
+	const s16 exptype = netbufReadS16(src);
+	struct coord pos;
+	netbufReadCoord(src, &pos);
+	const s16 room = netbufReadS16(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	RoomNum rooms[2] = { room, -1 };
+	explosionCreateComplex(NULL, &pos, rooms, exptype, 0);
+	return src->error;
+}
+
+// SVC_LOBBY_STATE: server periodically broadcasts current game setup to
+// clients in CLSTATE_LOBBY so they can display live info while waiting.
+// All display strings are pre-resolved here so the client render path is
+// simple. Sent every ~60 ticks and when a new client enters the lobby.
+u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
+{
+	static const char *const scenarioNames[] = {
+		"Combat", "Hold the Briefcase", "Hacker Central",
+		"Pop-A-Cap", "King of the Hill", "Capture the Case",
+	};
+
+	// Helper: copy src into buf (max len), strip embedded '\n' width markers.
+	#define LOBBY_COPY(buf, src, len) \
+		do { \
+			strncpy((buf), (src) ? (src) : "", (len) - 1); \
+			(buf)[(len) - 1] = '\0'; \
+			for (s32 _i = 0; (buf)[_i]; _i++) { \
+				if ((buf)[_i] == '\n') { (buf)[_i] = '\0'; break; } \
+			} \
+		} while (0)
+
+	char sbuf[NET_LOBBY_ARENANAME_LEN];
+
+	netbufWriteU8(dst, SVC_LOBBY_STATE);
+
+	netbufWriteU8(dst, g_MpSetup.scenario);
+	netbufWriteU8(dst, g_MpSetup.stagenum);
+	netbufWriteU32(dst, g_MpSetup.options);
+	netbufWriteU8(dst, g_MpSetup.scorelimit);
+	netbufWriteU8(dst, g_MpSetup.timelimit);
+	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
+
+	// Arena name: search g_MpArenas for the current stagenum
+	const char *arena_raw = "?";
+	for (s32 i = 0; i < 17; i++) {
+		if (g_MpArenas[i].stagenum == g_MpSetup.stagenum) {
+			arena_raw = langGet(g_MpArenas[i].name);
+			break;
+		}
+	}
+	LOBBY_COPY(sbuf, arena_raw, sizeof(sbuf));
+	netbufWriteStr(dst, sbuf);
+
+	// Scenario name
+	const char *scen_raw = (g_MpSetup.scenario < (u8)ARRAYCOUNT(scenarioNames))
+		? scenarioNames[g_MpSetup.scenario] : "?";
+	netbufWriteStr(dst, scen_raw);
+
+	// Weapon set name
+	LOBBY_COPY(sbuf, mpGetWeaponSetName(mpGetWeaponSet()), sizeof(sbuf));
+	netbufWriteStr(dst, sbuf);
+
+	// Per-slot weapon names (6 slots)
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		char wbuf[NET_LOBBY_WPNNAME_LEN];
+		LOBBY_COPY(wbuf, mpGetWeaponLabel(g_MpSetup.weapons[i]), sizeof(wbuf));
+		netbufWriteStr(dst, wbuf);
+	}
+
+	// Connected clients: name, ping, team
+	s32 numclients = 0;
+	for (s32 i = 0; i < g_NetMaxClients; i++) {
+		if (g_NetClients[i].state >= CLSTATE_LOBBY) { numclients++; }
+	}
+	netbufWriteU8(dst, (u8)numclients);
+	for (s32 i = 0; i < g_NetMaxClients; i++) {
+		const struct netclient *cl = &g_NetClients[i];
+		if (cl->state < CLSTATE_LOBBY) { continue; }
+		char nbuf[NET_MAX_NAME];
+		LOBBY_COPY(nbuf, cl->settings.name, sizeof(nbuf));
+		netbufWriteStr(dst, nbuf);
+		netbufWriteU16(dst, (u16)(cl->peer ? enet_peer_get_rtt(cl->peer) : 0u));
+		netbufWriteU8(dst, cl->settings.team);
+	}
+
+	// Active bots: name, team, difficulty
+	s32 numbots = 0;
+	for (s32 i = 0; i < MAX_BOTS; i++) {
+		if (g_BotConfigsArray[i].difficulty != BOTDIFF_DISABLED) { numbots++; }
+	}
+	netbufWriteU8(dst, (u8)numbots);
+	for (s32 i = 0; i < MAX_BOTS; i++) {
+		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
+		if (bot->difficulty == BOTDIFF_DISABLED) { continue; }
+		char nbuf[NET_MAX_NAME];
+		LOBBY_COPY(nbuf, bot->base.name, sizeof(nbuf));
+		netbufWriteStr(dst, nbuf);
+		netbufWriteU8(dst, bot->base.team);
+		netbufWriteU8(dst, bot->difficulty);
+	}
+
+	// Team names (always sent; client renders them if MPOPTION_TEAMSENABLED)
+	for (s32 i = 0; i < MAX_TEAMS; i++) {
+		char tbuf[NET_LOBBY_TEAMNAME_LEN];
+		LOBBY_COPY(tbuf, g_BossFile.teamnames[i], sizeof(tbuf));
+		netbufWriteStr(dst, tbuf);
+	}
+
+	#undef LOBBY_COPY
+	return dst->error;
+}
+
+u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 scenario        = netbufReadU8(src);
+	const u8 stagenum        = netbufReadU8(src);
+	const u32 options        = netbufReadU32(src);
+	const u8 scorelimit      = netbufReadU8(src);
+	const u8 timelimit       = netbufReadU8(src);
+	const u16 teamscorelimit = netbufReadU16(src);
+
+	// Pre-resolved display strings
+	const char *arena_name   = netbufReadStr(src);
+	const char *scen_name    = netbufReadStr(src);
+	const char *wpnset_name  = netbufReadStr(src);
+	const char *wpn_names[NUM_MPWEAPONSLOTS];
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		wpn_names[i] = netbufReadStr(src);
+	}
+
+	// Clients
+	const u8 num_clients = netbufReadU8(src);
+	struct netlobbyclient clients[NET_MAX_CLIENTS];
+	const u8 ncl = (num_clients < NET_MAX_CLIENTS) ? num_clients : NET_MAX_CLIENTS;
+	for (s32 i = 0; i < ncl; i++) {
+		const char *name = netbufReadStr(src);
+		const u16 ping   = netbufReadU16(src);
+		const u8 team    = netbufReadU8(src);
+		strncpy(clients[i].name, name ? name : "", NET_MAX_NAME - 1);
+		clients[i].name[NET_MAX_NAME - 1] = '\0';
+		clients[i].ping = ping;
+		clients[i].team = team;
+	}
+
+	// Bots
+	const u8 num_bots = netbufReadU8(src);
+	struct netlobbybot bots[MAX_BOTS];
+	const u8 nbt = (num_bots < MAX_BOTS) ? num_bots : MAX_BOTS;
+	for (s32 i = 0; i < nbt; i++) {
+		const char *name = netbufReadStr(src);
+		const u8 team    = netbufReadU8(src);
+		const u8 diff    = netbufReadU8(src);
+		strncpy(bots[i].name, name ? name : "", NET_MAX_NAME - 1);
+		bots[i].name[NET_MAX_NAME - 1] = '\0';
+		bots[i].team       = team;
+		bots[i].difficulty = diff;
+	}
+
+	// Team names
+	char teamnames[MAX_TEAMS][NET_LOBBY_TEAMNAME_LEN];
+	for (s32 i = 0; i < MAX_TEAMS; i++) {
+		const char *name = netbufReadStr(src);
+		strncpy(teamnames[i], name ? name : "", NET_LOBBY_TEAMNAME_LEN - 1);
+		teamnames[i][NET_LOBBY_TEAMNAME_LEN - 1] = '\0';
+	}
+
+	if (src->error) {
+		return src->error;
+	}
+	// Discard stale packets that arrive after the game has already started.
+	if (srccl->state != CLSTATE_LOBBY) {
+		return 0;
+	}
+
+	g_NetLobbyState.valid          = 1;
+	g_NetLobbyState.scenario       = scenario;
+	g_NetLobbyState.stagenum       = stagenum;
+	g_NetLobbyState.options        = options;
+	g_NetLobbyState.scorelimit     = scorelimit;
+	g_NetLobbyState.timelimit      = timelimit;
+	g_NetLobbyState.teamscorelimit = teamscorelimit;
+
+	strncpy(g_NetLobbyState.arena_name, arena_name ? arena_name : "?",
+		NET_LOBBY_ARENANAME_LEN - 1);
+	g_NetLobbyState.arena_name[NET_LOBBY_ARENANAME_LEN - 1] = '\0';
+
+	strncpy(g_NetLobbyState.scenario_name, scen_name ? scen_name : "?",
+		NET_LOBBY_SCENNAME_LEN - 1);
+	g_NetLobbyState.scenario_name[NET_LOBBY_SCENNAME_LEN - 1] = '\0';
+
+	strncpy(g_NetLobbyState.weaponset_name, wpnset_name ? wpnset_name : "?",
+		NET_LOBBY_WPNSETNAME_LEN - 1);
+	g_NetLobbyState.weaponset_name[NET_LOBBY_WPNSETNAME_LEN - 1] = '\0';
+
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		strncpy(g_NetLobbyState.weapon_names[i], wpn_names[i] ? wpn_names[i] : "?",
+			NET_LOBBY_WPNNAME_LEN - 1);
+		g_NetLobbyState.weapon_names[i][NET_LOBBY_WPNNAME_LEN - 1] = '\0';
+	}
+
+	g_NetLobbyState.num_clients = ncl;
+	for (s32 i = 0; i < ncl; i++) {
+		g_NetLobbyState.clients[i] = clients[i];
+	}
+
+	g_NetLobbyState.num_bots = nbt;
+	for (s32 i = 0; i < nbt; i++) {
+		g_NetLobbyState.bots[i] = bots[i];
+	}
+
+	for (s32 i = 0; i < MAX_TEAMS; i++) {
+		memcpy(g_NetLobbyState.teamnames[i], teamnames[i], NET_LOBBY_TEAMNAME_LEN);
+	}
+
+	return 0;
 }

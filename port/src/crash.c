@@ -84,6 +84,40 @@ static ULONGLONG crashGetPreferredImageBase(void)
 	return cached;
 }
 
+// Find the addr2line binary. Checks PATH first, then common MSYS2 locations.
+// _popen uses cmd.exe which doesn't inherit the MSYS2 shell PATH, so the tool
+// is often only findable via its install path.
+static const char *crashFindAddr2Line(void)
+{
+	static char path[MAX_PATH] = "";
+	static int tried = 0;
+	if (tried) {
+		return path[0] ? path : NULL;
+	}
+	tried = 1;
+
+	// Try PATH first.
+	if (SearchPathA(NULL, "addr2line.exe", NULL, sizeof(path), path, NULL)) {
+		return path;
+	}
+
+	// Common MSYS2 MinGW64 install locations.
+	static const char *candidates[] = {
+		"C:\\msys64\\mingw64\\bin\\addr2line.exe",
+		"C:\\msys2\\mingw64\\bin\\addr2line.exe",
+		"C:\\tools\\msys64\\mingw64\\bin\\addr2line.exe",
+	};
+	for (int i = 0; i < (int)(sizeof(candidates) / sizeof(candidates[0])); ++i) {
+		if (GetFileAttributesA(candidates[i]) != INVALID_FILE_ATTRIBUTES) {
+			strncpy(path, candidates[i], sizeof(path) - 1);
+			return path;
+		}
+	}
+
+	path[0] = '\0';
+	return NULL;
+}
+
 // Try to resolve a main-exe module offset using addr2line. Appends one or
 // more "      function at file:line" lines (one per inline expansion level)
 // into the crash message buffer. Silently no-ops if addr2line isn't on PATH
@@ -91,7 +125,8 @@ static ULONGLONG crashGetPreferredImageBase(void)
 static void crashAppendDwarf(char *msg, DWORD *msglenp, uintptr_t modofs)
 {
 	const char *exe = crashGetMainExePath();
-	if (!exe) {
+	const char *a2l = crashFindAddr2Line();
+	if (!exe || !a2l) {
 		return;
 	}
 
@@ -102,8 +137,8 @@ static void crashAppendDwarf(char *msg, DWORD *msglenp, uintptr_t modofs)
 	char cmd[1024];
 	// -f function names, -p one-line pretty print, -i include inline chain.
 	// Redirect stderr so a missing tool / bad path doesn't pollute the dump.
-	snprintf(cmd, sizeof(cmd), "addr2line -e \"%s\" -f -p -i 0x%llx 2>NUL",
-		exe, dwarfAddr);
+	snprintf(cmd, sizeof(cmd), "\"%s\" -e \"%s\" -f -p -i 0x%llx 2>NUL",
+		a2l, exe, dwarfAddr);
 
 	FILE *p = _popen(cmd, "r");
 	if (!p) {

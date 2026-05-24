@@ -4238,6 +4238,17 @@ bool propExplode(struct prop *prop, s32 exptype)
 		result = explosionCreateComplex(NULL, &prop->pos, prop->rooms, exptype, playernum);
 	}
 
+#ifndef PLATFORM_N64
+	// Broadcast the explosion to clients when this is a server-owned networked
+	// prop. propExplode is called server-side only (weapon tick runs on server);
+	// clients see the effect via SVC_EXPLOSION. Use prop->pos for the wire
+	// position — close enough for timer-detonated projectiles that are near
+	// their logical position when they detonate.
+	if (g_NetMode == NETMODE_SERVER && prop->syncid) {
+		netmsgSvcExplosionWrite(&g_NetMsgRel, exptype, &prop->pos, prop->rooms);
+	}
+#endif
+
 	return result;
 }
 

@@ -224,7 +224,14 @@ void menuTick(void)
 #ifndef PLATFORM_N64
 				if (g_NetMode) {
 					g_Vars.mpsetupmenu = MPSETUPMENU_ADVSETUP;
-					g_MpSetup.chrslots = 1;
+					// Server: preserve bot slots (bits 8-15) so sims reappear in the
+					// lobby after a match ends. Client resets fully because it shows the
+					// join-waiting screen, not the setup menu.
+					if (g_NetMode == NETMODE_SERVER) {
+						g_MpSetup.chrslots = (g_MpSetup.chrslots & 0xff00) | 1;
+					} else {
+						g_MpSetup.chrslots = 1;
+					}
 				} else
 #endif
 				if (g_Vars.usingadvsetup) {

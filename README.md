@@ -24,7 +24,7 @@
 > - `port/src/pdmain.c` — `netInit` placement, per-subsystem diag-log trail around stage init
 >
 > **Modified — game logic (`src/game/`):**
-> - `src/game/bondwalk.c` — `bwalkUpdateRemote` rewritten for 8-snapshot ring-buffer position interpolation
+> - `src/game/bondwalk.c` — `bwalkUpdateRemote` rewritten for 8-snapshot ring-buffer position interpolation; early return on server when `UCMD_FL_FORCEMASK` is set (prevents overwriting the authoritative spawn position with the client's stale death-point inmove on frames T+1+ after respawn)
 > - `src/game/bondmove.c` — `bmoveProcessRemoteInput` uses ring buffer; speeds lerp, angles snap, animation snaps when server diverges
 > - `src/game/bondgun.c` — `bgunPlayGunSound` routes remote players' weapon sounds through `psCreate` (positional) instead of `sndStart`; guard `bgunStartAnimation` for remote players (crash on partially-synced weapon gset `fire_animation` pointer)
 > - `src/game/chraction.c` — `SVC_CHR_FIRE` broadcast at sim shot on/off transitions, sim action-tick skipped on client; `func0f0341dc` sends `CLC_HIT` to server on client instead of silently dropping; `chrDie` skips `botinvDropAll` on client to preserve weapon syncids for in-flight `SVC_PROP_MOVE`

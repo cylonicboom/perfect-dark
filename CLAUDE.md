@@ -384,6 +384,10 @@ The anim fields are deliberately excluded from `netClientNeedMove`'s change-dete
 - `src/game/chraction.c` — **`chrUpdateFireslot` broadcasts `SVC_CHR_FIRE(soundnum>0)` on sim shot transitions; `chrTickShoot` broadcasts `SVC_CHR_FIRE(soundnum=0)` on off-transitions**; `chraTick` skips the per-action dispatch (`chrTickStand` etc.) for sim bots on the client so it can't clobber synced anim/yrot
 - `port/src/console.c` — `/`-prefixed lines route to `netConsoleCommand` for local netplay/debug commands (e.g., `/lag`, `/loss`, `/diag`, `/netinfo`); **scrollback via PageUp / PageDown / Home / End: 80-line ring buffer (`CON_ROWS`), half-page step (`CON_VISROWS / 2`), edge-triggered so a held key doesn't fly through; while scrolled the prompt prefix shows `[-N]`; closing the console or submitting a line snaps back to the live tail; new lines arriving while scrolled keep the view anchored to the same absolute rows (tmux-style) rather than auto-advancing**
 - `port/src/crash.c` — fallback to `addr2line` on Windows when DbgHelp lacks symbols, so MinGW DWARF debug info still produces function names + file:line on crash
+- `src/include/constants.h` — added `MPOPTION_NOCULL 0x10000000`: disables portal-based room culling in multiplayer
+- `src/game/bg.c` — `bgTickPortals()` early path (inside `if (!g_BgRoomTestsDisabled)`) skips the portal traversal and marks every room onscreen when `g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOCULL)`; the 60-slot `g_BgDrawSlots` hard cap in `bgSetRoomOnscreen` safely truncates rooms beyond 60 so there's no out-of-bounds risk
+- `src/game/mplayer/scenarios/combat.inc` — new "No Room Culling" checkbox (port-only, `MENUITEMFLAG_LITERAL_TEXT`) using `menuhandlerMpCheckboxOption` with `param3=MPOPTION_NOCULL`; added after "Controllers Only" inside `#ifndef PLATFORM_N64`
+- `port/src/net/netmenu.c` — `No Room Culling` added to the lobby active-options summary string (shown in the net lobby when the option is on)
 
 ### Known Limitations
 

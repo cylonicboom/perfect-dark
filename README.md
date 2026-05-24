@@ -7,7 +7,7 @@
 > server-authoritative kill/score feed, an outgoing-latency simulator, a
 > diagnostic CSV log, `/lag` / `/loss` / `/diag` console commands, client-reported
 > hits (`CLC_HIT`), lobby state display, server favourites list, King of the Hill
-> sync, explosion sync, client respawn fix, and various fixes. Full design notes,
+> sync, explosion sync, client respawn fix, no-room-culling combat option, and various fixes. Full design notes,
 > rationale, and known limitations are in [CLAUDE.md](CLAUDE.md).
 >
 > **Added on this branch:**
@@ -34,7 +34,10 @@
 > - `src/game/menutick.c` — preserve bot slot bits (`0xff00`) when net server returns from match to lobby; was resetting `chrslots = 1` and clearing all simulants
 > - `src/game/mplayer/mplayer.c` — dedicated RNG seed for `mpChooseTrack` to keep music in sync; `g_BotBodies[]` table for random body selection in `mpCreateBotFromProfile`
 > - `src/game/mplayer/scenarios.c` — includes `net.h`/`netmsg.h` for KoH sync
+> - `src/game/mplayer/scenarios/combat.inc` — "No Room Culling" checkbox (port-only) added to Combat Options menu; bypasses portal graph and marks every room visible each frame when enabled
 > - `src/game/mplayer/scenarios/kingofthehill.inc` — clients skip RNG hill selection and wait for `SVC_KOH_STATE` (prevents divergence); server broadcasts new hill state immediately on change
+> - `src/include/constants.h` — `MPOPTION_NOCULL 0x10000000` added
+> - `src/game/bg.c` — `bgTickPortals()` bypasses portal traversal and marks all rooms visible when `MPOPTION_NOCULL` is active in a multiplayer match (port-only; 60-slot draw-slot cap still applies)
 > - `src/game/mpstats.c` — gate `mpchrconfig` stat writes to server only, broadcast `SVC_KILL` / `SVC_SCORE`
 >
 > Inline comments throughout these files explain the WHY — constraints, tradeoffs,

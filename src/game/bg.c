@@ -5845,6 +5845,13 @@ void bgTickPortals(void)
 		bgCmdExecute(g_BgCommands);
 
 		if (!g_BgRoomTestsDisabled) {
+#ifndef PLATFORM_N64
+			if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOCULL)) {
+				for (room = 1; room < g_Vars.roomcount; room++) {
+					bgSetRoomOnscreen(room, 0, &box);
+				}
+			} else
+#endif
 			if (g_BgPortals[0].verticesoffset == 0) {
 				for (room = 1; room < g_Vars.roomcount; room++) {
 					if (bgRoomIntersectsScreenBox(room, &box)

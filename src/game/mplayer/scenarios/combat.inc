@@ -101,6 +101,18 @@ struct menuitem g_MpCombatOptionsMenuItems[] = {
 		MPOPTION_CONTROLLERS_ONLY,
 		menuhandlerMpCheckboxOption,
 	},
+	{
+		// Bypasses portal-based room culling: every room is marked onscreen
+		// every frame so nothing is hidden by the visibility graph. Fixes
+		// cases where a gap or window lets you see into a room the portal
+		// graph would normally cull. Costs extra draw calls on large maps.
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Room Culling",
+		MPOPTION_NOCULL,
+		menuhandlerMpCheckboxOption,
+	},
 #endif
 	{
 		MENUITEMTYPE_SEPARATOR,

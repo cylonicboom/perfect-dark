@@ -2929,6 +2929,12 @@
 // propagates the setting to every client; each client gates its own input
 // reads against the bit.
 #define MPOPTION_CONTROLLERS_ONLY       0x08000000
+// Disables portal-based room culling in multiplayer: marks every room onscreen
+// each frame so nothing is back-face culled by the portal graph. Useful for
+// maps where room visibility culls areas a player can physically see through a
+// gap or window. Performance cost scales with room count — use with caution on
+// large maps. PLATFORM_N64 ignores this bit (N64 portal culling is mandatory).
+#define MPOPTION_NOCULL                 0x10000000
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

@@ -533,6 +533,18 @@ void playerStartNewLife(void)
 
 	hudmsgsSetOn(0xffffffff);
 
+#ifndef PLATFORM_N64
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.currentplayer->prop) {
+		// Client: do not pick a new spawn position. The server sends the
+		// authoritative spawn via SVC_PLAYER_MOVE force flags. Running
+		// scenarioChooseSpawnLocation here produces a client-local spawn that
+		// diverges from the server; the echo-back CSP path never corrects it
+		// because the server echoes the client's own position (error = 0).
+		pos = g_Vars.currentplayer->prop->pos;
+		roomsCopy(g_Vars.currentplayer->prop->rooms, rooms);
+		angle = g_Vars.currentplayer->vv_theta * M_BADTAU / 360.0f;
+	} else
+#endif
 	angle = M_BADTAU - scenarioChooseSpawnLocation(30, &pos, rooms, g_Vars.currentplayer->prop); // var7f1ad534
 
 	groundy = cdFindGroundInfoAtCyl(&pos, 30, rooms,

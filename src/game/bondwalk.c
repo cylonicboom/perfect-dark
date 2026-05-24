@@ -55,6 +55,19 @@ static void bwalkUpdateRemote(void)
 	struct player *pl = g_Vars.currentplayer;
 	struct netclient *cl = pl->client;
 
+	// Server: when a force correction is pending (playerStartNewLife just ran,
+	// set UCMD_FL_FORCEMASK on player->ucmd), prop->pos holds the authoritative
+	// spawn position. Do not override it with the client's stale inmove here —
+	// the client's CLC_MOVE still reports the death position for several frames
+	// until the force correction packet propagates and the client starts sending
+	// from the new spawn. Without this guard, bwalkUpdateRemote fires every
+	// lvTickPlayer frame and writes DEATH_POS back into prop->pos, so every
+	// subsequent SVC_PLAYER_MOVE (which carries prop->pos) "force-corrects" the
+	// client to the death point rather than the spawn.
+	if (g_NetMode == NETMODE_SERVER && (pl->ucmd & UCMD_FL_FORCEMASK)) {
+		return;
+	}
+
 	const u32 head = cl->inmove_head;
 	const struct netplayermove *inmove = &cl->inmove[head];
 	const struct netplayermove *inmoveprev = &cl->inmove[(head + NET_SNAPSHOT_COUNT - 1) % NET_SNAPSHOT_COUNT];

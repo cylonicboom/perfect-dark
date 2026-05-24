@@ -7,8 +7,8 @@
 > server-authoritative kill/score feed, an outgoing-latency simulator, a
 > diagnostic CSV log, `/lag` / `/loss` / `/diag` console commands, client-reported
 > hits (`CLC_HIT`), lobby state display, server favourites list, King of the Hill
-> sync, explosion sync, and various fixes. Full design notes, rationale, and known
-> limitations are in [CLAUDE.md](CLAUDE.md).
+> sync, explosion sync, client respawn fix, and various fixes. Full design notes,
+> rationale, and known limitations are in [CLAUDE.md](CLAUDE.md).
 >
 > **Added on this branch:**
 > - `CLAUDE.md` — netplay design notes, branch state, environment + code-writing guidelines
@@ -30,7 +30,7 @@
 > - `src/game/chraction.c` — `SVC_CHR_FIRE` broadcast at sim shot on/off transitions, sim action-tick skipped on client; `func0f0341dc` sends `CLC_HIT` to server on client instead of silently dropping; `chrDie` skips `botinvDropAll` on client to preserve weapon syncids for in-flight `SVC_PROP_MOVE`
 > - `src/game/prop.c` — sims tick via `chrTick` (not `botTick`) on client, lag-compensation hooks in `shotCalculateHits`; server skips `chrHit` for remote-player shots (CLC_HIT path handles those to avoid double-damage)
 > - `src/game/propobj.c` — tick remote-client projectiles on the server; `propExplode` broadcasts `SVC_EXPLOSION` for networked props
-> - `src/game/player.c` — `inmove[0]` → `inmove[inmove_head]` fixes for respawn logic
+> - `src/game/player.c` — `inmove[0]` → `inmove[inmove_head]` fixes for respawn logic; `playerStartNewLife` skips `scenarioChooseSpawnLocation` on `NETMODE_CLIENT` — keeps current position so the server's force-correction `SVC_PLAYER_MOVE` is the sole authority on spawn placement (without this, a client-chosen local spawn diverged from the server's and the echo-back CSP path never corrected it, causing clients to respawn at or near the death point)
 > - `src/game/menutick.c` — preserve bot slot bits (`0xff00`) when net server returns from match to lobby; was resetting `chrslots = 1` and clearing all simulants
 > - `src/game/mplayer/mplayer.c` — dedicated RNG seed for `mpChooseTrack` to keep music in sync; `g_BotBodies[]` table for random body selection in `mpCreateBotFromProfile`
 > - `src/game/mplayer/scenarios.c` — includes `net.h`/`netmsg.h` for KoH sync

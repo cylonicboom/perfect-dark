@@ -113,6 +113,18 @@ struct menuitem g_MpCombatOptionsMenuItems[] = {
 		MPOPTION_NOCULL,
 		menuhandlerMpCheckboxOption,
 	},
+	{
+		// Removes the 60-room draw-slot cap so every room above slot 59 gets its
+		// own dedicated draw call instead of being merged into slot 59's scissor
+		// region. Only meaningful with No Room Culling enabled (the portal graph
+		// naturally keeps visible room counts well under 60 otherwise).
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Draw Slot Limit",
+		MPOPTION_NOOMLIMIT,
+		menuhandlerMpCheckboxOption,
+	},
 #endif
 	{
 		MENUITEMTYPE_SEPARATOR,

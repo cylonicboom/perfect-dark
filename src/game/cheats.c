@@ -14,6 +14,9 @@
 #include "data.h"
 #include "string.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+extern bool g_BgNoDrawSlotLimit;
+#endif
 
 u32 g_CheatsActiveBank0;
 u32 g_CheatsActiveBank1;
@@ -102,13 +105,33 @@ struct cheat g_Cheats[] = {
 	{ L_MPWEAPONS_116, WEAPON_RCP45,      0,                             0,       CHEATFLAG_FIRINGRANGE                        }, // RC-P45
 #ifndef PLATFORM_N64
 	{ L_MPWEAPONS_215, 0,                 SOLOSTAGEINDEX_EXTRACTION,     DIFF_A,  CHEATFLAG_COMPLETION                         }, // Dual wield all guns
+	// Developer/testing cheats: always unlocked (no mission completion required).
+	// CHEAT_NOCULL also calls gamefileUnlockEverything() on activation so every
+	// stage, cheat and weapon is available immediately for testing campaigns.
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Room Culling (CHEAT_NOCULL)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Draw Slot Limit (CHEAT_NODRAWLIMIT)
 #endif
 };
+
+#ifndef PLATFORM_N64
+// Literal names for always-unlocked port-only cheats. Indexed by cheat_id.
+// Entries for all other cheat IDs are NULL (use the lang string instead).
+static const char *const s_cheat_literal_names[] = {
+	[CHEAT_NOCULL]      = "No Room Culling",
+	[CHEAT_NODRAWLIMIT] = "No Draw Slot Limit",
+};
+#endif
 
 u32 cheatIsUnlocked(s32 cheat_id)
 {
 	struct cheat *cheat = &g_Cheats[cheat_id];
 	u32 unlocked = 0;
+
+#ifndef PLATFORM_N64
+	if (cheat->flags & CHEATFLAG_ALWAYSUNLOCKED) {
+		return 1;
+	}
+#endif
 
 	if (cheat->flags & CHEATFLAG_FIRINGRANGE) {
 		if (frIsClassicWeaponUnlocked(cheat->time)) {
@@ -177,6 +200,16 @@ void cheatActivate(s32 cheat_id)
 			setCurrentPlayerNum(prevplayernum);
 		}
 		break;
+#ifndef PLATFORM_N64
+	case CHEAT_NOCULL:
+		// Unlock all game content so every stage, cheat and weapon is available
+		// for testing. Harmless to call multiple times (idempotent).
+		gamefileUnlockEverything();
+		break;
+	case CHEAT_NODRAWLIMIT:
+		g_BgNoDrawSlotLimit = true;
+		break;
+#endif
 	}
 
 	if (cheat_id < 32) {
@@ -214,6 +247,11 @@ void cheatDeactivate(s32 cheat_id)
 			setCurrentPlayerNum(prevplayernum);
 		}
 		break;
+#ifndef PLATFORM_N64
+	case CHEAT_NODRAWLIMIT:
+		g_BgNoDrawSlotLimit = false;
+		break;
+#endif
 	}
 
 	if (cheat_id < 32) {
@@ -389,10 +427,26 @@ MenuItemHandlerResult cheatMenuHandleBuddyCheckbox(s32 operation, struct menuite
 	return 0;
 }
 
+#ifndef PLATFORM_N64
+// Returns the cheat's display name: uses the literal name table for always-unlocked
+// port-only cheats, falls back to the lang string for all others.
+static char *cheatGetName(s32 cheat_id)
+{
+	if ((size_t)cheat_id < ARRAYCOUNT(s_cheat_literal_names) && s_cheat_literal_names[cheat_id]) {
+		return (char *)s_cheat_literal_names[cheat_id];
+	}
+	return langGet(g_Cheats[cheat_id].nametextid);
+}
+#endif
+
 char *cheatGetNameIfUnlocked(struct menuitem *item)
 {
 	if (cheatIsUnlocked(item->param)) {
+#ifndef PLATFORM_N64
+		return cheatGetName(item->param);
+#else
 		return langGet(g_Cheats[item->param].nametextid);
+#endif
 	}
 
 	return langGet(L_MPWEAPONS_074); // "----------"
@@ -494,6 +548,22 @@ char *cheatGetMarquee(struct menuitem *arg0)
 	char *ptr;
 	char difficultyname[256];
 	char cheatname[256];
+
+#ifndef PLATFORM_N64
+	// Port-only always-unlocked cheats have no lang string; handle them before
+	// the VERSION-conditional code below which would call langGet(nametextid=0).
+	if (g_Menus[g_MpPlayerNum].curdialog
+			&& g_Menus[g_MpPlayerNum].curdialog->focuseditem
+			&& g_Menus[g_MpPlayerNum].curdialog->focuseditem->type == MENUITEMTYPE_CHECKBOX) {
+		s32 early_id = (s32)g_Menus[g_MpPlayerNum].curdialog->focuseditem->param;
+		if ((size_t)early_id < ARRAYCOUNT(g_Cheats) && (g_Cheats[early_id].flags & CHEATFLAG_ALWAYSUNLOCKED)) {
+			sprintf(g_CheatMarqueeString, "%s %s\n",
+					langGet(L_MPWEAPONS_136), // "Cheat available"
+					cheatGetName(early_id));
+			return g_CheatMarqueeString;
+		}
+	}
+#endif
 
 #if VERSION >= VERSION_JPN_FINAL
 	s32 len;
@@ -1097,6 +1167,28 @@ struct menuitem g_CheatsGameplayMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
 		CHEAT_DUALWIELDALLGUNS,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		// Bypasses portal-based room culling so every room renders every frame.
+		// Also calls gamefileUnlockEverything() on activation, making all
+		// missions, cheats and weapons available for campaign testing.
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_NOCULL,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		// Removes the 60-room draw-slot cap. Only meaningful alongside
+		// CHEAT_NOCULL or on maps where more than 60 rooms are simultaneously
+		// visible (extremely rare without culling disabled).
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_NODRAWLIMIT,
 		0,
 		(uintptr_t)&cheatGetNameIfUnlocked,
 		0,

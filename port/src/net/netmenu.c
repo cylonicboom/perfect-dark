@@ -275,6 +275,7 @@ static char *menutextLobbyLine(struct menuitem *item)
 			{ MPOPTION_NODRUGBLUR,        "No Drug Blur"     },
 			{ MPOPTION_CONTROLLERS_ONLY,  "Controllers Only" },
 			{ MPOPTION_NOCULL,            "No Room Culling"  },
+			{ MPOPTION_NOOMLIMIT,         "No Draw Limit"    },
 			{ MPOPTION_TEAMSENABLED,      "Teams"            },
 		};
 		char opts[220];

@@ -48,6 +48,7 @@
 #include "system.h"
 #include "video.h"
 #include "platform.h"
+#include "game/cheats.h"
 #endif
 
 #define BGCMD_END                               0x00
@@ -86,7 +87,14 @@
 #define VTXBATCHTYPE_OPA 0x01
 #define VTXBATCHTYPE_XLU 0x02
 
+#ifdef PLATFORM_N64
 struct drawslot g_BgDrawSlots[61];
+#else
+// 256 slots: indices 0-254 are usable draw slots; index 255 is the special
+// full-screen bbox sentinel (g_BgSpecialDrawSlot). The extra capacity is only
+// used when g_BgNoDrawSlotLimit is set by CHEAT_NODRAWLIMIT or MPOPTION_NOOMLIMIT.
+struct drawslot g_BgDrawSlots[256];
+#endif
 u8 *g_BgPrimaryData;
 u32 var800a4920;
 u32 g_BgSection3;
@@ -127,10 +135,21 @@ s32 g_NumRoomsWithGlares = 0;
 u32 var8007fc18 = 0x01000100;
 u32 var8007fc1c = 0;
 s32 g_CamRoom = 1;
+#ifdef PLATFORM_N64
 struct drawslot *g_BgSpecialDrawSlot = &g_BgDrawSlots[60];
+#else
+struct drawslot *g_BgSpecialDrawSlot = &g_BgDrawSlots[255];
+#endif
 s32 g_BgLoadCandidateTimer240 = 0;
 s32 g_BgNumDrawSlots = 0;
 s32 g_BgNumAttemptedDrawSlots = 0;
+#ifndef PLATFORM_N64
+// Set each frame in bgTickPortals from CHEAT_NOCULL/NODRAWLIMIT and MPOPTION_NOCULL/NOOMLIMIT.
+// Read by bgSetRoomOnscreen; explicit globals so callers inside bgTickPortals don't
+// need extra parameters.
+bool g_BgNoCull = false;
+bool g_BgNoDrawSlotLimit = false;
+#endif
 s32 g_BgMostAttemptedDrawSlots = 0;
 s32 g_BgNumRoomLoadCandidates = 0;
 u16 g_BgFrameCount = 0xfffe;
@@ -189,10 +208,10 @@ void bgSetRoomOnscreen(s32 roomnum, s32 draworder, struct screenbox *box)
 #endif
 
 		if (g_Rooms[roomnum].flags & ROOMFLAG_BBOXHACK) {
-			box->xmin = g_BgDrawSlots[60].box.xmin;
-			box->ymin = g_BgDrawSlots[60].box.ymin;
-			box->xmax = g_BgDrawSlots[60].box.xmax;
-			box->ymax = g_BgDrawSlots[60].box.ymax;
+			box->xmin = g_BgSpecialDrawSlot->box.xmin;
+			box->ymin = g_BgSpecialDrawSlot->box.ymin;
+			box->xmax = g_BgSpecialDrawSlot->box.xmax;
+			box->ymax = g_BgSpecialDrawSlot->box.ymax;
 		}
 
 		if (g_BgFrameCount == g_BgDrawSlotsByRoom[roomnum].updatedframe) {
@@ -214,6 +233,14 @@ void bgSetRoomOnscreen(s32 roomnum, s32 draworder, struct screenbox *box)
 		} else {
 			index = g_BgNumDrawSlots;
 
+#ifndef PLATFORM_N64
+			if (g_BgNoDrawSlotLimit) {
+				// Extended cap: 254 usable slots (0-254); slot 255 is the sentinel.
+				if (index > 254) {
+					index = 254;
+				}
+			} else
+#endif
 			if (index > 59) {
 				index = 59;
 			}
@@ -239,6 +266,13 @@ void bgSetRoomOnscreen(s32 roomnum, s32 draworder, struct screenbox *box)
 
 			g_BgNumAttemptedDrawSlots++;
 
+#ifndef PLATFORM_N64
+			if (g_BgNoDrawSlotLimit) {
+				if (g_BgNumAttemptedDrawSlots < 255) {
+					g_BgNumDrawSlots = g_BgNumAttemptedDrawSlots;
+				}
+			} else
+#endif
 			if (g_BgNumAttemptedDrawSlots < 60) {
 				g_BgNumDrawSlots = g_BgNumAttemptedDrawSlots;
 			}
@@ -982,8 +1016,13 @@ Gfx *bgRenderScene(Gfx *gdl)
 	struct prop *prop;
 	s16 tmp;
 	RoomNum *room;
+#ifdef PLATFORM_N64
 	s16 roomorder[60];
 	RoomNum roomnums[60];
+#else
+	s16 roomorder[255];
+	RoomNum roomnums[255];
+#endif
 
 #ifdef PLATFORM_N64
 	g_NumRoomsWithGlares = 0;
@@ -5837,16 +5876,22 @@ void bgTickPortals(void)
 		g_BgSnake.headindex = 0;
 		g_BgSnake.tailindex = 0;
 		g_BgRoomTestsDisabled = false;
-		g_BgDrawSlots[60].box.xmin = box.xmin;
-		g_BgDrawSlots[60].box.ymin = box.ymin;
-		g_BgDrawSlots[60].box.xmax = box.xmax;
-		g_BgDrawSlots[60].box.ymax = box.ymax;
+		g_BgSpecialDrawSlot->box.xmin = box.xmin;
+		g_BgSpecialDrawSlot->box.ymin = box.ymin;
+		g_BgSpecialDrawSlot->box.xmax = box.xmax;
+		g_BgSpecialDrawSlot->box.ymax = box.ymax;
+#ifndef PLATFORM_N64
+		g_BgNoCull = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOCULL))
+		          || cheatIsActive(CHEAT_NOCULL);
+		g_BgNoDrawSlotLimit = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOOMLIMIT))
+		                   || cheatIsActive(CHEAT_NODRAWLIMIT);
+#endif
 
 		bgCmdExecute(g_BgCommands);
 
 		if (!g_BgRoomTestsDisabled) {
 #ifndef PLATFORM_N64
-			if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOCULL)) {
+			if (g_BgNoCull) {
 				for (room = 1; room < g_Vars.roomcount; room++) {
 					bgSetRoomOnscreen(room, 0, &box);
 				}

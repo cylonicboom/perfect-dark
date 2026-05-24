@@ -474,12 +474,18 @@
 #define CHEAT_AR53                   40
 #define CHEAT_RCP45                  41
 #define CHEAT_DUALWIELDALLGUNS       42
+// Port-only debug/testing cheats — always unlocked, no mission completion required
+#define CHEAT_NOCULL                 43
+#define CHEAT_NODRAWLIMIT            44
 
-#define CHEATFLAG_TIMED       0
-#define CHEATFLAG_ALWAYSON    1
-#define CHEATFLAG_TRANSFERPAK 2
-#define CHEATFLAG_COMPLETION  4
-#define CHEATFLAG_FIRINGRANGE 8
+#define CHEATFLAG_TIMED           0
+#define CHEATFLAG_ALWAYSON        1
+#define CHEATFLAG_TRANSFERPAK     2
+#define CHEATFLAG_COMPLETION      4
+#define CHEATFLAG_FIRINGRANGE     8
+// Port-only: cheat is always available without completing any missions.
+// Used for developer/testing cheats that should be accessible from a fresh profile.
+#define CHEATFLAG_ALWAYSUNLOCKED  16
 
 #define CHECKSUM_PLACEHOLDER 0x99aabbcc
 
@@ -2935,6 +2941,12 @@
 // gap or window. Performance cost scales with room count — use with caution on
 // large maps. PLATFORM_N64 ignores this bit (N64 portal culling is mandatory).
 #define MPOPTION_NOCULL                 0x10000000
+// Removes the 60-room draw-slot cap in multiplayer. Normally bgSetRoomOnscreen
+// merges all rooms beyond slot 59 into a single draw call, so maps with many
+// simultaneously-visible rooms render incorrectly. This option removes the cap
+// so every room gets its own slot. Requires MPOPTION_NOCULL to be meaningful
+// (the portal graph naturally keeps visible-room counts well under 60).
+#define MPOPTION_NOOMLIMIT              0x20000000
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

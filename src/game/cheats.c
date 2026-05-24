@@ -427,26 +427,10 @@ MenuItemHandlerResult cheatMenuHandleBuddyCheckbox(s32 operation, struct menuite
 	return 0;
 }
 
-#ifndef PLATFORM_N64
-// Returns the cheat's display name: uses the literal name table for always-unlocked
-// port-only cheats, falls back to the lang string for all others.
-static char *cheatGetName(s32 cheat_id)
-{
-	if ((size_t)cheat_id < ARRAYCOUNT(s_cheat_literal_names) && s_cheat_literal_names[cheat_id]) {
-		return (char *)s_cheat_literal_names[cheat_id];
-	}
-	return langGet(g_Cheats[cheat_id].nametextid);
-}
-#endif
-
 char *cheatGetNameIfUnlocked(struct menuitem *item)
 {
 	if (cheatIsUnlocked(item->param)) {
-#ifndef PLATFORM_N64
 		return cheatGetName(item->param);
-#else
-		return langGet(g_Cheats[item->param].nametextid);
-#endif
 	}
 
 	return langGet(L_MPWEAPONS_074); // "----------"
@@ -928,6 +912,11 @@ s32 cheatGetTime(s32 cheat_id)
 #if VERSION >= VERSION_NTSC_1_0
 char *cheatGetName(s32 cheat_id)
 {
+#ifndef PLATFORM_N64
+	if ((size_t)cheat_id < ARRAYCOUNT(s_cheat_literal_names) && s_cheat_literal_names[cheat_id]) {
+		return (char *)s_cheat_literal_names[cheat_id];
+	}
+#endif
 	return langGet(g_Cheats[cheat_id].nametextid);
 }
 #endif

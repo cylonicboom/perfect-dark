@@ -75,6 +75,7 @@
 #include "system.h"
 #include "console.h"
 #include "net/net.h"
+#include "spectator.h"
 #include "net/netmsg.h"
 
 extern u8 *g_MempHeap;
@@ -445,6 +446,35 @@ void mainLoop(void)
 			if (getNumPlayers() >= 2) {
 				numplayers = getNumPlayers();
 			}
+
+			// Host spectator mode: allocate enough struct player slots for the
+			// remote combatants AND the host's 1-4 panel viewports. Combatants
+			// keep the low slot indices [0..combatants-1] so cl->playernum maps
+			// straight to g_Vars.players[cl->playernum] (netPlayersAllocate
+			// stays unchanged). Panels go at high slot indices
+			// [combatants..combatants+panels-1] and spectatorAllocatePanels
+			// reorders g_Vars.playerorder so they render first in lvRender's
+			// per-player loop. Without this room, a connecting remote has no
+			// struct player on the host (cl->player would land on a panel slot
+			// and get nulled by the spectator guard) — they'd be invisible /
+			// unspectatable in the world. Source of truth is
+			// g_NetLocalClient->is_spectator because g_MpSetup is wiped by
+			// mpsetupLoadCurrentFile. Excluded on STAGE_CITRAINING (Combat Sim
+			// setup menu) because playermgr.c also excludes it from
+			// spectatorAllocatePanels.
+			if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator
+					&& g_StageNum != STAGE_CITRAINING) {
+				s32 panels = g_SpectatorPanelCount;
+				if (panels < 1) panels = 1;
+				if (panels > SPEC_MAX_PANELS) panels = SPEC_MAX_PANELS;
+				// mpStartMatch already wrote the combatant count via setNumPlayers
+				// (chrslots popcount, host excluded). numplayers reflects that here
+				// unless the default path forced it to 1 — fall back to 0 if so
+				// since the spectator host never combats itself.
+				const s32 combatants = (getNumPlayers() > 0) ? getNumPlayers() : 0;
+				numplayers = combatants + panels;
+				if (numplayers > MAX_PLAYERS) numplayers = MAX_PLAYERS;
+			}
 		}
 
 		if (numplayers < 2) {
@@ -482,14 +512,32 @@ void mainLoop(void)
 			mpReset();
 		} else if (g_Vars.mplayerisrunning == false
 				&& (numplayers >= 2 || g_Vars.lvmpbotlevel || argFindByPrefix(1, "-play"))) {
-			g_MpSetup.chrslots = 1;
+#ifndef PLATFORM_N64
+			// Spectator host: mpStartMatch already populated chrslots with just
+			// the combatant bits (host excluded, remotes assigned slots from 0
+			// upward). The numplayers we have here is combatants + panels (the
+			// spectator inflation a few lines above), so the unconditional
+			// rebuild below would mark every panel slot as a combatant — and
+			// that chrslots gets sent to clients in SVC_STAGE_START, causing
+			// them to allocate ghost player slots, and locally would make
+			// setup.c walk panel slot indices looking for spawn pads. Leave
+			// chrslots as mpStartMatch wrote it and only run mpReset.
+			if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator
+					&& g_StageNum != STAGE_CITRAINING) {
+				g_MpSetup.stagenum = g_StageNum;
+				mpReset();
+			} else
+#endif
+			{
+				g_MpSetup.chrslots = 1;
 
-			for (s32 i = 1; i < numplayers; ++i) {
-				g_MpSetup.chrslots |= 1 << i;
+				for (s32 i = 1; i < numplayers; ++i) {
+					g_MpSetup.chrslots |= 1 << i;
+				}
+
+				g_MpSetup.stagenum = g_StageNum;
+				mpReset();
 			}
-
-			g_MpSetup.stagenum = g_StageNum;
-			mpReset();
 		}
 
 		// Per-subsystem reset trail. lvReset is the heaviest (loads stage
@@ -625,6 +673,11 @@ void mainTick(void)
 			if (mt_log) { netDiagLogf("mt_shuffle_post", ""); }
 
 			if (g_StageNum < STAGE_TITLE) {
+				// Spectator input runs once per frame (not per panel) — it
+				// only modifies the active panel's freecam state. Cheap no-op
+				// when the host isn't spectating.
+				spectatorReadInput();
+
 				for (i = 0; i < PLAYERCOUNT(); i++) {
 					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 
@@ -636,7 +689,15 @@ void mainTick(void)
 					}
 
 					if (mt_log) { netDiagLogf("mt_lvtickplayer_pre", "i=%d cp=%d", i, g_Vars.currentplayernum); }
-					lvTickPlayer();
+					if (g_Vars.currentplayer && g_Vars.currentplayer->is_spectator) {
+						// Spectator panels have no prop / no mpchr — lvTickPlayer
+						// would deref prop->pos and crash. spectatorTickPanel
+						// runs the minimum needed: cam pose + matrices for
+						// lvRender to read this frame.
+						spectatorTickPanel(g_Vars.currentplayer->spectator_panel);
+					} else {
+						lvTickPlayer();
+					}
 					if (mt_log) { netDiagLogf("mt_lvtickplayer_post", "i=%d", i); }
 				}
 			}

@@ -1449,10 +1449,19 @@ void netPlayersAllocate(void)
 
 	if (g_NetMode == NETMODE_CLIENT) {
 		// we always put the local player at index 0, even client-side
-		// which means that clientside we have to put the server's player into our slot
-		const s32 svplayernum = g_NetLocalClient->playernum;
-		g_NetLocalClient->playernum = 0;
-		g_NetClients[0].playernum = svplayernum;
+		// which means that clientside we have to put the server's player into our slot.
+		// Skip the swap if either the local client or the host (g_NetClients[0])
+		// is a spectator. The local-spectator case has no slot to swap into. The
+		// host-spectator case is different: the host has no playernum (sentinel
+		// 0xFE) and the local client is already at slot 0 on the wire because
+		// netPlayersAllocate-on-server skipped the spectator host when assigning
+		// sequential combatant playernums. Swapping would clobber g_NetClients[0]'s
+		// sentinel with a valid slot index that doesn't match its (NULL) player.
+		if (!g_NetLocalClient->is_spectator && !g_NetClients[0].is_spectator) {
+			const s32 svplayernum = g_NetLocalClient->playernum;
+			g_NetLocalClient->playernum = 0;
+			g_NetClients[0].playernum = svplayernum;
+		}
 	}
 
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
@@ -1461,8 +1470,23 @@ void netPlayersAllocate(void)
 			continue;
 		}
 
+		// Spectator clients have no mpchr / no player config — skip slot
+		// assignment entirely. They keep the sentinel playernum so any code
+		// that indexes g_PlayerConfigsArray / g_Vars.players by playernum
+		// blows up loudly instead of silently corrupting slot 0xFE.
+		if (cl->is_spectator) {
+			if (g_NetMode == NETMODE_SERVER) {
+				cl->playernum = NET_PLAYERNUM_SPECTATOR;
+			}
+			cl->config = NULL;
+			cl->player = NULL;
+			continue;
+		}
+
 		if (g_NetMode == NETMODE_SERVER) {
-			// on the server allocate players sequentially
+			// on the server allocate players sequentially (spectators were
+			// skipped above so playernum stays a dense [0..g_NetNumClients) range
+			// of combatants only)
 			cl->playernum = playernum++;
 		}
 
@@ -1475,6 +1499,8 @@ void netPlayersAllocate(void)
 			cfg->base.mpheadnum = cl->settings.headnum;
 			snprintf(cfg->base.name, sizeof(cfg->base.name), "%s\n", cl->settings.name);
 			// take some of the options from our local player and others from the client
+			// Source from the first combatant config (host slot may be unused
+			// in spectator mode, but config index 0 is still safe to read).
 			cfg->options = g_PlayerConfigsArray[0].options & OPTION_PAINTBALL;
 			cfg->options |= cl->settings.options & ~OPTION_PAINTBALL;
 			// don't enable toggle aim, invert pitch or lookahead for remote players
@@ -1485,6 +1511,11 @@ void netPlayersAllocate(void)
 		cl->config = &g_PlayerConfigsArray[cl->playernum];
 		cl->config->client = cl;
 		cl->config->handicap = 0x80;
+		// Combatants and panels live in disjoint g_Vars.players[] ranges on
+		// the spectator host (combatants at [0..N-1] = cl->playernum, panels
+		// at [N..N+P-1]) so cl->player binds straight to its combatant slot
+		// without colliding with a panel. spectatorAllocatePanels runs after
+		// this and tags the high slots.
 		cl->player = g_Vars.players[cl->playernum];
 		if (cl->player) {
 			cl->player->client = cl;
@@ -1531,9 +1562,15 @@ void netSyncIdsAllocate(void)
 			netDisconnect();
 			return;
 		}
-		const u16 sid = g_NetClients[0].player->prop->syncid;
-		g_NetClients[0].player->prop->syncid = g_NetLocalClient->player->prop->syncid;
-		g_NetLocalClient->player->prop->syncid = sid;
+		// Skip the swap when the host is a spectator — they have no prop on
+		// the wire, so g_NetClients[0].player is NULL and there's nothing to
+		// swap with. The local client is already at slot 0 in this case
+		// (netPlayersAllocate doesn't remap it).
+		if (g_NetClients[0].player && g_NetClients[0].player->prop) {
+			const u16 sid = g_NetClients[0].player->prop->syncid;
+			g_NetClients[0].player->prop->syncid = g_NetLocalClient->player->prop->syncid;
+			g_NetLocalClient->player->prop->syncid = sid;
+		}
 	}
 
 	// g_NetNextSyncId now holds the highest syncid assigned above. propAllocate

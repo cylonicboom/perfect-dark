@@ -12,6 +12,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "spectator.h"
 #endif
 
 void playermgrInit(void)
@@ -76,6 +77,15 @@ void playermgrAllocatePlayers(s32 count)
 		}
 
 #ifndef PLATFORM_N64
+		// Spectator host: tag the freshly-allocated player slots as panel
+		// viewports before netPlayersAllocate runs so the latter can recognise
+		// them via player->is_spectator and skip binding remote clients to
+		// those slots. Order matters here — flipping it lets remote combatants
+		// claim the panel struct and crash on the next bondmove tick.
+		if (spectatorIsActive() && g_StageNum != STAGE_TITLE && g_StageNum != STAGE_CITRAINING) {
+			spectatorAllocatePanels();
+		}
+
 		if (g_NetMode && g_StageNum != STAGE_TITLE && g_StageNum != STAGE_CITRAINING) {
 			netPlayersAllocate();
 		}
@@ -668,6 +678,14 @@ void playermgrAllocatePlayer(s32 index)
 	g_Vars.players[index]->client = NULL;
 	g_Vars.players[index]->ucmd = (g_NetMode == NETMODE_SERVER) ? UCMD_FL_FORCEMASK : 0;
 	g_Vars.players[index]->isremote = false;
+	// playermgrAllocatePlayer uses mempAlloc (no zero-init), so any field not
+	// explicitly assigned here holds whatever garbage was at that address.
+	// is_spectator gates the lvRender early-continue into spectatorRenderPanel —
+	// leaving it uninitialised crashes instantly at boot because the title
+	// screen's player[0] is created here and that branch then runs against an
+	// uninitialised matrix set.
+	g_Vars.players[index]->is_spectator = 0;
+	g_Vars.players[index]->spectator_panel = 0;
 #endif
 
 	g_Vars.bondvisible = true;

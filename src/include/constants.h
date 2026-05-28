@@ -2947,6 +2947,12 @@
 // so every room gets its own slot. Requires MPOPTION_NOCULL to be meaningful
 // (the portal graph naturally keeps visible-room counts well under 60).
 #define MPOPTION_NOOMLIMIT              0x20000000
+// Host spectator mode: when set, the host does not occupy a player slot. The
+// host's netclient is allocated as a spectator (no mpchr, no scoring, no kill
+// feed) and instead drives a 1-4 panel observer view (per-player first-person,
+// free flying cam, or 3D top-down). All 8 wire slots remain available to
+// remote clients and bots. Port-only; PLATFORM_N64 ignores this bit.
+#define MPOPTION_HOSTSPECTATOR          0x40000000
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

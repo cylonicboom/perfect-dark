@@ -129,3 +129,108 @@ Per-file breakdown of the changes made on the `port-net-predict` branch (CSP, en
 
 - fallback to `addr2line` on Windows when DbgHelp lacks symbols
   - so MinGW DWARF debug info still produces function names + file:line on crash
+
+## Host Spectator Mode
+
+Lets the host opt out of being a combatant and instead drive 1-4 panel observer
+views (per-player first-person, free flying cam, or 3D overhead). All 8 wire
+slots remain available to remote clients and bots — the host's slot is genuinely
+freed, not just hidden. Toggled in the lobby; per-panel mode/target cycle via
+in-game C-buttons.
+
+### `src/include/constants.h`
+
+- `MPOPTION_HOSTSPECTATOR 0x40000000` — new bit 30, host-only, port-only
+  - serialised in `g_MpSetup.options` so it propagates via `SVC_STAGE_START`
+
+### `src/include/types.h`
+
+- `struct player` gained `is_spectator` and `spectator_panel` (both `#ifndef PLATFORM_N64`)
+  - drives HUD suppression / lvRender early-continue / lvTickPlayer skip
+  - kept at the end of the existing port-only field block so N64 layout is unaffected
+
+### `port/include/net/net.h`
+
+- `NET_PROTOCOL_VER 27`
+- `NET_PLAYERNUM_SPECTATOR 0xFE` sentinel for the host's netclient
+- `netclient.is_spectator` field
+- `netlobbyclient.is_spectator` field (mirrors above for the lobby UI)
+
+### `port/include/spectator.h` (new)
+
+- `SPEC_MAX_PANELS 4`, `SPEC_MODE_PLAYER/SIM/FREECAM/TOPDOWN` constants
+- `struct spectatorpanel`: mode, target, cam pose (pos/look/up/yaw/pitch/room)
+- `g_SpectatorPanels[4]`, `g_SpectatorPanelCount`, `g_SpectatorActivePanel`
+- `spectatorIsActive`, `spectatorAllocatePanels`, `spectatorFreePanels`,
+  `spectatorTickPanel`, `spectatorReadInput`, `spectatorRenderPanel`,
+  `spectatorCycleTarget`, `spectatorCycleMode`
+
+### `port/src/spectator.c` (new)
+
+- panel state, freecam input integration, per-mode pose updates,
+  target-resolution against `g_NetClients[]` / `g_MpBotChrPtrs[]`
+- gamepad bindings: C-Left/Right cycle target, C-Up/Down cycle mode,
+  Z trigger cycles the active panel, sticks drive freecam (R-trigger boost,
+  D-pad up/down adjusts altitude)
+- `spectatorRenderPanel` is a minimal world-only render (sky + bg + props)
+  that bypasses the chr/HUD-laden per-player body of `lvRender`
+
+### `port/src/net/net.c`
+
+- `netPlayersAllocate` skips spectator clients when assigning sequential
+  combatant playernums
+  - keeps the host's view struct in `g_Vars.players[0..panelcount-1]` but
+    refuses to bind a remote combatant to it (`cl->player = NULL` on spectator
+    slot collision)
+
+### `port/src/net/netmsg.c`
+
+- `SVC_STAGE_START` client manifest: one extra byte per client for the
+  spectator flag (read on every client, forces `playernum =
+  NET_PLAYERNUM_SPECTATOR` when set)
+- `SVC_LOBBY_STATE` per-client block: same extra byte so the lobby UI on
+  remote clients can mark the host as "(spec)" before stage start
+- defensive guards in `SVC_PROP_PICKUP`/`USE`/`DOOR` read handlers — refuse
+  to `setCurrentPlayerNum(actcl->playernum)` if `actcl->is_spectator`
+
+### `port/src/net/netmenu.c`
+
+- new "Spectator Mode" toggle + "Spectator Panels" 1-4 slider in the host
+  dialog
+  - applied in `menuhandlerHostStart`: sets `MPOPTION_HOSTSPECTATOR` on
+    `g_MpSetup.options`, `g_NetLocalClient->is_spectator`, and
+    `g_SpectatorPanelCount`
+- lobby-view player line tags spectators with `(spec)`
+- "Host Spectator" added to the options-list dispatcher
+
+### `src/lib/main.c`
+
+- numplayers selection inflated to `g_SpectatorPanelCount` when host is
+  spectating, so `playermgrAllocatePlayers` creates 1-4 panel viewports
+- viewport loop dispatches `spectatorReadInput` once per frame and
+  `spectatorTickPanel` per panel (replaces `lvTickPlayer`, which would
+  deref `prop->pos` on a panel with no mpchr)
+
+### `src/game/playermgr.c`
+
+- `spectatorAllocatePanels` called after `playermgrAllocatePlayer` loop and
+  before `netPlayersAllocate`, so the `is_spectator` flag is set on the
+  panel slots before remote-client slot binding runs
+
+### `src/game/player.c`
+
+- `playerGetLocalCount` returns `g_SpectatorPanelCount` when host has
+  `MPOPTION_HOSTSPECTATOR` set, so `LOCALPLAYERCOUNT()` drives the existing
+  split-screen quadrant math in `playerGetViewport*()` for the panels
+
+### `src/game/lv.c`
+
+- `lvRender` per-player loop: `is_spectator` early-continue dispatches to
+  `spectatorRenderPanel(gdl)` to avoid the chr/HUD-laden body
+- `lvTick` `SLOWMOTION_SMART` iteration: skip spectator panels (they have
+  no `prop->rooms` to consult)
+
+### `src/game/mplayer/mplayer.c`
+
+- `mpStartMatch`: when `MPOPTION_HOSTSPECTATOR` is set, host doesn't claim
+  slot 0; remote clients fill 0..N-1 instead of 1..N

@@ -2826,6 +2826,15 @@ struct player {
 	/*0x1c84*/ u32 ucmd;
 	/*0x1c88*/ bool isremote;
 	/*0x1c8c*/ struct netclient *client;
+	// Host-spectator panel marker. Non-zero on the host's local panel slots
+	// when MPOPTION_HOSTSPECTATOR is on. Drives HUD suppression
+	// (playerRenderHud / bgunDraw* / radar) and routes lvTickPlayer through
+	// spectatorTickPanel instead of bondmove. Always 0 on the N64 build.
+	u8 is_spectator;
+	// Index into g_SpectatorPanels[] when is_spectator is non-zero; otherwise
+	// undefined. Same value as the slot's index in g_Vars.players[] but kept
+	// explicit so any future re-ordering doesn't silently break the mapping.
+	u8 spectator_panel;
 #endif
 };
 

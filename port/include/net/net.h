@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 26
+#define NET_PROTOCOL_VER 27
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -101,6 +101,10 @@ struct netlobbyclient {
 	char name[NET_MAX_NAME];
 	u16 ping;
 	u8 team;
+	// Non-zero when the client is in host-spectator mode (no mpchr, no scoring).
+	// Mirrored from netclient.is_spectator in SVC_LOBBY_STATE so the lobby UI
+	// on remote clients can mark the host as "(spectator)" before stage start.
+	u8 is_spectator;
 };
 
 struct netlobbybot {
@@ -130,6 +134,14 @@ struct netlobbystate {
 
 #define NET_NULL_CLIENT 0xFF
 #define NET_NULL_PROP 0
+
+// Sentinel playernum for a spectator netclient. Host spectator clients keep a
+// netclient entry (so they receive broadcasts and can chat) but do not occupy
+// a slot in g_PlayerConfigsArray / g_Vars.players / g_MpAllChrPtrs. Code that
+// dereferences cl->playernum against those arrays must guard against this
+// value. netPlayersAllocate skips spectator clients when assigning sequential
+// playernums; remaining 0..MAX_PLAYERS-1 slots are free for combatants.
+#define NET_PLAYERNUM_SPECTATOR 0xFE
 
 #define NETCHAN_DEFAULT 0
 #define NETCHAN_CONTROL 1
@@ -216,6 +228,11 @@ struct netclient {
 	struct mpplayerconfig *config;
 	struct player *player;
 	u8 playernum;
+	// Host spectator flag — when non-zero this client is a non-combatant
+	// observer. config/player are NULL on a spectator and playernum equals
+	// NET_PLAYERNUM_SPECTATOR. Wired in CLC_SETTINGS (lobby) and re-broadcast
+	// in SVC_STAGE_START's per-client manifest so all peers agree.
+	u8 is_spectator;
 
 	struct netplayermove outmove[2]; // last 2 outgoing player inputs, newest one first
 	// Ring buffer of incoming player moves. inmove_head is the index of the

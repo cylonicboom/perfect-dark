@@ -984,6 +984,18 @@ void playerSpawn(void)
 	struct coord sp84;
 	struct coord sp78;
 
+#ifndef PLATFORM_N64
+	// Host spectator panels are local viewport containers, not real combatants.
+	// They have no mpchr / no place on the spawn pads and the rest of this
+	// function would spawn a ghost player chr in the world (which sim AI would
+	// then attack instead of the actual remote combatants, causing visible
+	// desync on clients). spectatorTickPanel drives the cam pose; we don't
+	// need a prop or weapon load for the slot.
+	if (g_Vars.currentplayer && g_Vars.currentplayer->is_spectator) {
+		return;
+	}
+#endif
+
 	g_Vars.currentplayer->deathanimfinished = false;
 	g_Vars.currentplayer->redbloodfinished = false;
 	g_Vars.currentplayer->startnewbonddie = true;
@@ -2942,6 +2954,14 @@ bool playerHasSharedViewport(void)
 {
 #ifndef PLATFORM_N64
 	if (g_NetMode) {
+		// Host spectator mode wants the split-screen quadrant math so each
+		// panel gets its own viewport rect. Without this exemption every
+		// panel reads the full-screen rect from playerGetViewport*() and
+		// they all draw on top of each other — only the last panel survives.
+		if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator
+				&& g_StageNum != STAGE_CITRAINING) {
+			return false;
+		}
 		return true;
 	}
 #endif
@@ -6030,6 +6050,23 @@ s32 playerGetCount(void)
 s32 playerGetLocalCount(void)
 {
 	if (g_NetMode) {
+		// Host spectator mode promotes the host to N panel viewports; the
+		// split-screen quadrant math in playerGetViewport*() is driven by
+		// LOCALPLAYERCOUNT, so return the panel count for the host. Remote
+		// clients always render a single first-person view. Source of truth is
+		// g_NetLocalClient->is_spectator (g_MpSetup is wiped by
+		// mpsetupLoadCurrentFile, so MPOPTION bits don't survive). Excluded
+		// on STAGE_CITRAINING (Combat Sim setup menu) because the panel slots
+		// aren't tagged is_spectator there — see the matching guard in
+		// pdmain.c's numplayers inflation and playermgr.c's
+		// spectatorAllocatePanels call. Forward declarations rather than
+		// including spectator.h to keep this decompiled file's deps small.
+		extern s32 g_SpectatorPanelCount;
+		if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator
+				&& g_StageNum != STAGE_CITRAINING
+				&& g_SpectatorPanelCount >= 1 && g_SpectatorPanelCount <= MAX_LOCAL_PLAYERS) {
+			return g_SpectatorPanelCount;
+		}
 		return 1;
 	}
 	const s32 playercount = playerGetCount();

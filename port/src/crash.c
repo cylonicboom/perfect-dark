@@ -84,9 +84,12 @@ static ULONGLONG crashGetPreferredImageBase(void)
 	return cached;
 }
 
-// Find the addr2line binary. Checks PATH first, then common MSYS2 locations.
-// _popen uses cmd.exe which doesn't inherit the MSYS2 shell PATH, so the tool
-// is often only findable via its install path.
+// Find the addr2line binary. Looked up in this order:
+//   1. Next to the exe (so tester builds can ship addr2line.exe alongside pd
+//      and get symbolised crashes without an MSYS2 install).
+//   2. PATH (devs running from an MSYS2 MinGW64 shell).
+//   3. Common MSYS2 MinGW64 install locations (devs whose PATH doesn't carry
+//      MSYS2 — _popen launches cmd.exe which doesn't inherit the shell PATH).
 static const char *crashFindAddr2Line(void)
 {
 	static char path[MAX_PATH] = "";
@@ -96,12 +99,34 @@ static const char *crashFindAddr2Line(void)
 	}
 	tried = 1;
 
-	// Try PATH first.
+	// 1. Next to the exe.
+	const char *exe = crashGetMainExePath();
+	if (exe) {
+		char local[MAX_PATH];
+		strncpy(local, exe, sizeof(local) - 1);
+		local[sizeof(local) - 1] = '\0';
+		char *slash = strrchr(local, '\\');
+		if (!slash) slash = strrchr(local, '/');
+		if (slash) {
+			// Truncate to directory + append "addr2line.exe".
+			const size_t dirlen = (size_t)(slash - local) + 1;
+			if (dirlen + sizeof("addr2line.exe") <= sizeof(local)) {
+				strcpy(local + dirlen, "addr2line.exe");
+				if (GetFileAttributesA(local) != INVALID_FILE_ATTRIBUTES) {
+					strncpy(path, local, sizeof(path) - 1);
+					path[sizeof(path) - 1] = '\0';
+					return path;
+				}
+			}
+		}
+	}
+
+	// 2. PATH.
 	if (SearchPathA(NULL, "addr2line.exe", NULL, sizeof(path), path, NULL)) {
 		return path;
 	}
 
-	// Common MSYS2 MinGW64 install locations.
+	// 3. Common MSYS2 MinGW64 install locations.
 	static const char *candidates[] = {
 		"C:\\msys64\\mingw64\\bin\\addr2line.exe",
 		"C:\\msys2\\mingw64\\bin\\addr2line.exe",

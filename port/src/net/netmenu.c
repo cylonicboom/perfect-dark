@@ -14,7 +14,9 @@
 #include "input.h"
 #include "config.h"
 #include "mpsetups.h"
+#include "bss.h"
 #include "net/net.h"
+#include "spectator.h"
 
 extern MenuItemHandlerResult menuhandlerMainMenuCombatSimulator(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerMpAdvancedSetup(s32 operation, struct menuitem *item, union handlerdata *data);
@@ -23,6 +25,11 @@ extern struct menudialogdef g_NetJoinPlayerSetupMenuDialog;
 
 static s32 g_NetMenuMaxPlayers = NET_MAX_CLIENTS;
 static s32 g_NetMenuPort = NET_DEFAULT_PORT;
+// Host spectator-mode toggles. The host applies these when starting the
+// server so the first SVC_LOBBY_STATE broadcast already carries the flag.
+// Panel count is host-local — it never goes over the wire.
+static s32 g_NetMenuHostSpectator = 0;
+static s32 g_NetMenuHostPanels = 1;
 static char g_NetJoinAddr[NET_MAX_ADDR + 1];
 static s32 g_NetJoinAddrPtr = 0;
 
@@ -81,13 +88,62 @@ static char *menuhandlerHostPortValue(struct menuitem *item)
 	return tmp;
 }
 
+static MenuItemHandlerResult menuhandlerHostSpectator(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		g_NetMenuHostSpectator = !g_NetMenuHostSpectator;
+	}
+	return 0;
+}
+
+static const char *menutextHostSpectator(struct menuitem *item)
+{
+	return g_NetMenuHostSpectator ? "On\n" : "Off\n";
+}
+
+static MenuItemHandlerResult menuhandlerHostPanels(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_NetMenuHostPanels;
+		break;
+	case MENUOP_SET:
+		if (data->slider.value >= 1 && data->slider.value <= SPEC_MAX_PANELS) {
+			g_NetMenuHostPanels = data->slider.value;
+		}
+		break;
+	}
+	return 0;
+}
+
 MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
 		if (netStartServer(g_NetMenuPort, g_NetMenuMaxPlayers) == 0) {
+			// Stamp spectator state onto the local client. This survives
+			// mpsetupLoadCurrentFile (which clobbers g_MpSetup) and is the
+			// authoritative source the spectator code reads at runtime.
+			if (g_NetLocalClient) {
+				g_NetLocalClient->is_spectator = (u8)(g_NetMenuHostSpectator ? 1 : 0);
+			}
+			g_SpectatorPanelCount = g_NetMenuHostSpectator ? g_NetMenuHostPanels : 1;
+
 			// load the setup file when entering the Combat Simulator
 			mpsetupCopyAllFromPak();
 			mpsetupLoadCurrentFile();
+
+			// mpsetupLoadCurrentFile just overwrote g_MpSetup.options from
+			// disk, so re-apply MPOPTION_HOSTSPECTATOR here. The bit doesn't
+			// gate server-side behaviour (that uses g_NetLocalClient->is_spectator),
+			// but SVC_LOBBY_STATE/SVC_STAGE_START ship g_MpSetup.options as-is
+			// so remote clients can show "Host Spectator" in their options
+			// list.
+			if (g_NetMenuHostSpectator) {
+				g_MpSetup.options |= MPOPTION_HOSTSPECTATOR;
+			} else {
+				g_MpSetup.options &= ~MPOPTION_HOSTSPECTATOR;
+			}
+
 			menuhandlerMainMenuCombatSimulator(MENUOP_SET, NULL, NULL);
 			menuhandlerMpAdvancedSetup(MENUOP_SET, NULL, NULL);
 		}
@@ -112,6 +168,22 @@ struct menuitem g_NetHostMenuItems[] = {
 		(uintptr_t)"Port\n",
 		(uintptr_t)&menuhandlerHostPortValue,
 		menuhandlerHostPort,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Spectator Mode:\n",
+		(uintptr_t)&menutextHostSpectator,
+		menuhandlerHostSpectator,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Spectator Panels",
+		SPEC_MAX_PANELS,
+		menuhandlerHostPanels,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -276,6 +348,7 @@ static char *menutextLobbyLine(struct menuitem *item)
 			{ MPOPTION_CONTROLLERS_ONLY,  "Controllers Only" },
 			{ MPOPTION_NOCULL,            "No Room Culling"  },
 			{ MPOPTION_NOOMLIMIT,         "No Draw Limit"    },
+			{ MPOPTION_HOSTSPECTATOR,     "Host Spectator"   },
 			{ MPOPTION_TEAMSENABLED,      "Teams"            },
 		};
 		char opts[220];
@@ -312,14 +385,15 @@ static char *menutextLobbyLine(struct menuitem *item)
 		} else {
 			snprintf(ping, sizeof(ping), "%dms", (s32)cl->ping);
 		}
+		const char *spec_tag = cl->is_spectator ? " (spec)" : "";
 		if (teams_on && cl->team < MAX_TEAMS) {
-			snprintf(tmp, sizeof(tmp), "%s%s  %s  %s\n",
+			snprintf(tmp, sizeof(tmp), "%s%s%s  %s  %s\n",
 					is_me ? "* " : "  ",
-					cl->name, ping, ls->teamnames[cl->team]);
+					cl->name, spec_tag, ping, ls->teamnames[cl->team]);
 		} else {
-			snprintf(tmp, sizeof(tmp), "%s%s  %s\n",
+			snprintf(tmp, sizeof(tmp), "%s%s%s  %s\n",
 					is_me ? "* " : "  ",
-					cl->name, ping);
+					cl->name, spec_tag, ping);
 		}
 		return tmp;
 	}

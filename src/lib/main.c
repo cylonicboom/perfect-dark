@@ -69,6 +69,11 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#include "spectator.h"
+#include "game/lv.h"
+#endif
 
 // mainLoop calls rngSetSeed with a u32 argument,
 // but the function takes a u64 so an incorrect declaration is needed.
@@ -888,6 +893,20 @@ void mainLoop(void)
 			if (getNumPlayers() >= 2) {
 				numplayers = getNumPlayers();
 			}
+
+#ifndef PLATFORM_N64
+			// Host spectator mode: replace the single local player with up to
+			// SPEC_MAX_PANELS panel viewports. Each panel gets a struct player
+			// slot in g_Vars.players[]; netPlayersAllocate's spectator guard
+			// keeps remote combatants from clobbering them. Source of truth is
+			// g_NetLocalClient->is_spectator — g_MpSetup gets clobbered by
+			// mpsetupLoadCurrentFile so MPOPTION bits don't survive.
+			if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator) {
+				if (g_SpectatorPanelCount >= 1 && g_SpectatorPanelCount <= SPEC_MAX_PANELS) {
+					numplayers = g_SpectatorPanelCount;
+				}
+			}
+#endif
 		}
 
 		if (numplayers < 2) {
@@ -1040,6 +1059,12 @@ void mainTick(void)
 			playermgrShuffle();
 
 			if (g_StageNum < STAGE_TITLE) {
+#ifndef PLATFORM_N64
+				// Spectator input runs once per frame (not per panel) — it
+				// only modifies the active panel's freecam state. Cheap no-op
+				// when the host isn't spectating.
+				spectatorReadInput();
+#endif
 				for (i = 0; i < PLAYERCOUNT(); i++) {
 					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 
@@ -1050,7 +1075,19 @@ void mainTick(void)
 								g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
 					}
 
+#ifndef PLATFORM_N64
+					if (g_Vars.currentplayer && g_Vars.currentplayer->is_spectator) {
+						// Spectator panels have no prop / no mpchr — lvTickPlayer
+						// would deref prop->pos and crash. spectatorTickPanel
+						// runs the minimum needed: cam pose + matrices for
+						// lvRender to read this frame.
+						spectatorTickPanel(g_Vars.currentplayer->spectator_panel);
+					} else {
+						lvTickPlayer();
+					}
+#else
 					lvTickPlayer();
+#endif
 				}
 			}
 

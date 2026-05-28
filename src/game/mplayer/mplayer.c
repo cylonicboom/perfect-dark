@@ -208,8 +208,17 @@ void mpStartMatch(void)
 #ifndef PLATFORM_N64
 	if (g_NetMode == NETMODE_SERVER) {
 		g_MpSetup.chrslots &= 0xff00;
-		g_MpSetup.chrslots |= 1;
-		s32 slot = 1;
+		// In host-spectator mode the host doesn't take slot 0 — clients fill
+		// 0..N-1. Otherwise slot 0 is the host and remotes start at slot 1.
+		// Source of truth is g_NetLocalClient->is_spectator (g_MpSetup is
+		// wiped by mpsetupLoadCurrentFile, so MPOPTION bits don't survive).
+		s32 slot;
+		if (g_NetLocalClient && g_NetLocalClient->is_spectator) {
+			slot = 0;
+		} else {
+			g_MpSetup.chrslots |= 1;
+			slot = 1;
+		}
 		for (s32 i = 1; i < g_NetMaxClients; ++i) {
 			if (g_NetClients[i].state >= CLSTATE_LOBBY) {
 				g_MpSetup.chrslots |= (1 << slot);

@@ -51,6 +51,7 @@
 #include "video.h"
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "spectator.h"
 #endif
 
 void rng2SetSeed(u32 seed);
@@ -3407,6 +3408,16 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 	f32 xrayalphafrac;
 	u8 spec[4];
 	u8 speb = 0;
+
+#ifndef PLATFORM_N64
+	// Spectator first-person hide: skip the spectated target's own model
+	// for the current panel render only. Set by spectatorRenderPanel, cleared
+	// at the end of the same call, so other panels viewing the same chr
+	// (e.g. third-person from another quadrant) still see them.
+	if (g_SpectatorHideChrProp && g_SpectatorHideChrProp == prop) {
+		return gdl;
+	}
+#endif
 
 	// Don't render the eyespy if we're the one controlling it
 	if (CHRRACE(chr) == RACE_EYESPY) {

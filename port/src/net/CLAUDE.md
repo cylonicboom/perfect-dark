@@ -124,6 +124,26 @@ Server seeds RNG at stage start (`g_NetRngSeeds[2]`). Clients receive seeds via 
 
 When `Net.Server.AllowInfoQuery` is set (default: true), the server responds to connectionless UDP packets starting with magic `PDQM\x01` with a status payload: protocol version, player count, max players, stage, scenario, host name, ROM name, mod dir. Used for server browser / status tools.
 
+### Host Spectator Mode
+
+Host can opt out of being a combatant in the lobby ("Spectator Mode: On" + "Spectator Panels: 1..4"). The host's `netclient` keeps a sentinel `playernum = NET_PLAYERNUM_SPECTATOR (0xFE)`, its `config`/`player` stay `NULL`, and `netPlayersAllocate` skips it when assigning sequential playernums — all 8 wire slots remain available to remote clients and bots. `MPOPTION_HOSTSPECTATOR (0x40000000)` rides along with `g_MpSetup.options` and is mirrored in `SVC_STAGE_START`'s per-client manifest (one extra byte per client).
+
+Locally the host runs 1-4 panel viewports allocated as `g_Vars.players[0..N-1]` (`is_spectator = 1`). The `LOCALPLAYERCOUNT()` override returns the panel count so the existing split-screen quadrant math in `playerGetViewport*` lays out the panels. `lvRender`'s per-player loop dispatches to `spectatorRenderPanel` for spectator slots, bypassing the chr/HUD-dependent body.
+
+Per-panel mode is one of `SPEC_MODE_PLAYER` (first-person from another client), `SPEC_MODE_SIM` (first-person from a sim), `SPEC_MODE_FREECAM` (free flying cam), or `SPEC_MODE_TOPDOWN` (freecam pinned overhead). Top-down works because the same `playerAllocateMatrices(pos, look, up)` primitive that eyespy uses also accepts an arbitrary high-altitude pose; combine with `MPOPTION_NOCULL` for clean overhead shots on large maps.
+
+In-game controls (host only, when in spectator mode):
+
+- **Left stick** — pan the active panel's freecam in the local horizontal plane
+- **Right stick** — yaw / pitch the active panel's freecam
+- **R-trigger** — freecam boost (×4 movement)
+- **D-pad up / down** — freecam altitude
+- **C-Left / C-Right** — cycle target player/sim (when active panel is PLAYER or SIM mode)
+- **C-Up / C-Down** — cycle active panel's mode (PLAYER → SIM → FREECAM → TOPDOWN)
+- **Z-trigger** — cycle which panel is active (consumes input)
+
+The `/spec` console command (camera-only spectate of one chr from the *local player's* view) is unrelated — it predates spectator mode and still works for non-spectator clients.
+
 ### Config Keys in pd.ini
 
 ```

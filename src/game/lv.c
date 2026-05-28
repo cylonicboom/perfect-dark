@@ -99,6 +99,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "spectator.h"
 #include "video.h"
 #endif
 
@@ -1170,6 +1171,26 @@ Gfx *lvRender(Gfx *gdl)
 				islastplayer = playercount == nextplayernum;
 			}
 
+#ifndef PLATFORM_N64
+			// Spectator panel: the rest of this loop body assumes the player
+			// has a chr / prop / weapons / HUD. Spectator panels have none —
+			// dispatch to the minimal world-only renderer and skip ahead.
+			if (g_Vars.currentplayer && g_Vars.currentplayer->is_spectator) {
+				gdl = spectatorRenderPanel(gdl);
+				continue;
+			}
+			// Spectator host: combatant slots in g_Vars.players[] exist only
+			// to give remote clients a struct player for wire-update binding;
+			// they're never rendered locally on the host. Without this skip
+			// the loop would draw the combatant's first-person view into a
+			// quadrant, painting over the spectator panel that should be
+			// there.
+			if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator
+					&& g_StageNum != STAGE_CITRAINING) {
+				continue;
+			}
+#endif
+
 			// Calculate bluramount - this will be used later
 			if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
 				player = g_Vars.currentplayer;
@@ -2172,6 +2193,13 @@ void lvTick(void)
 
 					// Check if another player is in a nearby room
 					for (playernum = 0; playernum < PLAYERCOUNT() && !foundnearbychr; playernum++) {
+#ifndef PLATFORM_N64
+						// Spectator panel slots have no prop — skip them so
+						// SLOWMOTION_SMART doesn't deref NULL on the host.
+						if (g_Vars.players[playernum]->is_spectator || !g_Vars.players[playernum]->prop) {
+							continue;
+						}
+#endif
 						if (g_Vars.players[playernum]->isdead == false) {
 							RoomNum *rooms = g_Vars.players[playernum]->prop->rooms;
 							s32 r;

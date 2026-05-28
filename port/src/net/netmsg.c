@@ -522,7 +522,12 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
 		struct netclient *ncl = &g_NetClients[i];
 		if (ncl->state) {
-			ncl->settings.team = ncl->config->base.team;
+			// Spectator clients have no config (skipped by netPlayersAllocate),
+			// so don't dereference cfg->base.team here. The settings.team value
+			// the spectator brought into the lobby stays as-is.
+			if (ncl->config) {
+				ncl->settings.team = ncl->config->base.team;
+			}
 			netbufWriteU8(dst, ncl->id);
 			netbufWriteU8(dst, ncl->playernum);
 			netbufWriteU8(dst, ncl->settings.team);
@@ -532,6 +537,10 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 			netbufWriteF32(dst, ncl->settings.fovy);
 			netbufWriteF32(dst, ncl->settings.fovzoommult);
 			netbufWriteStr(dst, ncl->settings.name);
+			// Spectator flag (NET_PROTOCOL_VER >= 27). Bumped at the tail of
+			// the per-client block so older fields stay byte-compatible if we
+			// ever need a downgrade path.
+			netbufWriteU8(dst, ncl->is_spectator);
 			memset(ncl->inmove, 0, sizeof(ncl->inmove));
 			memset(ncl->outmove, 0, sizeof(ncl->outmove));
 			ncl->inmove_head = 0;
@@ -634,6 +643,14 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 			netbufReadF32(src);
 			netbufReadF32(src);
 			netbufReadStr(src);
+		}
+		// Spectator flag (NET_PROTOCOL_VER >= 27). Read for every client
+		// including the local one so the client knows whether the host is
+		// observing. Force playernum to the sentinel for spectators — the
+		// wire value may be a stale combatant slot from before the toggle.
+		ncl->is_spectator = netbufReadU8(src);
+		if (ncl->is_spectator) {
+			ncl->playernum = NET_PLAYERNUM_SPECTATOR;
 		}
 		ncl->state = CLSTATE_GAME;
 		ncl->player = NULL;
@@ -1806,6 +1823,16 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 	struct netclient *actcl = g_NetClients + clid;
+	if (actcl->is_spectator) {
+		// Spectator clients have no mpchr and no playernum — a SVC_PROP_PICKUP
+		// referencing one is either a stale message or a peer bug. Run the
+		// tickop so the prop still vanishes locally but skip the per-player
+		// inventory bookkeeping that would deref a NULL currentplayer.
+		if (tickop != TICKOP_NONE) {
+			propExecuteTickOperation(prop, tickop);
+		}
+		return src->error;
+	}
 
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(actcl->playernum);
@@ -1840,6 +1867,11 @@ u32 netmsgSvcPropUseRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	struct netclient *actcl = &g_NetClients[clid];
+	if (actcl->is_spectator) {
+		// Same rationale as in netmsgSvcPropPickupRead — don't index player
+		// arrays by the spectator sentinel.
+		return src->error;
+	}
 
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(actcl->playernum);
@@ -1895,6 +1927,12 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	const u32 hidden = netbufReadHidden(src);
 
 	struct netclient *actcl = (clid == NET_NULL_CLIENT) ? NULL : &g_NetClients[clid];
+	if (actcl && actcl->is_spectator) {
+		// A spectator can't have triggered a door. Treat it like an attribution-
+		// less event (NET_NULL_CLIENT) so we still process the door state but
+		// skip the playernum swap.
+		actcl = NULL;
+	}
 
 	if (!prop || srccl->state < CLSTATE_GAME) {
 		return src->error;
@@ -2595,6 +2633,9 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 		netbufWriteStr(dst, nbuf);
 		netbufWriteU16(dst, (u16)(cl->peer ? enet_peer_get_rtt(cl->peer) : 0u));
 		netbufWriteU8(dst, cl->settings.team);
+		// Spectator flag (NET_PROTOCOL_VER >= 27). Lets the lobby UI on
+		// remote clients tag the host as "(spectator)" before stage start.
+		netbufWriteU8(dst, cl->is_spectator);
 	}
 
 	// Active bots: name, team, difficulty
@@ -2650,10 +2691,12 @@ u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 		const char *name = netbufReadStr(src);
 		const u16 ping   = netbufReadU16(src);
 		const u8 team    = netbufReadU8(src);
+		const u8 spec    = netbufReadU8(src);
 		strncpy(clients[i].name, name ? name : "", NET_MAX_NAME - 1);
 		clients[i].name[NET_MAX_NAME - 1] = '\0';
 		clients[i].ping = ping;
 		clients[i].team = team;
+		clients[i].is_spectator = spec;
 	}
 
 	// Bots

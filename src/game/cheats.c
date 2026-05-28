@@ -110,6 +110,7 @@ struct cheat g_Cheats[] = {
 	// stage, cheat and weapon is available immediately for testing campaigns.
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Room Culling (CHEAT_NOCULL)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Draw Slot Limit (CHEAT_NODRAWLIMIT)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // GoldenEye Style (CHEAT_GOLDENEYE)
 #endif
 };
 
@@ -119,7 +120,31 @@ struct cheat g_Cheats[] = {
 static const char *const s_cheat_literal_names[] = {
 	[CHEAT_NOCULL]      = "No Room Culling",
 	[CHEAT_NODRAWLIMIT] = "No Draw Slot Limit",
+	[CHEAT_GOLDENEYE]   = "GoldenEye Style",
 };
+
+/**
+ * Single choke point for "is GoldenEye Style behaviour active?". Used by
+ * every GE gate site so the cheat (`CHEAT_GOLDENEYE`) and the per-match
+ * MP option (`MPOPTION_GOLDENEYE`) both trigger the same behavioural
+ * changes (snap lean, no crouch bonus, lower-and-raise reload, ledge
+ * wall, classic crosshair, hide-unless-aiming, side-arc HUD, no
+ * secondary functions, no mid-crouch, no dual-wield, i-frames + flash +
+ * fire lockout).
+ *
+ * The cheat path drops the `normmplayerisrunning` requirement so the
+ * gameplay changes work outside of Combat Sim too (solo, training, etc.).
+ */
+bool goldeneyeStyleActive(void)
+{
+	if (cheatIsActive(CHEAT_GOLDENEYE)) {
+		return true;
+	}
+	if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_GOLDENEYE)) {
+		return true;
+	}
+	return false;
+}
 #endif
 
 u32 cheatIsUnlocked(s32 cheat_id)
@@ -1178,6 +1203,20 @@ struct menuitem g_CheatsGameplayMenuItems[] = {
 		// visible (extremely rare without culling disabled).
 		MENUITEMTYPE_CHECKBOX,
 		CHEAT_NODRAWLIMIT,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		// GoldenEye Style: full GE-mode rule set (snap lean, no crouch
+		// bonus, lower-and-raise reload, ledge wall, classic crosshair,
+		// arc HUD, no secondary functions, no mid-crouch, no dual-wield,
+		// 300ms i-frames + flash + fire lockout). Works in any mode;
+		// the cheat path mirrors the MPOPTION_GOLDENEYE Combat Sim
+		// option behaviour outside of multiplayer.
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_GOLDENEYE,
 		0,
 		(uintptr_t)&cheatGetNameIfUnlocked,
 		0,

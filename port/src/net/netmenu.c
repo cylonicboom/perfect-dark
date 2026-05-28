@@ -349,6 +349,7 @@ static char *menutextLobbyLine(struct menuitem *item)
 			{ MPOPTION_NOCULL,            "No Room Culling"  },
 			{ MPOPTION_NOOMLIMIT,         "No Draw Limit"    },
 			{ MPOPTION_HOSTSPECTATOR,     "Host Spectator"   },
+			{ MPOPTION_GOLDENEYE,         "GoldenEye Style"  },
 			{ MPOPTION_TEAMSENABLED,      "Teams"            },
 		};
 		char opts[220];

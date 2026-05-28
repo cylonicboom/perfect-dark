@@ -30,6 +30,88 @@ MenuItemHandlerResult menuhandlerMpHillTime(s32 operation, struct menuitem *item
 	return 0;
 }
 
+#ifndef PLATFORM_N64
+static u8 kohGetStageHillCount(u8 stagenum)
+{
+	switch (stagenum) {
+	case STAGE_MP_RAVINE:     return 5;
+	case STAGE_MP_COMPLEX:    return 5;
+	case STAGE_MP_G5BUILDING: return 5;
+	case STAGE_MP_TEMPLE:     return 4;
+	case STAGE_MP_PIPES:      return 5;
+	case STAGE_MP_SKEDAR:     return 5;
+	case STAGE_MP_BASE:       return 4;
+	case STAGE_MP_AREA52:     return 5;
+	case STAGE_MP_WAREHOUSE:  return 4;
+	case STAGE_MP_CARPARK:    return 5;
+	case STAGE_MP_RUINS:      return 7;
+	case STAGE_MP_SEWERS:     return 4;
+	case STAGE_MP_FELICITY:   return 4;
+	case STAGE_MP_FORTRESS:   return 5;
+	case STAGE_MP_VILLA:      return 4;
+	case STAGE_MP_GRID:       return 4;
+	}
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerMpKohHillMode(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = 2;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return data->dropdown.value == 0 ? (uintptr_t)"Mobile" : (uintptr_t)"Static";
+	case MENUOP_SET:
+		if (data->dropdown.value == 0) {
+			g_MpSetup.options |= MPOPTION_KOH_MOBILEHILL;
+		} else {
+			g_MpSetup.options &= ~MPOPTION_KOH_MOBILEHILL;
+		}
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_MpSetup.options & MPOPTION_KOH_MOBILEHILL) ? 0 : 1;
+		break;
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerMpKohStaticHill(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static char label[16];
+	u8 max;
+
+	switch (operation) {
+	case MENUOP_CHECKDISABLED:
+		return (g_MpSetup.options & MPOPTION_KOH_MOBILEHILL) ? 1 : 0;
+	case MENUOP_GETOPTIONCOUNT:
+		max = kohGetStageHillCount(g_MpSetup.stagenum);
+		data->dropdown.value = 1 + max;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		if (data->dropdown.value == 0) {
+			return (uintptr_t)"Random";
+		}
+		sprintf(label, "Hill %u", (unsigned)data->dropdown.value);
+		return (uintptr_t)label;
+	case MENUOP_SET:
+		g_MpSetup.kohstatichill = (u8)data->dropdown.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		max = kohGetStageHillCount(g_MpSetup.stagenum);
+		if (g_MpSetup.kohstatichill > max) {
+			data->dropdown.value = 0;
+		} else {
+			data->dropdown.value = g_MpSetup.kohstatichill;
+		}
+		break;
+	}
+
+	return 0;
+}
+#endif
+
 struct menuitem g_KohOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -112,6 +194,30 @@ struct menuitem g_KohOptionsMenuItems[] = {
 		MPOPTION_NOPLAYERONRADAR,
 		menuhandlerMpCheckboxOption,
 	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Room Culling",
+		MPOPTION_NOCULL,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Draw Slot Limit",
+		MPOPTION_NOOMLIMIT,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"GoldenEye Style",
+		MPOPTION_GOLDENEYE,
+		menuhandlerMpCheckboxOption,
+	},
 #endif
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -137,6 +243,24 @@ struct menuitem g_KohOptionsMenuItems[] = {
 		MPOPTION_KOH_HILLONRADAR,
 		menuhandlerMpCheckboxOption,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Hill Mode",
+		0,
+		menuhandlerMpKohHillMode,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Static Hill",
+		0,
+		menuhandlerMpKohStaticHill,
+	},
+#else
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -145,6 +269,7 @@ struct menuitem g_KohOptionsMenuItems[] = {
 		MPOPTION_KOH_MOBILEHILL,
 		menuhandlerMpCheckboxOption,
 	},
+#endif
 	{
 		MENUITEMTYPE_SLIDER,
 		0,
@@ -222,7 +347,14 @@ void kohInitProps(void)
 	struct pad pad;
 
 	if (g_ScenarioData.koh.hillcount > 1) {
-		g_ScenarioData.koh.hillindex = rngRandom() % g_ScenarioData.koh.hillcount;
+#ifndef PLATFORM_N64
+		if (g_MpSetup.kohstatichill > 0 && g_MpSetup.kohstatichill <= g_ScenarioData.koh.hillcount) {
+			g_ScenarioData.koh.hillindex = g_MpSetup.kohstatichill - 1;
+		} else
+#endif
+		{
+			g_ScenarioData.koh.hillindex = rngRandom() % g_ScenarioData.koh.hillcount;
+		}
 		pad_id = g_ScenarioData.koh.hillpads[g_ScenarioData.koh.hillindex];
 	} else {
 		// @bug: If a stage setup file only has one hill, pad_id is not assigned

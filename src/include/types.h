@@ -1348,6 +1348,13 @@ struct chrdata {
 	/*0x362*/ u8 drcarollimage_left : 4;
 	/*0x362*/ u8 drcarollimage_right : 4;
 	/*0x364*/ struct prop *lift;
+#ifndef PLATFORM_N64
+	// GoldenEye Style i-frames: tick count of the last damage taken
+	// (in lvframe60 units). Zero = never damaged. Subsequent damage
+	// within TICKS(18) (= ~300ms at 60Hz) is rejected at the top of
+	// chrDamage. Port-only; the N64 build is byte-identical.
+	s32 lastdamagetick60;
+#endif
 };
 
 // This appears to be misnamed. Not only is it projectiles such as grenades and
@@ -2835,6 +2842,12 @@ struct player {
 	// undefined. Same value as the slot's index in g_Vars.players[] but kept
 	// explicit so any future re-ordering doesn't silently break the mapping.
 	u8 spectator_panel;
+	// GoldenEye Style damage flash: lvframe60 at the moment this local
+	// player last took damage. Drives an 8-frame triangular white
+	// fade-in/fade-out overlay rendered alongside the GE HUD bars.
+	// Initialized to a large negative sentinel in playermgrCreatePlayer
+	// so the flash never fires before the first real damage event.
+	s32 damageflashstart60;
 #endif
 };
 
@@ -4125,6 +4138,9 @@ struct mpsetup {
 	/*0x800acba0*/ u8 weapons[NUM_MPWEAPONSLOTS];
 	/*0x800acba6*/ u8 paused;
 	/*0x800acba8*/ struct fileguid fileguid;
+#ifndef PLATFORM_N64
+	u8 kohstatichill; // 0 = Random; 1..N = hillpads[index-1] in KotH (port-only)
+#endif
 };
 
 struct bossfile {
@@ -6179,6 +6195,8 @@ struct extplayerconfig {
 	u32 crosshaircolour;
 	u32 crosshairsize;
 	s32 crosshairhealth;
+	s32 crosshairforceclassic;
+	s32 crosshairhideunlessaiming;
 	s32 usereloads;
 };
 

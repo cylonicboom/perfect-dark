@@ -101,6 +101,15 @@ static f32 mouseSensY = 2.5f;
 static s32 lastKey = 0;
 static char lastChar = 0;
 static s32 textInput = 0;
+// One-frame cooldown applied after text input ends. While text input was
+// active, inputReadController returns button=0 for every pad. As soon as
+// it ends, the next frame's read sees whatever keys are still held (most
+// notably Enter, which the user just pressed to submit the keyboard) as
+// a 0->1 edge — so joyGetButtonsPressedThisFrame fires START_BUTTON and
+// the MPSETUP root interprets it as "press Start to begin match". This
+// counter keeps the masked state alive long enough for those held keys
+// to be observed as steady-state instead of fresh presses.
+static s32 textInputCooldown = 0;
 
 static char *clipboardText = NULL;
 
@@ -815,11 +824,23 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 
 	npad->button = 0;
 
-	if (textInput) {
+	// While text input is active we already mask. After it ends we keep
+	// masking until the keys that drove the text input (Enter / Escape)
+	// are physically released, otherwise the joystick edge detector reads
+	// the still-held key as a fresh 0->1 transition on the next real
+	// sample and fires START_BUTTON / B_BUTTON at the dialog underneath
+	// (e.g. menu.c:5243 reads inputs.start and pushes the Ready dialog
+	// which starts the Combat Sim match). Once the keys are released the
+	// next real read sees 0 and the prior masked sample was also 0, so no
+	// spurious edge fires.
+	if (textInput || textInputCooldown > 0) {
 		npad->stick_x = 0;
 		npad->stick_y = 0;
 		npad->rstick_x = 0;
 		npad->rstick_y = 0;
+		if (!textInput && !inputKeyPressed(VK_RETURN) && !inputKeyPressed(VK_ESCAPE)) {
+			textInputCooldown = 0;
+		}
 		return 0;
 	}
 
@@ -1526,6 +1547,12 @@ void inputStopTextInput(void)
 {
 	SDL_StopTextInput();
 	textInput = 0;
+	// Mask one more frame so the held Enter (or any other key still down
+	// from typing) reads as 0->0 rather than 0->1 in the joystick edge
+	// detector. See textInputCooldown declaration for the full story.
+	textInputCooldown = 1;
+	lastKey = 0;
+	lastChar = 0;
 }
 
 s32 inputIsTextInputActive(void)

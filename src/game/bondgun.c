@@ -59,6 +59,7 @@
 #include "video.h"
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "mpsetups.h"
 #endif
 
 #define GUNLOADSTATE_FLUX     0
@@ -1606,7 +1607,11 @@ s32 bgunTickIncReload(struct handweaponinfo *info, s32 handnum, struct hand *han
 		if (hand->statecycles == 0) {
 			if (func && (func->ammoindex == 0 || func->ammoindex == 1)) {
 				if (info->definition->ammos[func->ammoindex]->reload_animation
-						&& info->weaponnum != WEAPON_COMBATKNIFE) {
+						&& info->weaponnum != WEAPON_COMBATKNIFE
+#ifndef PLATFORM_N64
+						&& !goldeneyeStyleActive()
+#endif
+				) {
 					bgunStartAnimation(info->definition->ammos[func->ammoindex]->reload_animation, handnum, hand);
 
 					hand->unk0d0e_07 = true;
@@ -3279,11 +3284,34 @@ s32 bgunTickIncState2(struct handweaponinfo *info, s32 handnum, struct hand *han
 	return 0;
 }
 
+#ifndef PLATFORM_N64
+// Forward decl — definition is below, alongside the other GE helpers.
+bool bgunCurrentPlayerInIframe(void);
+#endif
+
 s32 bgunTickInc(struct handweaponinfo *info, s32 handnum, s32 lvupdate)
 {
 	s32 result = 0;
 	struct hand *hand = &g_Vars.currentplayer->hands[handnum];
 	s32 prevstate = hand->state;
+
+#ifndef PLATFORM_N64
+	// GoldenEye Style i-frames: if the player took damage in the last
+	// ~200ms and is mid-attack, snap the hand back to IDLE so the
+	// firing tick doesn't run this frame. Automatic-fire weapons stay
+	// pinned to IDLE until the i-frame window elapses; the bgunSetState
+	// gate prevents IDLE → ATTACK transitions during the same window.
+	if ((hand->state == HANDSTATE_ATTACK || hand->state == HANDSTATE_ATTACKEMPTY)
+			&& bgunCurrentPlayerInIframe()) {
+		hand->state = HANDSTATE_IDLE;
+		hand->stateframes = 0;
+		hand->stateflags = 0;
+		hand->statecycles = 0;
+		hand->stateminor = 0;
+		hand->statelastframe = 0;
+		prevstate = HANDSTATE_IDLE;
+	}
+#endif
 
 	hand->firing = false;
 	hand->flashon = false;
@@ -3335,6 +3363,127 @@ s32 bgunTickInc(struct handweaponinfo *info, s32 handnum, s32 lvupdate)
 	return result;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Look up the per-slot function-mode flags for the first Combat Sim slot
+ * carrying `weaponnum`. Returns 0 (no restrictions) when not in MP or
+ * when the weapon isn't in any slot. Saved Custom presets populate
+ * g_MpSlotFnFlags when loaded; built-in sets clear it.
+ */
+static u8 mpSlotFlagsForWeapon(s32 weaponnum)
+{
+	if (!g_Vars.normmplayerisrunning) {
+		return 0;
+	}
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		if (g_MpSlotFnFlags[i] == 0) {
+			continue;
+		}
+		u8 mpweaponnum = g_MpSetup.weapons[i];
+		if (g_MpWeapons[mpweaponnum].weaponnum == weaponnum) {
+			return g_MpSlotFnFlags[i];
+		}
+	}
+	return 0;
+}
+
+/**
+ * Reusable gate for "this weapon's secondary function is disabled."
+ *
+ * Driven by MPOPTION_GOLDENEYE (Combat Sim GoldenEye Style forces every
+ * weapon to primary-only) and by per-slot FNFLAG_SECONDARY_DISABLED bits
+ * on saved Custom presets. Designed as a single choke point so future
+ * weapon-loadout options can OR additional conditions in here.
+ *
+ * Used by:
+ *   - bgunSetState (HANDSTATE_CHANGEFUNC gate, below) to block player
+ *     input from switching primary -> secondary. Switching secondary ->
+ *     primary stays allowed so a player holding a secondary when GE mode
+ *     activates can manually drop back.
+ */
+bool bgunSecondaryFunctionDisabled(s32 weaponnum)
+{
+	if (goldeneyeStyleActive()) {
+		return true;
+	}
+	if (mpSlotFlagsForWeapon(weaponnum) & FNFLAG_SECONDARY_DISABLED) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Reusable gate for "this weapon's primary function is disabled."
+ *
+ * Driven by per-slot FNFLAG_PRIMARY_DISABLED bits on saved Custom presets.
+ * Mirrors bgunSecondaryFunctionDisabled — same shape, opposite axis. The
+ * menu UI enforces the invariant that at least one function remains
+ * enabled, so this never returns true for a weapon whose secondary is
+ * also gated.
+ *
+ * Used by:
+ *   - bgunSetState (HANDSTATE_CHANGEFUNC gate) to block secondary ->
+ *     primary transitions, mirroring the secondary case.
+ *   - The equip-time init in bgunTickSwitch2 to auto-flip new equips
+ *     to FUNC_SECONDARY when primary is gated.
+ */
+bool bgunPrimaryFunctionDisabled(s32 weaponnum)
+{
+	if (mpSlotFlagsForWeapon(weaponnum) & FNFLAG_PRIMARY_DISABLED) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Reusable gate for "dual wielding is disabled."
+ *
+ * Currently driven by MPOPTION_GOLDENEYE (Combat Sim GoldenEye Style
+ * forces single-wield only). Same pattern as bgunSecondaryFunctionDisabled
+ * — single choke point so future weapon-loadout options that ban
+ * per-weapon dual-wield can plug in here.
+ *
+ * Used by:
+ *   - The dualwielding-respect block in the unified weapon-switch path
+ *     (forces ctrl->dualwielding = false before the left-hand inuse gate).
+ *   - bgunEquipWeapon2 to refuse left-hand equips entirely.
+ */
+bool bgunDualWieldDisabled(void)
+{
+	if (goldeneyeStyleActive()) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Returns true when the current player is inside the GoldenEye Style
+ * i-frame window (TICKS(18) ~ 300ms after the last damage event).
+ *
+ * Used to block firing while invulnerable: bgunSetState refuses new
+ * ATTACK / ATTACKEMPTY transitions, and bgunTickInc force-cancels any
+ * attack that was already in progress when damage landed.
+ */
+bool bgunCurrentPlayerInIframe(void)
+{
+	if (!goldeneyeStyleActive()) {
+		return false;
+	}
+	if (!g_Vars.currentplayer->prop || !g_Vars.currentplayer->prop->chr) {
+		return false;
+	}
+	const s32 stamp = g_Vars.currentplayer->prop->chr->lastdamagetick60;
+	if (stamp == 0) {
+		return false;
+	}
+	// u32 subtraction so a stale stamp from a previous stage (stamp >
+	// current lvframe60) wraps to a huge unsigned value and fails the
+	// < TICKS(18) check, instead of producing a negative signed value
+	// that would lock the player into permanent iframes.
+	return ((u32)g_Vars.lvframe60 - (u32)stamp) < (u32)TICKS(18);
+}
+#endif
+
 bool bgunSetState(s32 handnum, s32 state)
 {
 	bool valid = true;
@@ -3344,6 +3493,34 @@ bool bgunSetState(s32 handnum, s32 state)
 	if (state == HANDSTATE_CHANGEFUNC && weaponGetFunction(&hand->gset, 1 - hand->gset.weaponfunc) == NULL) {
 		valid = false;
 	}
+
+#ifndef PLATFORM_N64
+	// Block switching INTO secondary when the gate says so. Switching back
+	// (secondary -> primary) is always allowed (for GoldenEye Style; the
+	// per-slot primary-disabled gate just below covers the inverse case).
+	if (state == HANDSTATE_CHANGEFUNC
+			&& hand->gset.weaponfunc == FUNC_PRIMARY
+			&& bgunSecondaryFunctionDisabled(hand->gset.weaponnum)) {
+		valid = false;
+	}
+
+	// Block switching INTO primary when per-slot fn-mode says so. The menu
+	// guarantees at least one of primary/secondary remains enabled, so this
+	// is symmetric with the secondary gate above and never traps the player.
+	if (state == HANDSTATE_CHANGEFUNC
+			&& hand->gset.weaponfunc == FUNC_SECONDARY
+			&& bgunPrimaryFunctionDisabled(hand->gset.weaponnum)) {
+		valid = false;
+	}
+
+	// Refuse new attacks while inside GoldenEye Style i-frames. Paired
+	// with the force-cancel at the top of bgunTickInc that handles
+	// attacks already in flight when damage lands.
+	if ((state == HANDSTATE_ATTACK || state == HANDSTATE_ATTACKEMPTY)
+			&& bgunCurrentPlayerInIframe()) {
+		valid = false;
+	}
+#endif
 
 	if (valid) {
 		hand->state = state;
@@ -5406,7 +5583,11 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	}
 
 	// Decrease spread if double crouched
-	if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT) {
+	if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT
+#ifndef PLATFORM_N64
+			&& !goldeneyeStyleActive()
+#endif
+	) {
 		spread *= 0.5f;
 	}
 
@@ -5571,6 +5752,23 @@ void bgunTickSwitch2(void)
 	struct gunctrl *ctrl = &g_Vars.currentplayer->gunctrl;
 	s32 i;
 
+#ifndef PLATFORM_N64
+	// Per-tick defense: if dual-wield is disabled, force both flags off
+	// every frame. dualwielding alone isn't enough — the else-branch
+	// resync below (~5786) only runs when bgunCanFreeWeapon(HAND_LEFT)
+	// is true, so a player mid-attack could keep firing the left hand
+	// for another frame or two. Forcing inuse here too kills the left
+	// fire path immediately. Covers cycle forward/back (~5892, ~5923)
+	// and any other path that set dualwielding=true synchronously
+	// before bgunTickSwitch2 runs.
+	if (bgunDualWieldDisabled()) {
+		ctrl->dualwielding = false;
+		if (player->hands[HAND_LEFT].inuse) {
+			player->hands[HAND_LEFT].inuse = false;
+		}
+	}
+#endif
+
 	if (ctrl->switchtoweaponnum >= 0) {
 		if (bgunCanFreeWeapon(HAND_RIGHT) && bgunCanFreeWeapon(HAND_LEFT)) {
 			s32 weaponnum = player->gunctrl.weaponnum;
@@ -5636,6 +5834,16 @@ void bgunTickSwitch2(void)
 				ctrl->dualwielding = true;
 			}
 
+#ifndef PLATFORM_N64
+			// Force-disable dual-wield in GoldenEye Style (or any future
+			// gate the helper picks up). Overrides the REMOTEMINE bump
+			// above and any cycle/active-menu code that set dualwielding
+			// before landing here.
+			if (bgunDualWieldDisabled()) {
+				ctrl->dualwielding = false;
+			}
+#endif
+
 			if (!ctrl->dualwielding) {
 				lefthand->inuse = false;
 			}
@@ -5670,6 +5878,17 @@ void bgunTickSwitch2(void)
 				player->hands[i].lastshootframe60 = 0;
 				player->hands[i].gset.weaponfunc = FUNC_PRIMARY;
 				player->hands[i].gset.weaponnum = ctrl->weaponnum;
+#ifndef PLATFORM_N64
+				// Auto-flip to secondary on equip when this weapon's primary
+				// is gated by a saved Custom preset and a secondary exists.
+				// Required because the CHANGEFUNC gate just below this site
+				// would otherwise reject every player-driven switch attempt,
+				// leaving them stuck holding a disabled function.
+				if (bgunPrimaryFunctionDisabled(ctrl->weaponnum)
+						&& weaponGetFunction(&player->hands[i].gset, FUNC_SECONDARY) != NULL) {
+					player->hands[i].gset.weaponfunc = FUNC_SECONDARY;
+				}
+#endif
 				player->hands[i].gset.unk0639 = (ctrl->upgradewant >> (i * 4)) & 0xf;
 				player->hands[i].gangstarot = 0.0f;
 
@@ -5804,6 +6023,20 @@ void bgunCycleForward(void)
 		weaponnum1 = bgunGetSwitchToWeapon(HAND_RIGHT);
 		weaponnum2 = bgunGetSwitchToWeapon(HAND_LEFT);
 
+#ifndef PLATFORM_N64
+		// When dual-wield is disabled (GoldenEye Style etc.) the per-tick
+		// gate above forces lefthand.inuse=false, so bgunGetSwitchToWeapon
+		// returns WEAPON_NONE for HAND_LEFT. If the player's inventory
+		// still has a DUAL of the current weapon, invChooseCycleForwardWeapon
+		// would match that DUAL item (weapon1 == current && weapon2 > 0)
+		// and pick it as "the next weapon," leaving the player stuck. Pretend
+		// weapon2 == weapon1 here so the cycle walks PAST the DUAL slot.
+		if (bgunDualWieldDisabled() && weaponnum1 > 0 && weaponnum2 == WEAPON_NONE
+				&& invHasDoubleWeaponIncAllGuns(weaponnum1, weaponnum1)) {
+			weaponnum2 = weaponnum1;
+		}
+#endif
+
 		if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
 			weaponnum1 = player->gunctrl.prevweaponnum;
 			weaponnum2 = player->gunctrl.prevweaponnum * player->gunctrl.prevwasdualwielding;
@@ -5834,6 +6067,16 @@ void bgunCycleBack(void)
 		if (weaponnum2 == WEAPON_REMOTEMINE) {
 			weaponnum2 = WEAPON_NONE;
 		}
+
+#ifndef PLATFORM_N64
+		// Same dual-wield-disabled cycle fix as bgunCycleForward — pretend
+		// weapon2 == weapon1 if the player has a DUAL of the current weapon
+		// so the cycle walks past it instead of getting stuck.
+		if (bgunDualWieldDisabled() && weaponnum1 > 0 && weaponnum2 == WEAPON_NONE
+				&& invHasDoubleWeaponIncAllGuns(weaponnum1, weaponnum1)) {
+			weaponnum2 = weaponnum1;
+		}
+#endif
 
 		if (weaponnum1 > WEAPON_PSYCHOSISGUN || weaponnum2 > WEAPON_PSYCHOSISGUN) {
 			weaponnum1 = player->gunctrl.prevweaponnum;
@@ -6098,6 +6341,15 @@ void bgunAutoSwitchWeapon(void)
 
 void bgunEquipWeapon2(s32 handnum, s32 weaponnum)
 {
+#ifndef PLATFORM_N64
+	// Refuse left-hand equips when dual-wield is gated off.
+	if (handnum == HAND_LEFT && bgunDualWieldDisabled()) {
+		g_Vars.currentplayer->gunctrl.dualwielding = false;
+		g_Vars.currentplayer->hands[HAND_LEFT].inuse = false;
+		return;
+	}
+#endif
+
 	if (handnum == HAND_LEFT) {
 		if (weaponnum == WEAPON_NONE) {
 			g_Vars.currentplayer->gunctrl.dualwielding = false;
@@ -11903,6 +12155,18 @@ s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromac
 #ifndef PLATFORM_N64
 	const bool extcontrols = PLAYER_EXTCFG().extcontrols || g_Vars.currentplayer->isremote;
 	bool docontinue;
+
+	// GoldenEye Style: refuse to enter a secondary function via the
+	// dedicated alt-fire button OR the active-menu function-toggle path.
+	// Covers weapons like RCP120 / AR34 / Laptop / Dragon whose secondary
+	// is activated via `invertgunfunc` / `activatesecondary` rather than
+	// the standard CHANGEFUNC state (which `bgunSetState` already gates).
+	// `!bgunIsUsingSecondaryFunction()` checks the direction so the
+	// player can still toggle BACK to primary if they were somehow in
+	// secondary when GE activated.
+	if (goldeneyeStyleActive() && !bgunIsUsingSecondaryFunction()) {
+		return USETIMER_STOP;
+	}
 #endif
 	switch (bgunGetWeaponNum(HAND_RIGHT)) {
 	case WEAPON_SNIPERRIFLE:
@@ -13049,11 +13313,19 @@ Gfx *bgunDrawHud(Gfx *gdl)
 		fncolour = ((ctrl->fnfader * 2) - 256) << 16 | 0xff000040;
 	}
 
-	gdl = textSetPrimColour(gdl, fncolour);
+#ifndef PLATFORM_N64
+	// GoldenEye Style also hides the small red/yellow primary/secondary
+	// indicator square next to the ammo counter — paired with the
+	// function-name overlay gate below for a clean minimal HUD.
+	if (!goldeneyeStyleActive())
+#endif
+	{
+		gdl = textSetPrimColour(gdl, fncolour);
 
-	gDPFillRectangleScaled(gdl++, xpos - 13, bottom - 11, xpos - 2, bottom);
+		gDPFillRectangleScaled(gdl++, xpos - 13, bottom - 11, xpos - 2, bottom);
 
-	gdl = text0f153838(gdl);
+		gdl = text0f153838(gdl);
+	}
 
 	// Draw weapon name and function name
 	if (optionsGetShowGunFunction(g_Vars.currentplayerstats->mpindex)) {
@@ -13117,7 +13389,15 @@ Gfx *bgunDrawHud(Gfx *gdl)
 			textResetBlends();
 		}
 
-		if (func) {
+		if (func
+#ifndef PLATFORM_N64
+				// GoldenEye Style hides the primary/secondary function
+				// name overlay ("Single Shot", "Burst Fire", etc.) to
+				// match GE's minimal HUD. The weapon name above it is
+				// left visible.
+				&& !goldeneyeStyleActive()
+#endif
+		) {
 			langGet(func->name);
 
 			colour = 0xff5555ff;

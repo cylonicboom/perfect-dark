@@ -477,6 +477,7 @@
 // Port-only debug/testing cheats — always unlocked, no mission completion required
 #define CHEAT_NOCULL                 43
 #define CHEAT_NODRAWLIMIT            44
+#define CHEAT_GOLDENEYE              45
 
 #define CHEATFLAG_TIMED           0
 #define CHEATFLAG_ALWAYSON        1
@@ -2953,6 +2954,12 @@
 // free flying cam, or 3D top-down). All 8 wire slots remain available to
 // remote clients and bots. Port-only; PLATFORM_N64 ignores this bit.
 #define MPOPTION_HOSTSPECTATOR          0x40000000
+// GoldenEye-style combat (port-only). Applies to all human players in
+// multiplayer; sims/bots unaffected. Snap-lean (no interpolation), no
+// crouch accuracy bonus, lower-and-raise reload for every weapon, and
+// invisible-wall ledges. Rides in g_MpSetup.options so SVC_STAGE_START
+// propagates it. PLATFORM_N64 ignores this bit.
+#define MPOPTION_GOLDENEYE              0x80000000
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1
@@ -4821,6 +4828,17 @@ enum weaponnum {
 #define MPSETUP_MAXSETUPS 128
 #define MPSETUP_MAXNAME 17
 #define MPSETUP_BLOCKSIZE 80
+
+// Port-only: saved Combat Sim custom weapon presets. Stored in mpsetups.bin
+// v2 as an appended section after the existing setup blocks. Per-slot
+// FNFLAG_* bits live in g_MpSlotFnFlags and gate bgunPrimary/Secondary
+// FunctionDisabled when a Custom loadout is active. The menu UI enforces
+// "at least one function enabled" so both bits set is never produced; the
+// engine hooks therefore don't have to handle that case.
+#define MPWEAPONPRESET_MAXNAME    17
+#define MPWEAPONPRESET_MAXENTRIES 32
+#define FNFLAG_PRIMARY_DISABLED   0x01
+#define FNFLAG_SECONDARY_DISABLED 0x02
 
 #define NETMODE_NONE 0
 #define NETMODE_SERVER 1

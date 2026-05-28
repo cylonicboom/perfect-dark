@@ -17,6 +17,7 @@
 #include "game/playermgr.h"
 #include "game/player.h"
 #include "game/bondgun.h"
+#include "game/cheats.h"
 #include "game/game_1531a0.h"
 #include "game/game_0b0fd0.h"
 #include "game/title.h"
@@ -2218,6 +2219,52 @@ s32 netConsoleCommand(const char *line)
 				sysLogPrintf(LOG_CHAT, "NET: no chr matching '%s'", arg);
 			}
 		}
+	} else if (strcmp(cmd, "igtick") == 0) {
+		// /igtick — diagnostic for the LOCAL in-game tick rate (not the
+		// server / wire tick). Prints the current `lvframe60` and, on
+		// the second+ call, the wall-clock rate of lvframe60 advance
+		// between calls. Also dumps the local player chr's GE i-frame
+		// stamp + age so you can see whether the gate is firing.
+		static u64 prev_us = 0;
+		static s32 prev_lvframe60 = 0;
+		const u64 now_us = sysGetMicroseconds();
+		sysLogPrintf(LOG_CHAT, "IGTICK: lvframe60=%d lvframenum=%d lvupdate60=%d",
+				g_Vars.lvframe60, g_Vars.lvframenum, g_Vars.lvupdate60);
+		if (prev_us > 0) {
+			const u64 elapsed_us = now_us - prev_us;
+			const s32 frame_delta = g_Vars.lvframe60 - prev_lvframe60;
+			const f64 secs = elapsed_us / 1000000.0;
+			const f64 tps = (elapsed_us > 0) ? (frame_delta * 1000000.0 / (f64)elapsed_us) : 0.0;
+			sysLogPrintf(LOG_CHAT, "IGTICK: +%d ticks over %.2fs = %.1f tps (target 60)",
+					frame_delta, secs, tps);
+		} else {
+			sysLogPrintf(LOG_CHAT, "IGTICK: call /igtick again to see tick rate");
+		}
+		prev_us = now_us;
+		prev_lvframe60 = g_Vars.lvframe60;
+		// GE i-frame state for the local player chr.
+		sysLogPrintf(LOG_CHAT, "IGTICK: gemode=%d normmpr=%d gecheat=%d active=%d ticks(18)=%d",
+				(g_MpSetup.options & MPOPTION_GOLDENEYE) ? 1 : 0,
+				g_Vars.normmplayerisrunning,
+				cheatIsActive(CHEAT_GOLDENEYE) ? 1 : 0,
+				goldeneyeStyleActive() ? 1 : 0,
+				(s32)TICKS(18));
+		if (!g_Vars.currentplayer) {
+			sysLogPrintf(LOG_CHAT, "IGTICK: no currentplayer");
+		} else if (!g_Vars.currentplayer->prop) {
+			sysLogPrintf(LOG_CHAT, "IGTICK: currentplayer has no prop (in menu?)");
+		} else if (!g_Vars.currentplayer->prop->chr) {
+			sysLogPrintf(LOG_CHAT, "IGTICK: currentplayer->prop has no chr");
+		} else {
+			struct chrdata *mychr = g_Vars.currentplayer->prop->chr;
+			const u32 age = (u32)g_Vars.lvframe60 - (u32)mychr->lastdamagetick60;
+			const u32 window = (u32)TICKS(18);
+			const bool stamped = (mychr->lastdamagetick60 != 0);
+			const bool in_iframe = stamped && (age < window);
+			sysLogPrintf(LOG_CHAT, "IGTICK: my chr lastdamage=%d age=%u window=%u %s",
+					mychr->lastdamagetick60, stamped ? age : 0u, window,
+					in_iframe ? "(IFRAME ACTIVE)" : stamped ? "(iframe expired)" : "(never damaged)");
+		}
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -2225,6 +2272,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /diag <path>     start diag log to file (no arg = stop)");
 		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
 		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
+		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
 		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");

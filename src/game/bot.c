@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/chraction.h"
+#include "game/cheats.h"
 #include "game/debug.h"
 #include "game/chr.h"
 #include "game/prop.h"
@@ -95,6 +96,10 @@ void botReset(struct chrdata *chr, u8 respawning)
 #ifndef PLATFORM_N64
 			chr->blurdrugamount = 0;
 			chr->poisoncounter = 0;
+			// Clear the GE i-frame stamp on respawn so a death-frame
+			// stamp can't carry over and grant the freshly respawned
+			// bot permanent invulnerability.
+			chr->lastdamagetick60 = 0;
 #endif
 
 #if VERSION >= VERSION_NTSC_1_0
@@ -2551,6 +2556,20 @@ void botTickUnpaused(struct chrdata *chr)
 		} else {
 			aibot->rcp120cloakenabled = false;
 		}
+
+#ifndef PLATFORM_N64
+		// GoldenEye Style: bots aren't allowed to use cloak alt-fire
+		// abilities (cloak device or RCP120 cloak). Override the AI's
+		// decisions made above so a bot in GE mode never goes invisible.
+		// Also clear any residual blur/dizziness so a freshly-flipped
+		// GE cheat instantly wipes lingering state from prior hits.
+		if (goldeneyeStyleActive()) {
+			aibot->cloakdeviceenabled = false;
+			aibot->rcp120cloakenabled = false;
+			chr->blurdrugamount = 0;
+			chr->blurnumtimesdied = 0;
+		}
+#endif
 
 		// KazeSims will attack on sight
 		if (aibot->config->type == BOTTYPE_KAZE

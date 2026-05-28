@@ -1412,6 +1412,32 @@ static MenuItemHandlerResult menuhandlerCrosshairHealth(s32 operation, struct me
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerCrosshairForceClassic(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_PlayerExtCfg[g_ExtMenuPlayer].crosshairforceclassic;
+	case MENUOP_SET:
+		g_PlayerExtCfg[g_ExtMenuPlayer].crosshairforceclassic = data->checkbox.value;
+		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerCrosshairHideUnlessAiming(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_PlayerExtCfg[g_ExtMenuPlayer].crosshairhideunlessaiming;
+	case MENUOP_SET:
+		g_PlayerExtCfg[g_ExtMenuPlayer].crosshairhideunlessaiming = data->checkbox.value;
+		break;
+	}
+
+	return 0;
+}
+
 struct menuitem g_ExtendedGameCrosshairColourMenuItems[] = {
 	{
 		MENUITEMTYPE_SLIDER,
@@ -1537,6 +1563,22 @@ struct menuitem g_ExtendedGameMenuItems[] = {
 		(uintptr_t)"Crosshair Colour by Health",
 		0,
 		menuhandlerCrosshairHealth,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Force Classic Crosshair",
+		0,
+		menuhandlerCrosshairForceClassic,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Hide Crosshair Unless Aiming",
+		0,
+		menuhandlerCrosshairHideUnlessAiming,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

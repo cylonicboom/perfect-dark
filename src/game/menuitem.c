@@ -1525,6 +1525,24 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 				menuPopDialog();
 
 				item->handler(MENUOP_SET, item, &handlerdata);
+
+				inputs->start = false;
+#ifndef PLATFORM_N64
+				// On PC, Enter fires both inputs->start (just consumed
+				// here) AND queues a VK_RETURN that the OSK text-input
+				// path below would pick up — running the accept flow a
+				// second time, popping whatever dialog MENUOP_SET just
+				// pushed, and re-firing the handler on stale state. In
+				// the Combat Sim flow that second pass also leaves
+				// inputs->start true downstream, which menu.c interprets
+				// as "press Start to begin match." Stop text input,
+				// clear the pending key, and bail out of this tick so
+				// the OSK path can't re-process the same press.
+				g_MenuKeyboardPlayer = -1;
+				inputStopTextInput();
+				inputClearLastKey();
+				return true;
+#endif
 			}
 
 			inputs->start = false;

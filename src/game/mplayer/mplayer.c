@@ -143,6 +143,8 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 	.crosshaircolour = 0x00ff0028, \
 	.crosshairsize = 2, \
 	.crosshairhealth = CROSSHAIR_HEALTH_OFF, \
+	.crosshairforceclassic = false, \
+	.crosshairhideunlessaiming = false, \
 	.usereloads = false, \
 }
 
@@ -1271,12 +1273,25 @@ void mpSetRandomWeapons(u8 weapons[])
 }
 #endif
 
+#ifndef PLATFORM_N64
+u8 g_MpSlotFnFlags[NUM_MPWEAPONSLOTS];
+#endif
+
 void mpApplyWeaponSet(void)
 {
 	s32 i;
 	u8 *ptr;
 #ifndef PLATFORM_N64
 	u8 randomweapons[NUM_MPWEAPONS];
+
+	// Any apply that isn't a Custom-load resets per-slot function flags.
+	// Custom-load (menu Load handler) writes g_MpSlotFnFlags directly and
+	// bypasses this function; the dropdown toggle to Custom enters here
+	// but matches none of the branches below, so clearing on entry gives
+	// fresh-Custom users an unrestricted loadout.
+	for (i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		g_MpSlotFnFlags[i] = 0;
+	}
 #endif
 
 	if (g_MpWeaponSetNum >= 0 && g_MpWeaponSetNum < ARRAYCOUNT(g_MpWeaponSets)) {
@@ -1370,8 +1385,29 @@ void mpApplyWeaponSet(void)
 				unlocked++;
 			}
 		}
-		if (unlocked > 0) {
-			s32 target = (s32)(rngRandom() % (u32)unlocked);
+#ifndef PLATFORM_N64
+		// User-saved custom presets join the rotation. Total pool is
+		// built-in unlocked + saved custom. Indices [0, unlocked) map to
+		// g_MpWeaponSets; [unlocked, total) map to g_MpWeaponPresets.
+		s32 total = unlocked + (s32)g_MpWeaponPresetCount;
+#else
+		s32 total = unlocked;
+#endif
+		if (total > 0) {
+			s32 target = (s32)(rngRandom() % (u32)total);
+#ifndef PLATFORM_N64
+			if (target >= unlocked) {
+				// Custom preset chosen: apply directly (copy weapons +
+				// fn-flags) without recursing, then restore the random
+				// label so the menu still shows "Random Preset".
+				const struct mpweaponpreset *p = &g_MpWeaponPresets[target - unlocked];
+				for (i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+					g_MpSetup.weapons[i] = p->weapons[i];
+					g_MpSlotFnFlags[i] = p->slotfnflags[i];
+				}
+				return;
+			}
+#endif
 			s32 chosen = 0;
 			for (i = 0; i < (s32)ARRAYCOUNT(g_MpWeaponSets); i++) {
 				const bool full_unlock =
@@ -4270,6 +4306,13 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 		g_PlayerConfigsArray[i].base.team = savebufferReadBits(buffer, 3);
 	}
 
+#ifndef PLATFORM_N64
+	g_MpSetup.kohstatichill = 0;
+	if (version >= 3) {
+		g_MpSetup.kohstatichill = savebufferReadBits(buffer, 4);
+	}
+#endif
+
 	challengeForceUnlockBotFeatures();
 }
 
@@ -4337,6 +4380,10 @@ void mpsetupfileSaveWad(struct savebuffer *buffer)
 	for (i = 0; i < MAX_LOCAL_PLAYERS; i++) {
 		savebufferOr(buffer, g_PlayerConfigsArray[i].base.team, 3);
 	}
+
+#ifndef PLATFORM_N64
+	savebufferOr(buffer, g_MpSetup.kohstatichill, 4);
+#endif
 }
 
 void mpsetupfileGetOverview(char *arg0, char *filename, u16 *numsims, u16 *stagenum, u16 *scenarionum)

@@ -180,6 +180,7 @@ Net.Debug.LogRate          # ticks between per-client/sim pos dumps (default 6, 
   - `/diag <path>` — open the diagnostic CSV log to the given path (truncates). `/diag` with no arg closes it. See "Diagnostic Log" below.
   - `/diagrate <ticks>` — change `Net.Debug.LogRate` (per-tick position dump interval). 0 disables dumps.
   - `/netinfo` — print current net state (tick, mode, clients, sims, lag/loss settings, diag path) plus the live tuning knob values below.
+  - `/igtick` — print the LOCAL machine's in-game tick rate. First call records `lvframe60` and the wall-clock timestamp; second+ calls report `(lvframe60_now - lvframe60_then) / elapsed_seconds` so you can see whether the local game loop is actually advancing at 60 tps. Also dumps the local player chr's GE i-frame stamp + age + window so you can debug whether the gate is firing. Diagnostic counterpart to `/netinfo`, which only reports the server / wire tick.
   - `/spec [name|next|prev|off]` — spectate another player/sim (camera-only; corpse stays put).
   - **Tuning knobs** (promoted from compile-time `#define`s so they can be changed without rebuilding — useful for hunting CSP / interp regressions on the fly):
     - `/interp <ticks>` — entity interpolation lag. Default 3. Backed by `g_NetInterpTicks` (also config key `Net.LerpTicks`).

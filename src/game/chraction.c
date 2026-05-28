@@ -5,6 +5,7 @@
 #include "game/bg.h"
 #include "game/body.h"
 #include "game/bondgun.h"
+#include "game/cheats.h"
 #include "game/bot.h"
 #include "game/botact.h"
 #include "game/botcmd.h"
@@ -4299,6 +4300,36 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		struct modelnode *node, struct model *model, s32 side, s16 *arg11,
 		bool explosion, struct coord *explosionpos)
 {
+#ifndef PLATFORM_N64
+	// GoldenEye Style i-frames: any chr that took damage in the last
+	// TICKS(18) (~300ms at 60Hz) is invulnerable until the window
+	// elapses. Applies to players AND sims/chrs uniformly. Zero is the
+	// "never damaged" sentinel so the very first hit always lands.
+	// The stamp itself is set at the actual damage-application sites
+	// below (the player-damage branch and the sim chr->damage += site)
+	// so probe / zero-damage calls (gun/hat hits, hits to a chr that
+	// is invincible or already dead) don't start a spurious window.
+	//
+	// Subtraction is done in u32: a stale stamp from a previous stage
+	// (lastdamagetick60 > current lvframe60 because the level counter
+	// reset to 0) wraps to a huge unsigned value, which correctly
+	// fails the < TICKS(18) check instead of producing a negative
+	// signed number that would lock the chr into permanent iframes.
+	if (goldeneyeStyleActive()
+			&& chr->lastdamagetick60 != 0
+			&& ((u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60) < (u32)TICKS(18)) {
+		netDiagLogf("dmg_block",
+				"chrnum=%d sid=%u stamp=%d age=%u window=%u dmg=%.2f",
+				(s32)chr->chrnum,
+				chr->prop ? (u32)chr->prop->syncid : 0u,
+				chr->lastdamagetick60,
+				(u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60,
+				(u32)TICKS(18),
+				damage);
+		return;
+	}
+#endif
+
 	bool onehitko = false;
 	s32 race = CHRRACE(chr);
 	f32 shield;
@@ -4415,6 +4446,16 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	func = gsetGetWeaponFunction(gset);
 	ismelee = func && (func->type & 0xff) == INVENTORYFUNCTYPE_MELEE;
 	makedizzy = race != RACE_DRCAROLL && gsetHasFunctionFlags(gset, FUNCFLAG_MAKEDIZZY);
+
+#ifndef PLATFORM_N64
+	// GoldenEye Style: no dizzy / blur effects. Clamping `makedizzy`
+	// here disables both the player-dizzy block (~4860 — blur accum +
+	// FOV bobbing on screen) and the chr-dizzy paths further down,
+	// without having to scatter gates at every downstream site.
+	if (goldeneyeStyleActive()) {
+		makedizzy = false;
+	}
+#endif
 
 	if (chr->prop == g_Vars.currentplayer->prop && g_Vars.currentplayer->invincible) {
 		return;
@@ -4871,6 +4912,38 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 
 					chr->lastattacker = (aprop ? aprop->chr : NULL);
 
+#ifndef PLATFORM_N64
+					// Start the GE i-frame window now that damage was
+					// actually applied (bondhealth has decreased). Bump
+					// to 1 if lvframe60 happens to be 0 so the "never
+					// damaged" sentinel isn't re-armed.
+					//
+					// The flash only re-stamps when the previous one
+					// has fully ended (>= 8 frames ago) AND the chr is
+					// not still in its i-frame window. The chrDamage
+					// top-of-function gate already filters most repeat
+					// damage during i-frames, but this guard makes it
+					// explicit at the trigger site so chained calls
+					// can't restack the flash mid-fade.
+					if (goldeneyeStyleActive()) {
+						const u32 prev_flash_age = (u32)g_Vars.lvframe60 - (u32)g_Vars.currentplayer->damageflashstart60;
+						const u32 prev_iframe_age = (u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60;
+						const bool flash_done = (prev_flash_age >= 8);
+						const bool iframe_done = (chr->lastdamagetick60 == 0) || (prev_iframe_age >= (u32)TICKS(18));
+						if (flash_done && iframe_done) {
+							g_Vars.currentplayer->damageflashstart60 = (s32)g_Vars.lvframe60;
+						}
+						chr->lastdamagetick60 = g_Vars.lvframe60 ? (s32)g_Vars.lvframe60 : 1;
+						netDiagLogf("dmg_player",
+								"chrnum=%d sid=%u dmg=%.2f hp=%.3f stamp=%d",
+								(s32)chr->chrnum,
+								chr->prop ? (u32)chr->prop->syncid : 0u,
+								amount,
+								g_Vars.currentplayer->bondhealth,
+								chr->lastdamagetick60);
+					}
+#endif
+
 					showdamage = true;
 
 					if (g_Vars.currentplayer->training == false
@@ -5031,6 +5104,21 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				chr->damage += damage;
 				chr->lastattacker = (aprop ? aprop->chr : NULL);
 				chr->chrflags |= CHRCFLAG_JUST_INJURED;
+
+#ifndef PLATFORM_N64
+				// Start the GE i-frame window for this sim/chr now
+				// that real damage was applied to chr->damage.
+				if (goldeneyeStyleActive()) {
+					chr->lastdamagetick60 = g_Vars.lvframe60 ? (s32)g_Vars.lvframe60 : 1;
+					netDiagLogf("dmg_sim",
+							"chrnum=%d sid=%u dmg=%.2f chrdmg=%.2f stamp=%d",
+							(s32)chr->chrnum,
+							chr->prop ? (u32)chr->prop->syncid : 0u,
+							damage,
+							chr->damage,
+							chr->lastdamagetick60);
+				}
+#endif
 
 				if (chr->aibot) {
 					if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_ONEHITKILLS)) {
@@ -9974,6 +10062,21 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 	struct prop *gunprop;
 	u8 isaibot = false;
 	u8 normalshoot = true;
+
+#ifndef PLATFORM_N64
+	// GoldenEye Style: bots / NPCs can't fire while inside their own
+	// i-frame window. Same TICKS(18) cooldown as the chrDamage gate.
+	// The check uses u32 subtraction so a stale stamp (e.g. recycled
+	// chrslot whose lastdamagetick60 is ahead of lvframe60) wraps to a
+	// huge unsigned value and correctly fails the < TICKS(18) check.
+	// Human players already get fire lockout via bgunCurrentPlayerInIframe
+	// at the bondgun.c bgunTickInc path — this gate is the bot-side mirror.
+	if (goldeneyeStyleActive()
+			&& chr->lastdamagetick60 != 0
+			&& ((u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60) < (u32)TICKS(18)) {
+		return;
+	}
+#endif
 
 	if (chr->aibot) {
 		isaibot = true;

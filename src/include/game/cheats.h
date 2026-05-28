@@ -29,4 +29,12 @@ MenuItemHandlerResult cheatCheckboxMenuHandler(s32 operation, struct menuitem *i
 MenuItemHandlerResult cheatMenuHandleBuddyCheckbox(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult cheatMenuHandleTurnOffAllCheats(s32 operation, struct menuitem *item, union handlerdata *data);
 
+#ifndef PLATFORM_N64
+// Returns true if GoldenEye Style behaviour should be active right now:
+// either the Combat Sim MP option (`MPOPTION_GOLDENEYE`) is set in an
+// active match, or the gameplay cheat `CHEAT_GOLDENEYE` is enabled. The
+// cheat path works in any mode (single-player, training, etc.).
+bool goldeneyeStyleActive(void);
+#endif
+
 #endif

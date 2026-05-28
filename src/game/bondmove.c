@@ -146,7 +146,9 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 	}
 
 	if (inmove->ucmd & UCMD_DUCK) {
-		pl->crouchpos = CROUCHPOS_DUCK;
+		// GoldenEye Style: collapse remote DUCK input to full SQUAT so
+		// remote players' crouches mirror what their local input did.
+		pl->crouchpos = goldeneyeStyleActive() ? CROUCHPOS_SQUAT : CROUCHPOS_DUCK;
 	} else if (inmove->ucmd & UCMD_SQUAT) {
 		pl->crouchpos = CROUCHPOS_SQUAT;
 	} else {
@@ -1866,12 +1868,25 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 										g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
 									} else {
 										g_Vars.currentplayer->crouchpos--;
+										// GoldenEye Style: cycle only
+										// STAND <-> SQUAT, skip mid.
+										if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK
+												&& goldeneyeStyleActive()) {
+											g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
+										}
 									}
 								}
 								crouchsample = joyGetButtonsPressedOnSample(i, contpad1, c1allowedbuttons) & BUTTON_HALF_CROUCH;
 								if (crouchsample) {
 									if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK) {
 										g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
+									} else if (goldeneyeStyleActive()) {
+										// GoldenEye Style: no mid-crouch.
+										// Treat half-crouch button as a full
+										// crouch toggle (STAND -> SQUAT).
+										g_Vars.currentplayer->crouchpos =
+												(g_Vars.currentplayer->crouchpos == CROUCHPOS_SQUAT)
+														? CROUCHPOS_STAND : CROUCHPOS_SQUAT;
 									} else {
 										g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
 									}
@@ -1892,7 +1907,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								} else if (crouchsample & BUTTON_FULL_CROUCH) {
 									g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
 								} else if (crouchsample & BUTTON_HALF_CROUCH) {
-									g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
+									// GoldenEye Style: collapse mid-crouch
+									// to full squat.
+									g_Vars.currentplayer->crouchpos = goldeneyeStyleActive()
+											? CROUCHPOS_SQUAT : CROUCHPOS_DUCK;
 								}
 							}
 						}

@@ -125,6 +125,19 @@ struct menuitem g_MpCombatOptionsMenuItems[] = {
 		MPOPTION_NOOMLIMIT,
 		menuhandlerMpCheckboxOption,
 	},
+	{
+		// GoldenEye-style combat: snap lean (no interpolation), no
+		// crouch accuracy bonus, lower-and-raise reload for every
+		// weapon (skip first-person reload anim entirely), and
+		// invisible-wall ledges. Applies to human players only;
+		// sims/bots are unaffected.
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"GoldenEye Style",
+		MPOPTION_GOLDENEYE,
+		menuhandlerMpCheckboxOption,
+	},
 #endif
 	{
 		MENUITEMTYPE_SEPARATOR,

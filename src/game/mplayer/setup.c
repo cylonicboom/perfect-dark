@@ -14,6 +14,7 @@
 #include "game/challenge.h"
 #include "game/lang.h"
 #include "game/mplayer/mplayer.h"
+#include "game/game_0b0fd0.h"
 #include "game/options.h"
 #include "bss.h"
 #include "lib/snd.h"
@@ -41,6 +42,9 @@ struct menudialogdef g_MpSaveSetupNameMenuDialog;
 extern struct menudialogdef g_ManageSettingsDialog;
 extern struct menudialogdef g_FilemgrFileSavedMenuDialog;
 extern struct menudialogdef g_FilemgrErrorMenuDialog;
+#ifndef PLATFORM_N64
+extern struct menudialogdef g_MpCustomPresetsMenuDialog;
+#endif
 
 #ifndef PLATFORM_N64
 extern s32 g_MpWeaponSetNum;
@@ -325,6 +329,15 @@ MenuItemHandlerResult menuhandlerMpWeaponSetDropdown(s32 operation, struct menui
 		return (uintptr_t) mpGetWeaponSetName(data->dropdown.value);
 	case MENUOP_SET:
 		mpSetWeaponSet(data->dropdown.value);
+#ifndef PLATFORM_N64
+		// Picking Custom opens the saved-preset manager on top of the
+		// Weapons menu. State change is already committed above, so
+		// hitting Back from the sub-dialog leaves Set=Custom selected
+		// with the current loadout intact.
+		if (data->dropdown.value == WEAPONSET_CUSTOM) {
+			menuPushDialog(&g_MpCustomPresetsMenuDialog);
+		}
+#endif
 		break;
 	case MENUOP_GETSELECTEDINDEX:
 		data->dropdown.value = mpGetWeaponSet();
@@ -1516,6 +1529,657 @@ struct menudialogdef g_MpWeaponsMenuDialog = {
 	MENUDIALOGFLAG_MPLOCKABLE,
 	NULL,
 };
+
+#ifndef PLATFORM_N64
+// =====================================================================
+// Saved Custom Weapon Presets (port-only)
+// =====================================================================
+// Selecting Set=Custom on the Weapons menu opens g_MpCustomPresetsMenuDialog,
+// which is a single LIST containing "New" at index 0 and saved presets
+// at indices 1..N. (Putting "New" inside the LIST avoids trapping focus
+// on selectables that the LIST can't yield to.) "New" pushes
+// g_MpEditCustomPresetMenuDialog (6 weapon-slot dropdowns + 6 cycling
+// fn-mode selectables + Save + Back); Save opens a keyboard naming
+// dialog. Picking a saved entry pushes a per-entry Manage dialog
+// (Load / Rename / Delete). Saved presets persist in mpsetups.bin v2 and
+// are also picked up by the Random Preset rotation in mpApplyWeaponSet.
+
+// Forward declarations for the dialog defs referenced before their bodies.
+extern struct menudialogdef g_MpCustomPresetsMenuDialog;
+extern struct menudialogdef g_MpEditCustomPresetMenuDialog;
+extern struct menudialogdef g_MpManageWeaponPresetMenuDialog;
+extern struct menudialogdef g_MpWeaponPresetSaveNameMenuDialog;
+extern struct menudialogdef g_MpWeaponPresetRenameMenuDialog;
+extern struct menudialogdef g_MpWeaponPresetOverwriteMenuDialog;
+extern struct menudialogdef g_MpWeaponPresetDeleteMenuDialog;
+extern struct menudialogdef g_MpWeaponPresetSavedMenuDialog;
+extern struct menudialogdef g_MpWeaponPresetMaxedMenuDialog;
+
+// Selected preset index for Manage actions (Load/Rename/Delete). -1 means
+// "no preset selected" — used by the save flow when writing a brand-new
+// entry. Stashed at module scope so the multi-step keyboard/confirm flow
+// can pass it across dialog pushes.
+static s32 g_MpWeaponPresetSlotIndex = -1;
+
+// Backing buffer for the keyboard dialog. Lives at module scope so the
+// MENUOP_SETTEXT updates (called per keystroke) and the eventual MENUOP_SET
+// can share state without a per-dialog struct.
+static char g_MpWeaponPresetNameBuf[MPWEAPONPRESET_MAXNAME + 1];
+
+// True when the overwrite confirm was reached via the Save-button-on-
+// loaded-preset path (no keyboard underneath). False when it came via
+// the keyboard's duplicate-name flow. Controls how many dialogs the Yes
+// handler pops on confirm so we don't accidentally close the editor.
+static bool g_MpWeaponPresetOverwriteFromSave = false;
+
+// Editor entry snapshot. Taken when the editor is opened (via New or
+// Load) and restored if the user picks Cancel — otherwise an edit they
+// changed their mind on would leak into the active loadout because the
+// 6 slot dropdowns and fn-mode selectables write to g_MpSetup.weapons /
+// g_MpSlotFnFlags live as the user clicks. Use Preset commits without
+// restoring; Save persists to disk but does not update the snapshot, so
+// Save → Cancel reverts the in-memory state while keeping the on-disk
+// copy (the next Load resyncs them).
+static u8 g_MpWeaponPresetSnapshotWeapons[NUM_MPWEAPONSLOTS];
+static u8 g_MpWeaponPresetSnapshotFlags[NUM_MPWEAPONSLOTS];
+
+static void mpWeaponPresetTakeSnapshot(void)
+{
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		g_MpWeaponPresetSnapshotWeapons[i] = g_MpSetup.weapons[i];
+		g_MpWeaponPresetSnapshotFlags[i] = g_MpSlotFnFlags[i];
+	}
+}
+
+static void mpWeaponPresetRestoreSnapshot(void)
+{
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+		g_MpSetup.weapons[i] = g_MpWeaponPresetSnapshotWeapons[i];
+		g_MpSlotFnFlags[i] = g_MpWeaponPresetSnapshotFlags[i];
+	}
+}
+
+// Per-slot function-mode states. Stored in g_MpSlotFnFlags as a bitmask;
+// the UI only ever produces one of three values (the menu won't let the
+// user disable both functions for the same slot).
+#define MPSLOTFN_BOTH      0
+#define MPSLOTFN_PRIMARY   1  // primary only -> FNFLAG_SECONDARY_DISABLED
+#define MPSLOTFN_SECONDARY 2  // secondary only -> FNFLAG_PRIMARY_DISABLED
+
+// Per-slot displayed label. Used as a SELECTABLE label resolver instead
+// of a dropdown so the editor's block budget stays well under the 80-slot
+// menu->blocks[] cap. A dropdown costs 4 blocks each (12 dropdowns would
+// be 48); a SELECTABLE with a resolver costs 0. Buffer is generous because
+// the label embeds the weapon's actual primary/secondary function names
+// (e.g. "Single Shot / Pistol Whip") which can be long.
+static char g_MpSlotFnModeText[NUM_MPWEAPONSLOTS][96];
+
+static s32 mpSlotFnFlagsToMode(u8 flags)
+{
+	if (flags & FNFLAG_PRIMARY_DISABLED) {
+		return MPSLOTFN_SECONDARY;
+	}
+	if (flags & FNFLAG_SECONDARY_DISABLED) {
+		return MPSLOTFN_PRIMARY;
+	}
+	return MPSLOTFN_BOTH;
+}
+
+static u8 mpSlotModeToFnFlags(s32 mode)
+{
+	if (mode == MPSLOTFN_PRIMARY) {
+		return FNFLAG_SECONDARY_DISABLED;
+	}
+	if (mode == MPSLOTFN_SECONDARY) {
+		return FNFLAG_PRIMARY_DISABLED;
+	}
+	return 0;
+}
+
+// Resolve the displayed name of a weapon's primary or secondary function.
+// Returns "—" for slots whose weapon has no firing function (Nothing,
+// Shield, Disabled), or whose function is absent (most weapons only have
+// one of either side).
+static const char *mpSlotFnName(s32 weaponnum, s32 which)
+{
+	// Non-firing slots have no functions to name.
+	if (weaponnum <= WEAPON_NONE || weaponnum == WEAPON_DISABLED || weaponnum == WEAPON_MPSHIELD) {
+		return "n/a";
+	}
+	struct weaponfunc *func = weaponGetFunctionById((u32)weaponnum, (u32)which);
+	if (func == NULL || func->name == 0) {
+		return "n/a";
+	}
+	return langGet(func->name);
+}
+
+// Label resolver: returns "Mode: <state> (<fn names>)" for the slot
+// encoded in item->param3. Called once per render frame per visible
+// row, so per-call sprintf is fine. Shows the weapon's actual function
+// names so the user can tell what they're picking before committing.
+char *mpMenuTextSlotFnMode(struct menuitem *item)
+{
+	s32 slot = (s32)item->param3;
+	if (slot < 0 || slot >= NUM_MPWEAPONSLOTS) {
+		return "";
+	}
+	u8 mpweaponnum = g_MpSetup.weapons[slot];
+	s32 weaponnum = (s32)g_MpWeapons[mpweaponnum].weaponnum;
+	const char *pri = mpSlotFnName(weaponnum, FUNC_PRIMARY);
+	const char *sec = mpSlotFnName(weaponnum, FUNC_SECONDARY);
+	switch (mpSlotFnFlagsToMode(g_MpSlotFnFlags[slot])) {
+	case MPSLOTFN_PRIMARY:
+		snprintf(g_MpSlotFnModeText[slot], sizeof(g_MpSlotFnModeText[slot]),
+				"  Mode: Primary only - %s\n", pri);
+		break;
+	case MPSLOTFN_SECONDARY:
+		snprintf(g_MpSlotFnModeText[slot], sizeof(g_MpSlotFnModeText[slot]),
+				"  Mode: Secondary only - %s\n", sec);
+		break;
+	default:
+		snprintf(g_MpSlotFnModeText[slot], sizeof(g_MpSlotFnModeText[slot]),
+				"  Mode: Both - %s / %s\n", pri, sec);
+		break;
+	}
+	return g_MpSlotFnModeText[slot];
+}
+
+// Click handler: cycles Both -> Primary only -> Secondary only -> Both.
+// "Both disabled" is intentionally unreachable so the gameplay hooks
+// never have to handle that state.
+MenuItemHandlerResult menuhandlerMpSlotFnModeCycle(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		s32 slot = (s32)item->param3;
+		if (slot >= 0 && slot < NUM_MPWEAPONSLOTS) {
+			s32 next = (mpSlotFnFlagsToMode(g_MpSlotFnFlags[slot]) + 1) % 3;
+			g_MpSlotFnFlags[slot] = mpSlotModeToFnFlags(next);
+		}
+	}
+	return 0;
+}
+
+
+// Keyboard handler for the Save Name dialog. Mirrors menuhandlerMpSetupName.
+// On Enter: if the name matches an existing preset, push the overwrite
+// confirm; if we're at the cap and adding new, push the maxed-out error;
+// otherwise append.
+MenuItemHandlerResult menuhandlerMpWeaponPresetSaveName(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETTEXT:
+		strcpy(data->keyboard.string, g_MpWeaponPresetNameBuf);
+		break;
+	case MENUOP_SETTEXT:
+		strncpy(g_MpWeaponPresetNameBuf, data->keyboard.string, MPWEAPONPRESET_MAXNAME);
+		g_MpWeaponPresetNameBuf[MPWEAPONPRESET_MAXNAME] = '\0';
+		break;
+	case MENUOP_SET:
+		if (g_MpWeaponPresetNameBuf[0] == '\0') {
+			break;
+		}
+		{
+			s32 existing = mpWeaponPresetFind(g_MpWeaponPresetNameBuf);
+			if (existing >= 0) {
+				g_MpWeaponPresetSlotIndex = existing;
+				// Came from the keyboard, not the Save button — Yes
+				// handler must pop both the confirm and the keyboard.
+				g_MpWeaponPresetOverwriteFromSave = false;
+				menuPushDialog(&g_MpWeaponPresetOverwriteMenuDialog);
+				break;
+			}
+			if (g_MpWeaponPresetCount >= MPWEAPONPRESET_MAXENTRIES) {
+				menuPushDialog(&g_MpWeaponPresetMaxedMenuDialog);
+				break;
+			}
+			mpWeaponPresetAdd(g_MpWeaponPresetNameBuf, g_MpSetup.weapons, g_MpSlotFnFlags);
+			mpsetupSaveCurrentFile();
+			// Save just persisted current values; refresh the snapshot
+			// so a subsequent Cancel / B-close reverts to post-save state
+			// instead of throwing away what the user just committed.
+			mpWeaponPresetTakeSnapshot();
+			menuPushDialog(&g_MpWeaponPresetSavedMenuDialog);
+		}
+		break;
+	}
+	return 0;
+}
+
+// Save button on the editor.
+// - If we entered the editor by Loading an existing preset (slotindex
+//   pointing at the source), Save = overwrite that slot. We push the
+//   overwrite confirm directly (no keyboard) — the user already named
+//   the preset when they first created it.
+// - If we entered via "New Preset" (slotindex == -1), Save behaves the
+//   same as Save as New: open the keyboard naming dialog.
+MenuItemHandlerResult menuhandlerMpCustomPresetSave(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		g_MpWeaponPresetOverwriteFromSave = false;
+		if (g_MpWeaponPresetSlotIndex >= 0
+				&& g_MpWeaponPresetSlotIndex < (s32)g_MpWeaponPresetCount) {
+			g_MpWeaponPresetOverwriteFromSave = true;
+			menuPushDialog(&g_MpWeaponPresetOverwriteMenuDialog);
+		} else {
+			g_MpWeaponPresetNameBuf[0] = '\0';
+			g_MpWeaponPresetSlotIndex = -1;
+			menuPushDialog(&g_MpWeaponPresetSaveNameMenuDialog);
+		}
+	}
+	return 0;
+}
+
+// Save as New / Copy button on the editor. Always opens the keyboard so
+// the user picks a name. If the entered name matches an existing preset
+// the keyboard handler falls through to the overwrite-from-keyboard path
+// (which keeps the keyboard underneath the confirm, so a No bounces back
+// to the keyboard for re-naming). slotindex is reset to -1 so the keyboard
+// flow's add path stays additive — copying from a loaded preset becomes a
+// new entry rather than overwriting the source.
+MenuItemHandlerResult menuhandlerMpCustomPresetSaveAsNew(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		g_MpWeaponPresetOverwriteFromSave = false;
+		g_MpWeaponPresetNameBuf[0] = '\0';
+		g_MpWeaponPresetSlotIndex = -1;
+		menuPushDialog(&g_MpWeaponPresetSaveNameMenuDialog);
+	}
+	return 0;
+}
+
+// "Yes" on the overwrite confirm. Writes the current loadout to the slot
+// captured in g_MpWeaponPresetSlotIndex. Pops one dialog (the confirm)
+// when invoked from the editor's Save button, two (confirm + keyboard)
+// when invoked from a duplicate-name resolution in Save as New. The
+// g_MpWeaponPresetOverwriteFromSave flag is set by the Save button path
+// and cleared here so subsequent overwrites default to the keyboard path.
+MenuItemHandlerResult menuhandlerMpWeaponPresetOverwriteYes(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		if (g_MpWeaponPresetSlotIndex >= 0) {
+			mpWeaponPresetReplace(g_MpWeaponPresetSlotIndex, g_MpSetup.weapons, g_MpSlotFnFlags);
+			mpsetupSaveCurrentFile();
+			// Refresh the snapshot so a later Cancel / B-close in the
+			// editor keeps the persisted values instead of reverting.
+			mpWeaponPresetTakeSnapshot();
+		}
+		menuPopDialog(); // overwrite confirm
+		if (!g_MpWeaponPresetOverwriteFromSave) {
+			menuPopDialog(); // keyboard dialog underneath
+		}
+		g_MpWeaponPresetOverwriteFromSave = false;
+		menuPushDialog(&g_MpWeaponPresetSavedMenuDialog);
+	}
+	return 0;
+}
+
+// Load action on the Manage dialog. Copies the preset into the live
+// loadout, leaves g_MpWeaponPresetSlotIndex pointing at the source slot,
+// and pushes the editor so the user can review and either Use it as-is,
+// edit and Save (overwrite), or Save as New / Copy under a different
+// name. The actual apply (g_MpWeaponSetNum = WEAPONSET_CUSTOM) is
+// deferred to the editor's Use action so a user who just wants to peek
+// at a preset can Back out without changing the active loadout.
+MenuItemHandlerResult menuhandlerMpWeaponPresetLoad(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		s32 idx = g_MpWeaponPresetSlotIndex;
+		if (idx >= 0 && idx < (s32)g_MpWeaponPresetCount) {
+			const struct mpweaponpreset *p = &g_MpWeaponPresets[idx];
+			for (s32 i = 0; i < NUM_MPWEAPONSLOTS; i++) {
+				g_MpSetup.weapons[i] = p->weapons[i];
+				g_MpSlotFnFlags[i] = p->slotfnflags[i];
+			}
+			menuPopDialog(); // Manage dialog
+			menuPushDialog(&g_MpEditCustomPresetMenuDialog);
+		} else {
+			menuPopDialog();
+		}
+	}
+	return 0;
+}
+
+// Use Preset action on the editor. Commits the (possibly edited) live
+// loadout as the active Custom set and pops back to the Weapons menu.
+// Updates the snapshot to current values so the dialog's CLOSE handler
+// doesn't revert what we just committed. Persistence is independent —
+// call Save / Save as New first to keep the changes on disk.
+MenuItemHandlerResult menuhandlerMpCustomPresetUse(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		mpWeaponPresetTakeSnapshot();
+		g_MpWeaponSetNum = WEAPONSET_CUSTOM;
+		menuPopDialog(); // Edit dialog
+		menuPopDialog(); // Custom Presets list
+	}
+	return 0;
+}
+
+// Editor dialog handler: takes the snapshot on OPEN, restores on CLOSE.
+// Restoring on CLOSE covers every exit path — Cancel button, B/back
+// button, or programmatic pop — so live edits never leak past the
+// editor unless explicitly committed via Use Preset (which updates the
+// snapshot first) or via a successful Save (which also updates).
+MenuDialogHandlerResult menudialogMpEditCustomPreset(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_OPEN) {
+		mpWeaponPresetTakeSnapshot();
+	} else if (operation == MENUOP_CLOSE) {
+		mpWeaponPresetRestoreSnapshot();
+	}
+	return false;
+}
+
+// Keyboard handler for the Rename dialog. Pre-loads the current name on
+// MENUOP_GETTEXT; persists on MENUOP_SET.
+MenuItemHandlerResult menuhandlerMpWeaponPresetRename(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 idx = g_MpWeaponPresetSlotIndex;
+
+	switch (operation) {
+	case MENUOP_GETTEXT:
+		if (idx >= 0 && idx < (s32)g_MpWeaponPresetCount) {
+			strcpy(data->keyboard.string, g_MpWeaponPresets[idx].name);
+		} else {
+			data->keyboard.string[0] = '\0';
+		}
+		break;
+	case MENUOP_SETTEXT:
+		strncpy(g_MpWeaponPresetNameBuf, data->keyboard.string, MPWEAPONPRESET_MAXNAME);
+		g_MpWeaponPresetNameBuf[MPWEAPONPRESET_MAXNAME] = '\0';
+		break;
+	case MENUOP_SET:
+		if (idx >= 0 && idx < (s32)g_MpWeaponPresetCount && g_MpWeaponPresetNameBuf[0] != '\0') {
+			mpWeaponPresetRename(idx, g_MpWeaponPresetNameBuf);
+			mpsetupSaveCurrentFile();
+		}
+		menuPopDialog(); // close keyboard
+		menuPopDialog(); // close Manage dialog
+		break;
+	}
+	return 0;
+}
+
+// Rename action on the Manage dialog. Resets the buffer and pushes the
+// rename keyboard dialog (which pre-loads via MENUOP_GETTEXT).
+MenuItemHandlerResult menuhandlerMpWeaponPresetRenameOpen(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		s32 idx = g_MpWeaponPresetSlotIndex;
+		if (idx >= 0 && idx < (s32)g_MpWeaponPresetCount) {
+			strcpy(g_MpWeaponPresetNameBuf, g_MpWeaponPresets[idx].name);
+			menuPushDialog(&g_MpWeaponPresetRenameMenuDialog);
+		}
+	}
+	return 0;
+}
+
+// Delete action on the Manage dialog. Just pushes the Yes/No confirm.
+MenuItemHandlerResult menuhandlerMpWeaponPresetDeleteOpen(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		menuPushDialog(&g_MpWeaponPresetDeleteMenuDialog);
+	}
+	return 0;
+}
+
+// "Yes" on the delete confirm. Removes the preset and saves.
+MenuItemHandlerResult menuhandlerMpWeaponPresetDeleteYes(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		mpWeaponPresetDelete(g_MpWeaponPresetSlotIndex);
+		mpsetupSaveCurrentFile();
+		menuPopDialog(); // close confirm
+		menuPopDialog(); // close Manage dialog
+	}
+	return 0;
+}
+
+// List handler for the saved-preset MENUITEMTYPE_LIST. Index 0 is "New"
+// (opens the editor); indices 1..N are saved presets (open the per-entry
+// Manage dialog). Embedding "New" inside the list rather than as a
+// surrounding selectable matters: the LIST item type captures focus, so
+// any selectable placed above/below it becomes unreachable via the
+// keyboard / gamepad d-pad. The group support (GETOPTGROUP*) puts a
+// visual "Saved" header between New and the saved entries.
+MenuItemHandlerResult menuhandlerMpCustomPresetList(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	const s32 total = 1 + (s32)g_MpWeaponPresetCount;
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->list.value = total;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		if (data->list.value == 0) {
+			return (uintptr_t)"New Preset\n";
+		}
+		{
+			s32 idx = data->list.value - 1;
+			if (idx >= 0 && idx < (s32)g_MpWeaponPresetCount) {
+				return (uintptr_t)g_MpWeaponPresets[idx].name;
+			}
+		}
+		return (uintptr_t)"";
+	case MENUOP_SET:
+		if (data->list.value == 0) {
+			g_MpWeaponPresetSlotIndex = -1;
+			menuPushDialog(&g_MpEditCustomPresetMenuDialog);
+		} else {
+			s32 idx = data->list.value - 1;
+			if (idx >= 0 && idx < (s32)g_MpWeaponPresetCount) {
+				g_MpWeaponPresetSlotIndex = idx;
+				menuPushDialog(&g_MpManageWeaponPresetMenuDialog);
+			}
+		}
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->list.value = 0xfffff;
+		break;
+	case MENUOP_GETOPTGROUPCOUNT:
+		data->list.value = (g_MpWeaponPresetCount > 0) ? 2 : 1;
+		break;
+	case MENUOP_GETOPTGROUPTEXT:
+		return (uintptr_t)(data->list.value == 0 ? "" : "Saved");
+	case MENUOP_GETGROUPSTARTINDEX:
+		data->list.groupstartindex = (data->list.value == 0) ? 0 : 1;
+		break;
+	}
+	return 0;
+}
+
+// ---------------------------------------------------------------------
+// Editor dialog: 6 weapon slot dropdowns + 6 fn-mode dropdowns + Save/Back.
+// Slot dropdowns reuse menuhandlerMpWeaponSlot so edits flow into
+// g_MpSetup.weapons[] the same way the parent Weapons menu does.
+// ---------------------------------------------------------------------
+struct menuitem g_MpEditCustomPresetMenuItems[] = {
+	// Each row pair = slot weapon dropdown (4 blocks) + fn-mode selectable
+	// (0 blocks). The selectable's label is resolved every frame via
+	// mpMenuTextSlotFnMode reading g_MpSlotFnFlags. Keeps the dialog under
+	// the 24-block envelope so pushing the save-name keyboard on top
+	// (3 blocks) stays comfortably inside the 80-slot menu block budget.
+	{ MENUITEMTYPE_DROPDOWN,   0, MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_MPWEAPONSLOT, L_MPMENU_176, 0, menuhandlerMpWeaponSlot },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, (uintptr_t)&mpMenuTextSlotFnMode, 0, menuhandlerMpSlotFnModeCycle },
+	{ MENUITEMTYPE_DROPDOWN,   0, MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_MPWEAPONSLOT, L_MPMENU_177, 1, menuhandlerMpWeaponSlot },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, (uintptr_t)&mpMenuTextSlotFnMode, 1, menuhandlerMpSlotFnModeCycle },
+	{ MENUITEMTYPE_DROPDOWN,   0, MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_MPWEAPONSLOT, L_MPMENU_178, 2, menuhandlerMpWeaponSlot },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, (uintptr_t)&mpMenuTextSlotFnMode, 2, menuhandlerMpSlotFnModeCycle },
+	{ MENUITEMTYPE_DROPDOWN,   0, MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_MPWEAPONSLOT, L_MPMENU_179, 3, menuhandlerMpWeaponSlot },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, (uintptr_t)&mpMenuTextSlotFnMode, 3, menuhandlerMpSlotFnModeCycle },
+	{ MENUITEMTYPE_DROPDOWN,   0, MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_MPWEAPONSLOT, L_MPMENU_180, 4, menuhandlerMpWeaponSlot },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, (uintptr_t)&mpMenuTextSlotFnMode, 4, menuhandlerMpSlotFnModeCycle },
+	{ MENUITEMTYPE_DROPDOWN,   0, MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_MPWEAPONSLOT, L_MPMENU_181, 5, menuhandlerMpWeaponSlot },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, (uintptr_t)&mpMenuTextSlotFnMode, 5, menuhandlerMpSlotFnModeCycle },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	// Use Preset: apply this loadout as the active Custom set and return
+	// to the Weapons menu. Independent of saving — values must already
+	// have been Saved if the user wants them on disk for next time.
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Use Preset\n", 0, menuhandlerMpCustomPresetUse },
+	// Save: overwrite the loaded preset (if any) or prompt for a name.
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Save\n", 0, menuhandlerMpCustomPresetSave },
+	// Save as New / Copy: always prompts for a new name, never overwrites
+	// the source preset by accident.
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Save as New\n", 0, menuhandlerMpCustomPresetSaveAsNew },
+	// Cancel: pop the dialog. The dialog-level CLOSE handler restores the
+	// entry-time snapshot, so any in-memory edits to slot weapons /
+	// fn-modes are reverted automatically. Same revert happens if the
+	// user dismisses the dialog with the B / back button.
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG, (uintptr_t)"Cancel\n", 0, NULL },
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpEditCustomPresetMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Custom Loadout\n",
+	g_MpEditCustomPresetMenuItems,
+	menudialogMpEditCustomPreset,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// ---------------------------------------------------------------------
+// Custom Presets dialog. The LIST is the only focusable item — putting
+// SELECTABLEs above or below traps d-pad/keyboard focus inside the LIST
+// (it consumes up/down for its own scrolling). "New" lives inside the
+// LIST as index 0; B/Cancel pops the dialog back to the Weapons menu.
+// ---------------------------------------------------------------------
+struct menuitem g_MpCustomPresetsMenuItems[] = {
+	{ MENUITEMTYPE_LIST, 0, MENUITEMFLAG_LABEL_CUSTOMCOLOUR, 160, 0x00000042, menuhandlerMpCustomPresetList },
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpCustomPresetsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Custom Presets\n",
+	g_MpCustomPresetsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// ---------------------------------------------------------------------
+// Per-entry Manage dialog: Load / Rename / Delete / Back.
+// Pushed by the list handler with g_MpWeaponPresetSlotIndex set.
+// ---------------------------------------------------------------------
+struct menuitem g_MpManageWeaponPresetMenuItems[] = {
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Load\n", 0, menuhandlerMpWeaponPresetLoad },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Rename\n", 0, menuhandlerMpWeaponPresetRenameOpen },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Delete\n", 0, menuhandlerMpWeaponPresetDeleteOpen },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG, L_OPTIONS_213, 0, NULL }, // "Back"
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpManageWeaponPresetMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Manage Preset\n",
+	g_MpManageWeaponPresetMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// ---------------------------------------------------------------------
+// Save-name keyboard dialog. Pushed by the editor's Save button.
+// ---------------------------------------------------------------------
+struct menuitem g_MpWeaponPresetSaveNameMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING, (uintptr_t)"Enter the preset name:\n", 0, NULL },
+	{ MENUITEMTYPE_KEYBOARD, MPWEAPONPRESET_MAXNAME, 0, 0, 1, menuhandlerMpWeaponPresetSaveName },
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpWeaponPresetSaveNameMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Preset Name\n",
+	g_MpWeaponPresetSaveNameMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// Rename keyboard dialog (pre-fills via MENUOP_GETTEXT from the selected slot).
+struct menuitem g_MpWeaponPresetRenameMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING, (uintptr_t)"Enter the new name:\n", 0, NULL },
+	{ MENUITEMTYPE_KEYBOARD, MPWEAPONPRESET_MAXNAME, 0, 0, 1, menuhandlerMpWeaponPresetRename },
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpWeaponPresetRenameMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Rename Preset\n",
+	g_MpWeaponPresetRenameMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// Overwrite confirm (Yes/No). "Yes" replaces the existing entry whose
+// index was captured into g_MpWeaponPresetSlotIndex by mpWeaponPresetFind.
+struct menuitem g_MpWeaponPresetOverwriteMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING, (uintptr_t)"Overwrite existing preset?\n", 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_SELECTABLE_CENTRE, L_OPTIONS_385, 0, NULL }, // "No"
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE, L_OPTIONS_386, 0, menuhandlerMpWeaponPresetOverwriteYes }, // "Yes"
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpWeaponPresetOverwriteMenuDialog = {
+	MENUDIALOGTYPE_DANGER,
+	(uintptr_t)"Overwrite\n",
+	g_MpWeaponPresetOverwriteMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// Delete confirm.
+struct menuitem g_MpWeaponPresetDeleteMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING, (uintptr_t)"Delete preset?\n", 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_SELECTABLE_CENTRE, L_OPTIONS_385, 0, NULL }, // "No"
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CENTRE, L_OPTIONS_386, 0, menuhandlerMpWeaponPresetDeleteYes }, // "Yes"
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpWeaponPresetDeleteMenuDialog = {
+	MENUDIALOGTYPE_DANGER,
+	(uintptr_t)"Delete\n",
+	g_MpWeaponPresetDeleteMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// "Saved" success popup, shown after Save or Overwrite-Yes.
+struct menuitem g_MpWeaponPresetSavedMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING, (uintptr_t)"Preset saved.\n", 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_SELECTABLE_CENTRE, L_OPTIONS_347, 0, NULL }, // "OK"
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpWeaponPresetSavedMenuDialog = {
+	MENUDIALOGTYPE_SUCCESS,
+	(uintptr_t)"Saved\n",
+	g_MpWeaponPresetSavedMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_DISABLEBANNER,
+	NULL,
+};
+
+// "No more slots" error, shown when adding a new preset would exceed the cap.
+struct menuitem g_MpWeaponPresetMaxedMenuItems[] = {
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING, (uintptr_t)"No more preset slots.\n", 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_SELECTABLE_CENTRE, L_OPTIONS_347, 0, NULL }, // "OK"
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpWeaponPresetMaxedMenuDialog = {
+	MENUDIALOGTYPE_DANGER,
+	(uintptr_t)"Full\n",
+	g_MpWeaponPresetMaxedMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_DISABLEBANNER,
+	NULL,
+};
+#endif
 
 struct menuitem g_MpQuickTeamWeaponsMenuItems[] = {
 	{

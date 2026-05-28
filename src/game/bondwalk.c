@@ -273,6 +273,15 @@ void bwalkAdjustCrouchPos(s32 value)
 	} else if (g_Vars.currentplayer->crouchpos > CROUCHPOS_STAND) {
 		g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
 	}
+
+#ifndef PLATFORM_N64
+	// GoldenEye Style: skip the mid (DUCK) position. A single input goes
+	// STAND <-> SQUAT directly using the original input direction to pick
+	// the destination.
+	if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK && goldeneyeStyleActive()) {
+		g_Vars.currentplayer->crouchpos = (value < 0) ? CROUCHPOS_SQUAT : CROUCHPOS_STAND;
+	}
+#endif
 }
 
 void bwalk0f0c3b38(struct coord *reltarget, struct defaultobj *obj)
@@ -1126,6 +1135,58 @@ void bwalkUpdateVertical(void)
 
 		if (bwalkTryMoveUpwards(newmanground - g_Vars.currentplayer->vv_manground) == CDRESULT_NOCOLLISION) {
 			// Falling
+#ifndef PLATFORM_N64
+			// GoldenEye-style invisible wall: sheer ~90-degree drops only.
+			// Drop magnitude = (last-tick feet) - (this-tick floor). Last-tick
+			// feet = bondprevpos.y - vv_height because bondprevpos is the
+			// prop reference (head height), not feet. vv_ground is the
+			// freshly-resolved floor under the new XZ.
+			//   At ~6 units/frame walking speed:
+			//     45° slope: ~6 unit drop  → walkable
+			//     60° slope: ~10 unit drop → walkable
+			//     75° slope: ~22 unit drop → walkable
+			//     85° slope: ~70 unit drop → blocked (near-vertical)
+			//     90° cliff: 100+ drop     → blocked
+			// isfalling == false gates to first tick only so mid-air
+			// knockback (explosion, recoil) keeps falling instead of
+			// snapping back.
+			if (g_Vars.currentplayer->isfalling == false
+					&& goldeneyeStyleActive()
+					&& ((g_Vars.currentplayer->bondprevpos.y - g_Vars.currentplayer->vv_height)
+							- g_Vars.currentplayer->vv_ground) > 60.0f) {
+				// Restore start-of-tick pose AND nudge the player a few
+				// units away from the cliff so they don't end up pinned
+				// right at the lip (where the very next tick's forward
+				// input would re-trigger the snap and feel like being
+				// stuck). The push direction is the OPPOSITE of this
+				// tick's attempted move; magnitude is clamped so we
+				// don't overshoot into a wall behind.
+				//
+				// vv_manground is FEET-Y (pos.y - vv_height); using
+				// bondprevpos.y directly would put the engine's feet
+				// 159 units above the real ground and the player would
+				// visibly float. vv_ground stays stale; next tick's
+				// floor lookup re-resolves at the restored XZ.
+				const f32 dx = g_Vars.currentplayer->prop->pos.x - g_Vars.currentplayer->bondprevpos.x;
+				const f32 dz = g_Vars.currentplayer->prop->pos.z - g_Vars.currentplayer->bondprevpos.z;
+				const f32 movelen = sqrtf(dx * dx + dz * dz);
+				const f32 buffer = 4.0f;
+				f32 pushx = 0.0f;
+				f32 pushz = 0.0f;
+				if (movelen > 0.01f) {
+					pushx = -dx * (buffer / movelen);
+					pushz = -dz * (buffer / movelen);
+				}
+				g_Vars.currentplayer->prop->pos.x = g_Vars.currentplayer->bondprevpos.x + pushx;
+				g_Vars.currentplayer->prop->pos.y = g_Vars.currentplayer->bondprevpos.y;
+				g_Vars.currentplayer->prop->pos.z = g_Vars.currentplayer->bondprevpos.z + pushz;
+				g_Vars.currentplayer->vv_manground = g_Vars.currentplayer->bondprevpos.y - g_Vars.currentplayer->vv_height;
+				g_Vars.currentplayer->bdeltapos.y = 0.0f;
+				g_Vars.currentplayer->speedforwards = 0.0f;
+				g_Vars.currentplayer->speedsideways = 0.0f;
+			} else
+#endif
+			{
 			g_Vars.currentplayer->vv_manground = newmanground;
 			g_Vars.currentplayer->bdeltapos.y = fallspeed;
 
@@ -1138,6 +1199,7 @@ void bwalkUpdateVertical(void)
 					// Have been falling for 4 seconds
 					playerDie(true);
 				}
+			}
 			}
 		} else {
 			// Not falling
@@ -1728,6 +1790,16 @@ void bwalk0f0c69b8(void)
 		} else if (g_Vars.currentplayer->crouchoffset < 0.0f) {
 			spa8 *= 0.5f;
 		}
+
+#ifndef PLATFORM_N64
+		if (goldeneyeStyleActive()) {
+			// GoldenEye-style snap lean: raise the per-frame lean speed cap
+			// so each frame applies ~50% of the remaining delta. Reaches
+			// near-target in ~3 frames instead of the vanilla 8-10 ramp,
+			// without the visual pop of a true 1-frame snap.
+			spa8 = dist * 0.5f;
+		}
+#endif
 
 		if (spa8 < dist) {
 			spa8 /= dist;

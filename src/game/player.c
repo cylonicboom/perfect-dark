@@ -749,6 +749,17 @@ void playerLoadDefaults(void)
 		g_Vars.currentplayer->bondhealth = 1;
 	}
 
+#ifndef PLATFORM_N64
+	// Clear the GE i-frame stamp on respawn so a death-frame stamp
+	// can't carry over and grant the freshly respawned player
+	// permanent invulnerability. Also reset the damage flash to the
+	// "never triggered" sentinel so no spurious flash on respawn.
+	if (g_Vars.currentplayer->prop && g_Vars.currentplayer->prop->chr) {
+		g_Vars.currentplayer->prop->chr->lastdamagetick60 = 0;
+	}
+	g_Vars.currentplayer->damageflashstart60 = -1000000;
+#endif
+
 	g_Vars.currentplayer->oldhealth = 1;
 	g_Vars.currentplayer->oldarmour = 0;
 	g_Vars.currentplayer->apparenthealth = 1;
@@ -2829,10 +2840,169 @@ void playerDisplayDamage(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+/**
+ * RGBA8888 linear lerp. Colors are 0xRRGGBBAA (R high byte, A low byte).
+ * t = 0 returns colA, t = 1 returns colB. Channels interpolated as signed
+ * ints to avoid unsigned underflow when colA > colB on any channel.
+ */
+static u32 playerLerpRGBA(u32 colA, u32 colB, f32 t)
+{
+	s32 rA = (colA >> 24) & 0xff;
+	s32 gA = (colA >> 16) & 0xff;
+	s32 bA = (colA >> 8)  & 0xff;
+	s32 aA = colA & 0xff;
+	s32 rB = (colB >> 24) & 0xff;
+	s32 gB = (colB >> 16) & 0xff;
+	s32 bB = (colB >> 8)  & 0xff;
+	s32 aB = colB & 0xff;
+	s32 r = rA + (s32)((rB - rA) * t);
+	s32 g = gA + (s32)((gB - gA) * t);
+	s32 b = bA + (s32)((bB - bA) * t);
+	s32 a = aA + (s32)((aB - aA) * t);
+	return ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | (u32)a;
+}
+
+/**
+ * GoldenEye-style health/shield HUD: two half-circle "bracket" arcs —
+ * a "(" shape on the left side and a ")" shape on the right side. Both
+ * endpoints of each arc anchor to the side edge, with the arc bulging
+ * inward toward the screen center. Vertically centered on the viewport
+ * so the arcs sit on the sides (not in the corners).
+ *
+ * Health on the left (yellow at top end, red at bottom end), shield on
+ * the right (light cyan at top, dark blue at bottom). All 8 segments
+ * visible at full; top segments deplete first so the "danger" red /
+ * dark-blue end persists longest.
+ *
+ * Segment positions / sizes are hand-tuned via `arc_layout[8]` to
+ * approximate a half-circle (radius ~80px, axis-aligned rectangles).
+ * Index 0 = bottom endpoint (red/dark-blue, persists longest); index
+ * 7 = top endpoint (yellow/cyan, depletes first). The right side
+ * mirrors x around `viewright`.
+ *
+ * Replaces the default PD shield-bar when MPOPTION_GOLDENEYE is active.
+ * Caller (menu.c:5533) has already set up 2D HUD render state via
+ * func0f0d49c8, so we can draw HUD rectangles directly.
+ */
+Gfx *playerRenderHealthBarGE(Gfx *gdl)
+{
+	const s32 viewleft   = viGetViewLeft() / g_ScaleX;
+	const s32 viewtop    = viGetViewTop();
+	const s32 viewwidth  = viGetViewWidth() / g_ScaleX;
+	const s32 viewheight = viGetViewHeight();
+	const s32 viewright  = viewleft + viewwidth - 1;
+	const s32 cy         = viewtop + viewheight / 2;
+
+	// Reversed half-arc bracket: 8 segments along a half-circle of
+	// radius ~90px, vertically centered on the viewport. The whole
+	// arc is inset 24px from each side edge so blank space remains
+	// between the arc and the screen border. `)` shape on the left,
+	// `(` shape on the right. Segment dimensions vary along the arc
+	// to approximate rotation: wide+short at endpoints (horizontal
+	// tangent), tall+narrow at the bulge (vertical tangent), squarish
+	// in between. Format per row:
+	//   { x_from_edge, y_off_from_center, w, h }.
+	// x grows INTO the screen from the side edge; y_off is signed
+	// (negative = above center, positive = below center). i=0 is the
+	// bottom endpoint, i=7 is the top endpoint.
+	static const struct { s8 x; s8 y_off; s8 w; s8 h; } arc_layout[8] = {
+		{ 96,  88, 24, 11 },  // 0: bottom endpoint (wide+short, red end)
+		{ 64,  75, 22, 14 },
+		{ 42,  50, 19, 17 },
+		{ 36,  18, 17, 22 },  // 3: middle-bottom (tall+narrow, bulge)
+		{ 36, -18, 17, 22 },  // 4: middle-top  (tall+narrow, bulge)
+		{ 42, -50, 19, 17 },
+		{ 64, -75, 22, 14 },
+		{ 96, -88, 24, 11 },  // 7: top endpoint (wide+short, yellow end)
+	};
+	const s32 segments = 8;
+
+	// Source values, clamped 0..1. cshield max is 8.0 per the engine.
+	f32 health = g_Vars.currentplayer->bondhealth;
+	f32 shield = g_Vars.currentplayer->prop->chr
+			? g_Vars.currentplayer->prop->chr->cshield * 0.125f
+			: 0.0f;
+
+	if (health < 0.0f) health = 0.0f;
+	if (health > 1.0f) health = 1.0f;
+	if (shield < 0.0f) shield = 0.0f;
+	if (shield > 1.0f) shield = 1.0f;
+
+	const s32 hp_filled = (s32)(segments * health + 0.5f);
+	const s32 sh_filled = (s32)(segments * shield + 0.5f);
+
+	// Gradient endpoints. "bot" = bottom endpoint (i=0, danger pole
+	// that persists longest); "top" = top endpoint (i=7, depletes first).
+	const u32 health_bot = 0xd01818e0;  // saturated red
+	const u32 health_top = 0xffd820e0;  // warm yellow
+	const u32 shield_bot = 0x2050d0e0;  // dark blue
+	const u32 shield_top = 0x80d0ffe0;  // light cyan
+	const u32 bgcol      = 0x10101060;  // dim slot
+
+	for (s32 i = 0; i < segments; i++) {
+		// t = 0 at bottom (i=0), t = 1 at top (i=7)
+		const f32 t = (f32)i / (f32)(segments - 1);
+		const bool hp_on = (i < hp_filled);
+		const bool sh_on = (i < sh_filled);
+
+		const s32 hp_cx = viewleft + arc_layout[i].x;
+		const s32 hp_cyy = cy + arc_layout[i].y_off;
+		const s32 hp_x1 = hp_cx - arc_layout[i].w / 2;
+		const s32 hp_y1 = hp_cyy - arc_layout[i].h / 2;
+		const s32 hp_x2 = hp_x1 + arc_layout[i].w - 1;
+		const s32 hp_y2 = hp_y1 + arc_layout[i].h - 1;
+
+		const s32 sh_cx = viewright - arc_layout[i].x;
+		const s32 sh_cyy = cy + arc_layout[i].y_off;
+		const s32 sh_x1 = sh_cx - arc_layout[i].w / 2;
+		const s32 sh_y1 = sh_cyy - arc_layout[i].h / 2;
+		const s32 sh_x2 = sh_x1 + arc_layout[i].w - 1;
+		const s32 sh_y2 = sh_y1 + arc_layout[i].h - 1;
+
+		const u32 hp_col = hp_on ? playerLerpRGBA(health_bot, health_top, t) : bgcol;
+		const u32 sh_col = sh_on ? playerLerpRGBA(shield_bot, shield_top, t) : bgcol;
+
+		gdl = textSetPrimColour(gdl, hp_col);
+		gDPHudRectangle(gdl++, hp_x1, hp_y1, hp_x2, hp_y2);
+
+		gdl = textSetPrimColour(gdl, sh_col);
+		gDPHudRectangle(gdl++, sh_x1, sh_y1, sh_x2, sh_y2);
+	}
+
+	// GoldenEye Style damage flash: 8-frame triangular white fade-in /
+	// fade-out covering the entire viewport. Triggered in chrDamage on
+	// local-player damage by stamping `damageflashstart60`. Peak alpha
+	// ~50 (~20% opacity) for a subtle hit indicator. Alpha curve:
+	//   phase 0..3 → 8, 22, 36, 50  (fade in)
+	//   phase 4..7 → 50, 36, 22, 8  (fade out)
+	{
+		const s32 phase = (s32)g_Vars.lvframe60 - g_Vars.currentplayer->damageflashstart60;
+		if (phase >= 0 && phase < 8) {
+			s32 alpha = (phase < 4) ? (8 + phase * 14) : (8 + (7 - phase) * 14);
+			if (alpha > 255) alpha = 255;
+			const u32 flashcol = 0xffffff00 | (u32)alpha;
+			gdl = textSetPrimColour(gdl, flashcol);
+			gDPHudRectangle(gdl++, viewleft, viewtop, viewright, viewtop + viewheight - 1);
+		}
+	}
+
+	return gdl;
+}
+#endif
+
 Gfx *playerRenderHealthBar(Gfx *gdl)
 {
 	Mtxf matrix;
-	Mtxf *addr = gfxAllocateMatrix();
+	Mtxf *addr;
+
+#ifndef PLATFORM_N64
+	if (goldeneyeStyleActive()) {
+		return playerRenderHealthBarGE(gdl);
+	}
+#endif
+
+	addr = gfxAllocateMatrix();
 
 #ifdef PLATFORM_N64
 	mtx00016ae4(&matrix, 0, 370, 0, 0, 0, 0, 0, 0, -1);

@@ -516,6 +516,10 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU16(dst, g_MpSetup.chrslots);
 	netbufWriteU32(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
+	// KotH static-hill index (NET_PROTOCOL_VER >= 28). 0 = Random; 1..N = hillpads[index-1].
+	// Both sides need the same value before kohInitProps runs to keep g_RngSeed in sync
+	// (the static-pick path skips rngRandom).
+	netbufWriteU8(dst, g_MpSetup.kohstatichill);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -602,6 +606,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.chrslots = netbufReadU16(src);
 	g_MpSetup.options = netbufReadU32(src);
 	netbufReadData(src, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
+	g_MpSetup.kohstatichill = netbufReadU8(src);
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {

@@ -184,4 +184,13 @@ s32 bgunGetWeaponNum2(s32 handnum);
 s8 bgunFreeFireslotWrapper(s32 fireslot);
 s8 bgunFreeFireslot(s32 fireslot);
 
+#ifndef PLATFORM_N64
+// Port-only function-mode gates. Defined in bondgun.c. Consulted by the
+// player equip path (auto-flip on equip) and the bot AI single-choke
+// point in botinvSwitchToWeapon to clamp picked funcs against per-slot
+// FNFLAG_* bits on the active Custom preset.
+bool bgunPrimaryFunctionDisabled(s32 weaponnum);
+bool bgunSecondaryFunctionDisabled(s32 weaponnum);
+#endif
+
 #endif

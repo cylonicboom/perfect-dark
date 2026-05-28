@@ -22,9 +22,14 @@ MP Setup File Format
 	[setup_1{80}]
 	...
 	[setup_n{80}]
+	# weapon presets (v2+)
+	[numweaponpresets{1}]
+	[preset_1{sizeof(struct mpweaponpreset)}]
+	...
+	[preset_m{sizeof(struct mpweaponpreset)}]
  */
 
-#define MPSETUP_VERSION 1
+#define MPSETUP_VERSION 3
 
 #define MPSETUP_EXPORTDIR "$S/exported/"
 #define MPSETUP_FILENAME "mpsetups"
@@ -43,6 +48,9 @@ extern struct menudialogdef g_MpSaveSetupNameMenuDialog;
 
 s16 g_MpCurrentSetup = -1;
 struct mpsetupfile g_MpSetupFile;
+
+u8 g_MpWeaponPresetCount = 0;
+struct mpweaponpreset g_MpWeaponPresets[MPWEAPONPRESET_MAXENTRIES];
 
 static struct mpsetupfile g_ImportMpSetupFile;
 static u64 g_MpImportExportFilter[2];
@@ -367,6 +375,30 @@ static s32 mpsetupDeserialize(FILE *f, struct mpsetupfile *setupfile)
 		rx += fread(setupfile->setups[i].bytes, sizeof(setupfile->setups[i].bytes), 1, f);
 	}
 
+	// v2+ tail: custom weapon presets. Only populated when this is the
+	// default setupfile (g_MpSetupFile) — import/export of weapon presets
+	// is intentionally skipped to keep the export format symmetric with
+	// the existing per-setup checkbox UI.
+	if (setupfile == &g_MpSetupFile) {
+		g_MpWeaponPresetCount = 0;
+		if (setupfile->version >= 2) {
+			u8 npresets = 0;
+			if (fread(&npresets, sizeof(npresets), 1, f) == 1) {
+				if (npresets > MPWEAPONPRESET_MAXENTRIES) {
+					npresets = MPWEAPONPRESET_MAXENTRIES;
+				}
+				for (u8 i = 0; i < npresets; ++i) {
+					if (fread(&g_MpWeaponPresets[i], sizeof(g_MpWeaponPresets[i]), 1, f) != 1) {
+						break;
+					}
+					// defensive: terminate name in case the file was hand-edited
+					g_MpWeaponPresets[i].name[MPWEAPONPRESET_MAXNAME] = '\0';
+					g_MpWeaponPresetCount = i + 1;
+				}
+			}
+		}
+	}
+
 	return rx;
 }
 
@@ -380,6 +412,17 @@ static s32 mpsetupSerialize(FILE *f, struct mpsetupfile *setupfile)
 
 	for (int i = 0; i < setupfile->numsetups; ++i) {
 		wx += fwrite(setupfile->setups[i].bytes, sizeof(setupfile->setups[i].bytes), 1, f);
+	}
+
+	// v2+ tail: only attach weapon presets when serialising the active
+	// setupfile. The export path uses a temporary mpsetupfile (no preset
+	// roundtrip) and the import path consumes one without the tail.
+	if (setupfile == &g_MpSetupFile && setupfile->version >= 2) {
+		fwrite(&g_MpWeaponPresetCount, sizeof(g_MpWeaponPresetCount), 1, f);
+		for (u8 i = 0; i < g_MpWeaponPresetCount; ++i) {
+			fwrite(&g_MpWeaponPresets[i], sizeof(g_MpWeaponPresets[i]), 1, f);
+		}
+		wx += 1;
 	}
 
 	return wx;
@@ -821,6 +864,63 @@ static MenuItemHandlerResult menuhandlerSetupSetDefault(s32 operation, struct me
 	}
 
 	return 0;
+}
+
+/* weapon preset helpers (port-only) */
+
+s32 mpWeaponPresetFind(const char *name)
+{
+	if (name == NULL || name[0] == '\0') {
+		return -1;
+	}
+	for (u8 i = 0; i < g_MpWeaponPresetCount; ++i) {
+		if (strcmp(g_MpWeaponPresets[i].name, name) == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+s32 mpWeaponPresetAdd(const char *name, const u8 *weapons, const u8 *slotfnflags)
+{
+	if (g_MpWeaponPresetCount >= MPWEAPONPRESET_MAXENTRIES) {
+		return -1;
+	}
+	struct mpweaponpreset *p = &g_MpWeaponPresets[g_MpWeaponPresetCount];
+	strncpy(p->name, name, MPWEAPONPRESET_MAXNAME);
+	p->name[MPWEAPONPRESET_MAXNAME] = '\0';
+	memcpy(p->weapons, weapons, NUM_MPWEAPONSLOTS);
+	memcpy(p->slotfnflags, slotfnflags, NUM_MPWEAPONSLOTS);
+	return g_MpWeaponPresetCount++;
+}
+
+void mpWeaponPresetReplace(s32 idx, const u8 *weapons, const u8 *slotfnflags)
+{
+	if (idx < 0 || idx >= g_MpWeaponPresetCount) {
+		return;
+	}
+	memcpy(g_MpWeaponPresets[idx].weapons, weapons, NUM_MPWEAPONSLOTS);
+	memcpy(g_MpWeaponPresets[idx].slotfnflags, slotfnflags, NUM_MPWEAPONSLOTS);
+}
+
+void mpWeaponPresetRename(s32 idx, const char *newname)
+{
+	if (idx < 0 || idx >= g_MpWeaponPresetCount || newname == NULL) {
+		return;
+	}
+	strncpy(g_MpWeaponPresets[idx].name, newname, MPWEAPONPRESET_MAXNAME);
+	g_MpWeaponPresets[idx].name[MPWEAPONPRESET_MAXNAME] = '\0';
+}
+
+void mpWeaponPresetDelete(s32 idx)
+{
+	if (idx < 0 || idx >= g_MpWeaponPresetCount) {
+		return;
+	}
+	for (u8 i = idx; i + 1 < g_MpWeaponPresetCount; ++i) {
+		g_MpWeaponPresets[i] = g_MpWeaponPresets[i + 1];
+	}
+	g_MpWeaponPresetCount--;
 }
 
 /* public functions */

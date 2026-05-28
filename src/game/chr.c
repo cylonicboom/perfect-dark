@@ -1116,6 +1116,12 @@ void chrInit(struct prop *prop, u8 *ailist)
 
 	chr->shotbondsum = 0;
 	chr->damage = 0;
+#ifndef PLATFORM_N64
+	// Clear the GE i-frame stamp so a freshly-spawned chr (or a
+	// chrslot recycled from a previous chr) starts at the "never
+	// damaged" sentinel and the very first hit lands.
+	chr->lastdamagetick60 = 0;
+#endif
 	chr->sumground = 0;
 	chr->manground = 0;
 	chr->ground = 0;
@@ -2312,7 +2318,14 @@ void chrTickPoisoned(struct chrdata *chr)
 
 				chr->poisoncounter = 0;
 			} else if (chr->poisoncounter < TICKS(1680)) {
-				chr->blurdrugamount += g_Vars.lvupdate240 * 10;
+#ifndef PLATFORM_N64
+				// GoldenEye Style: no dizzy/blur effects from any source,
+				// including poison ammo accumulation.
+				if (!goldeneyeStyleActive())
+#endif
+				{
+					chr->blurdrugamount += g_Vars.lvupdate240 * 10;
+				}
 			}
 
 			if (g_Vars.normmplayerisrunning) {

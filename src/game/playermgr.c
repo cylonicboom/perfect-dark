@@ -286,6 +286,11 @@ void playermgrAllocatePlayer(s32 index)
 	g_Vars.players[index]->bondhealth = 1;
 	g_Vars.players[index]->stealhealth = -1;
 	g_Vars.players[index]->oldhealth = 1;
+#ifndef PLATFORM_N64
+	// Sentinel so the GE-mode damage flash never fires before the
+	// first real damage event; phase = lvframe60 - start is huge.
+	g_Vars.players[index]->damageflashstart60 = -1000000;
+#endif
 	g_Vars.players[index]->oldarmour = 0;
 	g_Vars.players[index]->apparenthealth = 1;
 	g_Vars.players[index]->apparentarmour = 0;

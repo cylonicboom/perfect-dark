@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/chraction.h"
+#include "game/cheats.h"
 #include "game/debug.h"
 #include "game/chr.h"
 #include "game/ceil.h"
@@ -17,6 +18,9 @@
 #include "lib/rng.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "game/bondgun.h"
+#endif
 
 struct aibotweaponpreference g_AibotWeaponPreferences[] = {
 	//                             haspriammogoal
@@ -1041,6 +1045,24 @@ bool botinvSwitchToWeapon(struct chrdata *chr, s32 weaponnum, s32 funcnum)
 	if (!chr || !chr->aibot) {
 		return false;
 	}
+
+#ifndef PLATFORM_N64
+	// Single choke point for Combat Sim weapon-function gating. Subsumes:
+	//  - MPOPTION_GOLDENEYE (bgunSecondaryFunctionDisabled returns true
+	//    for every weapon when goldeneyeStyleActive())
+	//  - Per-slot FNFLAG_* bits on saved Custom presets (consulted via
+	//    bgunSecondary/PrimaryFunctionDisabled). Bot AI picks funcnum
+	//    via botinvScoreWeapon* and commits here, so clamping once covers
+	//    every selection path. Mirrors the player equip-time auto-switch
+	//    in bgunTickSwitch2 so bots and players obey the same rules.
+	//    The menu UI enforces "at least one function enabled" so this
+	//    never produces an invalid funcnum.
+	if (funcnum == FUNC_SECONDARY && bgunSecondaryFunctionDisabled(weaponnum)) {
+		funcnum = FUNC_PRIMARY;
+	} else if (funcnum == FUNC_PRIMARY && bgunPrimaryFunctionDisabled(weaponnum)) {
+		funcnum = FUNC_SECONDARY;
+	}
+#endif
 
 	aibot = chr->aibot;
 

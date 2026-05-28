@@ -84,6 +84,7 @@ For per-file purpose lookups (which `.c` does what), consult `docs/CODEMAP.md` b
 - `docs/PORT_NET_KNOWN_ISSUES.md` — Current netplay limitations and partially-broken features. Read before promising any feature works on clients, or when diagnosing client-only bugs.
 - `docs/PORT_NET_REVERTED_EXPERIMENTS.md` — Failed approaches with root-cause analysis. Read before re-attempting anything that smells like a previously-tried idea.
 - `docs/PORT_NO_CULLING.md` — Port-only "No Room Culling" / "No Draw Slot Limit" MP option + cheat feature. Read when touching `bg.c` draw-slot logic, `cheats.c` infrastructure, or the upper MP-option bits.
+- `docs/PORT_GOLDENEYE.md` — Port-only "GoldenEye Style" Combat Sim option (`MPOPTION_GOLDENEYE`): snap lean, lower-and-raise reloads, ledge wall, classic crosshair, hide-unless-aiming, GE-style vertical health/shield HUD, no secondary functions, no mid-crouch, no dual-wield. Documents the reusable `bgunSecondaryFunctionDisabled` / `bgunDualWieldDisabled` helpers that future weapon-loadout work plugs into.
 
 ## Submodules / do-not-modify paths
 

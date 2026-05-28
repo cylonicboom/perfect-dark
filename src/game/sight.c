@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "game/chraction.h"
 #include "game/bondgun.h"
+#include "game/cheats.h"
 #include "game/game_0b0fd0.h"
 #include "game/game_0b2150.h"
 #include "game/tex.h"
@@ -1603,6 +1604,16 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 	}
 
 #ifndef PLATFORM_N64
+	// Hide-unless-aiming gate (per-player option OR GoldenEye Style mode).
+	// sighton == true when the player is in the gun-aim state (R held in
+	// classic controls, or scope-aim mode). Skipping the whole draw when
+	// not aiming gives a clean look and matches GoldenEye 007's HUD.
+	if (!sighton
+			&& (PLAYER_EXTCFG().crosshairhideunlessaiming
+				|| goldeneyeStyleActive())) {
+		return gdl;
+	}
+
 	// Rounding the crosshair positions allow them to more accurately follow the
 	// gun's vector. Without this, the mantissa isn't factored in at all (cast
 	// to integer), which leads to some awkward behavior, such as the crosshair
@@ -1630,6 +1641,23 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 	}
 
 #ifndef PLATFORM_N64
+	// Force classic plus-sign reticle for every weapon when either:
+	//   1. The per-player "Force Classic Crosshair" option is on, or
+	//   2. MPOPTION_GOLDENEYE is set on the active Combat Sim match.
+	// Includes SIGHT_ZOOM weapons (MagSec 4, AR34, etc.) — sightDrawZoom
+	// ends by calling sightDrawDefault for the under-bracket reticle, so
+	// without this override their visible crosshair stays default even
+	// though the wrapper drew corner brackets. SIGHT_NONE (melee/scanner)
+	// is preserved so combat knife / horizon scanner stay reticle-less.
+	// Trade-off: zoom-capable weapons lose their corner-bracket overlay
+	// and sniper-scope view; the FOV-change itself still works on zoom.
+	// Color comes from the existing SIGHT_COLOUR macro.
+	if (sight != SIGHT_NONE
+			&& (PLAYER_EXTCFG().crosshairforceclassic
+				|| goldeneyeStyleActive())) {
+		sight = SIGHT_CLASSIC;
+	}
+
 	if (g_Vars.currentplayer->bondhealth <= 0.0f) {
 		// Hide crosshair during death animation
 		sight = SIGHT_NONE;

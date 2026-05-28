@@ -9,6 +9,52 @@
 
 #define HTM_NUM_TERMINALS 1
 
+#ifndef PLATFORM_N64
+// Maximum stable pad index across all HTM-supported MP stages. Stages feed
+// 4 INTROCMD_CASE + 24 INTROCMD_CASERESPAWN entries through htmAddPad,
+// giving padnums[0..27]. Additional runtime pads from OBJTYPE_MULTIAMMOCRATE
+// scanning in htmInitProps land at padnums[28+] but vary per stage; pinning
+// only covers the intro-defined range. Out-of-range pins fall through to
+// Random via the engine gate in htbCreateUplink.
+#define HTM_MAX_STATIC_PAD 28
+
+/**
+ * Static-spawn pin for HackThatMac (port-only). g_MpSetup.htmstaticpad
+ * encodes 0 = Random, 1..HTM_MAX_STATIC_PAD = pin uplink to padnums[N-1].
+ * The terminal placement is unaffected — only the data uplink position
+ * is pinned. Wire-synced via SVC_STAGE_START so server + client agree
+ * before htbCreateUplink runs (pin skips the rngRandom() fallback path).
+ */
+MenuItemHandlerResult menuhandlerMpHtmStaticPad(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static char label[16];
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = 1 + HTM_MAX_STATIC_PAD;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		if (data->dropdown.value == 0) {
+			return (uintptr_t)"Random";
+		}
+		sprintf(label, "Pad %u", (unsigned)data->dropdown.value);
+		return (uintptr_t)label;
+	case MENUOP_SET:
+		g_MpSetup.htmstaticpad = (u8)data->dropdown.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		if (g_MpSetup.htmstaticpad > HTM_MAX_STATIC_PAD) {
+			data->dropdown.value = 0;
+		} else {
+			data->dropdown.value = g_MpSetup.htmstaticpad;
+		}
+		break;
+	}
+
+	return 0;
+}
+#endif
+
 struct menuitem g_HtmOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -90,6 +136,14 @@ struct menuitem g_HtmOptionsMenuItems[] = {
 		(uintptr_t)"No Player on Radar",
 		MPOPTION_NOPLAYERONRADAR,
 		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Static Spawn",
+		0,
+		menuhandlerMpHtmStaticPad,
 	},
 #endif
 	{
@@ -271,6 +325,18 @@ void htbCreateUplink(void)
 		prop = prop->next;
 	}
 
+#ifndef PLATFORM_N64
+	// Port-only: static spawn pin. When set, bypass both the ammocrate-
+	// replacement scan and the rngRandom padnums fallback so the uplink
+	// lands on the chosen INTROCMD_CASE/CASERESPAWN pad. Terminal
+	// placement is handled separately in htmInitProps and is not pinned.
+	// Skipping rngRandom diverges the RNG advance — server + client must
+	// agree before htbCreateUplink runs (SVC_STAGE_START carries the field).
+	if (g_MpSetup.htmstaticpad > 0
+			&& g_MpSetup.htmstaticpad <= g_ScenarioData.htm.numpads) {
+		padnum = g_ScenarioData.htm.padnums[g_MpSetup.htmstaticpad - 1];
+	} else
+#endif
 	if (count > 0) {
 		count = rngRandom() % count;
 		var800869ec = candidates[count];

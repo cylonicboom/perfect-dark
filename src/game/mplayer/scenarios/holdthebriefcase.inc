@@ -9,6 +9,50 @@
  * slightly slower but still have full access to their weaponry.
  */
 
+#ifndef PLATFORM_N64
+// Maximum stable pad index across all HTB-supported MP stages. Each CTC-
+// supported stage feeds 4 INTROCMD_CASE + 24 INTROCMD_CASERESPAWN entries
+// through htbAddPad, giving padnums[0..27]. The dropdown lets the host
+// pin a specific pad; pins outside the live padnums[] range fall through
+// to Random via the engine gate in htbCreateToken.
+#define HTB_MAX_STATIC_PAD 28
+
+/**
+ * Static-spawn pin for HoldTheBriefcase (port-only). g_MpSetup.htbstaticpad
+ * encodes 0 = Random, 1..HTB_MAX_STATIC_PAD = pin to padnums[N-1]. Wire-
+ * synced via SVC_STAGE_START so server + client agree before
+ * htbCreateToken runs (pin skips the rngRandom() fallback path).
+ */
+MenuItemHandlerResult menuhandlerMpHtbStaticPad(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static char label[16];
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = 1 + HTB_MAX_STATIC_PAD;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		if (data->dropdown.value == 0) {
+			return (uintptr_t)"Random";
+		}
+		sprintf(label, "Pad %u", (unsigned)data->dropdown.value);
+		return (uintptr_t)label;
+	case MENUOP_SET:
+		g_MpSetup.htbstaticpad = (u8)data->dropdown.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		if (g_MpSetup.htbstaticpad > HTB_MAX_STATIC_PAD) {
+			data->dropdown.value = 0;
+		} else {
+			data->dropdown.value = g_MpSetup.htbstaticpad;
+		}
+		break;
+	}
+
+	return 0;
+}
+#endif
+
 struct menuitem g_HtbOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -90,6 +134,14 @@ struct menuitem g_HtbOptionsMenuItems[] = {
 		(uintptr_t)"No Player on Radar",
 		MPOPTION_NOPLAYERONRADAR,
 		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Static Spawn",
+		0,
+		menuhandlerMpHtbStaticPad,
 	},
 #endif
 	{
@@ -273,6 +325,17 @@ void htbCreateToken(void)
 	}
 
 	// Choose the candidate and remove it
+#ifndef PLATFORM_N64
+	// Port-only: static spawn pin. When set, bypass both the ammocrate-
+	// replacement scan and the rngRandom padnums fallback so the briefcase
+	// lands on the chosen INTROCMD_CASE/CASERESPAWN pad. Skipping
+	// rngRandom diverges the RNG advance — server + client must agree
+	// before htbCreateToken runs (SVC_STAGE_START carries the field).
+	if (g_MpSetup.htbstaticpad > 0
+			&& g_MpSetup.htbstaticpad <= g_ScenarioData.htb.nextindex) {
+		g_ScenarioData.htb.tokenpad = g_ScenarioData.htb.padnums[g_MpSetup.htbstaticpad - 1];
+	} else
+#endif
 	if (count > 0) {
 		count = rngRandom() % count;
 		var800869ec = candidates[count];

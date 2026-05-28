@@ -11,6 +11,58 @@
  * Players cannot score unless their briefcase is at the home base.
  */
 
+#ifndef PLATFORM_N64
+/**
+ * Static-base pin for one CTC team (port-only). item->param carries the
+ * team index 0..3. Encoding: g_MpSetup.ctcteambase[team] is 0 for Random,
+ * 1..4 to pin that team to spawnpadsperteam[N-1] in ctcInitProps. The
+ * pin is wire-synced via SVC_STAGE_START so server and client agree
+ * before the team-assignment loop runs (skipping rngRandom diverges
+ * RNG advance otherwise).
+ */
+MenuItemHandlerResult menuhandlerMpCtcTeamBase(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static char label[16];
+	s32 team_idx = item->param;
+	s32 k;
+	bool team_in_use;
+
+	switch (operation) {
+	case MENUOP_CHECKDISABLED:
+		team_in_use = false;
+		for (k = 0; k < MAX_MPCHRS; k++) {
+			if ((g_MpSetup.chrslots & (1 << k)) && MPCHR(k)->team == team_idx) {
+				team_in_use = true;
+				break;
+			}
+		}
+		return team_in_use ? 0 : 1;
+	case MENUOP_GETOPTIONCOUNT:
+		// Random + Base 1..4. All CTC-supported stages define exactly 4 bases.
+		data->dropdown.value = 5;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		if (data->dropdown.value == 0) {
+			return (uintptr_t)"Random";
+		}
+		sprintf(label, "Base %u", (unsigned)data->dropdown.value);
+		return (uintptr_t)label;
+	case MENUOP_SET:
+		g_MpSetup.ctcteambase[team_idx] = (u8)data->dropdown.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		if (g_MpSetup.ctcteambase[team_idx] > 4) {
+			data->dropdown.value = 0;
+		} else {
+			data->dropdown.value = g_MpSetup.ctcteambase[team_idx];
+		}
+		break;
+	}
+
+	return 0;
+}
+#endif
+
 struct menuitem g_CtcOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -92,6 +144,38 @@ struct menuitem g_CtcOptionsMenuItems[] = {
 		(uintptr_t)"No Player on Radar",
 		MPOPTION_NOPLAYERONRADAR,
 		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0, // team index
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Team 1 Base",
+		0,
+		menuhandlerMpCtcTeamBase,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		1, // team index
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Team 2 Base",
+		0,
+		menuhandlerMpCtcTeamBase,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		2, // team index
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Team 3 Base",
+		0,
+		menuhandlerMpCtcTeamBase,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		3, // team index
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Team 4 Base",
+		0,
+		menuhandlerMpCtcTeamBase,
 	},
 #endif
 	{
@@ -253,9 +337,24 @@ void ctcInitProps(void)
 	}
 
 	for (i = 0; i != ARRAYCOUNT(g_ScenarioData.ctc.teamindexes); i++) {
-		do {
-			g_ScenarioData.ctc.teamindexes[i] = rngRandom() % 4;
-		} while (teamsdone[g_ScenarioData.ctc.teamindexes[i]]);
+#ifndef PLATFORM_N64
+		// Port-only: static base pin. g_MpSetup.ctcteambase[i] encodes
+		// 0 = Random; 1..4 = pin team i to spawnpadsperteam[N-1]. The
+		// !teamsdone[…] check breaks ties when two teams pin the same
+		// base — the first wins, the second falls through to the
+		// rngRandom path. Pinning skips rngRandom for this iteration,
+		// so server + client MUST agree on this value before
+		// ctcInitProps runs (SVC_STAGE_START carries the field).
+		if (g_MpSetup.ctcteambase[i] > 0 && g_MpSetup.ctcteambase[i] <= 4
+				&& !teamsdone[g_MpSetup.ctcteambase[i] - 1]) {
+			g_ScenarioData.ctc.teamindexes[i] = g_MpSetup.ctcteambase[i] - 1;
+		} else
+#endif
+		{
+			do {
+				g_ScenarioData.ctc.teamindexes[i] = rngRandom() % 4;
+			} while (teamsdone[g_ScenarioData.ctc.teamindexes[i]]);
+		}
 
 		teamsdone[g_ScenarioData.ctc.teamindexes[i]] = true;
 	}

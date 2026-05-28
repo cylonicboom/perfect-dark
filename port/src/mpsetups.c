@@ -29,7 +29,7 @@ MP Setup File Format
 	[preset_m{sizeof(struct mpweaponpreset)}]
  */
 
-#define MPSETUP_VERSION 3
+#define MPSETUP_VERSION 4
 
 #define MPSETUP_EXPORTDIR "$S/exported/"
 #define MPSETUP_FILENAME "mpsetups"

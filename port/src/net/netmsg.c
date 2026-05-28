@@ -520,6 +520,15 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	// Both sides need the same value before kohInitProps runs to keep g_RngSeed in sync
 	// (the static-pick path skips rngRandom).
 	netbufWriteU8(dst, g_MpSetup.kohstatichill);
+	// CTC per-team base pins (NET_PROTOCOL_VER >= 29). 0 = Random; 1..4 = spawnpadsperteam[N-1].
+	// Server + client must agree before ctcInitProps team-assignment loop runs.
+	for (s32 i = 0; i < 4; ++i) {
+		netbufWriteU8(dst, g_MpSetup.ctcteambase[i]);
+	}
+	// HTB / HTM static spawn pins (NET_PROTOCOL_VER >= 29). 0 = Random; 1..N = padnums[N-1].
+	// Server + client must agree before htbCreateToken / htbCreateUplink runs.
+	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
+	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -607,6 +616,11 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.options = netbufReadU32(src);
 	netbufReadData(src, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	g_MpSetup.kohstatichill = netbufReadU8(src);
+	for (s32 i = 0; i < 4; ++i) {
+		g_MpSetup.ctcteambase[i] = netbufReadU8(src);
+	}
+	g_MpSetup.htbstaticpad = netbufReadU8(src);
+	g_MpSetup.htmstaticpad = netbufReadU8(src);
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {

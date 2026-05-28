@@ -4308,8 +4308,20 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 
 #ifndef PLATFORM_N64
 	g_MpSetup.kohstatichill = 0;
+	g_MpSetup.htbstaticpad = 0;
+	g_MpSetup.htmstaticpad = 0;
+	for (i = 0; i < (s32)ARRAYCOUNT(g_MpSetup.ctcteambase); i++) {
+		g_MpSetup.ctcteambase[i] = 0;
+	}
 	if (version >= 3) {
 		g_MpSetup.kohstatichill = savebufferReadBits(buffer, 4);
+	}
+	if (version >= 4) {
+		for (i = 0; i < (s32)ARRAYCOUNT(g_MpSetup.ctcteambase); i++) {
+			g_MpSetup.ctcteambase[i] = savebufferReadBits(buffer, 3);
+		}
+		g_MpSetup.htbstaticpad = savebufferReadBits(buffer, 6);
+		g_MpSetup.htmstaticpad = savebufferReadBits(buffer, 6);
 	}
 #endif
 
@@ -4383,6 +4395,11 @@ void mpsetupfileSaveWad(struct savebuffer *buffer)
 
 #ifndef PLATFORM_N64
 	savebufferOr(buffer, g_MpSetup.kohstatichill, 4);
+	for (i = 0; i < (s32)ARRAYCOUNT(g_MpSetup.ctcteambase); i++) {
+		savebufferOr(buffer, g_MpSetup.ctcteambase[i], 3);
+	}
+	savebufferOr(buffer, g_MpSetup.htbstaticpad, 6);
+	savebufferOr(buffer, g_MpSetup.htmstaticpad, 6);
 #endif
 }
 

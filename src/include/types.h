@@ -4140,6 +4140,9 @@ struct mpsetup {
 	/*0x800acba8*/ struct fileguid fileguid;
 #ifndef PLATFORM_N64
 	u8 kohstatichill; // 0 = Random; 1..N = hillpads[index-1] in KotH (port-only)
+	u8 ctcteambase[4]; // 0 = Random; 1..4 = spawnpadsperteam[N-1] in CTC (port-only)
+	u8 htbstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HoldTheBriefcase (port-only)
+	u8 htmstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HackThatMac (port-only)
 #endif
 };
 

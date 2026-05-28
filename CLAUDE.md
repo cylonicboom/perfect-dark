@@ -85,6 +85,10 @@ For per-file purpose lookups (which `.c` does what), consult `docs/CODEMAP.md` b
 - `docs/PORT_NET_REVERTED_EXPERIMENTS.md` — Failed approaches with root-cause analysis. Read before re-attempting anything that smells like a previously-tried idea.
 - `docs/PORT_NO_CULLING.md` — Port-only "No Room Culling" / "No Draw Slot Limit" MP option + cheat feature. Read when touching `bg.c` draw-slot logic, `cheats.c` infrastructure, or the upper MP-option bits.
 - `docs/PORT_GOLDENEYE.md` — Port-only "GoldenEye Style" Combat Sim option (`MPOPTION_GOLDENEYE`): snap lean, lower-and-raise reloads, ledge wall, classic crosshair, hide-unless-aiming, GE-style vertical health/shield HUD, no secondary functions, no mid-crouch, no dual-wield. Documents the reusable `bgunSecondaryFunctionDisabled` / `bgunDualWieldDisabled` helpers that future weapon-loadout work plugs into.
+- `docs/PORT_KOH_STATIC_HILL.md` — Port-only KotH "Static Hill" dropdown (per-stage hill picker) + Mobile/Static mode dropdown. Read when touching `kingofthehill.inc` hill selection, `mpsetup` versioning, or `SVC_STAGE_START` payload ordering.
+- `docs/PORT_WEAPON_PRESETS.md` — Port-only Custom Weapon Presets system (`mpsetups.bin` v2 tail; per-slot `FNFLAG_*` bits; `g_MpWeaponPresets[]`; `g_MpSlotFnFlags[]`). Read when touching the Combat Sim Weapons menu, the Random Preset rotation, or the `bgunPrimary/SecondaryFunctionDisabled` helpers.
+- `docs/PORT_HOST_SPECTATOR.md` — Port-only Host Spectator Mode (`MPOPTION_HOSTSPECTATOR`, WIP/paused). Read when touching `port/src/spectator.c`, the `is_spectator` wire bytes in `SVC_STAGE_START` / `SVC_LOBBY_STATE`, or `playerGetLocalCount` / `LOCALPLAYERCOUNT()`. **Has known breakage with remote combatants — read the "Known breakage" section before extending.**
+- `docs/PORTING_HOWTO.md` — Methodology guide for lifting any port-only feature in this repo into another fork / branch. Covers the decompilation contract, the two guard patterns, MPOPTION budget, protocol version discipline, wad versioning, deterministic invariants, helper choke points. Read once, then use as a checklist alongside the per-feature doc.
 
 ## Submodules / do-not-modify paths
 

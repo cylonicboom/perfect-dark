@@ -19,6 +19,10 @@
 > **Added on this branch:**
 > - `CLAUDE.md` — netplay design notes, branch state, environment + code-writing guidelines
 > - `docs/PORT_GOLDENEYE.md` — full per-file rationale for the GoldenEye Style option + cheat (snap lean, no crouch accuracy bonus, lower-and-raise reloads, ledge wall, classic crosshair, hide-unless-aiming, GE arc health/shield HUD, no secondary functions, no mid-crouch, no dual-wield, no blur/dizzy, i-frames + damage flash + fire lockout, hidden function indicator)
+> - `docs/PORT_KOH_STATIC_HILL.md` — per-file rationale for the KotH Static Hill picker + Mobile/Static mode dropdowns; mpsetup wad v3 encoding; `SVC_STAGE_START` payload extension
+> - `docs/PORT_WEAPON_PRESETS.md` — per-file rationale for the Custom Weapon Presets manager; `mpsetups.bin` v2 tail section; `FNFLAG_*` per-slot bits; `bgunPrimary/SecondaryFunctionDisabled` hook surface
+> - `docs/PORT_HOST_SPECTATOR.md` — per-file rationale for the host-spectator panel system (WIP/paused); architecture decisions + known breakage with remote combatants
+> - `docs/PORTING_HOWTO.md` — methodology guide for porting any port-only feature into another fork / branch (guard patterns, MPOPTION budget, protocol version discipline, wad versioning, deterministic invariants, helper choke points)
 > - `port/include/spectator.h`, `port/src/spectator.c` — host-spectator panel state, six per-panel modes (PLAYER_FP/TP, SIM_FP/TP, FREECAM, TOPDOWN), freecam input incl. KBM mouse-look, per-mode pose, minimal world render
 >
 > **Modified — network core (`port/`):**

@@ -157,9 +157,9 @@ bool bgunSecondaryFunctionDisabled(s32 weaponnum);  // src/game/bondgun.c
 bool bgunDualWieldDisabled(void);                   // src/game/bondgun.c
 ```
 
-Both currently return true only when `g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_GOLDENEYE)`. When weapon-loadout options that ban per-weapon secondaries / dual-wield arrive, add the `g_LoadoutDisabledSecondary[weaponnum]` (or whatever the loadout API exposes) check inside these helpers — every existing call site automatically picks up the new condition.
+Both route through `goldeneyeStyleActive()` for the GE arm. `bgunSecondaryFunctionDisabled` additionally consults a static `mpSlotFlagsForWeapon(weaponnum)` helper that walks `g_MpSetup.weapons[]` against `g_MpSlotFnFlags[]` for the per-slot `FNFLAG_SECONDARY_DISABLED` bit — this is the Custom Weapon Presets hook (see [`PORT_WEAPON_PRESETS.md`](PORT_WEAPON_PRESETS.md)). A separate `bgunPrimaryFunctionDisabled(weaponnum)` exists for the mirror axis; it currently only consults the FNFLAG bits (GE mode doesn't disable primary functions).
 
-The `weaponnum` parameter on `bgunSecondaryFunctionDisabled` is currently ignored but is in the signature so loadout work doesn't need to break the call signature when it lands.
+The `weaponnum` parameter on `bgunSecondaryFunctionDisabled` *is* used now (by `mpSlotFlagsForWeapon`). If you're porting GE Style alone and skipping the Custom Weapon Presets system, the parameter can remain unused in your reduced helper — but keep it in the signature so the call sites don't have to change when presets land later.
 
 ---
 
@@ -183,3 +183,108 @@ Both are also implied by GE mode (the same gates in `sight.c` OR them with the G
 - **`vv_height = 159` for Jo, constant regardless of crouch state** (per `types.h:2709` comment). Don't try to read it for crouch-aware feet placement; use `vv_manground` directly when you have it.
 - **All 4 upper-byte MPOPTION bits are now allocated** (`MPOPTION_NOCULL`, `MPOPTION_NOOMLIMIT`, `MPOPTION_HOSTSPECTATOR`, `MPOPTION_GOLDENEYE`). Future port-only MP options need a new strategy — either repurpose unused lower-byte bits the original game ignores, or widen the field. See `src/include/CLAUDE.md`.
 - **N64 build untouched.** All edits live under `#ifndef PLATFORM_N64`, preserving the decompilation contract.
+
+---
+
+## Porting checklist
+
+This is a large feature (12 behavioural rules across ~14 files), so porting in order matters — the foundation needs to be in place before any individual rule's gates can call `goldeneyeStyleActive()`. See [`PORTING_HOWTO.md`](PORTING_HOWTO.md) for the cross-cutting methodology (guard patterns, MPOPTION budget, helper choke points) this checklist sits on top of.
+
+### Foundation (must come first — every gate site below depends on these)
+
+1. **Constants** (`src/include/constants.h`, port-only block at the bottom):
+   - `CHEAT_GOLDENEYE 45` — append after the existing port-only cheats. Use the same numeric value as this branch; cheat indices are array indices into `g_Cheats[]` and the literal-name table.
+   - `MPOPTION_GOLDENEYE 0x80000000` — use the same bit value as this branch (save/wire compat depends on bit positions).
+
+2. **Reusable cheat infrastructure** (`src/game/cheats.c`) — skip if your branch already has it from [`PORT_NO_CULLING.md`](PORT_NO_CULLING.md):
+   - `s_cheat_literal_names[]` table + `cheatGetName` helper + `CHEATFLAG_ALWAYSUNLOCKED` short-circuit in `cheatIsUnlocked` + marquee early-return. See PORT_NO_CULLING for the exact shape.
+   - Add `[CHEAT_GOLDENEYE] = "GoldenEye Style"` to the literal-name table.
+
+3. **The single helper** — `bool goldeneyeStyleActive(void)` in `src/game/cheats.c`, prototype in `src/include/game/cheats.h` (both under `#ifndef PLATFORM_N64`):
+   ```c
+   bool goldeneyeStyleActive(void)
+   {
+       if (cheatIsActive(CHEAT_GOLDENEYE)) return true;
+       if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_GOLDENEYE)) return true;
+       return false;
+   }
+   ```
+   Every GE gate site routes through this — do **not** inline the `(MPOPTION | CHEAT)` check.
+
+4. **`g_Cheats[]` entry** for `CHEAT_GOLDENEYE` with `flags = CHEATFLAG_ALWAYSUNLOCKED`. Append to `g_CheatsGameplayMenuItems[]` so it shows in the cheat menu.
+
+5. **MP option menu entry** in `src/game/mplayer/scenarios/combat.inc` inside the existing port-only block of `g_MpCombatOptionsMenuItems[]`:
+   - `"GoldenEye Style"` → `MPOPTION_GOLDENEYE`, `menuhandlerMpCheckboxOption`.
+   Mirror to other scenario `.inc` files (KoH does this on this branch).
+
+6. **Reusable gate helpers** in `src/game/bondgun.c` + `src/include/game/bondgun.h` (prototypes), all port-only:
+   - `bool bgunSecondaryFunctionDisabled(s32 weaponnum)` — returns true on GE active OR `FNFLAG_SECONDARY_DISABLED` for the weapon's slot.
+   - `bool bgunPrimaryFunctionDisabled(s32 weaponnum)` — currently FNFLAG-only (no GE term).
+   - `bool bgunDualWieldDisabled(void)` — returns true on GE active.
+   - `bool bgunCurrentPlayerInIframe(void)` — reads the GE i-frame stamp on the current player's chr.
+   - The static `mpSlotFlagsForWeapon(weaponnum)` helper for the FNFLAG axis (only needed if you're also porting Custom Weapon Presets — see [`PORT_WEAPON_PRESETS.md`](PORT_WEAPON_PRESETS.md)).
+
+### Per-rule gates (any order — each depends only on the foundation above)
+
+Each step below corresponds to a numbered section earlier in this doc. Open that section for the exact file:line and code snippet to add. The order between these steps doesn't matter — they're independent gates.
+
+7.  **§1 Snap lean** — `src/game/bondwalk.c` `bwalk0f0c69b8`, raise the per-frame interpolation cap when `goldeneyeStyleActive()`.
+8.  **§2 No crouch accuracy bonus** — `src/game/bondgun.c` `bgunCalculatePlayerShotSpread`, skip the `CROUCHPOS_SQUAT` spread multiplier. Note: `bgunCalculateBotShotSpread` is intentionally NOT gated (sims keep their bonus).
+9.  **§3 Lower-and-raise reloads** — `src/game/bondgun.c` `HANDSTATEMINOR_RELOAD_MAIN` block, fail the `reload_animation` non-NULL gate so every weapon (except combat knife — exclusion preserved) falls through to `HANDSTATEMINOR_RELOAD_LOWER`.
+10. **§4 Invisible-wall ledges** — `src/game/bondwalk.c` `bwalkUpdateVertical`, restore start-of-tick pose when drop > 60 units and the falling transition is about to fire. Also nudge back along the attempted-move axis.
+11. **§5 Classic crosshair on every weapon** — `src/game/sight.c` `sightDraw` top, force `SIGHT_CLASSIC` when GE active (or per-player Force Classic Crosshair, see related section) AND sight != `SIGHT_NONE`.
+12. **§6 Hide crosshair unless aiming** — `src/game/sight.c` `sightDraw`, early-return when `!sighton` AND GE active (or per-player Hide Crosshair Unless Aiming).
+13. **§7 GoldenEye HUD** — `src/game/player.c` `playerRenderHealthBar` dispatches to `playerRenderHealthBarGE` when GE active. New function `playerRenderHealthBarGE` draws the 8-segment half-arc bracket pair (left = health, right = shield) plus the GE damage flash. Vanilla shield bar suppressed inside the GE branch.
+14. **§8 Disable secondary functions** — multi-site:
+    - `bondgun.c` `bgunSetState` HANDSTATE_CHANGEFUNC block: refuse primary→secondary when `bgunSecondaryFunctionDisabled(weaponnum)`.
+    - `bondgun.c` `bgunConsiderToggleGunFunction`: return `USETIMER_STOP` early when `goldeneyeStyleActive() && !bgunIsUsingSecondaryFunction()`.
+    - `botinv.c` `botinvSwitchToWeapon`: clamp `funcnum` to `FUNC_PRIMARY` when GE active. (This is the single AI choke point.)
+    - `bot.c` post-tick block: force `aibot->cloakdeviceenabled = false` and `aibot->rcp120cloakenabled = false` when GE active.
+15. **§9 No mid-crouch** — all four crouch input paths:
+    - `bondwalk.c` `bwalkAdjustCrouchPos`: collapse landings on `CROUCHPOS_DUCK` to STAND/SQUAT.
+    - `bondmove.c` BUTTON_CROUCH_CYCLE (toggle mode), BUTTON_HALF_CROUCH (toggle and hold modes).
+    - `bondmove.c` `bmoveProcessRemoteInput` UCMD_DUCK: collapse to SQUAT for remote-player visual parity.
+16. **§10 Disable dual-wield** — `bondgun.c` three sites:
+    - Top of `bgunTickSwitch2`: force `ctrl->dualwielding = false` and `lefthand->inuse = false` per-tick.
+    - Mid `bgunTickSwitch2` REMOTEMINE auto-bump branch: re-force `dualwielding = false`.
+    - `bgunEquipWeapon2(HAND_LEFT, …)`: early-return refusing left-hand equips.
+    - Companion patch in `bgunCycleForward` / `bgunCycleBack`: pretend `weapon2 == weapon1` for the cycle's lookup when the player has a DUAL inventory item but the left hand is force-disabled, so the cycle walks past the DUAL slot.
+17. **§11 I-frames + damage flash + fire lockout** — the largest single piece, multi-file:
+    - **New fields** in `src/include/types.h` under `#ifndef PLATFORM_N64`: `chrdata.lastdamagetick60` and `player.damageflashstart60`. Both at the tail of their respective structs.
+    - **Reset sites**: `chrInit` (`chr.c`), `botReset` respawn block (`bot.c`), `playerStartNewLife` (`player.c`) all zero `lastdamagetick60`. `playermgrAllocatePlayer` (`playermgr.c`) initialises `damageflashstart60 = -1000000` sentinel.
+    - **I-frame gate** at top of `chrDamage` (`chraction.c`): u32-wrap-safe `(u32)(lvframe60 - lastdamagetick60) < (u32)TICKS(12)` check (note the gate uses 12, the player flash window uses 8, the bot fire lockout uses 18 — different values intentionally).
+    - **Stamp at damage-application sites** in `chrDamage` (not at function entry — that would fire on zero-damage probe calls). Player branch + sim/chr branch both stamp `chr->lastdamagetick60 = lvframe60`. Player branch also stamps `currentplayer->damageflashstart60 = lvframe60` with anti-stack guards (only when the previous flash has ended AND the chr isn't still in its prior i-frame window).
+    - **Flash render** appended to `playerRenderHealthBarGE` (`player.c`): full-screen white `gDPHudRectangle` with triangular alpha curve over 8 frames `8 → 22 → 36 → 50 → 50 → 36 → 22 → 8`.
+    - **Fire lockout helper** `bgunCurrentPlayerInIframe()` in `bondgun.c` + three gate sites: `bgunSetState` (refuse new ATTACK/ATTACKEMPTY), `bgunTickInc` (snap an in-flight attack back to IDLE), and `chrTickShoot` in `chraction.c` (bot fire lockout, `TICKS(18)` window — wider than player gate because bots otherwise blast a freshly-damaged sim before it can react).
+18. **§12 No blur / dizzy** — `chraction.c` `makedizzy` clamp around line 4448 ("makedizzy = false" after the existing assignment); `chr.c` poison-blur accumulation skip around 2321; `bot.c` residual wipe (`blurdrugamount`, `blurnumtimesdied` force-zero per tick when GE active).
+19. **§12 Hide weapon function indicator** — `bondgun.c` two sites: the red/yellow square (`textSetPrimColour` / `gDPFillRectangleScaled` / `text0f153838` triple around line 13179), and the function-name text overlay (around 13245-13316). Both wrapped in a GE-mode check.
+
+### Optional / related
+
+20. **Per-player crosshair options** — independent of GE but referenced by the §5/§6 gates. See the dedicated section earlier in this doc. Files: `extplayerconfig` fields in `types.h`, `PLAYER_EXT_CFG_DEFAULT` in `mplayer.c`, `configRegisterInt` calls in `port/src/main.c`, menu entries in `port/src/optionsmenu.c`, the gate ORs in `sight.c`.
+
+21. **(Netplay branches only)** No `NET_PROTOCOL_VER` bump needed for GE Style alone — `MPOPTION_GOLDENEYE` rides in the existing `g_MpSetup.options` u32 that `SVC_STAGE_START` already serializes. The "GoldenEye Style" entry in `port/src/net/netmenu.c`'s `s_opts[]` lobby summary table is nice-to-have, not load-bearing.
+
+**Skip-conditions**: If your branch has no cheats menu, skip step 2 + 4 and gate everything on the MP option only (the `goldeneyeStyleActive()` helper just stops checking `cheatIsActive`). If your branch has no netplay, skip step 21 entirely. If you only want a subset of the 12 behavioural rules, the foundation steps (1-6) are still required — individual rules can be cherry-picked from steps 7-19 freely; they're independent.
+
+---
+
+## Porting gotchas
+
+- **`goldeneyeStyleActive()` IS the contract — never bypass it.** Inlining the `(MPOPTION_GOLDENEYE | CHEAT_GOLDENEYE)` check at a new gate site means future additions to the helper (a per-weapon loadout option, a settings UI override, anything) won't see your gate. Route every site through the helper. The 30 seconds of indirection is worth it.
+- **`bgunSecondaryFunctionDisabled` takes a `weaponnum` and uses it.** The Custom Weapon Presets system consumes the parameter via `mpSlotFlagsForWeapon(weaponnum)`. If you port GE Style alone (no presets), the helper's body simplifies but **keep the parameter in the signature** — when presets land later, every existing call site already passes the right argument and nothing has to change.
+- **`bgunDualWieldDisabled` is parameterless on purpose.** Currently GE-only; future per-weapon dual-wield bans would either widen this signature OR use a separate per-weapon helper that ORs with this one. Don't pre-emptively widen — let the future use case dictate the shape.
+- **The HUD assumes 2D HUD render state is already set up by the caller** (`menu.c:5533` runs `func0f0d49c8` before `playerRenderHealthBar`). If you rewire callers or move the GE HUD into a fresh render site, set up 2D state first or the arcs render with garbage transforms.
+- **`bondprevpos` is start-of-tick, not end-of-tick.** `bwalkUpdatePrevPos` runs at the top of every `bwalkTick`, before the horizontal move. The ledge wall uses this to snap back to "before this tick's move." If you reorder `bwalkUpdatePrevPos`, the ledge wall silently breaks (no compile error — just wrong gameplay).
+- **`vv_height = 159` for Jo, constant regardless of crouch state** (per `types.h:2709` comment). The ledge-wall code computes `vv_manground = bondprevpos.y - vv_height` (feet position). Using `bondprevpos.y` directly puts the engine's feet 159 units above the floor and the player visibly floats. Don't try to make this crouch-aware — `vv_height` doesn't change during crouch.
+- **I-frame stamp arithmetic MUST use u32.** The check `(u32)(lvframe60 - lastdamagetick60) < (u32)TICKS(12)` wraps safely when `lastdamagetick60` is stale from a previous chr life. Using signed arithmetic produces a huge negative number that incorrectly satisfies `< TICKS(12)` and grants permanent invulnerability. The same u32 cast appears in `chrTickShoot`'s bot fire lockout (`TICKS(18)` there).
+- **Reset `lastdamagetick60` in every chr-life-start site.** Currently `chrInit`, `botReset` respawn block, `playerStartNewLife`. If you add a new chr-spawn path (a new bot type, a respawn-with-special-state code path), reset there too — a recycled chrslot with a stale stamp grants the new chr permanent i-frame.
+- **The "zero is sentinel" convention requires bumping to 1 if `lvframe60 == 0`.** The damage-application sites set `chr->lastdamagetick60 = lvframe60`, but bump to 1 if `lvframe60` happened to be 0 (so the "never damaged" sentinel can't be re-armed by chance at level start).
+- **The flash stamp is conditional, the chr stamp is unconditional.** `chr->lastdamagetick60 = lvframe60` always fires at every damage-application site. `currentplayer->damageflashstart60 = lvframe60` only fires when the *previous* flash has fully ended (≥ 8 frames ago) AND the chr is not still in its prior i-frame window. Chained damage calls otherwise re-stack the flash and produce a strobe effect.
+- **`currentplayer` has to be the damaged player when the flash stamp fires.** The earlier `setCurrentPlayerNum(damagedplayernum)` call in `chrDamage`'s player branch must complete before the flash stamp runs. If you move the stamp earlier, the flash lands on the wrong viewport in split-screen.
+- **GE classic-crosshair forcing covers `SIGHT_ZOOM` weapons too.** Zoom-corner brackets and the sniper fullscreen scope are gone in GE mode. The FOV-change on zoom still works. If your branch needs zoom UI retained, exclude `SIGHT_ZOOM` from the `sightDraw` top force — but then the per-player "Force Classic" option becomes inconsistent (it forces classic on those weapons; GE mode wouldn't).
+- **Cycle-forward/back DUAL fix is a companion patch, not a GE gate.** When `lefthand.inuse` is force-disabled by the dual-wield gate, `bgunGetSwitchToWeapon(HAND_LEFT)` returns `WEAPON_NONE`. Without the cycle-lookup fix, `invChooseCycleForwardWeapon` matches the player's own DUAL inventory item and the cycle gets stuck. The fix lives in `bgunCycleForward` / `bgunCycleBack`: if the player has a DUAL of the current weapon, pretend `weapon2 == weapon1` for the lookup so the cycle walks past the DUAL slot. If you cherry-pick only the no-dual-wield rule, you need this companion patch too.
+- **`actiontype` is intentionally NOT touched.** The bot AI's per-action tick (`chrTickStand`, `chrTickAttack`, etc.) is decompiled code; GE Style doesn't gate on actiontype. If you find yourself wanting to gate AI behaviour on GE mode, do it in a port-only post-tick block (the pattern in `bot.c`'s cloak gate is the model).
+- **`MPOPTION_GOLDENEYE` rides in the existing `g_MpSetup.options` u32 — DO NOT add a new wire byte.** No `NET_PROTOCOL_VER` bump is needed solely for GE Style. If you also add a wire byte, you bump compat for no benefit and break wire-level interop with this branch.
+- **All 4 upper-byte MPOPTION bits are now allocated** (`MPOPTION_NOCULL`, `MPOPTION_NOOMLIMIT`, `MPOPTION_HOSTSPECTATOR`, `MPOPTION_GOLDENEYE`). Future port-only MP options on this branch need a new strategy — see [`PORTING_HOWTO.md`](PORTING_HOWTO.md) §3. If your target branch has a different upper-byte allocation, pick a free bit and document it.
+- **N64 build must remain byte-identical.** Every edit lives under `#ifndef PLATFORM_N64`. New struct fields (`lastdamagetick60`, `damageflashstart60`, the per-player crosshair fields) go at the **tail** of their structs under the guard. Reordering or inserting fields mid-struct breaks the decompilation contract.

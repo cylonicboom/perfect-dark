@@ -17321,6 +17321,26 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 	s32 result;
 	bool given = false;
 
+#ifndef PLATFORM_N64
+	netDiagLogf("pickup_attempt",
+			"prop_sid=%u objtype=%d pnum=%d client=%p isdead=%d netmode=%d",
+			(unsigned)prop->syncid, obj ? (s32)obj->type : -1,
+			g_Vars.currentplayernum,
+			(void *)g_Vars.currentplayer->client,
+			(s32)g_Vars.currentplayer->isdead, g_NetMode);
+
+	// Orphaned-slot guard: between a mid-match disconnect and the next
+	// stage transition, players[N]->client is NULL (netClientReset cleared
+	// the backlink; netPlayersAllocate hasn't re-bound yet). Without this
+	// guard, propPickupByPlayer would consume the prop server-side while
+	// the SVC_PROP_PICKUP gate below silently drops the wire write,
+	// making weapons / ammo disappear from every connected client's view
+	// without explanation.
+	if (g_NetMode == NETMODE_SERVER && !g_Vars.currentplayer->client) {
+		return TICKOP_NONE;
+	}
+#endif
+
 	if (g_Vars.currentplayer->isdead || g_Vars.lvupdate240 == 0) {
 		return TICKOP_NONE;
 	}
@@ -17577,6 +17597,9 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 
 #ifndef PLATFORM_N64
 	if (result != TICKOP_NONE && g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->client) {
+		netDiagLogf("pickup_svc_write", "cl=%u prop_sid=%u result=%d",
+				(unsigned)g_Vars.currentplayer->client->id,
+				(unsigned)prop->syncid, result);
 		netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, result);
 		netmsgSvcPlayerStatsWrite(&g_NetMsgRel, g_Vars.currentplayer->client);
 	}

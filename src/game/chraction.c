@@ -5522,6 +5522,65 @@ bool chrIsRoomOffScreen(struct chrdata *chr, struct coord *waypos, RoomNum *wayr
 
 	if (offscreen) {
 		for (i = 0; i < PLAYERCOUNT(); i++) {
+#ifndef PLATFORM_N64
+			// In netplay a slot in g_Vars.players[] can carry a stale prop:
+			// netClientReset on disconnect only clears the player->client
+			// backlink, not the slot or its ->prop, and playerStartNewLife
+			// reassigns prop via propAllocate() without clearing the old.
+			// A simple NULL check passes for a freed-but-not-cleared prop
+			// pointer, then prop->pos / prop->rooms deref into garbage.
+			//
+			// Three-layer guard:
+			//  (1) NULL slot / NULL prop — fast out.
+			//  (2) Orphaned slot — client backlink is NULL after a
+			//      mid-stage disconnect (netClientReset clears it);
+			//      netPlayersAllocate only re-binds at the next stage
+			//      transition. The chr is still in the world but its
+			//      prop / chr state may be in a half-cleaned state.
+			//      Sim AI iterating this slot via chrIsRoomOffScreen
+			//      was the observed 0xc0000005 crash site on every
+			//      "client rejoin + punch sim" repro.
+			//  (3) Stale prop pointer — pp must live inside
+			//      g_Vars.props[] and still be PROPTYPE_PLAYER.
+			if (!g_Vars.players[i] || !g_Vars.players[i]->prop) {
+				netDiagLogf("chroffsc_skip", "i=%d reason=null pp=%p", i,
+						g_Vars.players[i] ? (void *)g_Vars.players[i]->prop : NULL);
+				continue;
+			}
+			if (!g_Vars.players[i]->client) {
+				netDiagLogf("chroffsc_skip", "i=%d reason=orphan", i);
+				continue;
+			}
+			struct prop *pp = g_Vars.players[i]->prop;
+			if (pp < g_Vars.props || pp >= g_Vars.props + g_Vars.maxprops) {
+				netDiagLogf("chroffsc_skip",
+						"i=%d reason=oob pp=%p base=%p end=%p",
+						i, (void *)pp, (void *)g_Vars.props,
+						(void *)(g_Vars.props + g_Vars.maxprops));
+				continue;
+			}
+			if (pp->type != PROPTYPE_PLAYER) {
+				netDiagLogf("chroffsc_skip",
+						"i=%d reason=type pp=%p type=%d",
+						i, (void *)pp, (s32)pp->type);
+				continue;
+			}
+			// Log right before the unprotected dereference so a crash here
+			// leaves a final breadcrumb identifying the offending slot.
+			// Throttled per-tick to avoid log spam (chrIsRoomOffScreen is
+			// called from many AI paths every frame).
+			{
+				static u32 s_chroffsc_last_tick = 0xffffffffu;
+				if (g_NetTick != s_chroffsc_last_tick) {
+					s_chroffsc_last_tick = g_NetTick;
+					netDiagLogf("chroffsc_iter",
+							"chr_sid=%u i=%d pp=%p type=%d pos=(%.1f,%.1f,%.1f)",
+							chr->prop ? (unsigned)chr->prop->syncid : 0u,
+							i, (void *)pp, (s32)pp->type,
+							pp->pos.x, pp->pos.y, pp->pos.z);
+				}
+			}
+#endif
 			portal00018148(waypos, &g_Vars.players[i]->prop->pos, wayrooms, sp50, 0, 0);
 
 			if (arrayIntersects(g_Vars.players[i]->prop->rooms, sp50)) {

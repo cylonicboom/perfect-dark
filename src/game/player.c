@@ -503,6 +503,14 @@ void playerStartNewLife(void)
 
 	pakEnableRumbleForPlayer(g_Vars.currentplayernum);
 
+#ifndef PLATFORM_N64
+	netDiagLogf("respawn_start",
+			"pnum=%d netmode=%d isremote=%d isdead=%d",
+			g_Vars.currentplayernum, g_NetMode,
+			(s32)g_Vars.currentplayer->isremote,
+			(s32)g_Vars.currentplayer->isdead);
+#endif
+
 	g_Vars.currentplayer->dostartnewlife = false;
 
 	if (g_Vars.coopplayernum < 0) {
@@ -5725,6 +5733,17 @@ s32 playerTickThirdPerson(struct prop *prop)
 	struct prop *leftprop;
 	struct prop *rightprop;
 	struct coord sp5c;
+
+#ifndef PLATFORM_N64
+	// Headless dedicated server has no projection matrix or per-frame model
+	// matrices (lvRender / chr render-prep are skipped). The third-person
+	// player tick is pure render-tier — pose computation for someone else's
+	// view of this player. Server gameplay doesn't need it; skipping avoids
+	// a NULL deref in mtx00015be4(camGetProjectionMtxF(), model->matrices, ...).
+	if (g_NetDedicatedMode == 1) {
+		return 0;
+	}
+#endif
 
 	if (g_Vars.currentplayerindex == 0 && player->haschrbody) {
 		chr->hidden &= ~CHRHFLAG_00000800;

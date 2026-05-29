@@ -315,6 +315,23 @@ Mtxf *cam0f0b53a4(u8 *arg0)
 
 Mtxf *camGetWorldToScreenMtxf(void)
 {
+#ifndef PLATFORM_N64
+	// Headless dedicated server: the render path never assigns a worldtoscreen
+	// matrix, but gameplay code (projectileFindCollidingProp etc.) still calls
+	// us during propsTickPlayer. Returning NULL crashes mtx4TransformVec on
+	// the next dereference. Fall back to an identity matrix so collision /
+	// trajectory math degrades to plain world-space testing rather than
+	// faulting — broad-phase culling is less efficient but correct.
+	if (!g_Vars.currentplayer || !g_Vars.currentplayer->worldtoscreenmtx) {
+		static Mtxf identity = {
+			{{1.f, 0.f, 0.f, 0.f},
+			 {0.f, 1.f, 0.f, 0.f},
+			 {0.f, 0.f, 1.f, 0.f},
+			 {0.f, 0.f, 0.f, 1.f}}
+		};
+		return &identity;
+	}
+#endif
 	return g_Vars.currentplayer->worldtoscreenmtx;
 }
 

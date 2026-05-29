@@ -30,6 +30,7 @@
 #include "game/objectives.h"
 #include "game/endscreen.h"
 #include "game/playermgr.h"
+#include "game/player.h"
 #include "game/game_1531a0.h"
 #include "game/gfxmemory.h"
 #include "game/lang.h"
@@ -78,6 +79,8 @@
 #include "spectator.h"
 #include "net/netmsg.h"
 #include "headless.h"
+#include "game/prop.h"
+#include "game/mplayer/scenarios.h"
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
@@ -465,14 +468,17 @@ void mainLoop(void)
 			// spectatorAllocatePanels.
 			if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator
 					&& g_StageNum != STAGE_CITRAINING) {
-				s32 panels = g_SpectatorPanelCount;
-				if (panels < 1) panels = 1;
-				if (panels > SPEC_MAX_PANELS) panels = SPEC_MAX_PANELS;
-				// mpStartMatch already wrote the combatant count via setNumPlayers
-				// (chrslots popcount, host excluded). numplayers reflects that here
-				// unless the default path forced it to 1 — fall back to 0 if so
-				// since the spectator host never combats itself.
 				const s32 combatants = (getNumPlayers() > 0) ? getNumPlayers() : 0;
+				s32 panels;
+				if (g_NetDedicatedMode) {
+					// Dedicated: 0 panels, numplayers = combatants only. No
+					// phantom slot to spawn a ghost chr/prop into the world.
+					panels = 0;
+				} else {
+					panels = g_SpectatorPanelCount;
+					if (panels < 1) panels = 1;
+					if (panels > SPEC_MAX_PANELS) panels = SPEC_MAX_PANELS;
+				}
 				numplayers = combatants + panels;
 				if (numplayers > MAX_PLAYERS) numplayers = MAX_PLAYERS;
 			}
@@ -711,10 +717,164 @@ void mainTick(void)
 						// runs the minimum needed: cam pose + matrices for
 						// lvRender to read this frame.
 						spectatorTickPanel(g_Vars.currentplayer->spectator_panel);
+					} else if (g_Vars.currentplayer && !g_Vars.currentplayer->client && g_NetMode == NETMODE_SERVER) {
+						// Orphaned combatant slot after mid-stage disconnect:
+						// netClientReset cleared player->client; netPlayersAllocate
+						// won't re-bind until the next stage transition. The
+						// chr is still in g_Vars.players[] but its bgun /
+						// matrices / lookingatprop state hasn't been ticked
+						// since disconnect — lvTickPlayer's playerTick chain
+						// dereferences chr / prop / aibot links that are in a
+						// half-cleaned state and crashes inside the sim AI
+						// path (chrIsRoomOffScreen seen via addr2line).
+						// Skipping the tick entirely keeps the orphan inert
+						// until the next round's playermgrAllocatePlayers
+						// re-binds via netPlayersAllocate.
+						if (mt_log) { netDiagLogf("mt_lvtp_skip_orphan", "i=%d", i); }
 					} else {
 						lvTickPlayer();
 					}
 					if (mt_log) { netDiagLogf("mt_lvtickplayer_post", "i=%d", i); }
+				}
+			}
+
+			// Headless: lvRender owns the per-player propsTickPlayer +
+			// scenarioTickChr + propsSort calls — gameplay state, not just
+			// rendering. With lvRender skipped, sim AI never advances and
+			// the server broadcasts stale positions. Run the gameplay-tier
+			// subset here for each non-spectator slot before bailing out
+			// of the render path. (bgTick / lightsTick / autoaimTick are
+			// render-tier and stay skipped.)
+			if (headless && g_StageNum < STAGE_TITLE) {
+				// CRITICAL: propsTickPlayer's foreground gate at prop.c:2006
+				// adds g_Vars.alwaystick to the per-prop score. When non-zero,
+				// every active prop is treated as foreground and its tick
+				// (objTickPlayer for pickups, botTick for sim AI, chrTick
+				// for animation) runs unconditionally. The codebase has
+				// dedicated support for this; it's just never set in normal
+				// play. In headless we need it on because rendering doesn't
+				// populate PROPFLAG_ONANYSCREENPREVTICK — without it most
+				// props silently skip their gameplay tick.
+				g_Vars.alwaystick = 1;
+
+				s32 lastcombatant = -1;
+				for (s32 j = 0; j < PLAYERCOUNT(); j++) {
+					struct player *pl = g_Vars.players[playermgrGetPlayerAtOrder(j)];
+					if (pl && !pl->is_spectator) {
+						lastcombatant = j;
+					}
+				}
+				for (s32 j = 0; j < PLAYERCOUNT(); j++) {
+					setCurrentPlayerNum(playermgrGetPlayerAtOrder(j));
+					if (g_Vars.currentplayer && g_Vars.currentplayer->is_spectator) {
+						continue;
+					}
+					// Skip orphaned combatant slots. netClientReset nukes
+					// player->client on disconnect, and the bidirectional
+					// link only gets restored when netPlayersAllocate
+					// runs (at the next stage transition). Between a
+					// mid-match disconnect and the next round, the chr
+					// stays in the world but nothing controls it. Without
+					// this skip propsTickPlayer keeps firing pickup
+					// detection for the abandoned chr — items get
+					// "consumed" server-side but no SVC_PROP_PICKUP goes
+					// out (gate at propobj.c requires currentplayer->client),
+					// so the items disappear silently from every client's
+					// view. Sim AI hits the orphan via chrIsRoomOffScreen
+					// and crashes deref'ing the stale chain.
+					if (g_Vars.currentplayer && !g_Vars.currentplayer->client) {
+						continue;
+					}
+					propsTickPlayer(j == lastcombatant);
+					scenarioTickChr(NULL);
+					propsSort();
+
+					// Pickup detection. propsTestForPickup is normally called
+					// from lvRender's per-player loop (lv.c:1416) — the function
+					// iterates props near the current player and routes weapon
+					// / ammo / case pickups through objTestForPickup, which then
+					// calls propPickupByPlayer + writes SVC_PROP_PICKUP. Without
+					// it, players walk over pickups with no effect on the
+					// dedicated server.
+					propsTestForPickup();
+
+					// Door / lift / pickup-by-activate. lvRender at lv.c:1391
+					// calls currentPlayerInteract(false) when the player's
+					// activate input bit is set. Mirror that here; the bit is
+					// driven by UCMD_ACTIVATE on remote players.
+					if (g_Vars.currentplayer
+							&& (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_ACTIVATE)) {
+						currentPlayerInteract(false);
+					}
+
+					// Death-state advancement for headless. The death state
+					// machine normally runs inside playerRenderHud (player.c
+					// ~4966): isdead 1 -> 2, deathanimfinished, redbloodfinished,
+					// colourfadetimemax60 all get advanced as the animation
+					// plays out. Without rendering, none of this runs.
+					//
+					// lvTickPlayer (lv.c:2358) counts any dead player whose
+					// flags haven't advanced as "numdying", and lv.c:2402 only
+					// fires mainEndStage() when numdying == 0. Result in
+					// headless: hit g_MpScoreLimit -> g_NumReasonsToEndMpMatch
+					// goes positive -> player dies -> deathanimfinished stays
+					// false -> mainEndStage never fires -> match never ends ->
+					// next round never starts -> player can't respawn (the
+					// respawn gate at player.c:5151 also requires
+					// g_NumReasonsToEndMpMatch == 0, which never clears).
+					//
+					// No anim to wait for in headless, so advance the
+					// terminal state directly the moment we see isdead set.
+					// On respawn (playerStartNewLife) all three reset to 0/-1
+					// via playerResetDefaults, so this won't re-fire.
+					{
+						struct player *pl_ds = g_Vars.currentplayer;
+						if (pl_ds && pl_ds->isremote && pl_ds->isdead) {
+							if (pl_ds->isdead == 1) {
+								pl_ds->isdead = 2;
+							}
+							pl_ds->deathanimfinished = true;
+							pl_ds->redbloodfinished = true;
+							if (pl_ds->colourfadetimemax60 >= 0) {
+								pl_ds->colourfadetimemax60 = -1;
+							}
+						}
+					}
+
+					// Respawn handling for headless. Two render-tier functions
+					// drive respawn normally: playerRenderHud sets
+					// dostartnewlife=true on UCMD_RESPAWN; lvRender's
+					// per-player loop reads it and calls playerStartNewLife.
+					// Both skipped in headless. Mirror the detect + consume.
+					struct player *p = g_Vars.currentplayer;
+					// Diagnostic: log every dead remote player's state once a
+					// second so we can see why the respawn gate isn't firing.
+					// Throttled to keep the log readable.
+					if (p && p->isremote && (g_NetTick % 60u) == 0u) {
+						const struct netclient *cl_ = p->client;
+						const u32 ucmd = cl_ ? cl_->inmove[cl_->inmove_head].ucmd : 0u;
+						netDiagLogf("respawn_dead_state",
+								"pnum=%d isdead=%d client=%p paused=%d endmatch=%d ucmd=0x%08x dostart=%d",
+								g_Vars.currentplayernum,
+								(s32)p->isdead, (void *)p->client,
+								(s32)mpIsPaused(), g_NumReasonsToEndMpMatch,
+								(unsigned)ucmd, (s32)p->dostartnewlife);
+					}
+					if (p && p->isremote && p->isdead && p->client && !mpIsPaused()
+							&& g_NumReasonsToEndMpMatch == 0) {
+						const struct netclient *cl_ = p->client;
+						if (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) {
+							netDiagLogf("respawn_ucmd_seen",
+									"pnum=%d cl=%u isdead=%d dostartnewlife=%d",
+									g_Vars.currentplayernum, (unsigned)cl_->id,
+									(s32)p->isdead, (s32)p->dostartnewlife);
+							p->dostartnewlife = true;
+						}
+					}
+					if (p && p->dostartnewlife) {
+						netDiagLogf("respawn_invoke", "pnum=%d", g_Vars.currentplayernum);
+						playerStartNewLife();
+					}
 				}
 			}
 

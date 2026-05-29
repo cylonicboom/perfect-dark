@@ -55,6 +55,21 @@ static void bwalkUpdateRemote(void)
 	struct player *pl = g_Vars.currentplayer;
 	struct netclient *cl = pl->client;
 
+	// PROBE: dedicated-server stale-position investigation. Throttled to ~1Hz
+	// per call (netDiagLogf is a no-op when no diag log file is open). Logs
+	// entry state so we can see whether this fires at all for the remote
+	// player, and what inmove vs prop->pos look like.
+	if (cl && (g_NetTick % 60u) == 0u) {
+		const u32 h = cl->inmove_head;
+		netDiagLogf("bwalkrem_enter",
+			"cl=%u pnum=%u isremote=%d ucmd=0x%08x inmove_tick=%u inmove_pos=(%.1f,%.1f,%.1f) prop_pos=(%.1f,%.1f,%.1f) ipick=%u",
+			cl->id, (unsigned)cl->playernum, pl->isremote ? 1 : 0,
+			(unsigned)pl->ucmd, cl->inmove[h].tick,
+			cl->inmove[h].pos.x, cl->inmove[h].pos.y, cl->inmove[h].pos.z,
+			pl->prop ? pl->prop->pos.x : 0.f, pl->prop ? pl->prop->pos.y : 0.f, pl->prop ? pl->prop->pos.z : 0.f,
+			(unsigned)g_NetInterpTicks);
+	}
+
 	// Server: when a force correction is pending (playerStartNewLife just ran,
 	// set UCMD_FL_FORCEMASK on player->ucmd), prop->pos holds the authoritative
 	// spawn position. Do not override it with the client's stale inmove here —
@@ -64,8 +79,25 @@ static void bwalkUpdateRemote(void)
 	// lvTickPlayer frame and writes DEATH_POS back into prop->pos, so every
 	// subsequent SVC_PLAYER_MOVE (which carries prop->pos) "force-corrects" the
 	// client to the death point rather than the spawn.
-	if (g_NetMode == NETMODE_SERVER && (pl->ucmd & UCMD_FL_FORCEMASK)) {
+	//
+	// Also gate on cl->forcetick: the auto-clear in netmsgClcMoveRead only fires
+	// when forcetick is non-zero (it compares against outmoveack). In the
+	// dedicated-server / no-host flow the remote player's ucmd is initialised
+	// with FORCEMASK bits but forcetick is 0, so the clear never runs and the
+	// guard locks the server's view of the client at spawn forever. If forcetick
+	// is 0 the FORCEMASK bits are stale init artifacts, not an active pending
+	// force — fall through to the normal inmove path.
+	if (g_NetMode == NETMODE_SERVER && (pl->ucmd & UCMD_FL_FORCEMASK) && cl->forcetick) {
+		if (cl && (g_NetTick % 60u) == 0u) {
+			netDiagLogf("bwalkrem_skip_force", "cl=%u forcetick=%u", cl->id, cl->forcetick);
+		}
 		return;
+	}
+
+	// One-shot clear of stale init FORCEMASK bits so subsequent ticks don't have
+	// to redo the forcetick check. Mirror the normal auto-clear path's effect.
+	if (g_NetMode == NETMODE_SERVER && (pl->ucmd & UCMD_FL_FORCEMASK) && !cl->forcetick) {
+		pl->ucmd &= ~UCMD_FL_FORCEMASK;
 	}
 
 	const u32 head = cl->inmove_head;
@@ -109,6 +141,10 @@ static void bwalkUpdateRemote(void)
 		pl->prop->pos = inmove->pos;
 		cl->lerpticks = g_NetInterpTicks + 1;
 		cdtype = CDTYPE_PLAYERS;
+		if (cl && (g_NetTick % 60u) == 0u) {
+			netDiagLogf("bwalkrem_exit_force", "cl=%u prop_pos=(%.1f,%.1f,%.1f)",
+				cl->id, pl->prop->pos.x, pl->prop->pos.y, pl->prop->pos.z);
+		}
 	} else {
 		// Entity interpolation: find two snapshots bracketing
 		// (g_NetTick - g_NetInterpTicks) and interpolate between them.
@@ -145,6 +181,10 @@ static void bwalkUpdateRemote(void)
 			target = snap_newer->pos;
 		} else {
 			// No usable snapshots yet: stand still
+			if (cl && (g_NetTick % 60u) == 0u) {
+				netDiagLogf("bwalkrem_exit_nosnap", "cl=%u desired=%u",
+					cl->id, desired_tick);
+			}
 			return;
 		}
 
@@ -158,6 +198,13 @@ static void bwalkUpdateRemote(void)
 		delta.z = g_Vars.lvupdate60freal * (target.z - pl->prop->pos.z) * dt;
 		bwalk0f0c63bc(&delta, pl->swaytarget == 0.0f, cdtype);
 		cl->lerpticks += g_Vars.lvupdate60;
+		if (cl && (g_NetTick % 60u) == 0u) {
+			netDiagLogf("bwalkrem_exit_interp",
+				"cl=%u target=(%.1f,%.1f,%.1f) delta=(%.2f,%.2f,%.2f) prop_pos=(%.1f,%.1f,%.1f)",
+				cl->id, target.x, target.y, target.z,
+				delta.x, delta.y, delta.z,
+				pl->prop->pos.x, pl->prop->pos.y, pl->prop->pos.z);
+		}
 	}
 }
 #endif

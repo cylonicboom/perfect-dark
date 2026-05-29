@@ -2503,6 +2503,21 @@ void lvTickPlayer(void)
 	f32 xdiff;
 	f32 zdiff;
 
+#ifndef PLATFORM_N64
+	// PROBE: dedicated-server stale-position investigation. Throttled to ~1Hz
+	// per call. Lets us confirm whether lvTickPlayer fires at all for remote
+	// players on the server, and which playerTick branch (true/false) runs.
+	if ((g_NetTick % 60u) == 0u && g_Vars.currentplayer) {
+		netDiagLogf("lvtp_enter",
+			"pnum=%d isremote=%d has_client=%d is_spec=%d v64=%d v68=%d",
+			g_Vars.currentplayernum,
+			g_Vars.currentplayer->isremote ? 1 : 0,
+			g_Vars.currentplayer->client ? 1 : 0,
+			g_Vars.currentplayer->is_spectator ? 1 : 0,
+			var80075d64, var80075d68);
+	}
+#endif
+
 	if (var80075d64 == 2) {
 		if (var80075d68 == 2) {
 			playerTick(true);

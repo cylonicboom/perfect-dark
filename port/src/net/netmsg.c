@@ -830,6 +830,12 @@ u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 		// received yet (server's own player). Send the authoritative server state.
 		netbufWritePlayerMove(dst, &movecl->outmove[0]);
 		if (has_force) {
+			netDiagLogf("force_move_write",
+					"cl=%u ucmd=0x%08x pos=(%.1f,%.1f,%.1f)",
+					(unsigned)movecl->id, (unsigned)movecl->outmove[0].ucmd,
+					movecl->outmove[0].pos.x,
+					movecl->outmove[0].pos.y,
+					movecl->outmove[0].pos.z);
 			netbufWriteRooms(dst, movecl->player->prop->rooms, ARRAYCOUNT(movecl->player->prop->rooms));
 		}
 	}
@@ -898,6 +904,13 @@ u32 netmsgSvcPlayerMoveRead(struct netbuf *src, struct netclient *srccl)
 			// Server wants to teleport us; cancel any pending CSP correction
 			g_NetCspCorrFrames = 0;
 			if (movecl->player && movecl->player->prop) {
+				netDiagLogf("force_move_apply",
+						"cl=%u ucmd=0x%08x pos=(%.1f,%.1f,%.1f) before=(%.1f,%.1f,%.1f)",
+						(unsigned)movecl->id, (unsigned)newmove.ucmd,
+						newmove.pos.x, newmove.pos.y, newmove.pos.z,
+						movecl->player->prop->pos.x,
+						movecl->player->prop->pos.y,
+						movecl->player->prop->pos.z);
 				chrSetPos(movecl->player->prop->chr, &newmove.pos, newrooms, newmove.angles[0], (newmove.ucmd & UCMD_FL_FORCEGROUND) != 0);
 			}
 		} else {

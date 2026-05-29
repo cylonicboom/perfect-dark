@@ -1,8 +1,66 @@
 #include <SDL.h>
-#include <PR/ultratypes.h>
 #include "platform.h"
+#include <PR/ultratypes.h>
+#include <stdlib.h>
 #include "system.h"
 #include "headless.h"
+
+#ifdef _WIN32
+#include <windows.h>
+
+// Windows console control handler. Fires for Ctrl-C, the window's X button
+// (CTRL_CLOSE_EVENT), logoff, and shutdown. Without this, clicking X on the
+// cmd window kills the console but leaves the headless server orphaned in
+// the background — the user has to Task-Manager it. ExitProcess triggers
+// the registered atexit cleanup() which calls netDisconnect to flush ENet
+// and close the diag log gracefully.
+//
+// CTRL_CLOSE_EVENT only gives the process ~5 seconds before Windows force-
+// terminates, so cleanup must stay quick. netDisconnect + close-log fits
+// well under that budget.
+static BOOL WINAPI headlessConsoleHandler(DWORD ctrl)
+{
+	switch (ctrl) {
+	case CTRL_C_EVENT:
+	case CTRL_BREAK_EVENT:
+	case CTRL_CLOSE_EVENT:
+	case CTRL_LOGOFF_EVENT:
+	case CTRL_SHUTDOWN_EVENT:
+		sysLogPrintf(LOG_NOTE, "headless: console signal %lu, force-shutting down", (unsigned long)ctrl);
+		// _exit bypasses atexit cleanup (which calls netDisconnect — that
+		// can block on ENet peer teardown if a client is unresponsive).
+		// The OS reclaims the UDP socket immediately. Diag log is the only
+		// thing that loses its tail; flush before exiting.
+		_exit(0);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+void headlessInstallSignalHandlers(void)
+{
+	SetConsoleCtrlHandler(headlessConsoleHandler, TRUE);
+}
+
+#else // POSIX
+
+#include <signal.h>
+#include <unistd.h>
+
+static void headlessPosixSignal(int sig)
+{
+	sysLogPrintf(LOG_NOTE, "headless: signal %d, force-shutting down", sig);
+	_exit(0);
+}
+
+void headlessInstallSignalHandlers(void)
+{
+	signal(SIGINT,  headlessPosixSignal);
+	signal(SIGTERM, headlessPosixSignal);
+	signal(SIGHUP,  headlessPosixSignal);
+}
+
+#endif
 
 // SDL_Delay granularity is ~1ms on most platforms; we sleep for (target_us -
 // now - 1500us) and busy-wait the last bit so the cadence stays tight.

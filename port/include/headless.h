@@ -15,4 +15,10 @@
 // CPU for no benefit since game logic is gated by diffframe60.
 void headlessPace(s32 target_hz);
 
+// Install OS console-signal handlers so closing the console window (X button
+// on Windows, SIGINT/SIGTERM on POSIX) triggers a clean shutdown via exit(),
+// which runs the registered atexit cleanup() to flush ENet + close logs.
+// Call once during dedicated-server startup.
+void headlessInstallSignalHandlers(void);
+
 #endif

@@ -13,6 +13,7 @@
 #include "video.h"
 #include "input.h"
 #include "config.h"
+#include "system.h"
 #include "mpsetups.h"
 #include "bss.h"
 #include "net/net.h"
@@ -121,13 +122,22 @@ MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item,
 {
 	if (operation == MENUOP_SET) {
 		if (netStartServer(g_NetMenuPort, g_NetMenuMaxPlayers) == 0) {
-			// Stamp spectator state onto the local client. This survives
-			// mpsetupLoadCurrentFile (which clobbers g_MpSetup) and is the
-			// authoritative source the spectator code reads at runtime.
-			if (g_NetLocalClient) {
-				g_NetLocalClient->is_spectator = (u8)(g_NetMenuHostSpectator ? 1 : 0);
+			// Dedicated server (CLI --dedicated / --dedicated-windowed):
+			// netStartServer already forced is_spectator=1 and panel count=0.
+			// Don't let the menu-driven "Host Spectator" toggle clobber that
+			// — there's no UI in dedicated mode, g_NetMenuHostSpectator
+			// stays at its default 0, and applying it would re-spawn a
+			// ghost host player. Same reason we don't touch g_MpSetup.options
+			// for HOSTSPECTATOR below in dedicated.
+			if (!g_NetDedicatedMode) {
+				// Stamp spectator state onto the local client. This survives
+				// mpsetupLoadCurrentFile (which clobbers g_MpSetup) and is the
+				// authoritative source the spectator code reads at runtime.
+				if (g_NetLocalClient) {
+					g_NetLocalClient->is_spectator = (u8)(g_NetMenuHostSpectator ? 1 : 0);
+				}
+				g_SpectatorPanelCount = g_NetMenuHostSpectator ? g_NetMenuHostPanels : 1;
 			}
-			g_SpectatorPanelCount = g_NetMenuHostSpectator ? g_NetMenuHostPanels : 1;
 
 			// load the setup file when entering the Combat Simulator
 			mpsetupCopyAllFromPak();
@@ -139,7 +149,7 @@ MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item,
 			// but SVC_LOBBY_STATE/SVC_STAGE_START ship g_MpSetup.options as-is
 			// so remote clients can show "Host Spectator" in their options
 			// list.
-			if (g_NetMenuHostSpectator) {
+			if (g_NetDedicatedMode || g_NetMenuHostSpectator) {
 				g_MpSetup.options |= MPOPTION_HOSTSPECTATOR;
 			} else {
 				g_MpSetup.options &= ~MPOPTION_HOSTSPECTATOR;
@@ -1017,7 +1027,7 @@ static MenuItemHandlerResult menuhandlerDedicatedShutdown(s32 operation, struct 
 }
 
 #define DEDLINE(n) \
-	{ MENUITEMTYPE_LABEL, (n), MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT, \
+	{ MENUITEMTYPE_LABEL, (n), MENUITEMFLAG_SMALLFONT, \
 	  (uintptr_t)&menutextDedicatedStatus, 0, NULL }
 
 static struct menuitem g_NetDedicatedStatusMenuItems[] = {

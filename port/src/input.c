@@ -1291,8 +1291,18 @@ s32 inputMouseIsLocked(void)
 
 s32 inputMouseGetPosition(s32 *x, s32 *y)
 {
-	if (x) *x = mouseX * videoGetNativeWidth() / videoGetWidth();
-	if (y) *y = mouseY * videoGetNativeHeight() / videoGetHeight();
+	// In headless dedicated, videoGetWidth/Height return 0 (gfx_init was
+	// skipped). Avoid the integer divide-by-zero that menu input handlers
+	// trigger when they poll mouse position with no video subsystem.
+	const s32 vw = videoGetWidth();
+	const s32 vh = videoGetHeight();
+	if (vw <= 0 || vh <= 0) {
+		if (x) *x = 0;
+		if (y) *y = 0;
+		return 0;
+	}
+	if (x) *x = mouseX * videoGetNativeWidth() / vw;
+	if (y) *y = mouseY * videoGetNativeHeight() / vh;
 	return (mouseDX != 0 || mouseDY != 0);
 }
 

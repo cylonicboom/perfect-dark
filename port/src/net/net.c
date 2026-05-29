@@ -52,7 +52,10 @@ s32 g_NetJoinLatch = false;
 s32 g_NetDedicatedMode = 0;
 s32 g_NetDedicatedLatch = 0;
 char g_NetServerName[64] = "Perfect Dark Dedicated";
-char g_NetPlaylistPath[260] = "server_playlist.ini";
+// $S = save dir (same place pd.ini lives). Override via --playlist <path>
+// or Server.PlaylistPath in pd.ini; absolute / cwd-relative paths are
+// honored as-is by fsFullPath.
+char g_NetPlaylistPath[260] = "$S/server_playlist.ini";
 
 struct netvotestate g_NetVote;
 
@@ -758,15 +761,13 @@ s32 netStartServer(u16 port, s32 maxclients)
 	netClientReadConfig(g_NetLocalClient, 0);
 
 	// Dedicated server: the host doesn't participate as a combatant. Force
-	// is_spectator=1 immediately so netPlayersAllocate skips slot 0 for the
-	// host (combatants take 0..N-1), and force panel count to 1 so the
-	// host-spectator player-slot inflation in pdmain.c gives us one phantom
-	// panel slot that satisfies g_Vars.players[N] / g_Vars.currentplayer
-	// invariants. The panel is never rendered (headless skips lvRender), so
-	// it's effectively a no-op stand-in for the 0-local-player ideal.
+	// is_spectator=1 so netPlayersAllocate skips slot 0 for the host
+	// (combatants take 0..N-1), and force panel count to 0 — dedicated has
+	// no local viewports. spectatorAllocatePanels respects the 0 (won't
+	// clamp to 1) so no phantom player chr/prop spawns in the world.
 	if (g_NetDedicatedMode) {
 		g_NetLocalClient->is_spectator = 1;
-		g_SpectatorPanelCount = 1;
+		g_SpectatorPanelCount = 0;
 	}
 
 	g_NetMode = NETMODE_SERVER;
@@ -1351,7 +1352,19 @@ void netEndFrame(void)
 	// send whatever messages have accumulated so far
 	netFlushSendBuffers();
 
-	if (g_NetLocalClient->state == CLSTATE_GAME && g_NetLocalClient->player && g_NetLocalClient->player->prop) {
+	// The player+prop precondition is only meaningful for the CLIENT branch
+	// (which records its OWN player's move). The SERVER branch iterates remote
+	// clients and sims independently and doesn't read the local client's
+	// player. In dedicated mode g_NetLocalClient is a spectator with
+	// player==NULL, so gating the whole block on it silently drops every
+	// per-tick server broadcast — SVC_PLAYER_MOVE for each remote client,
+	// SVC_PROP_MOVE for each sim, plus KoH / score / stats heartbeats —
+	// and clients receive no state updates from the host.
+	if ((g_NetMode == NETMODE_CLIENT
+			&& g_NetLocalClient->state == CLSTATE_GAME
+			&& g_NetLocalClient->player && g_NetLocalClient->player->prop)
+			|| (g_NetMode == NETMODE_SERVER
+			&& g_NetLocalClient->state == CLSTATE_GAME)) {
 		if (g_NetMode == NETMODE_CLIENT) {
 			if (g_NetTick > 100) {
 				netClientRecordMove(g_NetLocalClient, g_NetLocalClient->player);
@@ -1399,6 +1412,40 @@ void netEndFrame(void)
 					&& (g_NetTick % NET_HEARTBEAT_INTERVAL) == 0u) {
 				netmsgSvcKohStateWrite(&g_NetMsgRel);
 			}
+
+			// Scoreboard heartbeat: SVC_SCORE only fires on kill events
+			// (SVC_KILL path) — if a single packet is dropped or a client
+			// joined mid-round via JIP, the local scoreboard can silently
+			// disagree with the server. Rebroadcast the full table every
+			// second to heal it. Phase-offset within NET_HEARTBEAT_INTERVAL
+			// so it doesn't land on the same tick as KoH (0) or lobby (30).
+			if ((g_NetTick % NET_HEARTBEAT_INTERVAL) == (NET_HEARTBEAT_INTERVAL / 4u)) {
+				s32 indexes[MAX_MPCHRS];
+				s32 count = 0;
+				for (s32 i = 0; i < MAX_MPCHRS; ++i) {
+					if (g_MpAllChrConfigPtrs[i]) {
+						indexes[count++] = i;
+					}
+				}
+				if (count > 0) {
+					netmsgSvcScoreWrite(&g_NetMsgRel, indexes, count);
+				}
+			}
+
+			// Player-stats heartbeat: SVC_PLAYER_STATS is on-change too
+			// (health, armor, weapon, ammo). Same drift risk as scores,
+			// same cheap fix. Phase-offset to 3/4 within the interval so
+			// the four periodic broadcasts (KoH at 0, score at 15, lobby
+			// at 30, stats at 45) spread their bandwidth instead of all
+			// landing on the same frame.
+			if ((g_NetTick % NET_HEARTBEAT_INTERVAL) == (3u * NET_HEARTBEAT_INTERVAL / 4u)) {
+				for (s32 i = 0; i < g_NetMaxClients; ++i) {
+					struct netclient *cl = &g_NetClients[i];
+					if (cl->state >= CLSTATE_GAME && cl->player && cl->player->prop) {
+						netmsgSvcPlayerStatsWrite(&g_NetMsgRel, cl);
+					}
+				}
+			}
 #endif
 			if (g_NetNextUpdate <= g_NetTick) {
 				g_NetNextUpdate = g_NetTick + g_NetServerUpdateRate;
@@ -1416,14 +1463,37 @@ void netEndFrame(void)
 	// the first playlist entry and calls mpStartMatch (which transitions to
 	// the actual stage). After this first match, the vote machine below
 	// handles round-to-round advancement.
+	// Helper: count connected non-spectator clients. Used by the dedicated
+	// auto-start gate and the post-vote advance to decide whether to spin a
+	// match or sit idle. Skips slot 0 (the local server client — always
+	// is_spectator in dedicated mode).
+	s32 humans_connected = 0;
+	if (g_NetMode == NETMODE_SERVER) {
+		for (s32 _ci = 1; _ci < g_NetMaxClients; _ci++) {
+			if (g_NetClients[_ci].state >= CLSTATE_LOBBY
+					&& !g_NetClients[_ci].is_spectator) {
+				humans_connected++;
+			}
+		}
+	}
+
 	if (g_NetMode == NETMODE_SERVER && g_NetDedicatedMode
 			&& g_StageNum == STAGE_CITRAINING && g_NetPlaylist.count > 0) {
-		static u32 s_ded_grace = 0;
-		static u8  s_ded_started = 0;
-		if (!s_ded_started) {
-			if (s_ded_grace == 0) {
-				s_ded_grace = g_NetTick + 60u; // ~1 second
-			} else if (g_NetTick >= s_ded_grace) {
+		// Gate the first-match start on min_humans_to_start. As soon as
+		// enough clients are in the lobby, arm a 1-second grace so any
+		// stragglers connecting in the same window land before the round
+		// begins. If clients disconnect during grace, the grace resets.
+		// Re-arms automatically whenever we land in CITRAINING (post-vote
+		// fallback path also returns here when humans drop below threshold).
+		static u32 s_ded_armed_at = 0;
+		const s32 needed = (s32)g_NetPlaylist.min_humans_to_start;
+		if (humans_connected >= needed) {
+			if (s_ded_armed_at == 0) {
+				s_ded_armed_at = g_NetTick + 60u; // ~1 second grace
+				sysLogPrintf(LOG_NOTE,
+						"dedicated: %d/%d humans connected, starting match in 1s",
+						humans_connected, needed);
+			} else if (g_NetTick >= s_ded_armed_at) {
 				struct playlistentry resolved;
 				playlistResolveRandoms(&g_NetPlaylist.entries[0], &resolved);
 				playlistApply(&resolved);
@@ -1432,12 +1502,15 @@ void netEndFrame(void)
 						resolved.name, (s32)resolved.stagenum, (s32)resolved.scenario,
 						(s32)resolved.bot_count);
 				mpStartMatch();
-				s_ded_started = 1;
+				s_ded_armed_at = 0; // re-arms on next CITRAINING entry
 			}
+		} else if (s_ded_armed_at != 0) {
+			sysLogPrintf(LOG_NOTE, "dedicated: humans dropped below threshold, cancelling start");
+			s_ded_armed_at = 0;
 		}
 	}
 
-	// Vote machine: server side. When a match ends (g_MpPaused becomes
+	// Vote machine: server side. When a match ends (g_MpSetup.paused becomes
 	// MPPAUSEMODE_GAMEOVER while we're still in CLSTATE_GAME on the host),
 	// open the vote. When the deadline elapses, close + apply + advance.
 	// Skipped if no playlist configured (then operator drives /nextmap).
@@ -1460,7 +1533,21 @@ void netEndFrame(void)
 						s_vote_apply_at = g_NetTick + 60u;
 					}
 					if (g_NetTick >= s_vote_apply_at) {
-						mpStartMatch();
+						const s32 needed = (s32)g_NetPlaylist.min_humans_to_start;
+						if (g_NetDedicatedMode && humans_connected < needed) {
+							// No humans left to play for — drop back to the
+							// Combat Sim lobby. The dedicated auto-start gate
+							// above will re-arm and wait for clients again.
+							sysLogPrintf(LOG_NOTE,
+									"dedicated: %d/%d humans after vote, returning to lobby",
+									humans_connected, needed);
+							mpSetPaused(MPPAUSEMODE_UNPAUSED);
+							titleSetNextStage(STAGE_CITRAINING);
+							titleSetNextMode(TITLEMODE_SKIP);
+							mainChangeToStage(STAGE_CITRAINING);
+						} else {
+							mpStartMatch();
+						}
 						g_NetVote.state = NETVOTE_IDLE;
 						s_vote_seen_gameover = 0;
 						s_vote_apply_at = 0;
@@ -1711,6 +1798,14 @@ void netSyncIdsAllocate(void)
 	// HACK: when we're a client, we'll need to swap our player and server player's props
 	// because of what we do in netPlayersAllocate
 	if (g_NetMode == NETMODE_CLIENT) {
+		// JIP-as-spectator: the local client connected mid-match and was
+		// flagged is_spectator on the server. They have no player / no prop
+		// of their own (won't until mpStartMatch unspectates them next
+		// round). Skip the prop-existence check and the swap — both are
+		// no-ops for a spectator.
+		if (g_NetLocalClient->is_spectator) {
+			return;
+		}
 		if (!g_NetLocalClient->player || !g_NetLocalClient->player->prop) {
 			sysLogPrintf(LOG_ERROR, "NET: no props allocated for players?");
 			netDisconnect();

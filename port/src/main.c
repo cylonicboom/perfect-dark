@@ -17,6 +17,7 @@
 #include "config.h"
 #include "mod.h"
 #include "system.h"
+#include "headless.h"
 #include "console.h"
 #include "utils.h"
 #include "net/net.h"
@@ -102,8 +103,14 @@ static void cleanup(void)
 {
 	sysLogPrintf(LOG_NOTE, "shutdown");
 	netDisconnect();
-	inputSaveBinds();
-	configSave(CONFIG_PATH);
+	// Headless dedicated never loaded binds (inputInit early-returned) and
+	// has no user settings to persist. Skipping inputSaveBinds + configSave
+	// here avoids clobbering pd.ini with empty bind strings, which would
+	// otherwise wipe the keybinds of any client sharing this directory.
+	if (g_NetDedicatedMode != 1) {
+		inputSaveBinds();
+		configSave(CONFIG_PATH);
+	}
 	videoShutdown();
 	crashShutdown();
 	// TODO: actually shut down all subsystems
@@ -142,6 +149,10 @@ int main(int argc, const char **argv)
 		// dedicated needs it before.
 		if (g_NetDedicatedMode == 1) {
 			g_SndDisabled = true;
+			// Install console-signal handlers so clicking X on the cmd
+			// window (or Ctrl-C) triggers a clean shutdown rather than
+			// orphaning the server process in the background.
+			headlessInstallSignalHandlers();
 		}
 	}
 

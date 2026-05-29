@@ -136,6 +136,15 @@ static void spectatorDefaultPanel(struct spectatorpanel *p, s32 idx)
 
 void spectatorAllocatePanels(void)
 {
+	if (g_NetDedicatedMode) {
+		// Dedicated server: no local viewports at all. Clamping to 1 panel
+		// would tag a g_Vars.players[] slot as spectator AFTER its chr/prop
+		// already spawned in setup.c, leaving a ghost player visible to
+		// remote clients. Skip allocation entirely.
+		g_SpectatorPanelCount = 0;
+		g_SpectatorActivePanel = 0;
+		return;
+	}
 	if (g_SpectatorPanelCount < 1) {
 		g_SpectatorPanelCount = 1;
 	}

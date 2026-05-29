@@ -8,7 +8,10 @@
 #include "config.h"
 #include "system.h"
 #include "video.h"
-#include "net/net.h"
+
+// Forward-decl only: pulling net/net.h would drag in types.h which redefines
+// `bool` and collides with <stdbool.h> already included above.
+extern s32 g_NetDedicatedMode;
 
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
@@ -189,6 +192,7 @@ void *videoGetWindowHandle(void)
 
 void videoUpdateNativeResolution(s32 w, s32 h)
 {
+	if (!wmAPI) return;
 	gfx_current_native_viewport.width = w;
 	gfx_current_native_viewport.height = h;
 	gfx_current_native_aspect = (float)w / (float)h;
@@ -475,6 +479,7 @@ void videoCapFramerate(s32 limit)
 
 s32 videoCreateFramebuffer(u32 w, u32 h, s32 upscale, s32 autoresize)
 {
+	if (!wmAPI) return -1;
 	return gfx_create_framebuffer(w, h, upscale, autoresize);
 }
 
@@ -509,11 +514,13 @@ void videoSetDisplayFPS(const s32 displayfps)
 
 void videoSetFramebuffer(s32 target)
 {
+	if (!wmAPI) return;
 	return gfx_set_framebuffer(target, 1.f);
 }
 
 void videoResetFramebuffer(void)
 {
+	if (!wmAPI) return;
 	return gfx_reset_framebuffer();
 }
 
@@ -524,22 +531,26 @@ s32 videoFramebuffersSupported(void)
 
 void videoResizeFramebuffer(s32 target, u32 w, u32 h, s32 upscale, s32 autoresize)
 {
+	if (!wmAPI) return;
 	gfx_resize_framebuffer(target, w, h, upscale, autoresize);
 }
 
 void videoCopyFramebuffer(s32 dst, s32 src, s32 left, s32 top)
 {
+	if (!wmAPI) return;
 	// assume immediate copies always read the front buffer
 	gfx_copy_framebuffer(dst, src, left, top, false);
 }
 
 void videoResetTextureCache(void)
 {
+	if (!wmAPI) return;
 	gfx_texture_cache_clear();
 }
 
 void videoFreeCachedTexture(const void *texptr)
 {
+	if (!wmAPI) return;
 	gfx_texture_cache_delete(texptr);
 }
 

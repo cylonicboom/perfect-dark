@@ -5,7 +5,10 @@
 #include "config.h"
 #include "audio.h"
 #include "system.h"
-#include "net/net.h"
+
+// Forward-decl only: avoid pulling net/net.h -> types.h, which redefines
+// `bool` and would clash with SDL's <stdbool.h>.
+extern s32 g_NetDedicatedMode;
 
 static SDL_AudioDeviceID dev;
 static const s16 *nextBuf;

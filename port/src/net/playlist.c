@@ -2,10 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <PR/ultratypes.h>
 #include "platform.h"
-#include "constants.h"
+#include <PR/ultratypes.h>
 #include "types.h"
+#include "constants.h"
 #include "bss.h"
 #include "data.h"
 #include "system.h"
@@ -249,6 +249,7 @@ void playlistFree(struct playlist *pl)
 	pl->vote_seconds = 20;
 	pl->vote_candidates = 3;
 	pl->random_in_pool = 1;
+	pl->min_humans_to_start = 1;
 	strncpy(pl->server_name, "Perfect Dark Dedicated", sizeof(pl->server_name) - 1);
 }
 
@@ -256,11 +257,54 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 {
 	playlistFree(pl);
 
-	FILE *f = fsFileOpenRead(path);
-	if (!f) {
-		sysLogPrintf(LOG_WARNING, "playlist: cannot open `%s`", path);
-		return 0;
+	// Try a sequence of candidate paths so the user's file is found whether
+	// it sits next to pd.ini (save dir), the exe, the working directory, or
+	// the data dir. Bare names (no `/`, no `\`, no `$`, no drive letter)
+	// expand to all four candidates; explicit paths (./foo, $S/foo, C:/foo,
+	// /foo) are used as-is via fsFullPath.
+	FILE *f = NULL;
+	char resolved_path[FS_MAXPATH + 1] = { 0 };
+
+	const bool is_explicit = (path[0] == '$' || path[0] == '/' || path[0] == '\\'
+			|| (path[0] == '.' && (path[1] == '/' || path[1] == '\\' || path[1] == '.'))
+			|| (path[0] && path[1] == ':'));
+
+	if (is_explicit) {
+		const char *resolved = fsFullPath(path);
+		strncpy(resolved_path, resolved ? resolved : path, FS_MAXPATH);
+		f = fsFileOpenRead(path);
+		if (!f) {
+			sysLogPrintf(LOG_WARNING, "playlist: cannot open `%s` (resolved to `%s`)",
+					path, resolved_path);
+			return 0;
+		}
+	} else {
+		// Strip any leading directory component just to be safe — the
+		// candidates below all prepend their own prefix.
+		const char *base = strrchr(path, '/');
+		if (!base) base = strrchr(path, '\\');
+		base = base ? base + 1 : path;
+
+		static const char *prefixes[] = { "$S", "$E", ".", "$B" };
+		char candidate[FS_MAXPATH + 1];
+		for (s32 i = 0; i < (s32)(sizeof(prefixes) / sizeof(prefixes[0])); ++i) {
+			snprintf(candidate, sizeof(candidate), "%s/%s", prefixes[i], base);
+			f = fsFileOpenRead(candidate);
+			const char *resolved = fsFullPath(candidate);
+			if (f) {
+				strncpy(resolved_path, resolved ? resolved : candidate, FS_MAXPATH);
+				break;
+			}
+			sysLogPrintf(LOG_NOTE, "playlist: tried `%s` (`%s`) — not found",
+					candidate, resolved ? resolved : "?");
+		}
+		if (!f) {
+			sysLogPrintf(LOG_WARNING, "playlist: `%s` not found in any of $S/$E/./$B", base);
+			return 0;
+		}
 	}
+
+	sysLogPrintf(LOG_NOTE, "playlist: loading `%s`", resolved_path);
 
 	char line[1024];
 	enum { SEC_NONE, SEC_SERVER, SEC_ENTRY } section = SEC_NONE;
@@ -324,6 +368,9 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 				pl->vote_candidates = (u8)(v < 2 ? 2 : v > 6 ? 6 : v);
 			} else if (ieq(key, "random_in_pool")) {
 				pl->random_in_pool = (ieq(val, "true") || strtol(val, NULL, 0)) ? 1 : 0;
+			} else if (ieq(key, "min_humans_to_start")) {
+				const s32 v = (s32)strtol(val, NULL, 0);
+				pl->min_humans_to_start = (u8)(v < 0 ? 0 : v > NET_MAX_CLIENTS ? NET_MAX_CLIENTS : v);
 			} else {
 				sysLogPrintf(LOG_WARNING, "playlist: unknown server key `%s`", key);
 			}
@@ -491,11 +538,23 @@ void playlistApply(const struct playlistentry *resolved)
 	g_MpSetup.scorelimit = resolved->scorelimit;
 	g_MpSetup.teamscorelimit = resolved->teamscorelimit;
 
-	// Apply masked option overrides: clear the masked bits, then set the
-	// override bits. Bits outside the mask keep their existing value so the
-	// playlist entry can selectively control individual flags.
-	g_MpSetup.options = (g_MpSetup.options & ~resolved->mp_options_mask)
-			| (resolved->mp_options & resolved->mp_options_mask);
+	// Playlist is authoritative for g_MpSetup.options. Bits listed in
+	// `options=` are ON; everything else is OFF. This stops bits that
+	// mpsetupLoadCurrentFile picked up from disk — particularly the
+	// port-only upper-byte flags like MPOPTION_GOLDENEYE / MPOPTION_NOCULL /
+	// MPOPTION_NOOMLIMIT that a previous menu-driven Combat Sim session may
+	// have saved into mpsetups.bin — from silently leaking into dedicated-
+	// server matches. `options_clear=` remains parsed for back-compat but
+	// is now redundant: any bit not in `options=` is already 0.
+	//
+	// MPOPTION_HOSTSPECTATOR is preserved across applies because it's a
+	// host-session flag (set by netStartServer in dedicated mode, by
+	// menuhandlerHostStart in host-and-play with the Host Spectator menu
+	// option) — not a per-match toggle. Clearing it here would break
+	// SVC_LOBBY_STATE / SVC_STAGE_START's spectator-status broadcast.
+	const u32 sticky = MPOPTION_HOSTSPECTATOR;
+	g_MpSetup.options = (g_MpSetup.options & sticky)
+			| (resolved->mp_options & ~sticky);
 
 	// Weapons: if a valid preset index, copy its weapons + slotfnflags into
 	// the active setup. Otherwise leave g_MpSetup.weapons alone (last-applied

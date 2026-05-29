@@ -48,6 +48,11 @@ struct playlist {
 	u8 vote_seconds;          // default 20
 	u8 vote_candidates;       // default 3
 	u8 random_in_pool;        // 0/1, default 1
+	// Minimum connected human clients before the dedicated-server auto-start
+	// gate fires (and before a post-vote round advance happens). Below this,
+	// the server idles in the Combat Sim lobby. 0 means "never wait" (the
+	// pre-existing behavior); default 1.
+	u8 min_humans_to_start;
 };
 
 // Load from disk. Returns 1 on success, 0 if the file is missing or empty.

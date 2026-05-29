@@ -209,6 +209,18 @@ void mpStartMatch(void)
 
 #ifndef PLATFORM_N64
 	if (g_NetMode == NETMODE_SERVER) {
+		// JIP unspectate: any client that joined mid-round was flagged with
+		// jip_pending_unspectate by netServerEvConnect and is_spectator=1.
+		// This is the round-boundary tick where they get promoted to
+		// combatant. Clearing both flags before the chrslots loop below lets
+		// them count toward sequential slot assignment.
+		for (s32 i = 1; i < g_NetMaxClients; ++i) {
+			if (g_NetClients[i].jip_pending_unspectate) {
+				g_NetClients[i].jip_pending_unspectate = 0;
+				g_NetClients[i].is_spectator = 0;
+			}
+		}
+
 		g_MpSetup.chrslots &= 0xff00;
 		// In host-spectator mode the host doesn't take slot 0 — clients fill
 		// 0..N-1. Otherwise slot 0 is the host and remotes start at slot 1.

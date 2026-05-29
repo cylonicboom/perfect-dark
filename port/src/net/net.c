@@ -9,6 +9,7 @@
 #include "net/net.h"
 #include "net/netbuf.h"
 #include "net/netmsg.h"
+#include "net/playlist.h"
 #include "types.h"
 #include "constants.h"
 #include "data.h"
@@ -24,6 +25,7 @@
 #include "game/menu.h"
 #include "game/pdmode.h"
 #include "game/mplayer/mplayer.h"
+#include "spectator.h"
 #include "game/chraction.h"
 #include "game/chr.h"
 #include "lib/main.h"
@@ -40,6 +42,19 @@ s32 g_NetMode = NETMODE_NONE;
 
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
+
+// Dedicated-server mode latches. g_NetDedicatedLatch is set by --dedicated
+// (mode 1) or --dedicated-windowed (mode 2) at CLI parse time, before any
+// subsystem init. main.c copies it to g_NetDedicatedMode before videoInit /
+// audioInit so those subsystems can no-op cleanly. g_NetDedicatedMode is also
+// set directly by the "Dedicated Server" menu handler (always to 2 — windowed
+// is the only mode available post-init since videoInit has already run).
+s32 g_NetDedicatedMode = 0;
+s32 g_NetDedicatedLatch = 0;
+char g_NetServerName[64] = "Perfect Dark Dedicated";
+char g_NetPlaylistPath[260] = "server_playlist.ini";
+
+struct netvotestate g_NetVote;
 
 u32 g_NetServerUpdateRate = 1;
 u32 g_NetServerInRate = 128 * 1024;
@@ -676,6 +691,43 @@ void netInit(void)
 		g_NetHostLatch = true;
 	}
 
+	// --dedicated: true headless. videoInit/audioInit will no-op, mainTick
+	// skips the render path. Implies --host (auto-starts server on boot).
+	// --dedicated-windowed: same server-mode, but keeps the SDL window for a
+	// status overlay — useful for beginners who want to see what's going on.
+	if (sysArgCheck("--dedicated")) {
+		g_NetDedicatedLatch = 1;
+		g_NetHostLatch = true;
+	} else if (sysArgCheck("--dedicated-windowed")) {
+		g_NetDedicatedLatch = 2;
+		g_NetHostLatch = true;
+	}
+
+	const char *argplaylist = sysArgGetString("--playlist");
+	if (argplaylist && argplaylist[0]) {
+		strncpy(g_NetPlaylistPath, argplaylist, sizeof(g_NetPlaylistPath) - 1);
+		g_NetPlaylistPath[sizeof(g_NetPlaylistPath) - 1] = '\0';
+	}
+
+	const char *argname = sysArgGetString("--server-name");
+	if (argname && argname[0]) {
+		strncpy(g_NetServerName, argname, sizeof(g_NetServerName) - 1);
+		g_NetServerName[sizeof(g_NetServerName) - 1] = '\0';
+	}
+
+	// Initialise playlist to empty defaults; an actual load (which logs if
+	// the file is missing) only runs when we're going to be a server.
+	playlistFree(&g_NetPlaylist);
+	if (g_NetDedicatedLatch || g_NetHostLatch) {
+		playlistLoad(&g_NetPlaylist, g_NetPlaylistPath);
+		// If the playlist named a server, prefer it over the --server-name
+		// default; the CLI flag still wins because g_NetServerName was
+		// updated above with strncpy if --server-name was provided.
+		if (g_NetPlaylist.server_name[0] && strcmp(g_NetServerName, "Perfect Dark Dedicated") == 0) {
+			strncpy(g_NetServerName, g_NetPlaylist.server_name, sizeof(g_NetServerName) - 1);
+		}
+	}
+
 	g_NetInit = true;
 }
 
@@ -704,6 +756,18 @@ s32 netStartServer(u16 port, s32 maxclients)
 	g_NetLocalClient = &g_NetClients[0];
 	g_NetLocalClient->state = CLSTATE_LOBBY; // local client doesn't need auth
 	netClientReadConfig(g_NetLocalClient, 0);
+
+	// Dedicated server: the host doesn't participate as a combatant. Force
+	// is_spectator=1 immediately so netPlayersAllocate skips slot 0 for the
+	// host (combatants take 0..N-1), and force panel count to 1 so the
+	// host-spectator player-slot inflation in pdmain.c gives us one phantom
+	// panel slot that satisfies g_Vars.players[N] / g_Vars.currentplayer
+	// invariants. The panel is never rendered (headless skips lvRender), so
+	// it's effectively a no-op stand-in for the 0-local-player ideal.
+	if (g_NetDedicatedMode) {
+		g_NetLocalClient->is_spectator = 1;
+		g_SpectatorPanelCount = 1;
+	}
 
 	g_NetMode = NETMODE_SERVER;
 
@@ -918,11 +982,13 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 		return;
 	}
 
-	if (g_NetLocalClient && g_NetLocalClient->state > CLSTATE_LOBBY) {
-		sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: %s rejected: late joins not allowed", addrstr);
-		enet_peer_disconnect(peer, DISCONNECT_LATE);
-		return;
-	}
+	// Late-join handling: previously hard-rejected (DISCONNECT_LATE). Now
+	// accepted as a spectator — they observe the running match without
+	// allocating a chr/prop/syncid, and mpStartMatch unspectates them at
+	// the next round boundary so they spawn cleanly. The is_spectator byte
+	// is broadcast in SVC_STAGE_START / SVC_LOBBY_STATE so other clients
+	// see them tagged as (spec) in the lobby UI.
+	const bool jip = (g_NetLocalClient && g_NetLocalClient->state > CLSTATE_LOBBY);
 
 	struct netclient *cl = NULL;
 
@@ -943,6 +1009,11 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 	netClientReset(cl);
 	cl->state = CLSTATE_AUTH; // skip CLSTATE_CONNECTING, since we already know it connected
 	cl->peer = peer;
+	if (jip) {
+		cl->is_spectator = 1;
+		cl->jip_pending_unspectate = 1;
+		sysLogPrintf(LOG_NOTE, "NET: %s joining in progress as spectator (will spawn next round)", addrstr);
+	}
 	enet_peer_set_data(peer, cl);
 }
 
@@ -964,6 +1035,18 @@ static void netServerEvDisconnect(struct netclient *cl)
 		sysLogPrintf(LOG_CHAT, "NET: client %u disconnected", cl->id);
 	}
 
+	// Vote tally upkeep: if this client had a vote outstanding, drop it.
+	// The deadline isn't extended — the vote closes on schedule, just with
+	// one fewer ballot in the pool.
+	if (g_NetVote.state == NETVOTE_OPEN
+			&& cl->id < (sizeof(g_NetVote.client_vote) / sizeof(g_NetVote.client_vote[0]))) {
+		const s8 prev = g_NetVote.client_vote[cl->id];
+		if (prev >= 0 && prev < g_NetVote.num_candidates && g_NetVote.tally[prev] > 0) {
+			g_NetVote.tally[prev]--;
+		}
+		g_NetVote.client_vote[cl->id] = -1;
+	}
+
 	netClientReset(cl);
 
 	--g_NetNumClients;
@@ -983,6 +1066,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_MOVE: rc = netmsgClcMoveRead(&cl->in, cl); break;
 			case CLC_SETTINGS: rc = netmsgClcSettingsRead(&cl->in, cl); break;
 			case CLC_HIT: rc = netmsgClcHitRead(&cl->in, cl); break;
+			case CLC_VOTE: rc = netmsgClcVoteRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1043,6 +1127,8 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_KOH_STATE: rc = netmsgSvcKohStateRead(&cl->in, cl); break;
 			case SVC_EXPLOSION: rc = netmsgSvcExplosionRead(&cl->in, cl); break;
 			case SVC_LOBBY_STATE: rc = netmsgSvcLobbyStateRead(&cl->in, cl); break;
+			case SVC_VOTE_OPEN: rc = netmsgSvcVoteOpenRead(&cl->in, cl); break;
+			case SVC_VOTE_RESULTS: rc = netmsgSvcVoteResultsRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1306,10 +1392,11 @@ void netEndFrame(void)
 				}
 			}
 			// King of the Hill: keep clients' hill state in sync. Broadcast
-			// every ~60 ticks (~1 second) as a keep-alive; on-change broadcasts
-			// come from kohTick (kingofthehill.inc) immediately after hill selection.
+			// every NET_HEARTBEAT_INTERVAL ticks (~1 second) as a keep-alive;
+			// on-change broadcasts come from kohTick (kingofthehill.inc)
+			// immediately after hill selection.
 			if (g_MpSetup.scenario == MPSCENARIO_KINGOFTHEHILL
-					&& (g_NetTick % 60u) == 0u) {
+					&& (g_NetTick % NET_HEARTBEAT_INTERVAL) == 0u) {
 				netmsgSvcKohStateWrite(&g_NetMsgRel);
 			}
 #endif
@@ -1323,12 +1410,78 @@ void netEndFrame(void)
 	netFlushSendBuffers();
 
 #ifndef PLATFORM_N64
+	// Dedicated server: auto-start the first match from the playlist once the
+	// server is up and in CITRAINING (combat-sim lobby). Gives a 1-second
+	// grace window so config / playlist / menu state settles, then applies
+	// the first playlist entry and calls mpStartMatch (which transitions to
+	// the actual stage). After this first match, the vote machine below
+	// handles round-to-round advancement.
+	if (g_NetMode == NETMODE_SERVER && g_NetDedicatedMode
+			&& g_StageNum == STAGE_CITRAINING && g_NetPlaylist.count > 0) {
+		static u32 s_ded_grace = 0;
+		static u8  s_ded_started = 0;
+		if (!s_ded_started) {
+			if (s_ded_grace == 0) {
+				s_ded_grace = g_NetTick + 60u; // ~1 second
+			} else if (g_NetTick >= s_ded_grace) {
+				struct playlistentry resolved;
+				playlistResolveRandoms(&g_NetPlaylist.entries[0], &resolved);
+				playlistApply(&resolved);
+				sysLogPrintf(LOG_NOTE,
+						"dedicated: auto-starting match `%s` stage=0x%02x scenario=%d bots=%d",
+						resolved.name, (s32)resolved.stagenum, (s32)resolved.scenario,
+						(s32)resolved.bot_count);
+				mpStartMatch();
+				s_ded_started = 1;
+			}
+		}
+	}
+
+	// Vote machine: server side. When a match ends (g_MpPaused becomes
+	// MPPAUSEMODE_GAMEOVER while we're still in CLSTATE_GAME on the host),
+	// open the vote. When the deadline elapses, close + apply + advance.
+	// Skipped if no playlist configured (then operator drives /nextmap).
+	{
+		static u8  s_vote_seen_gameover = 0;
+		static u32 s_vote_apply_at = 0;
+		if (g_NetMode == NETMODE_SERVER && g_NetPlaylist.count > 0
+				&& g_StageNum != STAGE_CITRAINING) {
+			if (g_MpSetup.paused == MPPAUSEMODE_GAMEOVER) {
+				if (!s_vote_seen_gameover) {
+					s_vote_seen_gameover = 1;
+					s_vote_apply_at = 0;
+					netServerVoteOpen();
+				}
+				if (g_NetVote.state == NETVOTE_OPEN && g_NetTick >= g_NetVote.deadline_tick) {
+					netServerVoteClose();
+				}
+				if (g_NetVote.state == NETVOTE_RESULTS) {
+					if (s_vote_apply_at == 0) {
+						s_vote_apply_at = g_NetTick + 60u;
+					}
+					if (g_NetTick >= s_vote_apply_at) {
+						mpStartMatch();
+						g_NetVote.state = NETVOTE_IDLE;
+						s_vote_seen_gameover = 0;
+						s_vote_apply_at = 0;
+					}
+				}
+			} else {
+				s_vote_seen_gameover = 0;
+				s_vote_apply_at = 0;
+			}
+		}
+	}
+
 	// Lobby state: broadcast to waiting clients after the main send flush so
 	// g_NetMsgRel is empty. Runs during lobby phase (g_NetLocalClient is
 	// CLSTATE_LOBBY on the server) so there are no player-move messages to
-	// clobber. Only sent every ~60 ticks when at least one remote client is
-	// still in CLSTATE_LOBBY (skipped once all clients have started the game).
-	if (g_NetMode == NETMODE_SERVER && (g_NetTick % 60u) == 30u) {
+	// clobber. Only sent every NET_HEARTBEAT_INTERVAL ticks when at least one
+	// remote client is still in CLSTATE_LOBBY (skipped once all clients have
+	// started the game). Phase-offset by half the interval so this doesn't
+	// land on the same tick as the KoH keep-alive above.
+	if (g_NetMode == NETMODE_SERVER
+			&& (g_NetTick % NET_HEARTBEAT_INTERVAL) == (NET_HEARTBEAT_INTERVAL / 2u)) {
 		for (s32 _li = 0; _li < g_NetMaxClients; _li++) {
 			if (g_NetClients[_li].state == CLSTATE_LOBBY
 					&& g_NetClients[_li].peer != NULL) {
@@ -1922,6 +2075,180 @@ void netSpectateStop(void)
 	g_NetSpectateChr = NULL;
 }
 
+// ---------- Vote helpers (port-only, dedicated/server side) ----------
+
+// Server-side: build the ballot from the current playlist and broadcast
+// SVC_VOTE_OPEN. The ballot includes vote_candidates entries; if the playlist
+// has random_in_pool set and there's more than one candidate, the last slot
+// becomes a RANDOM sentinel (playlist_index = -1) that resolves at apply
+// time. Stages and scenarios on every other candidate are pre-resolved here
+// so clients display concrete names; RANDOM picks resolve only at apply.
+void netServerVoteOpen(void)
+{
+	if (g_NetMode != NETMODE_SERVER) return;
+	if (g_NetVote.state == NETVOTE_OPEN) return;
+	if (g_NetPlaylist.count == 0) return;
+
+	const s32 n_req = g_NetPlaylist.vote_candidates
+			? g_NetPlaylist.vote_candidates : 3;
+	s32 n = n_req > NET_VOTE_MAX_CANDIDATES ? NET_VOTE_MAX_CANDIDATES : n_req;
+	if (n > g_NetPlaylist.count + (g_NetPlaylist.random_in_pool ? 1 : 0)) {
+		n = g_NetPlaylist.count + (g_NetPlaylist.random_in_pool ? 1 : 0);
+	}
+	if (n < 1) n = 1;
+
+	// Seed from current tick so successive ballots aren't identical.
+	u64 rng = ((u64)g_NetTick * 0x9E3779B97F4A7C15ULL) ^ sysGetMicroseconds();
+
+	s8 picks[NET_VOTE_MAX_CANDIDATES];
+	const s32 chosen = playlistPickBallot(&g_NetPlaylist, &rng, n, picks);
+	if (chosen <= 0) return;
+
+	g_NetVote.num_candidates = (u8)chosen;
+	g_NetVote.vote_seconds = g_NetPlaylist.vote_seconds ? g_NetPlaylist.vote_seconds : 20;
+	g_NetVote.deadline_tick = g_NetTick + (u32)g_NetVote.vote_seconds * 60u;
+	g_NetVote.winning_index = 0;
+	g_NetVote.winner_was_random = 0;
+	for (s32 i = 0; i < NET_VOTE_MAX_CANDIDATES; ++i) {
+		g_NetVote.tally[i] = 0;
+	}
+	for (s32 i = 0; i < (s32)(sizeof(g_NetVote.client_vote) / sizeof(g_NetVote.client_vote[0])); ++i) {
+		g_NetVote.client_vote[i] = -1;
+	}
+
+	for (s32 i = 0; i < chosen; ++i) {
+		struct netvotecandidate *c = &g_NetVote.candidates[i];
+		c->playlist_index = picks[i];
+		if (picks[i] < 0) {
+			// RANDOM slot — fill with sentinel display info; the actual
+			// pick happens at apply time so all clients see the same name
+			// pre-resolve.
+			c->stagenum = 0;
+			c->scenario = 0;
+			c->preset_index = 0xFF;
+			c->bot_count = 0;
+			c->timelimit = 0;
+			c->scorelimit = 0;
+			strncpy(c->name, "Random", sizeof(c->name) - 1);
+			c->name[sizeof(c->name) - 1] = '\0';
+		} else {
+			struct playlistentry resolved;
+			playlistResolveRandoms(&g_NetPlaylist.entries[picks[i]], &resolved);
+			c->stagenum = (u8)resolved.stagenum;
+			c->scenario = (u8)resolved.scenario;
+			c->preset_index = (u8)(resolved.weaponpreset < 0 ? 0xFF : resolved.weaponpreset);
+			c->bot_count = resolved.bot_count;
+			c->timelimit = resolved.timelimit;
+			c->scorelimit = resolved.scorelimit;
+			strncpy(c->name, resolved.name, sizeof(c->name) - 1);
+			c->name[sizeof(c->name) - 1] = '\0';
+		}
+	}
+
+	g_NetVote.state = NETVOTE_OPEN;
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcVoteOpenWrite(&g_NetMsgRel);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+
+	sysLogPrintf(LOG_CHAT, "VOTE: opened %d candidates, %ds deadline", chosen, (s32)g_NetVote.vote_seconds);
+	netDiagLogf("vote_open", "candidates=%d secs=%d", chosen, (s32)g_NetVote.vote_seconds);
+}
+
+// Server-side: tally the votes, broadcast SVC_VOTE_RESULTS, apply the winner,
+// and call mpStartMatch to begin the next round.
+void netServerVoteClose(void)
+{
+	if (g_NetMode != NETMODE_SERVER) return;
+	if (g_NetVote.state != NETVOTE_OPEN) return;
+
+	// Tie-break: lowest index wins, except RANDOM (index N-1 with playlist
+	// _index < 0) wins ties against itself so the outcome stays randomized.
+	u8 best = 0;
+	for (s32 i = 1; i < g_NetVote.num_candidates; ++i) {
+		if (g_NetVote.tally[i] > g_NetVote.tally[best]) {
+			best = (u8)i;
+		}
+	}
+	g_NetVote.winning_index = best;
+	g_NetVote.winner_was_random =
+		(g_NetVote.candidates[best].playlist_index < 0) ? 1u : 0u;
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcVoteResultsWrite(&g_NetMsgRel);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+
+	sysLogPrintf(LOG_CHAT, "VOTE: closed, winner [%d] %s (%d votes%s)",
+			(s32)best, g_NetVote.candidates[best].name,
+			(s32)g_NetVote.tally[best],
+			g_NetVote.winner_was_random ? ", random" : "");
+	netDiagLogf("vote_close", "winner=%d votes=%d random=%d",
+			(s32)best, (s32)g_NetVote.tally[best],
+			(s32)g_NetVote.winner_was_random);
+
+	// Resolve and apply the winning entry. RANDOM slot: pick a fresh
+	// playlist entry now (weighted) and resolve its random sub-fields.
+	struct playlistentry resolved;
+	const s8 pl_idx = g_NetVote.candidates[best].playlist_index;
+	if (pl_idx < 0) {
+		u64 rng = ((u64)g_NetTick * 0xBF58476D1CE4E5B9ULL) ^ sysGetMicroseconds();
+		const s32 picked = playlistPick(&g_NetPlaylist, &rng);
+		if (picked < 0) {
+			sysLogPrintf(LOG_WARNING, "VOTE: RANDOM winner but playlist empty?");
+			g_NetVote.state = NETVOTE_IDLE;
+			return;
+		}
+		playlistResolveRandoms(&g_NetPlaylist.entries[picked], &resolved);
+	} else {
+		playlistResolveRandoms(&g_NetPlaylist.entries[pl_idx], &resolved);
+	}
+	playlistApply(&resolved);
+
+	g_NetVote.state = NETVOTE_RESULTS;
+
+	// Defer the actual mpStartMatch by a frame so SVC_VOTE_RESULTS lands
+	// before the stage transition kicks in. Stash the trigger; the netEndFrame
+	// poll will fire mpStartMatch when the grace tick elapses.
+}
+
+void netServerVoteRecord(struct netclient *cl, u8 candidate_index)
+{
+	if (g_NetMode != NETMODE_SERVER) return;
+	if (g_NetVote.state != NETVOTE_OPEN) return;
+	if (!cl || cl->id >= (sizeof(g_NetVote.client_vote) / sizeof(g_NetVote.client_vote[0]))) return;
+	if (candidate_index >= g_NetVote.num_candidates && candidate_index != 0xFFu) return;
+
+	// Undo previous vote if any.
+	const s8 prev = g_NetVote.client_vote[cl->id];
+	if (prev >= 0 && prev < g_NetVote.num_candidates && g_NetVote.tally[prev] > 0) {
+		g_NetVote.tally[prev]--;
+	}
+
+	if (candidate_index == 0xFFu) {
+		g_NetVote.client_vote[cl->id] = -1;
+		return;
+	}
+
+	g_NetVote.client_vote[cl->id] = (s8)candidate_index;
+	g_NetVote.tally[candidate_index]++;
+
+	sysLogPrintf(LOG_CHAT, "VOTE: %s voted [%d] %s",
+			cl->settings.name, (s32)candidate_index,
+			g_NetVote.candidates[candidate_index].name);
+}
+
+s32 netClientVoteCast(s32 candidate_index)
+{
+	if (g_NetMode != NETMODE_CLIENT) return -1;
+	if (g_NetVote.state != NETVOTE_OPEN) return -1;
+	if (candidate_index < 0 || candidate_index >= g_NetVote.num_candidates) return -1;
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgClcVoteWrite(&g_NetMsgRel, (u8)candidate_index);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+	return 0;
+}
+
 void netSpectateCycle(s32 direction)
 {
 	struct chrdata *targets[MAX_MPCHRS];
@@ -2265,6 +2592,154 @@ s32 netConsoleCommand(const char *line)
 					mychr->lastdamagetick60, stamped ? age : 0u, window,
 					in_iframe ? "(IFRAME ACTIVE)" : stamped ? "(iframe expired)" : "(never damaged)");
 		}
+	} else if (strcmp(cmd, "playlist") == 0) {
+		// /playlist [list|reload]   server-only
+		if (g_NetMode != NETMODE_SERVER && g_NetMode != NETMODE_NONE) {
+			sysLogPrintf(LOG_CHAT, "/playlist is server-only");
+		} else if (!*arg || strncmp(arg, "list", 4) == 0) {
+			playlistDumpToChat();
+		} else if (strncmp(arg, "reload", 6) == 0) {
+			const s32 ok = playlistLoad(&g_NetPlaylist, g_NetPlaylistPath);
+			sysLogPrintf(LOG_CHAT, "playlist: reload %s (%d entries)",
+					ok ? "ok" : "failed", (s32)g_NetPlaylist.count);
+		} else {
+			sysLogPrintf(LOG_CHAT, "usage: /playlist [list|reload]");
+		}
+	} else if (strcmp(cmd, "nextmap") == 0) {
+		// /nextmap [index]   server-only: force the next playlist entry now,
+		// skipping the vote. With no index, picks a random weighted entry.
+		if (g_NetMode != NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "/nextmap is server-only");
+		} else if (g_NetPlaylist.count == 0) {
+			sysLogPrintf(LOG_CHAT, "playlist empty");
+		} else {
+			s32 idx = -1;
+			if (*arg) {
+				idx = (s32)strtol(arg, NULL, 0);
+				if (idx < 0 || idx >= g_NetPlaylist.count) {
+					sysLogPrintf(LOG_CHAT, "nextmap: index %d out of range (0..%d)",
+							idx, (s32)g_NetPlaylist.count - 1);
+					return 1;
+				}
+			} else {
+				u64 rng = ((u64)g_NetTick * 0x9E3779B97F4A7C15ULL) ^ sysGetMicroseconds();
+				idx = playlistPick(&g_NetPlaylist, &rng);
+			}
+			struct playlistentry resolved;
+			playlistResolveRandoms(&g_NetPlaylist.entries[idx], &resolved);
+			playlistApply(&resolved);
+			sysLogPrintf(LOG_CHAT, "nextmap: applying [%d] %s", idx, resolved.name);
+			mpStartMatch();
+			g_NetVote.state = NETVOTE_IDLE; // cancel any vote in flight
+		}
+	} else if (strcmp(cmd, "kick") == 0) {
+		// /kick <name|id> [reason]   server-only
+		if (g_NetMode != NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "/kick is server-only");
+		} else if (!*arg) {
+			sysLogPrintf(LOG_CHAT, "usage: /kick <name|id>");
+		} else {
+			// Parse first whitespace-delimited token as id-or-name.
+			char who[NET_MAX_NAME + 1] = { 0 };
+			s32 wi = 0;
+			const char *q = arg;
+			while (*q && *q != ' ' && *q != '\t' && wi < (s32)sizeof(who) - 1) {
+				who[wi++] = *q++;
+			}
+			who[wi] = '\0';
+			struct netclient *target = NULL;
+			// Try numeric id first.
+			char *endp = NULL;
+			const s32 id_try = (s32)strtol(who, &endp, 10);
+			if (endp && *endp == '\0' && id_try > 0 && id_try < g_NetMaxClients) {
+				if (g_NetClients[id_try].state >= CLSTATE_LOBBY) {
+					target = &g_NetClients[id_try];
+				}
+			}
+			// Fall back to name match.
+			if (!target) {
+				for (s32 i = 1; i < g_NetMaxClients; ++i) {
+					if (g_NetClients[i].state >= CLSTATE_LOBBY
+							&& strcasecmp(g_NetClients[i].settings.name, who) == 0) {
+						target = &g_NetClients[i];
+						break;
+					}
+				}
+			}
+			if (!target) {
+				sysLogPrintf(LOG_CHAT, "kick: no such client `%s`", who);
+			} else {
+				sysLogPrintf(LOG_CHAT, "kick: disconnecting %s", target->settings.name);
+				netChatPrintf(NULL, "%s was kicked", target->settings.name);
+				netServerKick(target, DISCONNECT_KICKED);
+			}
+		}
+	} else if (strcmp(cmd, "say") == 0) {
+		// /say <msg>   server-only chat broadcast as the server
+		if (g_NetMode != NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "/say is server-only");
+		} else if (!*arg) {
+			sysLogPrintf(LOG_CHAT, "usage: /say <message>");
+		} else {
+			netChatPrintf(NULL, "[SERVER] %s", arg);
+		}
+	} else if (strcmp(cmd, "endmatch") == 0) {
+		// /endmatch   server-only: triggers mainEndStage flow (score screen +
+		// vote/nextmap). Useful for skipping a stuck round.
+		if (g_NetMode != NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "/endmatch is server-only");
+		} else if (g_StageNum == STAGE_CITRAINING || g_StageNum >= STAGE_TITLE) {
+			sysLogPrintf(LOG_CHAT, "no match in progress");
+		} else {
+			sysLogPrintf(LOG_CHAT, "endmatch: triggering mainEndStage");
+			mainEndStage();
+		}
+	} else if (strcmp(cmd, "players") == 0) {
+		// /players   dump connected client roster
+		s32 shown = 0;
+		for (s32 i = 0; i < g_NetMaxClients; ++i) {
+			const struct netclient *cl = &g_NetClients[i];
+			if (cl->state < CLSTATE_LOBBY) continue;
+			sysLogPrintf(LOG_CHAT, "  [%d] %s%s state=%d team=%d ping=%u",
+					(s32)i, cl->settings.name,
+					cl->is_spectator ? " (spec)" : "",
+					(s32)cl->state,
+					(s32)cl->settings.team,
+					(unsigned)(cl->peer ? cl->peer->roundTripTime : 0u));
+			++shown;
+		}
+		sysLogPrintf(LOG_CHAT, "players: %d connected, %d bots", shown, (s32)g_BotCount);
+	} else if (strcmp(cmd, "vote") == 0) {
+		// /vote N   client-side: cast a ballot for candidate N
+		if (g_NetMode != NETMODE_CLIENT) {
+			sysLogPrintf(LOG_CHAT, "/vote is client-only");
+		} else if (g_NetVote.state != NETVOTE_OPEN) {
+			sysLogPrintf(LOG_CHAT, "no vote currently open");
+		} else if (!*arg) {
+			sysLogPrintf(LOG_CHAT, "usage: /vote <0..%d>", (s32)g_NetVote.num_candidates - 1);
+			for (s32 i = 0; i < g_NetVote.num_candidates; ++i) {
+				sysLogPrintf(LOG_CHAT, "  [%d] %s", i, g_NetVote.candidates[i].name);
+			}
+		} else {
+			const s32 idx = (s32)strtol(arg, NULL, 0);
+			if (netClientVoteCast(idx) == 0) {
+				sysLogPrintf(LOG_CHAT, "voted for [%d] %s", idx,
+						g_NetVote.candidates[idx].name);
+			} else {
+				sysLogPrintf(LOG_CHAT, "vote failed: index out of range or vote closed");
+			}
+		}
+	} else if (strcmp(cmd, "status") == 0) {
+		// /status   dump server / match state
+		sysLogPrintf(LOG_CHAT, "STATUS: name=\"%s\" mode=%d port=%u clients=%d/%d sims=%d tick=%u",
+				g_NetServerName, g_NetMode, g_NetServerPort,
+				g_NetNumClients, g_NetMaxClients, (s32)g_BotCount, g_NetTick);
+		sysLogPrintf(LOG_CHAT, "STATUS: stage=0x%02x scenario=%d options=0x%08x score=%d time=%d",
+				g_MpSetup.stagenum, g_MpSetup.scenario, g_MpSetup.options,
+				(s32)g_MpSetup.scorelimit, (s32)g_MpSetup.timelimit);
+		sysLogPrintf(LOG_CHAT, "STATUS: playlist=%s (%d entries, vote=%ds/%dcand)",
+				g_NetPlaylistPath, (s32)g_NetPlaylist.count,
+				(s32)g_NetPlaylist.vote_seconds, (s32)g_NetPlaylist.vote_candidates);
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -2281,6 +2756,16 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
 		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
 		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");
+		sysLogPrintf(LOG_CHAT, "Server commands (host only):");
+		sysLogPrintf(LOG_CHAT, "  /playlist [list|reload]  show or reload server_playlist.ini");
+		sysLogPrintf(LOG_CHAT, "  /nextmap [index]         force next playlist entry");
+		sysLogPrintf(LOG_CHAT, "  /kick <name|id>          disconnect a client");
+		sysLogPrintf(LOG_CHAT, "  /say <msg>               broadcast a server chat line");
+		sysLogPrintf(LOG_CHAT, "  /endmatch                force the current round to end");
+		sysLogPrintf(LOG_CHAT, "  /players                 list connected clients");
+		sysLogPrintf(LOG_CHAT, "  /status                  dump server / match state");
+		sysLogPrintf(LOG_CHAT, "Client commands (during a vote):");
+		sysLogPrintf(LOG_CHAT, "  /vote <N>                vote for candidate N");
 	} else {
 		sysLogPrintf(LOG_CHAT, "NET: unknown command /%s (try /help)", cmd);
 	}
@@ -2670,4 +3155,7 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 
 	configRegisterString("Net.Debug.LogPath", g_NetDiagPath, sizeof(g_NetDiagPath) - 1);
 	configRegisterUInt("Net.Debug.LogRate", &g_NetDiagDumpRate, 0, 600);
+
+	configRegisterString("Server.Name", g_NetServerName, sizeof(g_NetServerName) - 1);
+	configRegisterString("Server.PlaylistPath", g_NetPlaylistPath, sizeof(g_NetPlaylistPath) - 1);
 }

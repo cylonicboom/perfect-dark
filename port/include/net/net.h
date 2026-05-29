@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 29
+#define NET_PROTOCOL_VER 30
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -30,6 +30,12 @@
 // 120 ticks ≈ 2 seconds at 60 Hz. Shots rewinding further than this will use
 // the oldest available snapshot instead.
 #define NET_LAGCOMP_SIZE      120
+
+// Server-side keep-alive cadence (ticks) for KoH-state and lobby-state
+// broadcasts. ~1 second at 60 Hz. The KoH and lobby broadcasts use the same
+// interval but are phase-offset by half (NET_HEARTBEAT_INTERVAL / 2) so they
+// don't both land on the same tick.
+#define NET_HEARTBEAT_INTERVAL 60u
 
 // Live-tunable CSP / interp knobs. Were #define constants; converted to
 // globals so the in-game /csp* and /stale console commands can adjust them
@@ -233,6 +239,14 @@ struct netclient {
 	// NET_PLAYERNUM_SPECTATOR. Wired in CLC_SETTINGS (lobby) and re-broadcast
 	// in SVC_STAGE_START's per-client manifest so all peers agree.
 	u8 is_spectator;
+	// Join-in-progress transient flag. Set to 1 when netServerEvConnect
+	// accepts a late client (host is already in CLSTATE_GAME) and forces
+	// is_spectator=1 so they observe the current round without trying to
+	// allocate a player slot mid-match. mpStartMatch (server-side, at the
+	// next round's start) walks g_NetClients[] and clears both this flag
+	// and is_spectator for any client with this set, so they spawn cleanly
+	// into the new round. Not sent over the wire — local server state only.
+	u8 jip_pending_unspectate;
 
 	struct netplayermove outmove[2]; // last 2 outgoing player inputs, newest one first
 	// Ring buffer of incoming player moves. inmove_head is the index of the
@@ -259,6 +273,18 @@ extern s32 g_NetMode;
 
 extern s32 g_NetJoinLatch;
 extern s32 g_NetHostLatch;
+
+// Dedicated-server mode. 0 = listen server (host plays), 1 = headless dedicated
+// (no SDL window, no audio device, server-only tick), 2 = windowed dedicated
+// (window open showing a status overlay, no local combatant). Set from the
+// --dedicated / --dedicated-windowed CLI flags before videoInit/audioInit, or
+// at runtime by the "Dedicated Server" menu handler (mode 2 only). When
+// non-zero, g_NetLocalClient->is_spectator is forced to 1 in netStartServer
+// and no local player slot is allocated.
+extern s32 g_NetDedicatedMode;
+extern s32 g_NetDedicatedLatch;
+extern char g_NetServerName[64];
+extern char g_NetPlaylistPath[260];
 
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;
@@ -297,6 +323,59 @@ extern struct netbuf g_NetMsg;
 extern struct netbuf g_NetMsgRel;
 
 extern struct netlobbystate g_NetLobbyState;
+
+// Vote-for-next-map state machine (port-only, dedicated/server side and
+// client-side cache). Server opens a ballot at end-of-round (g_MpPaused ==
+// MPPAUSEMODE_GAMEOVER on the host), broadcasts candidates, tallies after
+// vote_seconds, and advances to the winner. Client mirrors the cache so
+// /vote N and a future overlay menu can read the candidates list.
+#define NET_VOTE_MAX_CANDIDATES 6
+
+#define NETVOTE_IDLE     0
+#define NETVOTE_OPEN     1
+#define NETVOTE_RESULTS  2
+
+struct netvotecandidate {
+	s8  playlist_index;     // -1 (0xFF on wire) for the RANDOM slot
+	u8  stagenum;
+	u8  scenario;
+	u8  preset_index;       // 0xFF = default
+	u8  bot_count;
+	u8  timelimit;
+	u8  scorelimit;
+	char name[32];
+};
+
+struct netvotestate {
+	u8  state;              // NETVOTE_*
+	u8  num_candidates;
+	u8  vote_seconds;
+	u8  winning_index;
+	u8  winner_was_random;
+	u32 deadline_tick;      // server-side tick at which the vote closes
+	struct netvotecandidate candidates[NET_VOTE_MAX_CANDIDATES];
+	u8  tally[NET_VOTE_MAX_CANDIDATES];
+	s8  client_vote[NET_MAX_CLIENTS + 1]; // server-side: each client's choice, -1 = none
+};
+
+extern struct netvotestate g_NetVote;
+
+// Server-side: open a vote ballot from the current playlist. Builds the
+// candidate list (with optional RANDOM slot), broadcasts SVC_VOTE_OPEN,
+// transitions state to NETVOTE_OPEN. No-op if vote already open or playlist
+// empty.
+void netServerVoteOpen(void);
+
+// Server-side: tally + broadcast SVC_VOTE_RESULTS + apply winning entry +
+// mpStartMatch. Called from netEndFrame when g_NetTick >= deadline_tick.
+void netServerVoteClose(void);
+
+// Server-side: record a CLC_VOTE from a client into the tally.
+void netServerVoteRecord(struct netclient *cl, u8 candidate_index);
+
+// Client-side: send a CLC_VOTE for the local choice. Returns -1 if no vote
+// is currently open or the candidate index is out of range. /vote N hook.
+s32 netClientVoteCast(s32 candidate_index);
 
 const char *netFormatClientAddr(const struct netclient *cl);
 

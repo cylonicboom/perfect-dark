@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "system.h"
 #include "fs.h"
+#include "net/net.h"
 // Needed for the MPOPTION_CONTROLLERS_ONLY gate below — pulls in g_Vars and
 // g_MpSetup so we can drop kbd/mouse input mid-match when the host (or any
 // client) flips the option.
@@ -693,6 +694,14 @@ static inline void inputLoadBinds(void)
 
 s32 inputInit(void)
 {
+	if (g_NetDedicatedMode == 1) {
+		// Headless dedicated: no input devices, no event watcher. inputUpdate
+		// short-circuits below; inputKeyPressed reads SDL keyboard state which
+		// SDL returns as an empty buffer when SDL_INIT_VIDEO isn't up.
+		sysLogPrintf(LOG_NOTE, "input: headless dedicated server, skipping init");
+		return 0;
+	}
+
 	// Set SDL hints before initializing the controller subsystem.
 	if (useHIDAPI) {
 #if SDL_VERSION_ATLEAST(2, 0, 12)
@@ -956,6 +965,10 @@ static inline void inputUpdateMouse(void)
 
 void inputUpdate(void)
 {
+	if (g_NetDedicatedMode == 1) {
+		return;
+	}
+
 	SDL_GameControllerUpdate();
 
 	if (mouseEnabled) {

@@ -121,6 +121,30 @@ int main(int argc, const char **argv)
 	sysInit();
 	fsInit();
 	configInit();
+
+	// Parse --dedicated / --dedicated-windowed before videoInit / audioInit so
+	// they can skip SDL window + audio device creation. The actual CLI parsing
+	// happens in netInit (below), but we peek at the flags directly here since
+	// netInit runs after videoInit by design (ENet doesn't need video). The
+	// duplication is intentional and cheap — sysArgCheck is a linear arg scan.
+	if (sysArgCheck("--dedicated")) {
+		g_NetDedicatedMode = 1;
+	} else if (sysArgCheck("--dedicated-windowed")) {
+		g_NetDedicatedMode = 2;
+	}
+	if (g_NetDedicatedMode) {
+		sysLogPrintf(LOG_NOTE, "starting dedicated server (mode %d: %s)",
+				g_NetDedicatedMode,
+				g_NetDedicatedMode == 1 ? "headless" : "windowed");
+		// Headless mode: silence the audio mixer before audioInit so the
+		// per-frame audio path in schedAudioFrame short-circuits. The
+		// --no-sound CLI flag normally toggles this *after* audioInit;
+		// dedicated needs it before.
+		if (g_NetDedicatedMode == 1) {
+			g_SndDisabled = true;
+		}
+	}
+
 	videoInit();
 	inputInit();
 	audioInit();

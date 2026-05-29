@@ -8,6 +8,7 @@
 #include "config.h"
 #include "system.h"
 #include "video.h"
+#include "net/net.h"
 
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
@@ -66,6 +67,15 @@ static s32 videoInitDisplayModes(void);
 
 s32 videoInit(void)
 {
+	// Dedicated headless server: no SDL window, no GL context. Leave wmAPI =
+	// NULL and initDone = false; the per-frame entry points (videoStartFrame /
+	// videoEndFrame / videoSubmitCommands) short-circuit on initDone, and the
+	// other wmAPI-touching entry points below now guard on wmAPI != NULL.
+	if (g_NetDedicatedMode == 1) {
+		sysLogPrintf(LOG_NOTE, "video: headless dedicated server, skipping init");
+		return 0;
+	}
+
 	wmAPI = &gfx_sdl;
 	renderingAPI = &gfx_opengl_api;
 
@@ -110,11 +120,11 @@ void videoStartFrame(void)
 	if (initDone) {
 		startTime = wmAPI->get_time();
 		gfx_start_frame();
+		// Synchronize with their backend counterparts. Moved inside the
+		// initDone gate so headless dedicated (wmAPI == NULL) doesn't deref.
+		vidFullscreen = videoGetFullscreen();
+		vidMaximize = videoGetMaximizeWindow();
 	}
-
-	// Synchronize with their backend counterparts.
-	vidFullscreen = videoGetFullscreen();
-	vidMaximize = videoGetMaximizeWindow();
 }
 
 void videoSubmitCommands(Gfx *cmds)
@@ -206,18 +216,21 @@ s32 videoGetHeight(void)
 
 s32 videoGetFullscreen(void)
 {
+	if (!wmAPI) return vidFullscreen;
 	vidFullscreen = wmAPI->get_fullscreen_state();
 	return vidFullscreen;
 }
 
 s32 videoGetFullscreenMode(void)
 {
+	if (!wmAPI) return vidFullscreenExclusive;
 	vidFullscreenExclusive = wmAPI->get_fullscreen_flag_mode();
 	return vidFullscreenExclusive;
 }
 
 s32 videoGetMaximizeWindow(void)
 {
+	if (!wmAPI) return vidMaximize;
 	vidMaximize = wmAPI->get_maximized_state();
 	return vidMaximize;
 }
@@ -252,12 +265,14 @@ s32 videoGetMSAA(void)
 
 s32 videoGetVsync(void)
 {
+	if (!wmAPI) return vidVsync;
 	vidVsync = wmAPI->get_swap_interval();
 	return vidVsync;
 }
 
 s32 videoGetFramerateLimit(void)
 {
+	if (!wmAPI) return vidFramerateLimit;
 	vidFramerateLimit = wmAPI->get_target_fps();
 	return vidFramerateLimit;
 }
@@ -449,6 +464,9 @@ void videoSetDetailTextures(s32 detail)
 
 void videoCapFramerate(s32 limit)
 {
+	if (!wmAPI) {
+		return;
+	}
 	if (vidFramerateLimit > 0 && vidFramerateLimit < limit) {
 		limit = vidFramerateLimit;
 	}
@@ -468,6 +486,7 @@ void videoSetMSAA(const s32 msaa)
 
 void videoSetVsync(const s32 vsync)
 {
+	if (!wmAPI) return;
 	vidVsync = wmAPI->set_swap_interval(vsync) ? vsync : 0;
 
 	if (vidVsync == 0 && vidFramerateLimit == 0) {
@@ -478,6 +497,7 @@ void videoSetVsync(const s32 vsync)
 
 void videoSetFramerateLimit(const s32 limit)
 {
+	if (!wmAPI) return;
 	vidFramerateLimit = (vidVsync == 0 && limit == 0) ? VIDEO_MAX_FPS : limit;
 	wmAPI->set_target_fps(vidFramerateLimit);
 }
@@ -525,7 +545,11 @@ void videoFreeCachedTexture(const void *texptr)
 
 void videoShutdown(void)
 {
-	free(vidModes);
+	// In headless dedicated, vidModes was never reassigned away from the
+	// static &vidModeDefault default — calling free() on it is undefined.
+	if (vidModes != &vidModeDefault) {
+		free(vidModes);
+	}
 }
 
 PD_CONSTRUCTOR static void videoConfigInit(void)

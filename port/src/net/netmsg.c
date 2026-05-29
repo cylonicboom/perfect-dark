@@ -235,6 +235,21 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 
 	netChatPrintf(NULL, "%s joined", name);
 
+	// Join-in-progress: if this client connected while the host was already
+	// in CLSTATE_GAME, netServerEvConnect tagged them with
+	// jip_pending_unspectate. Ship the current SVC_STAGE_START to them now
+	// so they enter the running match as a spectator (is_spectator = 1).
+	// mpStartMatch at the next round boundary clears their JIP flags so they
+	// spawn cleanly. No prop-spawn snapshot is sent — they'll see whatever
+	// is on the wire from this point forward; dropped weapons / tokens
+	// already on the ground won't be reconstructed (deferred to v2).
+	if (srccl->jip_pending_unspectate) {
+		netbufStartWrite(&srccl->out);
+		netmsgSvcStageStartWrite(&srccl->out);
+		netSend(srccl, NULL, true, NETCHAN_DEFAULT);
+		sysLogPrintf(LOG_NOTE, "NET: shipped JIP SVC_STAGE_START to client %u", srccl->id);
+	}
+
 	return 0;
 }
 
@@ -2788,5 +2803,118 @@ u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 		memcpy(g_NetLobbyState.teamnames[i], teamnames[i], NET_LOBBY_TEAMNAME_LEN);
 	}
 
+	return 0;
+}
+
+// ---------- Vote messages (port-only) ----------
+
+u32 netmsgSvcVoteOpenWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, SVC_VOTE_OPEN);
+	netbufWriteU8(dst, g_NetVote.num_candidates);
+	netbufWriteU8(dst, g_NetVote.vote_seconds);
+	for (s32 i = 0; i < g_NetVote.num_candidates; ++i) {
+		const struct netvotecandidate *c = &g_NetVote.candidates[i];
+		// playlist_index: -1 sentinel marshals to 0xFF on the wire
+		netbufWriteU8(dst, (u8)(c->playlist_index < 0 ? 0xFFu : (u8)c->playlist_index));
+		netbufWriteU8(dst, c->stagenum);
+		netbufWriteU8(dst, c->scenario);
+		netbufWriteU8(dst, c->preset_index);
+		netbufWriteU8(dst, c->bot_count);
+		netbufWriteU8(dst, c->timelimit);
+		netbufWriteU8(dst, c->scorelimit);
+		netbufWriteStr(dst, c->name);
+	}
+	return dst->error;
+}
+
+u32 netmsgSvcVoteOpenRead(struct netbuf *src, struct netclient *srccl)
+{
+	(void)srccl;
+	const u8 num = netbufReadU8(src);
+	const u8 secs = netbufReadU8(src);
+	if (src->error || num > NET_VOTE_MAX_CANDIDATES) {
+		return src->error;
+	}
+	g_NetVote.state = NETVOTE_OPEN;
+	g_NetVote.num_candidates = num;
+	g_NetVote.vote_seconds = secs;
+	g_NetVote.winning_index = 0;
+	g_NetVote.winner_was_random = 0;
+	for (s32 i = 0; i < num; ++i) {
+		struct netvotecandidate *c = &g_NetVote.candidates[i];
+		const u8 pl_idx = netbufReadU8(src);
+		c->playlist_index = (pl_idx == 0xFF) ? -1 : (s8)pl_idx;
+		c->stagenum = netbufReadU8(src);
+		c->scenario = netbufReadU8(src);
+		c->preset_index = netbufReadU8(src);
+		c->bot_count = netbufReadU8(src);
+		c->timelimit = netbufReadU8(src);
+		c->scorelimit = netbufReadU8(src);
+		const char *nm = netbufReadStr(src);
+		strncpy(c->name, nm ? nm : "?", sizeof(c->name) - 1);
+		c->name[sizeof(c->name) - 1] = '\0';
+		g_NetVote.tally[i] = 0;
+	}
+
+	sysLogPrintf(LOG_CHAT, "VOTE: %d candidates, %d seconds. Vote with /vote N:", (s32)num, (s32)secs);
+	for (s32 i = 0; i < num; ++i) {
+		sysLogPrintf(LOG_CHAT, "  [%d] %s", i, g_NetVote.candidates[i].name);
+	}
+
+	return src->error;
+}
+
+u32 netmsgSvcVoteResultsWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, SVC_VOTE_RESULTS);
+	netbufWriteU8(dst, g_NetVote.winning_index);
+	netbufWriteU8(dst, g_NetVote.winner_was_random);
+	netbufWriteU8(dst, g_NetVote.num_candidates);
+	for (s32 i = 0; i < g_NetVote.num_candidates; ++i) {
+		netbufWriteU8(dst, g_NetVote.tally[i]);
+	}
+	return dst->error;
+}
+
+u32 netmsgSvcVoteResultsRead(struct netbuf *src, struct netclient *srccl)
+{
+	(void)srccl;
+	const u8 winning = netbufReadU8(src);
+	const u8 was_random = netbufReadU8(src);
+	const u8 count = netbufReadU8(src);
+	if (src->error || count > NET_VOTE_MAX_CANDIDATES) {
+		return src->error;
+	}
+	g_NetVote.state = NETVOTE_RESULTS;
+	g_NetVote.winning_index = winning;
+	g_NetVote.winner_was_random = was_random;
+	for (s32 i = 0; i < count; ++i) {
+		g_NetVote.tally[i] = netbufReadU8(src);
+	}
+
+	if (winning < count) {
+		const char *wname = g_NetVote.candidates[winning].name;
+		sysLogPrintf(LOG_CHAT, "VOTE: winner = [%d] %s%s (%d votes)",
+				(s32)winning, wname,
+				was_random ? " (RANDOM)" : "",
+				(s32)g_NetVote.tally[winning]);
+	}
+
+	return src->error;
+}
+
+u32 netmsgClcVoteWrite(struct netbuf *dst, u8 candidate_index)
+{
+	netbufWriteU8(dst, CLC_VOTE);
+	netbufWriteU8(dst, candidate_index);
+	return dst->error;
+}
+
+u32 netmsgClcVoteRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 idx = netbufReadU8(src);
+	if (src->error) return src->error;
+	netServerVoteRecord(srccl, idx);
 	return 0;
 }

@@ -16,6 +16,7 @@
 #include "mpsetups.h"
 #include "bss.h"
 #include "net/net.h"
+#include "net/playlist.h"
 #include "spectator.h"
 
 extern MenuItemHandlerResult menuhandlerMainMenuCombatSimulator(s32 operation, struct menuitem *item, union handlerdata *data);
@@ -964,6 +965,123 @@ struct menudialogdef g_NetJoinMenuDialog = {
 	NULL,
 };
 
+/* dedicated server */
+
+static const char *menutextDedicatedStatus(struct menuitem *item)
+{
+	static char tmp[160];
+	const u8 idx = item->param;
+
+	if (g_NetMode != NETMODE_SERVER) {
+		return (idx == 0) ? "Server not running\n" : "";
+	}
+
+	switch (idx) {
+	case 0:
+		snprintf(tmp, sizeof(tmp), "Server: %s\n", g_NetServerName);
+		return tmp;
+	case 1:
+		snprintf(tmp, sizeof(tmp), "Port %u  clients %d/%d  bots %d\n",
+				g_NetServerPort, g_NetNumClients, g_NetMaxClients, (s32)g_BotCount);
+		return tmp;
+	case 2:
+		snprintf(tmp, sizeof(tmp), "Stage 0x%02x  scenario %d  tick %u\n",
+				g_MpSetup.stagenum, g_MpSetup.scenario, g_NetTick);
+		return tmp;
+	case 3:
+		snprintf(tmp, sizeof(tmp), "Playlist: %d entries (%s)\n",
+				(s32)g_NetPlaylist.count, g_NetPlaylistPath);
+		return tmp;
+	case 4:
+		if (g_NetVote.state == NETVOTE_OPEN) {
+			const s32 remaining = (g_NetVote.deadline_tick > g_NetTick)
+					? (s32)((g_NetVote.deadline_tick - g_NetTick) / 60u) : 0;
+			snprintf(tmp, sizeof(tmp), "Vote open: %ds remaining, %d candidates\n",
+					remaining, (s32)g_NetVote.num_candidates);
+			return tmp;
+		}
+		return "";
+	default:
+		return "";
+	}
+}
+
+static MenuItemHandlerResult menuhandlerDedicatedShutdown(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		netDisconnect();
+		g_NetDedicatedMode = 0;
+		menuPopDialog();
+	}
+	return 0;
+}
+
+#define DEDLINE(n) \
+	{ MENUITEMTYPE_LABEL, (n), MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT, \
+	  (uintptr_t)&menutextDedicatedStatus, 0, NULL }
+
+static struct menuitem g_NetDedicatedStatusMenuItems[] = {
+	DEDLINE(0),
+	DEDLINE(1),
+	DEDLINE(2),
+	DEDLINE(3),
+	DEDLINE(4),
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Shutdown Server\n",
+		0,
+		menuhandlerDedicatedShutdown,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+#undef DEDLINE
+
+static struct menudialogdef g_NetDedicatedStatusDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Dedicated Server",
+	g_NetDedicatedStatusMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_IGNOREBACK | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+static MenuItemHandlerResult menuhandlerDedicatedServer(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation != MENUOP_SET) return 0;
+
+	// Mode 2 = windowed dedicated. videoInit / audioInit have already run
+	// by now (we're in the menu), so we can't skip them — the window stays
+	// open showing the status dialog. The server-side behavior is the same
+	// as mode 1: no local combatant, playlist-driven match rotation, vote
+	// machine for round-to-round advancement.
+	g_NetDedicatedMode = 2;
+
+	// (Re)load the playlist now so the operator can edit and click in one
+	// session without restarting the game. Path comes from CLI / pd.ini.
+	playlistLoad(&g_NetPlaylist, g_NetPlaylistPath);
+
+	if (netStartServer(g_NetMenuPort ? g_NetMenuPort : g_NetServerPort,
+			g_NetMenuMaxPlayers ? g_NetMenuMaxPlayers : g_NetMaxClients) != 0) {
+		sysLogPrintf(LOG_CHAT, "dedicated: netStartServer failed");
+		g_NetDedicatedMode = 0;
+		return 0;
+	}
+
+	// Load the MP setup file so g_MpSetup is populated with defaults that
+	// playlistApply can override. Mirrors menuhandlerHostStart.
+	mpsetupCopyAllFromPak();
+	mpsetupLoadCurrentFile();
+
+	// Open the status dialog. Auto-start of the first match runs from
+	// netEndFrame's dedicated-poll once we sit in CITRAINING for ~1s.
+	menuPushDialog(&g_NetDedicatedStatusDialog);
+	return 0;
+}
+
 /* main */
 
 MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -1006,6 +1124,14 @@ struct menuitem g_NetMenuItems[] = {
 		(uintptr_t)"Join Game\n",
 		0,
 		menuhandlerJoinGame,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Dedicated Server\n",
+		0,
+		menuhandlerDedicatedServer,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

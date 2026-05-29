@@ -29,6 +29,8 @@
 #define SVC_KOH_STATE    0x47 // King of the Hill authoritative hill position/state
 #define SVC_EXPLOSION    0x48 // explosion visual effect (for timer-detonated networked props)
 #define SVC_LOBBY_STATE  0x49 // lobby info broadcast to clients waiting for game start
+#define SVC_VOTE_OPEN    0x4a // open a vote-for-next-map ballot at end-of-round
+#define SVC_VOTE_RESULTS 0x4b // close the vote: winning index + per-candidate tally
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -37,6 +39,7 @@
 #define CLC_MOVE     0x04 // player input
 #define CLC_SETTINGS 0x05 // player settings changed
 #define CLC_HIT      0x06 // client-reported chr hit; server validates and applies damage
+#define CLC_VOTE     0x07 // client's vote-for-next-map ballot choice
 
 u32 netmsgClcAuthWrite(struct netbuf *dst);
 u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl);
@@ -91,5 +94,32 @@ u32 netmsgSvcExplosionWrite(struct netbuf *dst, s32 exptype, const struct coord 
 u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcLobbyStateWrite(struct netbuf *dst);
 u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl);
+
+// Vote system (port-only, dedicated server). Wire layout:
+//   SVC_VOTE_OPEN:
+//     u8 num_candidates   1..6
+//     u8 vote_seconds     deadline in seconds
+//     per candidate:
+//       u8  playlist_index  0..N-1 or 0xFF for the RANDOM slot
+//       u8  stagenum        STAGE_MP_* (pre-resolved by server)
+//       u8  scenario        MPSCENARIO_*
+//       u8  preset_index    g_MpWeaponPresets index, or 0xFF if default
+//       u8  bot_count
+//       u8  timelimit       minutes
+//       u8  scorelimit
+//       str name            null-terminated, <= 32 chars
+//   SVC_VOTE_RESULTS:
+//     u8 winning_index    0..num_candidates-1
+//     u8 winner_was_random 1 if the winner was the RANDOM slot
+//     u8 tally_count      mirrors num_candidates for parsing convenience
+//     per candidate: u8 votes
+//   CLC_VOTE:
+//     u8 candidate_index  0..num_candidates-1, or 0xFF for abstain
+u32 netmsgSvcVoteOpenWrite(struct netbuf *dst);
+u32 netmsgSvcVoteOpenRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcVoteResultsWrite(struct netbuf *dst);
+u32 netmsgSvcVoteResultsRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgClcVoteWrite(struct netbuf *dst, u8 candidate_index);
+u32 netmsgClcVoteRead(struct netbuf *src, struct netclient *srccl);
 
 #endif

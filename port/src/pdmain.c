@@ -77,6 +77,7 @@
 #include "net/net.h"
 #include "spectator.h"
 #include "net/netmsg.h"
+#include "headless.h"
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
@@ -650,10 +651,25 @@ void mainTick(void)
 		schedSetCrashEnable2(false);
 
 		if (g_MainGameLogicEnabled) {
-			gdl = gdlstart = gfxGetMasterDisplayList();
+			// Headless dedicated server: skip the renderer setup. gfxGetMasterDisplayList
+			// returns into g_GfxBuffers and the gDPSetTile prologue writes there.
+			// Without a real renderer that buffer is never shipped to the GPU, but
+			// the per-frame gfxAllocate / gfxSwapBuffers reset cycle still needs to
+			// run so chr render-prep allocations (matrices) don't overflow the pool.
+			const bool headless = (g_NetDedicatedMode == 1);
 
-			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
-			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_4b, 0, 0x0100, 6, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+			if (!headless) {
+				gdl = gdlstart = gfxGetMasterDisplayList();
+
+				gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+				gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_4b, 0, 0x0100, 6, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+			} else {
+				// Get the buffer head so any stray gdl writes have a target,
+				// but don't ship it. (Most chr render-prep paths skip cleanly
+				// when PLAYERCOUNT() == 0, but the master gdl pointer is read
+				// by some helpers via gfxGetMasterDisplayList directly.)
+				gdl = gdlstart = gfxGetMasterDisplayList();
+			}
 
 			// First-mainTick crash-hunt trail. The sims-in-Skedar crash
 			// pattern points at the per-player propsTickPlayer pass: lvTick
@@ -702,33 +718,51 @@ void mainTick(void)
 				}
 			}
 
-			if (mt_log) { netDiagLogf("mt_lvrender_pre", ""); }
-			gdl = lvRender(gdl);
-			if (mt_log) {
-				netDiagLogf("mt_lvrender_post", "");
+			if (!headless) {
+				if (mt_log) { netDiagLogf("mt_lvrender_pre", ""); }
+				gdl = lvRender(gdl);
+				if (mt_log) {
+					netDiagLogf("mt_lvrender_post", "");
+					mt_logged++;
+				}
+
+				if (debugGetProfileMode() >= 2) {
+					gdl = profileRender(gdl);
+				}
+
+				gdl = conRender(gdl);
+				gdl = netKillFeedRender(gdl);
+				gdl = netDebugRender(gdl);
+
+				gDPFullSync(gdl++);
+				gSPEndDisplayList(gdl++);
+			} else if (mt_log) {
+				netDiagLogf("mt_headless_skiprender", "");
 				mt_logged++;
 			}
-
-			if (debugGetProfileMode() >= 2) {
-				gdl = profileRender(gdl);
-			}
-
-			gdl = conRender(gdl);
-			gdl = netKillFeedRender(gdl);
-			gdl = netDebugRender(gdl);
-
-			gDPFullSync(gdl++);
-			gSPEndDisplayList(gdl++);
 		}
 
 		if (g_MainGameLogicEnabled) {
+			// gfxSwapBuffers resets the per-frame allocator pool — must run
+			// even in headless or g_GfxMemPos grows until it overflows.
 			gfxSwapBuffers();
-			viUpdateMode();
+			if (g_NetDedicatedMode != 1) {
+				viUpdateMode();
+			}
 		}
 
-		rdpCreateTask(gdlstart, gdl, 0, (uintptr_t) &msg);
+		if (g_NetDedicatedMode != 1) {
+			rdpCreateTask(gdlstart, gdl, 0, (uintptr_t) &msg);
+		}
 		memaPrint();
 		profileSetMarker(PROFILE_MAINTICK_END);
+	}
+
+	if (g_NetDedicatedMode == 1) {
+		// No vsync sleep in headless — pace the loop to 60 Hz so the server
+		// doesn't peg a core. g_NetTick advances at 60 Hz inside netStartFrame,
+		// so anything faster wastes CPU without helping clients.
+		headlessPace(60);
 	}
 }
 

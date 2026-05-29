@@ -5,6 +5,7 @@
 #include "config.h"
 #include "audio.h"
 #include "system.h"
+#include "net/net.h"
 
 static SDL_AudioDeviceID dev;
 static const s16 *nextBuf;
@@ -15,6 +16,14 @@ static s32 queueLimit = 8192;
 
 s32 audioInit(void)
 {
+	if (g_NetDedicatedMode == 1) {
+		// Headless dedicated: no audio device, no mixer output. dev stays 0;
+		// SDL_QueueAudio(0, ...) is a no-op so audioEndFrame won't crash if
+		// it somehow gets called past the g_SndDisabled gate.
+		sysLogPrintf(LOG_NOTE, "audio: headless dedicated server, skipping init");
+		return 0;
+	}
+
 	if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
 		sysLogPrintf(LOG_ERROR, "SDL audio init error: %s", SDL_GetError());
 		return -1;

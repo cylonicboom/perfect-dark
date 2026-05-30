@@ -220,6 +220,80 @@ POPACAP plus RANDOM wildcards, `min_humans_to_start = 1`, 20s/3-candidate votes)
 works unchanged on Linux — only the path needs to resolve, which `--playlist`
 makes explicit.
 
+## 8a. Running multiple instances on one machine
+
+Use a **single templated unit** `pd-server@.service`, enabled once per instance —
+not copies of a unit. The port already exposes the flags needed for isolation:
+
+- `--basedir <path>` — read-only install dir (ROM + assets), **shared**.
+- `--savedir <path>` — writable dir (own `pd.ini`, saves, diag log, future stats),
+  **per instance**. Distinct savedirs avoid any shared-`pd.ini` contention.
+- `--port` / `--server-name` / `--playlist` — per instance.
+
+```ini
+# /etc/systemd/system/pd-server@.service
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=pd-server/%i          # -> /var/lib/pd-server/%i (persistent)
+WorkingDirectory=/opt/pd-server
+EnvironmentFile=/etc/pd-server/%i.conf
+ExecStart=/opt/pd-server/pd-server --dedicated \
+          --basedir /opt/pd-server --savedir /var/lib/pd-server/%i \
+          --port ${PORT} --maxclients ${MAXCLIENTS} \
+          --server-name "${NAME}" --playlist ${PLAYLIST} ${EXTRA}
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target
+```
+
+Per-instance config, e.g. `/etc/pd-server/dm.conf`:
+```
+PORT=27100
+MAXCLIENTS=8
+NAME=PD Deathmatch
+PLAYLIST=/opt/pd-server/playlists/dm.ini
+EXTRA=
+```
+
+```sh
+sudo systemctl enable --now pd-server@dm pd-server@objective
+journalctl -u pd-server@dm -f
+```
+
+Each `%i` gets its own UDP port, its own persistent `StateDirectory`, its own
+**distinct DynamicUser UID** (full isolation between instances), and its own
+playlist/rules; all share one read-only `/opt/pd-server`.
+
+Sizing: each instance is a full 60 Hz sim (bots are the main CPU cost; the pacer
+sleeps when idle). Budget ~1 core per busy instance; open the assigned UDP range
+(e.g. `27100-27103/udp`) in the firewall.
+
+## 8b. Per-server persistent state & stat tracking (future)
+
+Each instance's `StateDirectory` (`/var/lib/pd-server/%i`, passed as `--savedir`)
+is **persistent across restarts/reboots and naturally per-server** — the right
+home for future per-server stat tracking. The storage is provisioned by the unit
+today; the stat feature is code on top (write e.g. a `stats.db` SQLite file or
+JSON into the savedir at match end, keyed by player; optionally surface via the
+control socket in §9).
+
+Notes:
+- `DynamicUser=yes` + `StateDirectory` is supported for persistent state —
+  systemd re-applies ownership to the transient UID each start, so the server
+  always reads/writes its own stats. **But** the files end up owned by a floating
+  system UID. If external tooling (web leaderboard, cron export, manual edits)
+  will touch the stats DB directly, prefer a **fixed `pdserver` user** for stable
+  ownership. This is the concrete use-case that may tip the §11 user-model choice.
+- Per-server vs global: per-server stats fall out for free (one DB per
+  StateDirectory). A cross-server leaderboard is additive — aggregate the
+  per-server DBs on a schedule, or point instances at a shared stats path with
+  concurrency handling.
+
 ## 9. Admin control (future seam)
 
 Lifecycle is covered immediately by systemctl/journalctl. Live in-game admin ops

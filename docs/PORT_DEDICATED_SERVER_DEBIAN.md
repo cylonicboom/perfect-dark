@@ -145,6 +145,10 @@ cmake --build build-server -j
 # -> build-server/pd-server
 ```
 
+**Windows server**: the same `-DDEDICATED_SERVER=ON` build works on Windows
+(MSYS2/MinGW) — a console app linking no SDL/GL (verified by cross-compile + the
+CI Windows job). Build/run/service instructions: `dist/windows/server/README.md`.
+
 ## 7. ROM / data on a GUI-less box
 
 The port loads `pd.<ROMID>.z64` (e.g. `pd.ntsc-final.z64`) from its data dir

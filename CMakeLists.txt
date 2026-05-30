@@ -375,7 +375,10 @@ add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
 target_link_libraries(pd ${LIBS})
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
-if(WIN32)
+if(WIN32 AND NOT DEDICATED_SERVER)
+  # Client is a GUI-subsystem app (SDL provides WinMain via SDL2main). The
+  # dedicated server stays a console app: it has no SDL2main, uses plain main(),
+  # and needs a console for its log output + the Ctrl-C/close signal handler.
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 

@@ -84,18 +84,41 @@ static inline u32 netbufReadGset(struct netbuf *buf, struct gset *gset)
 	return buf->error;
 }
 
+// Move-payload quantization (Fix #6, NET_PROTOCOL_VER 31). The full f32 payload was
+// ~57B per player per tick; encoding the bounded fields as fixed-point ints drops it
+// to ~37B (~35%) before any rate change. Scales are shared by write+read so they can
+// never drift. The struct stays full f32 in memory — only the WIRE is quantized — so
+// netClientNeedMove's memcmp and the trust-client CSP (pos is NOT quantized, round-
+// trips exactly) are unaffected. Field RANGES (verified): leanofs/movespeed -1..1
+// (player.speedforwards is clamped to [-1,1]); crouchofs -90..0 (1-unit steps, smooth
+// enough); angles[0] yaw 0..360; angles[1] pitch within +-180; crosspos screen px.
+// pos stays f32: its level-coordinate range can't be covered by an s16 at useful
+// precision, so quantizing it cleanly would need bit-packing (a separate follow-up).
+#define NET_MV_UNIT_SCALE  127.0f                // -1..1 -> s8 (leanofs, movespeed)
+#define NET_MV_THETA_SCALE (65536.0f / 360.0f)   // yaw 0..360 -> u16
+#define NET_MV_VERTA_SCALE (32767.0f / 180.0f)   // pitch -180..180 -> s16
+#define NET_MV_CROSS_SCALE 8.0f                  // crosshair px -> s16 (1/8 px)
+
+// Round to nearest and clamp into [lo, hi] so an out-of-range value saturates
+// instead of wrapping to a wildly wrong int.
+static inline s32 netQuantRound(f32 v, s32 lo, s32 hi)
+{
+	s32 i = (s32)(v >= 0.0f ? v + 0.5f : v - 0.5f);
+	return i < lo ? lo : (i > hi ? hi : i);
+}
+
 static inline u32 netbufWritePlayerMove(struct netbuf *buf, const struct netplayermove *in)
 {
 	netbufWriteU32(buf, in->tick);
 	netbufWriteU32(buf, in->ucmd);
-	netbufWriteF32(buf, in->leanofs);
-	netbufWriteF32(buf, in->crouchofs);
-	netbufWriteF32(buf, in->movespeed[0]);
-	netbufWriteF32(buf, in->movespeed[1]);
-	netbufWriteF32(buf, in->angles[0]);
-	netbufWriteF32(buf, in->angles[1]);
-	netbufWriteF32(buf, in->crosspos[0]);
-	netbufWriteF32(buf, in->crosspos[1]);
+	netbufWriteS8(buf, (s8)netQuantRound(in->leanofs * NET_MV_UNIT_SCALE, -127, 127));
+	netbufWriteS8(buf, (s8)netQuantRound(in->crouchofs, -128, 127));
+	netbufWriteS8(buf, (s8)netQuantRound(in->movespeed[0] * NET_MV_UNIT_SCALE, -127, 127));
+	netbufWriteS8(buf, (s8)netQuantRound(in->movespeed[1] * NET_MV_UNIT_SCALE, -127, 127));
+	netbufWriteU16(buf, (u16)netQuantRound(in->angles[0] * NET_MV_THETA_SCALE, 0, 65535));
+	netbufWriteS16(buf, (s16)netQuantRound(in->angles[1] * NET_MV_VERTA_SCALE, -32767, 32767));
+	netbufWriteS16(buf, (s16)netQuantRound(in->crosspos[0] * NET_MV_CROSS_SCALE, -32767, 32767));
+	netbufWriteS16(buf, (s16)netQuantRound(in->crosspos[1] * NET_MV_CROSS_SCALE, -32767, 32767));
 	netbufWriteS8(buf, in->weaponnum);
 	netbufWriteCoord(buf, &in->pos);
 	netbufWriteS16(buf, in->animnum);
@@ -110,14 +133,14 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 {
 	in->tick = netbufReadU32(buf);
 	in->ucmd = netbufReadU32(buf);
-	in->leanofs = netbufReadF32(buf);
-	in->crouchofs = netbufReadF32(buf);
-	in->movespeed[0] = netbufReadF32(buf);
-	in->movespeed[1] = netbufReadF32(buf);
-	in->angles[0] = netbufReadF32(buf);
-	in->angles[1] = netbufReadF32(buf);
-	in->crosspos[0] = netbufReadF32(buf);
-	in->crosspos[1] = netbufReadF32(buf);
+	in->leanofs = (f32)netbufReadS8(buf) / NET_MV_UNIT_SCALE;
+	in->crouchofs = (f32)netbufReadS8(buf);
+	in->movespeed[0] = (f32)netbufReadS8(buf) / NET_MV_UNIT_SCALE;
+	in->movespeed[1] = (f32)netbufReadS8(buf) / NET_MV_UNIT_SCALE;
+	in->angles[0] = (f32)netbufReadU16(buf) / NET_MV_THETA_SCALE;
+	in->angles[1] = (f32)netbufReadS16(buf) / NET_MV_VERTA_SCALE;
+	in->crosspos[0] = (f32)netbufReadS16(buf) / NET_MV_CROSS_SCALE;
+	in->crosspos[1] = (f32)netbufReadS16(buf) / NET_MV_CROSS_SCALE;
 	in->weaponnum = netbufReadS8(buf);
 	netbufReadCoord(buf, &in->pos);
 	in->animnum = netbufReadS16(buf);

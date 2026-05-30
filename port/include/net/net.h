@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 30
+#define NET_PROTOCOL_VER 31 // 31: move-payload quantization (Fix #6)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 

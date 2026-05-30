@@ -204,6 +204,7 @@ u32 netmsgClcAuthWrite(struct netbuf *dst)
 	netbufWriteStr(dst, g_RomName); // TODO: use a CRC or something
 	netbufWriteStr(dst, modDir);
 	netbufWriteU8(dst, 1); // TODO: number of local players
+	netbufWriteStr(dst, g_NetJoinPassword); // join password ("" if the server is open)
 
 	return dst->error;
 }
@@ -219,6 +220,7 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 	const char *romName = netbufReadStr(src);
 	const char *modDir = netbufReadStr(src);
 	const u8 players = netbufReadU8(src);
+	const char *password = netbufReadStr(src);
 
 	if (src->error) {
 		sysLogPrintf(LOG_WARNING, "NET: malformed CLC_AUTH from client %u", srccl->id);
@@ -240,6 +242,16 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 	if ((!myModDir != !modDir) || (myModDir && modDir && strcasecmp(modDir, myModDir) != 0)) {
 		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u has the wrong mod, disconnecting", srccl->id);
 		netServerKick(srccl, DISCONNECT_FILES);
+		return src->error;
+	}
+
+	// Password gate: an open server (empty password) accepts anyone; otherwise
+	// the client's CLC_AUTH password must match exactly. The password itself is
+	// never broadcast — only a "passworded" flag rides in the server query /
+	// master heartbeat.
+	if (g_NetServerPassword[0] && strcmp(password ? password : "", g_NetServerPassword) != 0) {
+		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u supplied an incorrect password, disconnecting", srccl->id);
+		netServerKick(srccl, DISCONNECT_PASSWORD);
 		return src->error;
 	}
 
@@ -2718,6 +2730,91 @@ u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl)
 // clients in CLSTATE_LOBBY so they can display live info while waiting.
 // All display strings are pre-resolved here so the client render path is
 // simple. Sent every ~60 ticks and when a new client enters the lobby.
+/* server status query payloads (port-only server browser / master server) */
+
+// Summary block — the browser-list row: counts, game type, map, server name and
+// the shared flags byte. Written verbatim by both the direct PDQM query response
+// (net.c netServerQueryResponse) and the master-server HEARTBEAT (netmaster.c),
+// so the in-game browser and the VPS tracker decode identical bytes. stagenum /
+// scenario are g_MpSetup's (the selected arena / game type), which the receiver
+// resolves to display names locally via g_MpArenas / the scenario table.
+u32 netmsgQuerySummaryWrite(struct netbuf *dst)
+{
+	const char *modDir = fsGetModDir();
+	if (!modDir) {
+		modDir = "";
+	}
+
+	u8 flags = 0;
+	if (g_NetLocalClient && g_NetLocalClient->state > CLSTATE_LOBBY) { flags |= NET_QF_INPROGRESS; }
+	if (g_NetServerPassword[0])                                      { flags |= NET_QF_PASSWORD;   }
+	if (g_NetDedicatedMode)                                          { flags |= NET_QF_DEDICATED;  }
+	// NET_QF_CHALLENGE: netplay hosts run the custom Combat Simulator flow, not
+	// the solo/co-op challenge flow, so this stays 0 in practice. If challenge
+	// hosting is ever wired into netplay, set the bit here (single choke point).
+
+	netbufWriteU32(dst, NET_PROTOCOL_VER);
+	netbufWriteU8(dst, flags);
+	netbufWriteU8(dst, (u8)g_NetNumClients);
+	netbufWriteU8(dst, (u8)g_NetMaxClients);
+	netbufWriteU8(dst, (u8)g_BotCount);
+	netbufWriteU8(dst, g_MpSetup.stagenum);
+	netbufWriteU8(dst, g_MpSetup.scenario);
+	netbufWriteStr(dst, g_NetServerName);
+	netbufWriteStr(dst, g_RomName);
+	netbufWriteStr(dst, modDir);
+	return dst->error;
+}
+
+// Details block — appended after the summary for NET_QUERYTYPE_DETAILS (the
+// browser "Details" view). Live scoreboard: per-player name/ping/team/score/
+// deaths and per-sim name/team/difficulty/score. Mirrors the lobby-state
+// enumeration; score/deaths come from the live mpchrconfig (0 while in lobby).
+u32 netmsgQueryDetailsWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, g_MpSetup.scorelimit);
+	netbufWriteU8(dst, g_MpSetup.timelimit);
+	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
+
+	s32 numclients = 0;
+	for (s32 i = 0; i < g_NetMaxClients; i++) {
+		if (g_NetClients[i].state >= CLSTATE_LOBBY) { numclients++; }
+	}
+	netbufWriteU8(dst, (u8)numclients);
+	for (s32 i = 0; i < g_NetMaxClients; i++) {
+		const struct netclient *cl = &g_NetClients[i];
+		if (cl->state < CLSTATE_LOBBY) { continue; }
+		s16 score = 0, deaths = 0;
+		u8 team = cl->settings.team;
+		if (cl->playernum < MAX_MPCHRS && g_MpAllChrConfigPtrs[cl->playernum]) {
+			const struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[cl->playernum];
+			score  = mpchr->numpoints;
+			deaths = mpchr->numdeaths;
+			team   = mpchr->team;
+		}
+		netbufWriteStr(dst, cl->settings.name);
+		netbufWriteU16(dst, (u16)(cl->peer ? enet_peer_get_rtt(cl->peer) : 0u));
+		netbufWriteU8(dst, team);
+		netbufWriteS16(dst, score);
+		netbufWriteS16(dst, deaths);
+	}
+
+	s32 numbots = 0;
+	for (s32 i = 0; i < MAX_BOTS; i++) {
+		if (g_BotConfigsArray[i].difficulty != BOTDIFF_DISABLED) { numbots++; }
+	}
+	netbufWriteU8(dst, (u8)numbots);
+	for (s32 i = 0; i < MAX_BOTS; i++) {
+		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
+		if (bot->difficulty == BOTDIFF_DISABLED) { continue; }
+		netbufWriteStr(dst, bot->base.name);
+		netbufWriteU8(dst, bot->base.team);
+		netbufWriteU8(dst, bot->difficulty);
+		netbufWriteS16(dst, bot->base.numpoints);
+	}
+	return dst->error;
+}
+
 u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 {
 	static const char *const scenarioNames[] = {

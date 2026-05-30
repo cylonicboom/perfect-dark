@@ -14,11 +14,13 @@
 |---|---|
 | `port/src/net/net.c` | Core: ENet event loop, `netInit`, `netStartServer`, `netStartClient`, `netDisconnect`, `netStartFrame`, `netEndFrame`, `netSend` |
 | `port/src/net/netmsg.c` | Message serialization — all SVC_* and CLC_* read/write functions |
-| `port/src/net/netmenu.c` | In-game menus: "Host Network Game" and "Join Game" dialogs |
+| `port/src/net/netmenu.c` | In-game menus: "Host Network Game", "Join Game", **"Server Browser"** + details/password dialogs |
+| `port/src/net/netmaster.c` | **port-net-predict:** master-server heartbeat + standalone browser socket / list + per-server query parsing |
 | `port/src/net/netbuf.c` | Byte-level read/write buffer (typed readers/writers for u8, u16, u32, f32, coord, etc.) |
 | `port/include/net/net.h` | Public net API; `netclient`, `netplayermove` structs; NETMODE/CLSTATE/UCMD/DISCONNECT constants |
 | `port/include/net/netmsg.h` | SVC_* and CLC_* message ID constants; all read/write function declarations |
 | `port/include/net/netbuf.h` | `netbuf` struct definition; buffer API |
+| `port/include/net/netmaster.h` | **port-net-predict:** master/browser constants, `netserverentry`/`netserverdetails`, browser state externs, API (ENet-free so menus can include it) |
 | `port/include/net/netenet.h` | Thin ENet include wrapper (undefines `bool`, `near`, `far` after inclusion) |
 | `port/external/enet.c` | Bundled ENet source |
 | `port/include/external/enet.h` | Bundled ENet header |
@@ -122,7 +124,20 @@ Server seeds RNG at stage start (`g_NetRngSeeds[2]`). Clients receive seeds via 
 
 ### Server Query Protocol
 
-When `Net.Server.AllowInfoQuery` is set (default: true), the server responds to connectionless UDP packets starting with magic `PDQM\x01` with a status payload: protocol version, player count, max players, stage, scenario, host name, ROM name, mod dir. Used for server browser / status tools.
+When `Net.Server.AllowInfoQuery` is set (default: true), the server responds to connectionless UDP packets starting with magic `PDQM\x01`. The request may carry one trailing `u8` query type: `0`/absent = **summary**, `1` = **details**.
+
+- **Summary** (`netmsgQuerySummaryWrite`): protocol version, flags byte (`NET_QF_INPROGRESS|PASSWORD|DEDICATED|CHALLENGE`), num clients, max clients, **num sims**, stagenum, scenario, **server name** (`g_NetServerName`, not the player name), ROM name, mod dir. This block is shared verbatim with the master HEARTBEAT.
+- **Details** (`netmsgQueryDetailsWrite`, appended for type 1): score/time/team limits, then a live scoreboard — per-player `{name, ping, team, score, deaths}` and per-sim `{name, team, difficulty, score}`.
+
+The browser measures ping by timing the summary round-trip and pulls the scoreboard with a details query. Full wire layout (and the master-server protocol) is in [`docs/PORT_MASTER_SERVER.md`](../../../docs/PORT_MASTER_SERVER.md). `tools/query.py [--details] <addr>` is the reference client.
+
+### Master Server + Server Browser (`netmaster.c` / `netmaster.h`)
+
+Port-only discovery. Servers (listen + dedicated) heartbeat to an external UDP tracker (the VPS) every ~15s via `netMasterTick` (called from `netEndFrame`), sent out of the game socket (`netSendConnectionless`) so the master sees the real `ip:port`. The in-game **Network Game → Server Browser** opens a standalone non-blocking UDP socket (`netBrowserOpen`, driven each frame by the dialog handler's `MENUOP_TICK`), asks the master for the directory (`PDMS\x01` LIST_REQUEST/RESPONSE), then direct-queries each listed server for ping + live counts, and (on the Details view) the live scoreboard. The master is a thin directory — never relays game traffic, never sees passwords. Browser state for the UI: `g_NetServerList[]`, `g_NetServerCount`, `g_NetServerDetails`, `g_NetBrowserState`. The `netmaster.h` header is deliberately ENet-free so `netmenu.c` can include it without pulling in enet.
+
+### Join Password
+
+`g_NetServerPassword` (host, `Server.Password`/`--password`) gates joining: the client sends a trailing `str password` in `CLC_AUTH`; `netmsgClcAuthRead` string-compares and kicks a mismatch with `DISCONNECT_PASSWORD`. Only a `NET_QF_PASSWORD` flag is advertised — the password never goes on the wire as plaintext beyond the join attempt itself (and ENet is unencrypted, so this is access-gating, not strong security). The browser prompts for it before connecting to a flagged server; manual joins set `g_NetJoinPassword` first.
 
 ### Host Spectator Mode
 
@@ -157,6 +172,10 @@ Net.Server.InRate          # server bandwidth in
 Net.Server.OutRate         # server bandwidth out
 Net.Server.UpdateFrames    # server update interval (1 = every tick; 2 = every other)
 Net.Server.AllowInfoQuery  # respond to server query packets (0/1)
+Net.Master.Addr            # master-server host/IP (compile-time default; "" disables)
+Net.Master.Port            # master-server UDP port (default 27200)
+Net.Master.Advertise       # server registers with the master (0/1, default 1)
+Server.Password            # host join password (empty = open server)
 Net.Debug.LogPath          # diagnostic log file path (empty = disabled)
 Net.Debug.LogRate          # ticks between per-client/sim pos dumps (default 6, 0 = disabled)
 ```
@@ -168,6 +187,9 @@ Net.Debug.LogRate          # ticks between per-client/sim pos dumps (default 6, 
 --connect <addr>    auto-join address on startup
 --port <n>          server port override
 --maxclients <n>    max client cap
+--master <addr>     master-server host/IP override (Net.Master.Addr)
+--no-advertise      don't register this server with the master
+--password <pw>     set the host join password (Server.Password)
 ```
 
 ### Debug / Console

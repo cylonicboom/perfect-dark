@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 31 // 31: move-payload quantization (Fix #6)
+#define NET_PROTOCOL_VER 32 // 32: server browser + master registration + join password (CLC_AUTH)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -162,6 +162,7 @@ struct netlobbystate {
 #define DISCONNECT_FULL 6
 #define DISCONNECT_LATE 7
 #define DISCONNECT_FILES 8
+#define DISCONNECT_PASSWORD 9
 
 #define CLSTATE_DISCONNECTED 0
 #define CLSTATE_CONNECTING 1
@@ -294,6 +295,15 @@ extern s32 g_NetDedicatedLatch;
 extern char g_NetServerName[64];
 extern char g_NetPlaylistPath[260];
 
+// Join password. g_NetServerPassword is the password this host requires (empty
+// = open server); it is never sent over the wire — only a "passworded" flag is
+// advertised, and the server string-compares the client's CLC_AUTH password
+// against it. g_NetJoinPassword is the password the local client will send in
+// its next CLC_AUTH (set by the browser / join menu before netStartClient).
+#define NET_MAX_PASSWORD 64
+extern char g_NetServerPassword[NET_MAX_PASSWORD];
+extern char g_NetJoinPassword[NET_MAX_PASSWORD];
+
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;
 extern u32 g_NetNextSyncId;
@@ -309,6 +319,9 @@ extern u64 g_NetMusicRngSeed;
 
 extern u32 g_NetInterpTicks;
 extern u32 g_NetServerPort;
+// Actual bound listen port of the running server (set in netStartServer). The
+// master heartbeat advertises this so the tracker pairs it with the source IP.
+extern u16 g_NetServerActualPort;
 extern char g_NetLastJoinAddr[NET_MAX_ADDR + 1];
 
 extern s32 g_NetDebugDraw;

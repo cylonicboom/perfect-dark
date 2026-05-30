@@ -41,6 +41,24 @@
 #define CLC_HIT      0x06 // client-reported chr hit; server validates and applies damage
 #define CLC_VOTE     0x07 // client's vote-for-next-map ballot choice
 
+// Server status query (port-only server browser + master server). The "flags"
+// byte is shared by the direct PDQM query summary and the master HEARTBEAT.
+#define NET_QF_INPROGRESS (1 << 0) // a match is in progress (not in lobby)
+#define NET_QF_PASSWORD   (1 << 1) // server requires a join password
+#define NET_QF_DEDICATED  (1 << 2) // headless / windowed dedicated server
+#define NET_QF_CHALLENGE  (1 << 3) // running a Combat Sim challenge
+
+// Direct server query type — optional trailing byte after NET_QUERY_MAGIC.
+// Absent (legacy 5-byte request) is treated as SUMMARY.
+#define NET_QUERYTYPE_SUMMARY 0 // browser-list row only
+#define NET_QUERYTYPE_DETAILS 1 // summary + live scoreboard (players/sims)
+
+// Server status payload builders. The summary block is reused verbatim by both
+// the direct query response and the master heartbeat; details appends the live
+// scoreboard. See netmsg.c.
+u32 netmsgQuerySummaryWrite(struct netbuf *dst);
+u32 netmsgQueryDetailsWrite(struct netbuf *dst);
+
 u32 netmsgClcAuthWrite(struct netbuf *dst);
 u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcChatWrite(struct netbuf *dst, const char *str);

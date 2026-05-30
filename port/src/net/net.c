@@ -9,6 +9,7 @@
 #include "net/net.h"
 #include "net/netbuf.h"
 #include "net/netmsg.h"
+#include "net/netmaster.h"
 #include "net/playlist.h"
 #include "types.h"
 #include "constants.h"
@@ -52,6 +53,9 @@ s32 g_NetJoinLatch = false;
 s32 g_NetDedicatedMode = 0;
 s32 g_NetDedicatedLatch = 0;
 char g_NetServerName[64] = "Perfect Dark Dedicated";
+// Join password (see net.h). Empty server password = open server.
+char g_NetServerPassword[NET_MAX_PASSWORD] = "";
+char g_NetJoinPassword[NET_MAX_PASSWORD] = "";
 // $S = save dir (same place pd.ini lives). Override via --playlist <path>
 // or Server.PlaylistPath in pd.ini; absolute / cwd-relative paths are
 // honored as-is by fsFullPath.
@@ -63,6 +67,7 @@ u32 g_NetServerUpdateRate = 1;
 u32 g_NetServerInRate = 128 * 1024;
 u32 g_NetServerOutRate = 128 * 1024;
 u32 g_NetServerPort = NET_DEFAULT_PORT;
+u16 g_NetServerActualPort = 0; // bound listen port; advertised to the master
 s32 g_NetServerInfoQuery = true;
 
 u32 g_NetClientUpdateRate = 1;
@@ -301,7 +306,7 @@ static u32 g_LagCompLastRewindTicks = 0;
 // teardown — declare it here so the dispatch order doesn't break.
 static void netKillFeedClear(void);
 
-static s32 netParseAddr(ENetAddress *out, const char *str)
+s32 netParseAddr(ENetAddress *out, const char *str)
 {
 	char tmp[256] = { 0 };
 
@@ -583,7 +588,8 @@ static inline const char *netGetDisconnectReason(const u32 reason)
 		"Connection timed out",
 		"Server is full",
 		"The game is already in progress",
-		"Your files differ from the server's"
+		"Your files differ from the server's",
+		"Incorrect password"
 	};
 	if (reason < (u32)ARRAYCOUNT(msgs)) {
 		return msgs[reason];
@@ -591,30 +597,26 @@ static inline const char *netGetDisconnectReason(const u32 reason)
 	return msgs[0];
 }
 
-static void netServerQueryResponse(ENetAddress *address)
+// Extended server query response. querytype selects NET_QUERYTYPE_SUMMARY (the
+// browser-list row) or NET_QUERYTYPE_DETAILS (summary + live scoreboard). The
+// summary block is the shared netmsgQuerySummaryWrite payload so the in-game
+// browser and the master server decode identical bytes. Larger static buffer
+// than the legacy response since details can carry up to 8 players + 8 sims.
+static void netServerQueryResponse(ENetAddress *address, u8 querytype)
 {
-	static u8 data[256];
+	static u8 data[1024];
 	static ENetBuffer ebuf;
 	struct netbuf buf = { .data = data, .size = sizeof(data) };
-	const u8 flags = (g_NetLocalClient && g_NetLocalClient->state > CLSTATE_LOBBY)
-		| (0 << 1); // TODO: this will indicate coop/anti/etc
-	const char *modDir = fsGetModDir();
-	if (!modDir) {
-		modDir = "";
-	}
 
 	netbufStartWrite(&buf);
 	netbufWriteData(&buf, NET_QUERY_MAGIC, sizeof(NET_QUERY_MAGIC) - 1);
 	netbufWriteU16(&buf, 0); // space for size
-	netbufWriteU32(&buf, NET_PROTOCOL_VER);
-	netbufWriteU8(&buf, flags);
-	netbufWriteU8(&buf, g_NetNumClients);
-	netbufWriteU8(&buf, g_NetMaxClients);
-	netbufWriteU8(&buf, g_StageNum);
-	netbufWriteU8(&buf, g_MpSetup.scenario);
-	netbufWriteStr(&buf, g_NetLocalClient ? g_NetLocalClient->settings.name : "");
-	netbufWriteStr(&buf, g_RomName);
-	netbufWriteStr(&buf, modDir);
+
+	netmsgQuerySummaryWrite(&buf);
+	if (querytype == NET_QUERYTYPE_DETAILS) {
+		netmsgQueryDetailsWrite(&buf);
+	}
+
 	netbufWriteU16(&buf, 0); // space for checksum
 
 	ebuf.data = buf.data;
@@ -638,15 +640,38 @@ static void netServerQueryResponse(ENetAddress *address)
 	enet_socket_send(g_NetHost->socket, address, &ebuf, 1);
 }
 
+// Send a raw connectionless datagram out of the server's ENet socket. Used by
+// the master-server heartbeat (netmaster.c) so the packet's source ip:port is
+// the same address clients connect to (NAT-friendly). No-op if the host is down.
+void netSendConnectionless(const ENetAddress *addr, const void *data, u32 len)
+{
+	if (!g_NetHost || !addr || !data || !len) {
+		return;
+	}
+	ENetBuffer ebuf;
+	ebuf.data = (void *)data;
+	ebuf.dataLength = len;
+	enet_socket_send(g_NetHost->socket, addr, &ebuf, 1);
+}
+
 static s32 netServerConnectionlessPacket(ENetEvent *event, ENetAddress *address, u8 *rxdata, s32 rxlen)
 {
 	if (rxdata && rxlen >= 5) {
 		if (!memcmp(rxdata, NET_QUERY_MAGIC, sizeof(NET_QUERY_MAGIC) - 1)) {
-			// this is a query packet, respond with server status
+			// direct server query; optional trailing byte selects summary/details
+			const u8 querytype = (rxlen >= 6) ? rxdata[5] : NET_QUERYTYPE_SUMMARY;
 			sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: query request from %s, responding", netFormatAddr(address));
-			netServerQueryResponse(address);
+			netServerQueryResponse(address, querytype);
 			return 1;
 		}
+#ifndef PLATFORM_N64
+		if (rxlen >= (s32)(sizeof(NET_MASTER_MAGIC) - 1) &&
+				!memcmp(rxdata, NET_MASTER_MAGIC, sizeof(NET_MASTER_MAGIC) - 1)) {
+			// reply from the master server (e.g. REGISTER_ACK)
+			netMasterHandlePacket(rxdata, rxlen);
+			return 1;
+		}
+#endif
 	}
 	// probably a normal packet, pass through to enet
 	return 0;
@@ -718,6 +743,22 @@ void netInit(void)
 		g_NetServerName[sizeof(g_NetServerName) - 1] = '\0';
 	}
 
+	const char *argmaster = sysArgGetString("--master");
+	if (argmaster && argmaster[0]) {
+		strncpy(g_NetMasterAddr, argmaster, sizeof(g_NetMasterAddr) - 1);
+		g_NetMasterAddr[sizeof(g_NetMasterAddr) - 1] = '\0';
+	}
+
+	if (sysArgCheck("--no-advertise")) {
+		g_NetMasterAdvertise = 0;
+	}
+
+	const char *argpassword = sysArgGetString("--password");
+	if (argpassword) {
+		strncpy(g_NetServerPassword, argpassword, sizeof(g_NetServerPassword) - 1);
+		g_NetServerPassword[sizeof(g_NetServerPassword) - 1] = '\0';
+	}
+
 	// Initialise playlist to empty defaults; an actual load (which logs if
 	// the file is missing) only runs when we're going to be a server.
 	playlistFree(&g_NetPlaylist);
@@ -747,6 +788,8 @@ s32 netStartServer(u16 port, s32 maxclients)
 		sysLogPrintf(LOG_ERROR, "NET: could not create ENet host");
 		return -2;
 	}
+
+	g_NetServerActualPort = port;
 
 	if (g_NetServerInfoQuery) {
 		enet_host_set_intercept_callback(g_NetHost, netServerConnectionlessPacket);
@@ -898,6 +941,10 @@ s32 netDisconnect(void)
 	if (!g_NetMode) {
 		return -1;
 	}
+
+	// Tell the master we're going away (best-effort) while the socket is still
+	// up and we're still in NETMODE_SERVER. No-op on clients.
+	netMasterUnregister();
 
 	// stop responding to connectionless packets
 	enet_host_set_intercept_callback(g_NetHost, NULL);
@@ -1464,6 +1511,9 @@ void netEndFrame(void)
 
 	// send position updates
 	netFlushSendBuffers();
+
+	// Advertise to the master server (server-only; self-gated + rate-limited).
+	netMasterTick();
 
 #ifndef PLATFORM_N64
 	// Dedicated server: auto-start the first match from the playlist once the

@@ -241,3 +241,79 @@ in-game C-buttons.
 
 - `mpStartMatch`: when `MPOPTION_HOSTSPECTATOR` is set, host doesn't claim
   slot 0; remote clients fill 0..N-1 instead of 1..N
+
+---
+
+## Master Server, Server Browser & Join Password
+
+In-game server discovery + a host password. Full wire spec (the contract for the
+external VPS master) in [`PORT_MASTER_SERVER.md`](PORT_MASTER_SERVER.md).
+
+### `port/include/net/net.h`
+
+- `NET_PROTOCOL_VER` → **32** (CLC_AUTH password field + new disconnect reason)
+- `DISCONNECT_PASSWORD 9`
+- `NET_MAX_PASSWORD`, `g_NetServerPassword` / `g_NetJoinPassword` externs
+- `g_NetServerActualPort` extern (bound listen port, advertised in the heartbeat)
+
+### `port/include/net/netmsg.h`
+
+- `NET_QF_INPROGRESS|PASSWORD|DEDICATED|CHALLENGE` flags + `NET_QUERYTYPE_SUMMARY|DETAILS`
+- `netmsgQuerySummaryWrite` / `netmsgQueryDetailsWrite` prototypes
+
+### `port/include/net/netmaster.h` (new)
+
+- master magic/port/msgtype constants, `NET_BROWSER_MAX`, `NETBROWSER_*`,
+  `struct netserverentry` / `netserverdetails` (+ sub-structs), browser-state
+  externs, full API. Deliberately ENet-free so `netmenu.c` can include it.
+
+### `port/src/net/netmaster.c` (new)
+
+- server heartbeat pump (`netMasterTick`, 15s cadence) + `netMasterUnregister`
+  + `netMasterHandlePacket` (REGISTER_ACK)
+- standalone non-blocking browser socket: `netBrowserOpen/Close/Tick/Refresh`,
+  `netBrowserQueryDetails`; LIST_REQUEST/RESPONSE + direct PDQM summary/details
+  parsing, per-entry ping timing, master resolve
+  - clears `IPV6_V6ONLY` on the browser socket (as `enet_host_create` does) so it
+    can reach IPv4 servers via v4-mapped addresses — else sends silently fail
+- `Net.Master.Addr/Port/Advertise` config registration
+
+### `port/src/net/netmsg.c`
+
+- `netmsgClcAuthWrite/Read`: trailing `str password`; server compares against
+  `g_NetServerPassword`, kicks mismatch with `DISCONNECT_PASSWORD`
+- `netmsgQuerySummaryWrite` (shared by query + heartbeat) and
+  `netmsgQueryDetailsWrite` (live scoreboard) — mirror the lobby-state gather,
+  add live `numpoints`/`numdeaths` from `g_MpAllChrConfigPtrs` / `g_BotConfigsArray`
+
+### `port/src/net/net.c`
+
+- `netServerQueryResponse(address, querytype)`: redefined summary
+  (`g_NetServerName` not player name, + sims, + flags) via the shared writer;
+  appends details for query type 1; 1KB buffer
+- `netServerConnectionlessPacket`: parses the query-type byte; recognises the
+  `PDMS` master magic → `netMasterHandlePacket`
+- `netSendConnectionless` helper (sends out of the server socket so the master
+  sees the real `ip:port`)
+- `netMasterTick()` call in `netEndFrame`; `netMasterUnregister()` in
+  `netDisconnect`; `g_NetServerActualPort` set in `netStartServer`
+- `netGetDisconnectReason`: "Incorrect password"
+- `netParseAddr` de-`static`'d (reused by `netmaster.c`)
+- `netInit`: `--master`, `--no-advertise`, `--password` CLI flags
+- `netConfigInit`: nothing new here (master keys register in `netmaster.c`)
+
+### `port/src/net/netmenu.c`
+
+- **Network Game → "Server Browser"** entry → `g_NetBrowserDialog`
+  (list + `MENUOP_TICK`-driven socket pump), `g_NetBrowserActionDialog`
+  (Connect / Details / Add to Favourites), `g_NetBrowserDetailsDialog`
+  (live scoreboard, re-queried ~1Hz), `g_NetJoinPasswordDialog` (prompt before
+  connecting to a passworded server)
+- host menu: **Password** entry (`g_NetServerPassword`) + **List Publicly**
+  toggle (`g_NetMasterAdvertise`)
+- client-side `stagenum`/`scenario` → name resolution via `g_MpArenas` / `langGet`
+
+### `tools/query.py`
+
+- parses the new summary (server name, sims, flags) and adds a `--details` mode
+  that dumps the live scoreboard

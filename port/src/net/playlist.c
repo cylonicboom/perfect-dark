@@ -124,6 +124,24 @@ static s32 lookupNamedId(const struct namedid *tbl, const char *name, s32 fallba
 	return fallback;
 }
 
+// Public name->id lookups, reusing the parser tables above. Used by the admin
+// `set` command (net.c) to accept human-readable stage/scenario/option/bot-diff
+// names. Stage/scenario/bot-diff return -1 on no match; option returns the
+// MPOPTION_* bit or 0.
+s32 playlistLookupStage(const char *name)    { return lookupNamedId(s_stages, name, -1); }
+s32 playlistLookupScenario(const char *name) { return lookupNamedId(s_scenarios, name, -1); }
+s32 playlistLookupBotDiff(const char *name)  { return lookupNamedId(s_botdiffs, name, -1); }
+u32 playlistLookupOption(const char *name)   { return (u32)lookupNamedId(s_options, name, 0); }
+
+u32 playlistAllOptionBits(void)
+{
+	u32 m = 0;
+	for (const struct namedid *p = s_options; p->name; ++p) {
+		m |= (u32)p->id;
+	}
+	return m;
+}
+
 static const char *stageName(s32 stagenum)
 {
 	for (const struct namedid *p = s_stages; p->name; ++p) {

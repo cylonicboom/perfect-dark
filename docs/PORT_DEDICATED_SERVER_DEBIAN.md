@@ -156,9 +156,26 @@ Current Windows launch (`run-dedicated.bat`):
 pd.x86_64.exe --dedicated --port 27100 --maxclients 8 --server-name "Perfect Dark Dedicated" --playlist server_playlist.ini
 ```
 
-Maps 1:1 onto the service. Proposed layout: a dedicated unprivileged user
-`pdserver`, install root `/opt/pd-server` (binary + ROM + `server_playlist.ini`),
-writable state under `/var/lib/pd-server`.
+Maps 1:1 onto the service.
+
+**Privilege model: never root.** Root is used only for *install* (copying files
+into `/opt`, dropping the unit). The server *process* runs as an unprivileged,
+service-only user. Rationale: the server is network-facing (UDP from untrusted
+peers), so a netcode bug under root would be full box compromise; under a
+sandboxed service user it's boxed into a throwaway account.
+
+Default user model: **`DynamicUser=yes`** — systemd fabricates a transient
+`pd-server` user at start and tears it down at stop. No manual `useradd`, no
+leftover account; persistent state lives in `StateDirectory=pd-server`
+(`/var/lib/pd-server`). Alternative: an explicit `useradd --system pdserver`
+account if a stable UID / pre-owned files are preferred.
+
+Layout: install root `/opt/pd-server` (binary + ROM + `server_playlist.ini`,
+read-only to the service); writable state `/var/lib/pd-server`.
+
+The **master server** (`netmaster.c`, browser/matchmaker on 27100) is an
+independent service with its **own** user/unit if self-hosted; the dedicated
+game server only *registers* with one via `--master` (or runs `--no-advertise`).
 
 `/etc/systemd/system/pd-server.service` (draft):
 ```ini
@@ -169,8 +186,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pdserver
-Group=pdserver
+DynamicUser=yes
+StateDirectory=pd-server
 WorkingDirectory=/opt/pd-server
 ExecStart=/opt/pd-server/pd-server --dedicated --port 27100 --maxclients 8 \
           --server-name "Perfect Dark Dedicated" \
@@ -182,9 +199,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/pd-server
-# UDP game/master port
-# (open 27100/udp in the firewall)
+# StateDirectory grants RW to /var/lib/pd-server automatically
+# UDP game/master port — open 27100/udp in the firewall
 
 [Install]
 WantedBy=multi-user.target
@@ -222,8 +238,15 @@ respawn issues). That is a **netplay correctness** problem independent of this
 deployment work — the Debian service can be built and validated around it, but a
 *playable* server depends on it being fixed. Tracked separately.
 
-## 11. Open questions
+## 11. Decisions & open questions
 
+Decided:
+- **Privilege:** never root. Service runs unprivileged via `DynamicUser=yes`
+  (transient `pd-server` user); explicit `pdserver` account is the alternative.
+- **Master server:** separate service / own user if self-hosted; the game server
+  only registers with one.
+
+Open:
 - Install root: `/opt/pd-server` vs `/srv` vs `/var/games` — default `/opt`.
 - Firewall: confirm `27100/udp` (game + master query) is the only port to open.
 - Master advertising: keep default-on, or run private with `--no-advertise`?

@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 32 // 32: server browser + master registration + join password (CLC_AUTH)
+#define NET_PROTOCOL_VER 33 // 33: admin remote control (CLC_ADMIN / SVC_ADMIN)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -249,6 +249,13 @@ struct netclient {
 	// into the new round. Not sent over the wire — local server state only.
 	u8 jip_pending_unspectate;
 
+	// Server-side only: set when this client has authenticated as an admin via
+	// the CLC_ADMIN `login` command (password matches g_NetAdminPassword).
+	// Grants access to admin commands; an admin may additionally "take control"
+	// (recorded in g_NetAdminController) to suspend the playlist/vote auto-
+	// advance and drive the match manually. Never sent over the wire.
+	u8 is_admin;
+
 	struct netplayermove outmove[2]; // last 2 outgoing player inputs, newest one first
 	// Ring buffer of incoming player moves. inmove_head is the index of the
 	// newest entry; older entries go backwards modulo NET_SNAPSHOT_COUNT.
@@ -303,6 +310,15 @@ extern char g_NetPlaylistPath[260];
 #define NET_MAX_PASSWORD 64
 extern char g_NetServerPassword[NET_MAX_PASSWORD];
 extern char g_NetJoinPassword[NET_MAX_PASSWORD];
+
+// Admin remote control. g_NetAdminPassword (Server.AdminPassword / --admin-password;
+// empty = admin disabled) gates the CLC_ADMIN `login` command. An authenticated
+// admin may "take control" of the server, which suspends the dedicated playlist
+// auto-start and the end-of-round vote so the admin can drive the match (end it,
+// reconfigure, start) manually. g_NetAdminController holds the client id that
+// currently holds control, or NET_NULL_CLIENT when nobody does.
+extern char g_NetAdminPassword[NET_MAX_PASSWORD];
+extern u32 g_NetAdminController;
 
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;
@@ -423,6 +439,16 @@ extern s32 g_NetSimLagMs;
 
 void netChat(struct netclient *dst, const char *text);
 void netChatPrintf(struct netclient *dst, const char *fmt, ...);
+
+// Server-side: execute an admin command line received via CLC_ADMIN from cl
+// (or from the local host console). All output is sent back to cl via SVC_ADMIN
+// using netAdminReply. Authentication and "in control" checks are enforced
+// inside. Defined in net.c.
+void netServerAdminCommand(struct netclient *cl, const char *line);
+
+// Send one formatted SVC_ADMIN reply line to a single client (admin console
+// output). On the local host (cl == g_NetLocalClient) it logs locally instead.
+void netAdminReply(struct netclient *cl, const char *fmt, ...);
 
 void netServerStageStart(void);
 void netServerStageEnd(void);

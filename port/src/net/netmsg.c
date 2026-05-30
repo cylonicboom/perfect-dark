@@ -308,6 +308,22 @@ u32 netmsgClcChatRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcAdminWrite(struct netbuf *dst, const char *line)
+{
+	netbufWriteU8(dst, CLC_ADMIN);
+	netbufWriteStr(dst, line);
+	return dst->error;
+}
+
+u32 netmsgClcAdminRead(struct netbuf *src, struct netclient *srccl)
+{
+	const char *line = netbufReadStr(src);
+	if (line && !src->error) {
+		netServerAdminCommand(srccl, line);
+	}
+	return src->error;
+}
+
 u32 netmsgClcMoveWrite(struct netbuf *dst)
 {
 	netbufWriteU8(dst, CLC_MOVE);
@@ -533,6 +549,23 @@ u32 netmsgSvcChatRead(struct netbuf *src, struct netclient *srccl)
 	const char *msg = netbufReadStr(src);
 	if (msg && !src->error) {
 		sysLogPrintf(LOG_CHAT, "%s", msg);
+	}
+	return src->error;
+}
+
+u32 netmsgSvcAdminWrite(struct netbuf *dst, const char *line)
+{
+	netbufWriteU8(dst, SVC_ADMIN);
+	netbufWriteStr(dst, line);
+	return dst->error;
+}
+
+u32 netmsgSvcAdminRead(struct netbuf *src, struct netclient *srccl)
+{
+	const char *line = netbufReadStr(src);
+	if (line && !src->error) {
+		// Admin command output from the server — surface it in the console.
+		sysLogPrintf(LOG_CHAT, "%s", line);
 	}
 	return src->error;
 }

@@ -12,6 +12,8 @@
 #include "game/filelist.h"
 #include "video.h"
 #include "input.h"
+#include "lib/vi.h"
+#include "game/game_1531a0.h"
 #include "config.h"
 #include "system.h"
 #include "mpsetups.h"
@@ -1254,6 +1256,7 @@ struct menudialogdef g_NetJoinMenuDialog = {
 
 static s32 g_NetBrowserSelected = 0;
 static s32 g_NetDetailsReqTick = 0;
+static u32 g_NetBrowserMarquee = 0; // frame counter; scrolls the focused row's long name
 
 static struct menudialogdef g_NetBrowserDialog;
 static struct menudialogdef g_NetBrowserActionDialog;
@@ -1298,43 +1301,195 @@ static const char *menutextBrowserHeader(struct menuitem *item)
 	return tmp;
 }
 
-// One row: [lock]name  used/max  Nsim  type  map  [C]  ping
-static char *menutextBrowserEntry(struct menuitem *item)
+// Short game-type label for the narrow Type column.
+static const char *netBrowserScenarioShort(u8 scenario)
 {
-	static char tmp[160];
-	const s32 i = item->param;
-	if (i >= g_NetServerCount) {
-		return "";
-	}
-	const struct netserverentry *e = &g_NetServerList[i];
-
-	char ping[10];
-	if (e->ping == NET_PING_PENDING) {
-		snprintf(ping, sizeof(ping), "--");
-	} else {
-		snprintf(ping, sizeof(ping), "%dms", (s32)e->ping);
-	}
-
-	// Compact single line. The menu font is proportional so these don't truly
-	// align into columns (that needs the custom table render); this just keeps
-	// the row narrow enough to fit. Lock prefix = passworded.
-	snprintf(tmp, sizeof(tmp), "%s%.13s %d/%d %ds %.6s %.8s %s\n",
-			(e->flags & NET_QF_PASSWORD) ? "#" : "",
-			e->name,
-			(s32)e->num_clients, (s32)e->max_clients, (s32)e->num_sims,
-			netBrowserScenarioName(e->scenario), netBrowserMapName(e->stagenum),
-			ping);
-	return tmp;
+	static const char *const names[] = { "DM", "HtB", "HC", "PaC", "KotH", "CtC" };
+	return (scenario < (u8)(sizeof(names) / sizeof(names[0]))) ? names[scenario] : "?";
 }
 
-static MenuItemHandlerResult menuhandlerBrowserSelect(s32 operation, struct menuitem *item, union handlerdata *data)
+// Render one piece of text at (x, y) in the extra-small font. Copies to a local
+// buffer so callers can pass string literals (textRenderProjected wants char*).
+// Wrap a batch of these between text0f153628 / text0f153780.
+static Gfx *netBrowserText(Gfx *gdl, s32 x, s32 y, const char *s, u32 colour)
 {
-	if (operation == MENUOP_SET) {
-		const s32 i = item->param;
-		if (i < g_NetServerCount) {
-			g_NetBrowserSelected = i;
+	char buf[64];
+	s32 tx = x;
+	s32 ty = y;
+	snprintf(buf, sizeof(buf), "%s", s);
+	return textRenderProjected(gdl, &tx, &ty, buf, g_CharsHandelGothicXs, g_FontHandelGothicXs,
+			(s32)colour, viGetWidth(), viGetHeight(), 0, 0);
+}
+
+// Build the name-column text. For the focused row, a name longer than the column
+// budget scrolls (marquee) via a character ticker driven by g_NetBrowserMarquee;
+// other rows are truncated. NET_QF_PASSWORD shows a leading lock.
+static void netBrowserRowName(char *out, s32 outsz, const struct netserverentry *e, s32 focused)
+{
+	char full[80];
+	snprintf(full, sizeof(full), "%s%s", (e->flags & NET_QF_PASSWORD) ? "#" : "", e->name);
+	const s32 budget = 15;
+	const s32 len = (s32)strlen(full);
+
+	if (len <= budget || !focused) {
+		snprintf(out, outsz, "%.*s", budget, full);
+		return;
+	}
+
+	char loop[100];
+	snprintf(loop, sizeof(loop), "%s    ", full); // gap before it wraps
+	const s32 looplen = (s32)strlen(loop);
+	const s32 off = (s32)((g_NetBrowserMarquee / 8u) % (u32)looplen); // ~8 frames/char
+	s32 i;
+	for (i = 0; i < budget && i < outsz - 1; i++) {
+		out[i] = loop[(off + i) % looplen];
+	}
+	out[i] = '\0';
+}
+
+// Shared column geometry so the header titles and the row cells line up. Each
+// column has a divider X (where the '|' bar goes) and a text X a few pixels to
+// its right, giving breathing room around the bars.
+struct netbrowsercols {
+	s32 name;
+	s32 dplay, play;
+	s32 dsim, sim;
+	s32 dtype, type;
+	s32 dmap, map;
+	s32 dping, ping;
+};
+
+static void netBrowserCols(struct netbrowsercols *c, s32 x0, s32 w)
+{
+	const s32 pad = 4; // gap between a divider bar and the text after it
+	c->name  = x0 + 2;
+	c->dplay = x0 + w * 40 / 100; c->play = c->dplay + pad;
+	c->dsim  = x0 + w * 50 / 100; c->sim  = c->dsim + pad;
+	c->dtype = x0 + w * 56 / 100; c->type = c->dtype + pad;
+	c->dmap  = x0 + w * 72 / 100; c->map  = c->dmap + pad;
+	c->dping = x0 + w * 88 / 100; c->ping = c->dping + pad;
+}
+
+// Custom render for one server row (MENUOP_RENDER on the LIST item). Columns are
+// drawn at fixed pixel X (so they truly align), with faint '|' dividers. The menu
+// passes the row index in data->list.unk04 and per-row state in renderdata
+// (x/y/width/colour, unk10 = focused). Tracks the focused row for activation.
+static Gfx *netBrowserRenderRow(union handlerdata *data)
+{
+	Gfx *gdl = data->type19.gdl;
+	struct menuitemrenderdata *rd = data->type19.renderdata2;
+	const s32 row = (s32)data->list.unk04;
+	if (!rd || row < 0 || row >= g_NetServerCount) {
+		return gdl;
+	}
+	const struct netserverentry *e = &g_NetServerList[row];
+	if (rd->unk10) {
+		g_NetBrowserSelected = row; // focused row → action dialog target
+	}
+
+	const s32 x0 = rd->x;
+	const s32 w = rd->width;
+	const s32 y = rd->y;
+	const u32 col = rd->colour;
+	const u32 divc = 0xa0a0a050; // faint grey dividers
+
+	struct netbrowsercols c;
+	netBrowserCols(&c, x0, w);
+	char buf[80];
+
+	gdl = text0f153628(gdl);
+
+	gdl = netBrowserText(gdl, c.dplay, y, "|", divc);
+	gdl = netBrowserText(gdl, c.dsim,  y, "|", divc);
+	gdl = netBrowserText(gdl, c.dtype, y, "|", divc);
+	gdl = netBrowserText(gdl, c.dmap,  y, "|", divc);
+	gdl = netBrowserText(gdl, c.dping, y, "|", divc);
+
+	netBrowserRowName(buf, sizeof(buf), e, rd->unk10);
+	gdl = netBrowserText(gdl, c.name, y, buf, col);
+
+	snprintf(buf, sizeof(buf), "%d/%d", (s32)e->num_clients, (s32)e->max_clients);
+	gdl = netBrowserText(gdl, c.play, y, buf, col);
+
+	snprintf(buf, sizeof(buf), "%d", (s32)e->num_sims);
+	gdl = netBrowserText(gdl, c.sim, y, buf, col);
+
+	gdl = netBrowserText(gdl, c.type, y, netBrowserScenarioShort(e->scenario), col);
+
+	snprintf(buf, sizeof(buf), "%.7s", netBrowserMapName(e->stagenum));
+	gdl = netBrowserText(gdl, c.map, y, buf, col);
+
+	if (e->ping == NET_PING_PENDING) {
+		gdl = netBrowserText(gdl, c.ping, y, "--", col);
+	} else {
+		snprintf(buf, sizeof(buf), "%dms", (s32)e->ping);
+		gdl = netBrowserText(gdl, c.ping, y, buf, col);
+	}
+
+	gdl = text0f153780(gdl);
+	return gdl;
+}
+
+// Custom-render label drawing the column titles, aligned to the row columns.
+static MenuItemHandlerResult menuhandlerBrowserHeader(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation != MENUOP_RENDER) {
+		return 0;
+	}
+	Gfx *gdl = data->type19.gdl;
+	struct menuitemrenderdata *rd = data->type19.renderdata2;
+	if (!rd) {
+		return (intptr_t)gdl;
+	}
+	const s32 x0 = rd->x;
+	const s32 w = rd->width;
+	const s32 y = rd->y;
+	const u32 col = 0xc8c8c8c0;
+	const u32 divc = 0xa0a0a050;
+	struct netbrowsercols c;
+	netBrowserCols(&c, x0, w);
+
+	gdl = text0f153628(gdl);
+	gdl = netBrowserText(gdl, c.dplay, y, "|", divc);
+	gdl = netBrowserText(gdl, c.dsim,  y, "|", divc);
+	gdl = netBrowserText(gdl, c.dtype, y, "|", divc);
+	gdl = netBrowserText(gdl, c.dmap,  y, "|", divc);
+	gdl = netBrowserText(gdl, c.dping, y, "|", divc);
+	gdl = netBrowserText(gdl, c.name, y, "Name", col);
+	gdl = netBrowserText(gdl, c.play, y, "Plr",  col);
+	gdl = netBrowserText(gdl, c.sim,  y, "Sim",  col);
+	gdl = netBrowserText(gdl, c.type, y, "Type", col);
+	gdl = netBrowserText(gdl, c.map,  y, "Map",  col);
+	gdl = netBrowserText(gdl, c.ping, y, "Png",  col);
+	gdl = text0f153780(gdl);
+
+	return (intptr_t)gdl;
+}
+
+// The server table itself (MENUITEMTYPE_LIST). The menu handles scrolling +
+// focus; we provide the row count, height, current selection, per-row render,
+// and open the action dialog when a row is activated.
+static MenuItemHandlerResult menuhandlerBrowserList(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->list.value = g_NetServerCount;
+		break;
+	case MENUOP_GETOPTIONHEIGHT:
+		data->list.value = 9;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->list.value = (g_NetBrowserSelected >= 0 && g_NetBrowserSelected < g_NetServerCount)
+				? g_NetBrowserSelected : 0;
+		break;
+	case MENUOP_RENDER:
+		return (intptr_t)netBrowserRenderRow(data);
+	case MENUOP_SET:
+		// g_NetBrowserSelected is kept current by the focused row's render.
+		if (g_NetBrowserSelected >= 0 && g_NetBrowserSelected < g_NetServerCount) {
 			menuPushDialog(&g_NetBrowserActionDialog);
 		}
+		break;
 	}
 	return 0;
 }
@@ -1357,6 +1512,7 @@ static s32 netBrowserDialogHandler(s32 operation, struct menudialogdef *dialogde
 		break;
 	case MENUOP_TICK:
 		netBrowserTick();
+		g_NetBrowserMarquee++; // advance the focused-row name scroll
 		break;
 	case MENUOP_CLOSE:
 		netBrowserClose();
@@ -1365,17 +1521,25 @@ static s32 netBrowserDialogHandler(s32 operation, struct menudialogdef *dialogde
 	return 0;
 }
 
-#define BROWSERLINE(n) \
-	{ MENUITEMTYPE_SELECTABLE, (n), MENUITEMFLAG_SMALLFONT, \
-	  (uintptr_t)&menutextBrowserEntry, 0, menuhandlerBrowserSelect }
-
 static struct menuitem g_NetBrowserMenuItems[] = {
+	// status line ("N servers found" / "Searching..." / "Master unreachable")
 	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_SMALLFONT, (uintptr_t)&menutextBrowserHeader, 0, NULL },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
-	BROWSERLINE(0),  BROWSERLINE(1),  BROWSERLINE(2),  BROWSERLINE(3),
-	BROWSERLINE(4),  BROWSERLINE(5),  BROWSERLINE(6),  BROWSERLINE(7),
-	BROWSERLINE(8),  BROWSERLINE(9),  BROWSERLINE(10), BROWSERLINE(11),
-	BROWSERLINE(12), BROWSERLINE(13), BROWSERLINE(14), BROWSERLINE(15),
+	// custom-rendered column header (under the line), aligned to the list columns.
+	// Needs a (blank) literal text or menuitemLabelRender bails before the custom
+	// MENUOP_RENDER call (it early-returns on a null param2/text).
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SMALLFONT | MENUITEMFLAG_LIST_CUSTOMRENDER, (uintptr_t)" ", 0, menuhandlerBrowserHeader },
+	// the scrollable server table (one custom-rendered row per server). The list
+	// keeps the focused row vertically centred, so a shorter area keeps the rows
+	// up near the header instead of halfway down the window.
+	{
+		MENUITEMTYPE_LIST,
+		0,
+		MENUITEMFLAG_LIST_CUSTOMRENDER,
+		0x00000118,
+		0x00000030,
+		menuhandlerBrowserList,
+	},
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -1395,8 +1559,6 @@ static struct menuitem g_NetBrowserMenuItems[] = {
 	},
 	{ MENUITEMTYPE_END },
 };
-
-#undef BROWSERLINE
 
 static struct menudialogdef g_NetBrowserDialog = {
 	MENUDIALOGTYPE_DEFAULT,

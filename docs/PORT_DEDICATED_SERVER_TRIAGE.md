@@ -196,6 +196,41 @@ Defensive coverage now spans all four per-player loops touched in the headless d
 
 The proper fix (rebind on JIP reconnect) remains the right long-term answer; these guards just keep tests moving.
 
+### Round 8 (2026-05-30, uncommitted) — first-spawn human clump (all humans on one pad)
+
+**New symptom (user-confirmed):** on the dedicated server **all human players spawn stacked on a single pad at the *first* match spawn** (not respawn). Sims spread normally in the same match. Both the server view and clients show the same clump — a deterministic, consistent collapse, *not* a desync.
+
+**Static analysis — every spawn path *should* spread, so the cause is a state/timing interaction:**
+- Picker `playerChooseSpawnLocation` (`player.c:225`) is shared verbatim by humans (`playerReset` → `scenarioChooseSpawnLocation(30,…)`, `playerreset.c:411/419`) and sims (`botSpawn`, `bot.c:262`). **Sims spreading proves the picker + RNG work in headless.** Final pick is `rngRandom() % sllen` (`player.c:464`) / random pad (`:475`).
+- Initial placement = sequential `lvReset` loop (`lv.c:435`); `playerReset` commits `prop->pos` (`playerreset.c:442-444`). Seed synced once at stage start (`netClientSyncRng`, `lv.c:334`; server seed untouched by `netServerStageStart`) then *advances* through the loop → consecutive players get distinct draws.
+- `bwalkUpdateRemote` with no snapshots stands still (`bondwalk.c:192-198`) — doesn't drag remotes to a shared point.
+- Clients allocate all N slots (`playermgrAllocatePlayers`, `playermgr.c:59`; N from synced `chrslots`).
+- Headless kills screen/standby avoidance (`bgRoomIsOnPlayerScreen/Standby` read render-populated `g_MpRoomVisibility`, `bg.c:2596/2605`) but the geometric distance term + RNG pick still randomize.
+
+**Remaining candidates (need a runtime trace):** (1) human shortlist collapses to one pad (`sllen==1`); (2) RNG consumption diverges so every human starts from the same seed; (3) loop spreads them but a post-placement step overwrites all humans to one pos.
+
+**Probes added (Round 8):** `spawn_pick` (`player.c::playerChooseSpawnLocation`) + `spawn_loop` (`lv.c::lvReset`). Cross-reference with existing `pos_cl` dumps. Full diagnosis matrix in the plan file `C:\Users\tidbu\.claude\plans\twinkly-orbiting-globe.md`.
+
+| Log signature (server pdhost.log vs client pd.log) | Conclusion |
+|---|---|
+| `spawn_pick` distinct per human on server, but early `pos_cl` collapsed | picker spreads; **post-placement overwrite** — hunt the collapse |
+| `spawn_pick` same pos for all humans, `sllen=1` | **shortlist collapses to one pad** — teams / avoidance |
+| `spawn_pick` same pos AND identical `seed_in=` per human | **RNG reset per player** — find/remove the reset |
+| `spawn_loop` client `playercount`/`numplayers` ≠ server N | **client places only its own slot** — chrslots/numplayers timing |
+| `spawn_loop` server vs client differ in `botcount`/`seed` | **RNG-consumption divergence** before the loop |
+
+**CONFIRMED (log run 2026-05-30).** Matrix row 1 — picker spreads, post-placement overwrite:
+- Client `pd.log`: `spawn_pick pnum=0 …padidx=3 pos=(-2645,102,-749)` and `pnum=1 …padidx=5 pos=(-3185,102,-4310)` — two humans on **distinct** pads (distinct `seed_in`, sllen=4). So the picker is fine and deterministic *by slot*.
+- Server `pdhost.log` `pos_cl`: tick 294 `id=0 (host) x=-2645,z=-749` (pad3), `id=1 (Murk) x=-3185,z=-4310` (pad5) — distinct. Tick 300 onward: `id=1` snaps to `x=-2645,z=-749` (pad3) and stays. Client `pos_cl`: both at `(-2645,-749)` from tick 294.
+
+**Root cause:** pads are picked deterministically per *local slot* (synced RNG → identical pad per slot on every machine), but `netPlayersAllocate` (net.c:1700-1714) swaps each client's local player to **slot 0**. So slot 0 = host on the server but = the local client on every client. Every client's local pawn therefore picks slot-0's pad (the host's pad). Under the trust-client model the server then *adopts* the client's reported position (`bwalkUpdateRemote` >512 drift snap / interp), collapsing all humans onto the host's pad. Sims are immune: `g_MpBotChrPtrs` order is identical on both sides (no swap). Confirms "first spawn / both views agree / sims spread."
+
+**Fix applied (uncommitted):** `src/game/lv.c` `lvReset` per-player loop, after `playerSpawn()` — for `g_NetMode == NETMODE_SERVER && currentplayer->isremote && currentplayer->client`, set `ucmd |= UCMD_FL_FORCEPOS|FORCEANGLE|FORCEGROUND` **and latch `client->forcetick = g_NetTick` directly**. The direct latch is required because at stage-load timing `bwalkUpdateRemote` runs before the first `netClientRecordMove`, so the bondwalk.c:99 one-shot clear would wipe a bare FORCEMASK before net.c:489 could auto-latch it. Server now holds each remote's authoritative pad (skips adopting the client's wrong report) and force-corrects the client; clears on ack (netmsg.c:322-326). Mirrors `playerStartNewLife` (player.c:735-744). The host's own pad needs no force — clients auto-snap its view via the >512 drift path.
+
+**Note:** in this run the server binary was stale (had the `npa` probe but not `spawn_loop`/`spawn_pick`), so verifying the fix required rebuilding *and redeploying to the `__SERVER` folder*.
+
+**VERIFIED WORKING (2026-05-30).** After the fix + rebuild of both binaries, humans spawn on distinct pads on all machines. `spawn_pick`/`spawn_loop` probes removed (player.c, lv.c). Only the `lvReset` force block remains. Ready to promote to `PORT_NET_PREDICT_CHANGES.md` at commit time.
+
 ### What may still not work after this fix
 
 - **cl=2's 17-second CLC_MOVE pause** (originally Finding 1): independent of the gate bug. Likely a defocused-window or process-suspend artifact on one of the two client instances running on this machine. After the gate fix this should manifest as "remote player visibly frozen for 17 s while server is starved of their input" instead of "frozen forever because nothing ever broadcasts anyway". Not a fix-required bug — testing with focus-aware clients (or one client per machine) will tell us if it's a real protocol issue or a Windows focus-loss-pause.

@@ -97,6 +97,13 @@ Per-file breakdown of the changes made on the `port-net-predict` branch (CSP, en
   - If this ran after the server's force-correction `SVC_PLAYER_MOVE` had already been acked (clearing force flags), the server switched to echo-back mode and reflected the client's own position — CSP error was always zero, the desync was never detected, and the client stayed permanently at the local spawn (often near the death point, because `scenarioChooseSpawnLocation` avoids the server's spawn, making the death area look attractive).
   - Fix: on the client, `playerStartNewLife` keeps the current position; the server's force-correction `SVC_PLAYER_MOVE` is the sole authority on where the client spawns.
 
+## `src/game/lv.c`
+
+- `lvReset` per-player placement loop: after `playerSpawn()`, force remote combatants to the server's authoritative initial spawn. Server-only guard (`g_NetMode == NETMODE_SERVER && currentplayer->isremote && currentplayer->client`); sets `UCMD_FL_FORCEPOS|FORCEANGLE|FORCEGROUND` on `ucmd` and latches `client->forcetick = g_NetTick` directly.
+  - Why: spawn pads are picked deterministically per *local slot* (synced RNG → identical pad per slot on every machine), but `netPlayersAllocate` swaps each client's local player to slot 0. So every client's local pawn picked slot-0's pad (the host's), and the trust-client position echo made the server adopt it — collapsing all humans onto one pad at the **first** match spawn. Sims were immune (their `g_MpBotChrPtrs` order is identical on both sides, no swap).
+  - The direct `forcetick` latch is required (rather than relying on the `pl->ucmd` auto-latch in `net.c` `netClientRecordMove`): at stage-load timing `bwalkUpdateRemote` runs before the first move-record, so the `bondwalk.c` one-shot clear (`forcetick == 0` path) would wipe a bare FORCEMASK first. Clears itself on client ack via `netmsgClcMoveRead`.
+  - Initial-spawn counterpart to the `playerStartNewLife` respawn fix under `src/game/player.c` above.
+
 ## `src/game/prop.c`
 
 - `botTick` guarded on `NETMODE_CLIENT`

@@ -444,6 +444,32 @@ void lvReset(s32 stagenum)
 			playerLoadDefaults();
 			playerReset();
 			playerSpawn();
+
+#ifndef PLATFORM_N64
+			// The initial MP spawn was RNG-desynced between server and client.
+			// The pad pick is deterministic per local slot (synced RNG -> same
+			// pad per slot on every machine), but each client swaps its local
+			// player to slot 0 (netPlayersAllocate, net.c:1700), so a client's
+			// local pawn picks the pad the server assigned to slot 0 (the host).
+			// Under the trust-client model the server then ADOPTS that reported
+			// position, collapsing every client's pawn onto the host's pad.
+			//
+			// Fix: force remote combatants to hard-snap to the SERVER's
+			// authoritative spawn, and hold it server-side so the client's echo
+			// can't drag it back. forcetick is latched DIRECTLY here rather than
+			// relying on the pl->ucmd auto-latch in net.c (netClientRecordMove):
+			// at stage load bwalkUpdateRemote runs before the first move-record,
+			// so a bare FORCEMASK would be wiped by the bondwalk.c one-shot clear
+			// (forcetick == 0 path) before it could latch. Mirrors the respawn
+			// handling in playerStartNewLife (player.c:735-744). Clears itself on
+			// client ack via netmsgClcMoveRead.
+			if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+					&& g_Vars.currentplayer->client) {
+				g_Vars.currentplayer->ucmd |= UCMD_FL_FORCEPOS | UCMD_FL_FORCEANGLE | UCMD_FL_FORCEGROUND;
+				g_Vars.currentplayer->client->forcetick = g_NetTick;
+			}
+#endif
+
 			bheadReset();
 
 			if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_TEAMSENABLED)) {

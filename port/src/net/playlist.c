@@ -163,6 +163,21 @@ static const char *scenarioName(s32 sc)
 	}
 }
 
+// Reverse lookup for the bot-difficulty token, for serialization. All of the
+// above scenarioName/stageName outputs parse back via the case-insensitive
+// table lookups, so the file round-trips.
+static const char *botDiffName(u8 d)
+{
+	for (const struct namedid *p = s_botdiffs; p->name; ++p) {
+		if ((u8)p->id == d) { return p->name; }
+	}
+	return "NORMAL";
+}
+
+// Absolute path the playlist was last loaded from, captured in playlistLoad so
+// playlistAppendEntryToFile can append admin-saved entries to the same file.
+static char s_loadedPath[FS_MAXPATH + 1] = { 0 };
+
 // ---------- parser helpers ----------
 
 // In-place trim of leading + trailing whitespace and a trailing '\r'/'\n'.
@@ -323,6 +338,10 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 	}
 
 	sysLogPrintf(LOG_NOTE, "playlist: loading `%s`", resolved_path);
+
+	// Remember the resolved path so admin `saverotation` can append to it.
+	strncpy(s_loadedPath, resolved_path, sizeof(s_loadedPath) - 1);
+	s_loadedPath[sizeof(s_loadedPath) - 1] = '\0';
 
 	char line[1024];
 	enum { SEC_NONE, SEC_SERVER, SEC_ENTRY } section = SEC_NONE;
@@ -603,6 +622,71 @@ void playlistApply(const struct playlistentry *resolved)
 		mpCreateBotFromProfile(i, prof);
 	}
 	g_BotCount = resolved->bot_count;
+}
+
+// ---------- serialize (admin saverotation) ----------
+
+s32 playlistAppendEntryToFile(const struct playlistentry *e)
+{
+	if (!e) {
+		return -1;
+	}
+	if (s_loadedPath[0] == '\0') {
+		sysLogPrintf(LOG_WARNING, "playlist: no loaded file to append to");
+		return -1;
+	}
+
+	FILE *f = fopen(s_loadedPath, "a");
+	if (!f) {
+		sysLogPrintf(LOG_WARNING, "playlist: cannot append to `%s`", s_loadedPath);
+		return -1;
+	}
+
+	// Section id is cosmetic (the name= line is authoritative); use a unique
+	// suffix so re-saves don't collide.
+	fprintf(f, "\n[entry.admin_%llu]\n", (unsigned long long)sysGetMicroseconds());
+	fprintf(f, "name        = \"%s\"\n", e->name);
+	if (e->stagenum == PLAYLIST_RANDOM_STAGE) {
+		fprintf(f, "stage       = RANDOM\n");
+	} else {
+		fprintf(f, "stage       = %s\n", stageName(e->stagenum));
+	}
+	if (e->scenario == PLAYLIST_RANDOM_SCENARIO) {
+		fprintf(f, "scenario    = RANDOM\n");
+	} else {
+		fprintf(f, "scenario    = %s\n", scenarioName(e->scenario));
+	}
+	if (e->preset_name[0]) {
+		fprintf(f, "preset      = \"%s\"\n", e->preset_name);
+	}
+	fprintf(f, "timelimit   = %d\n", (s32)e->timelimit);
+	fprintf(f, "scorelimit  = %d\n", (s32)e->scorelimit);
+	if (e->teamscorelimit) {
+		fprintf(f, "teamscorelimit = %d\n", (s32)e->teamscorelimit);
+	}
+
+	// Emit the options that are forced ON (set in both options and mask).
+	char opts[256];
+	opts[0] = '\0';
+	for (const struct namedid *p = s_options; p->name; ++p) {
+		if ((e->mp_options & e->mp_options_mask) & (u32)p->id) {
+			if (opts[0]) {
+				strncat(opts, ",", sizeof(opts) - strlen(opts) - 1);
+			}
+			strncat(opts, p->name, sizeof(opts) - strlen(opts) - 1);
+		}
+	}
+	if (opts[0]) {
+		fprintf(f, "options     = %s\n", opts);
+	}
+
+	fprintf(f, "bots        = %d\n", (s32)e->bot_count);
+	fprintf(f, "bot_diff    = %s\n", botDiffName(e->bot_difficulty));
+	fprintf(f, "weight      = %d\n", (s32)(e->weight ? e->weight : 1));
+
+	fclose(f);
+	sysLogPrintf(LOG_NOTE, "playlist: appended `%s` to %s", e->name, s_loadedPath);
+	return 0;
 }
 
 // ---------- debug print ----------

@@ -2998,8 +2998,10 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 		dst->name[sizeof(dst->name) - 1] = '\0';
 		if (dst->weight == 0) { dst->weight = 1; }
 		g_NetPlaylist.count++;
-		netAdminReply(cl, "saverotation: added `%s` as entry [%d] (live; not persisted to disk)",
-				dst->name, (s32)g_NetPlaylist.count - 1);
+		const s32 persisted = playlistAppendEntryToFile(dst);
+		netAdminReply(cl, "saverotation: added `%s` as entry [%d]%s",
+				dst->name, (s32)g_NetPlaylist.count - 1,
+				persisted == 0 ? " (persisted to playlist file)" : " (live only; file not writable)");
 		return;
 	}
 

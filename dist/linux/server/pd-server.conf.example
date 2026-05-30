@@ -21,6 +21,7 @@ PLAYLIST=/opt/pd-server/playlists/default.ini
 
 # Any extra flags, space-separated. Examples:
 #   EXTRA=--password hunter2
+#   EXTRA=--admin-password letmein     (enables remote /admin control; see docs/PORT_ADMIN_CONTROL.md)
 #   EXTRA=--no-advertise
 #   EXTRA=--master master.example.net
 #   EXTRA=--netdiag /var/lib/pd-server/dm/netdiag.log

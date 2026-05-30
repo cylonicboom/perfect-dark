@@ -1,16 +1,20 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <PR/ultratypes.h>
+// netenet.h must precede types.h: types.h does `#define bool s32`, and
+// netenet.h `#undef bool` afterwards. Because types.h is include-guarded, its
+// definition only runs once — so netenet.h has to come before the first time
+// types.h is pulled in (here, via net.h), or netmsg.h's `bool` decls break.
+// This mirrors net.c's include order.
 #include "platform.h"
-#include "types.h"
-#include "config.h"
-#include "system.h"
 #include "net/netenet.h"
 #include "net/net.h"
 #include "net/netbuf.h"
 #include "net/netmsg.h"
 #include "net/netmaster.h"
+#include "types.h"
+#include "config.h"
+#include "system.h"
 
 // Glue implemented in net.c. Declared here (not in the ENet-free net.h) because
 // the signatures use ENet types. netSendConnectionless sends a connectionless
@@ -21,7 +25,10 @@ extern void netSendConnectionless(const ENetAddress *addr, const void *data, u32
 extern s32 netParseAddr(ENetAddress *out, const char *str);
 
 /* config (registered below) */
-char g_NetMasterAddr[NET_MAX_ADDR + 1] = NET_MASTER_DEFAULT_ADDR;
+// Empty = use the compiled-in NET_MASTER_DEFAULT_ADDR. A non-empty value (from
+// Net.Master.Addr in pd.ini or --master) overrides the baked-in default. We keep
+// this empty by default so the baked-in IP never gets written into the ini.
+char g_NetMasterAddr[NET_MAX_ADDR + 1] = "";
 u32  g_NetMasterPort = NET_MASTER_DEFAULT_PORT;
 s32  g_NetMasterAdvertise = 1;
 
@@ -91,15 +98,19 @@ static u8 netMasterResolve(void)
 	if (s_masterResolved) {
 		return 1;
 	}
-	if (!g_NetMasterAddr[0]) {
+	// ini override (Net.Master.Addr) if set, else the compiled-in default IP.
+	const char *addr = g_NetMasterAddr[0] ? g_NetMasterAddr : NET_MASTER_DEFAULT_ADDR;
+	if (!addr[0]) {
 		return 0;
 	}
 	memset(&s_masterAddr, 0, sizeof(s_masterAddr));
-	if (enet_address_set_hostname(&s_masterAddr, g_NetMasterAddr) != 0) {
-		sysLogPrintf(LOG_WARNING, "NET: could not resolve master server '%s'", g_NetMasterAddr);
+	if (enet_address_set_hostname(&s_masterAddr, addr) != 0) {
+		sysLogPrintf(LOG_WARNING, "NET: could not resolve master server '%s'", addr);
 		return 0;
 	}
-	s_masterAddr.port = (u16)g_NetMasterPort;
+	// A 0 / unset port (e.g. a stale pd.ini) falls back to the baked-in default
+	// instead of sending to the invalid port 0 — which silently breaks discovery.
+	s_masterAddr.port = g_NetMasterPort ? (u16)g_NetMasterPort : (u16)NET_MASTER_DEFAULT_PORT;
 	s_masterResolved = 1;
 	return 1;
 }
@@ -111,7 +122,7 @@ void netMasterTick(void)
 	if (g_NetMode != NETMODE_SERVER) {
 		return;
 	}
-	if (!g_NetMasterAdvertise || !g_NetMasterAddr[0]) {
+	if (!g_NetMasterAdvertise) {
 		return;
 	}
 
@@ -146,7 +157,7 @@ void netMasterUnregister(void)
 	if (g_NetMode != NETMODE_SERVER || !s_masterResolved) {
 		return;
 	}
-	if (!g_NetMasterAdvertise || !g_NetMasterAddr[0]) {
+	if (!g_NetMasterAdvertise) {
 		return;
 	}
 

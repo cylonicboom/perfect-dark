@@ -21,13 +21,14 @@
 #include "net/netmsg.h" // NET_QF_* flag bits shared with the query summary
 
 #define NET_MASTER_MAGIC "PDMS\x01"
-#define NET_MASTER_DEFAULT_PORT 27200
+#define NET_MASTER_DEFAULT_PORT 27100 // same number as the game port — one port to open/remember
 
-// Compile-time default master host. MUST be set to the project's VPS hostname
-// or IP before shipping to testers; overridable at runtime via Net.Master.Addr
-// in pd.ini or the --master CLI flag. An empty / unresolvable value simply
-// disables advertising and yields an empty browser (no crash).
-#define NET_MASTER_DEFAULT_ADDR "master.perfectdark.invalid"
+// Compile-time default master host — the project's VPS. Used unless the user
+// overrides it via Net.Master.Addr in pd.ini (empty there = use this) or the
+// --master CLI flag. This baked-in value is intentionally NOT written into the
+// ini; only a user-supplied override is. An unresolvable value yields an empty
+// browser and no advertising (no crash).
+#define NET_MASTER_DEFAULT_ADDR "204.152.192.106"
 
 // Master message type byte (follows the 5-byte magic).
 #define NET_MASTER_MSG_HEARTBEAT     0x01 // server -> master: advertise/keep-alive

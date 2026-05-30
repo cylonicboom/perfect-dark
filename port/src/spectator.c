@@ -356,6 +356,14 @@ void spectatorReadInput(void)
 		g_Vars.playerorder[ord++] = (u32)i;
 	}
 
+	// Dedicated server has no local panels (g_SpectatorPanelCount == 0): there's
+	// nothing to drive, and the panel-cycle '% g_SpectatorPanelCount' below would
+	// be a divide-by-zero (0xc0000094) the moment Z-trigger / TAB is pressed. The
+	// playerorder reorder above still runs (sims depend on it).
+	if (g_SpectatorPanelCount < 1) {
+		return;
+	}
+
 	// Mode/target/active-panel cycle bindings. C-buttons aren't bound to
 	// anything useful for a spectator (no weapon, no aiming), so we reuse
 	// them: C-Left / C-Right cycle the target, C-Up / C-Down cycle the mode,

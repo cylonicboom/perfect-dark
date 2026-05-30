@@ -172,8 +172,8 @@ Net.Server.InRate          # server bandwidth in
 Net.Server.OutRate         # server bandwidth out
 Net.Server.UpdateFrames    # server update interval (1 = every tick; 2 = every other)
 Net.Server.AllowInfoQuery  # respond to server query packets (0/1)
-Net.Master.Addr            # master-server host/IP (compile-time default; "" disables)
-Net.Master.Port            # master-server UDP port (default 27200)
+Net.Master.Addr            # user override; empty = use baked-in NET_MASTER_DEFAULT_ADDR (204.152.192.106)
+Net.Master.Port            # master-server UDP port (default 27100, same as the game port)
 Net.Master.Advertise       # server registers with the master (0/1, default 1)
 Server.Password            # host join password (empty = open server)
 Net.Debug.LogPath          # diagnostic log file path (empty = disabled)

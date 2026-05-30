@@ -77,22 +77,6 @@ static MenuItemHandlerResult menuhandlerHostMaxPlayers(s32 operation, struct men
 	return 0;
 }
 
-static MenuItemHandlerResult menuhandlerHostPort(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation == MENUOP_SET) {
-
-	}
-
-	return 0;
-}
-
-static char *menuhandlerHostPortValue(struct menuitem *item)
-{
-	static char tmp[16];
-	snprintf(tmp, sizeof(tmp), "%u\n", g_NetMenuPort);
-	return tmp;
-}
-
 static MenuItemHandlerResult menuhandlerHostSpectator(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
@@ -106,16 +90,24 @@ static const char *menutextHostSpectator(struct menuitem *item)
 	return g_NetMenuHostSpectator ? "On\n" : "Off\n";
 }
 
+// Spectator Panels dropdown (1..SPEC_MAX_PANELS). Hidden unless Spectator Mode
+// is on, since the panels only exist for a spectating host.
 static MenuItemHandlerResult menuhandlerHostPanels(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	static const char *const opts[] = { "1", "2", "3", "4" };
 	switch (operation) {
-	case MENUOP_GETSLIDER:
-		data->slider.value = g_NetMenuHostPanels;
+	case MENUOP_CHECKHIDDEN:
+		return !g_NetMenuHostSpectator;
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
 		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
 	case MENUOP_SET:
-		if (data->slider.value >= 1 && data->slider.value <= SPEC_MAX_PANELS) {
-			g_NetMenuHostPanels = data->slider.value;
-		}
+		g_NetMenuHostPanels = (s32)data->checkbox.value + 1;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetMenuHostPanels >= 1) ? g_NetMenuHostPanels - 1 : 0;
 		break;
 	}
 	return 0;
@@ -259,20 +251,94 @@ static MenuItemHandlerResult menuhandlerHostPassword(s32 operation, struct menui
 	return 0;
 }
 
-static const char *menutextListPublicly(struct menuitem *item)
+/* host: server name */
+
+static s32 g_NetServerNamePtr = 0;
+static struct menudialogdef g_NetServerNameDialog;
+
+// Value shown next to "Server Name:" in the host menu.
+static const char *menutextHostServerName(struct menuitem *item)
 {
-	return g_NetMasterAdvertise ? "On\n" : "Off\n";
+	static char tmp[sizeof(g_NetServerName) + 1];
+	snprintf(tmp, sizeof(tmp), "%s\n", g_NetServerName[0] ? g_NetServerName : "(unnamed)");
+	return tmp;
 }
 
-static MenuItemHandlerResult menuhandlerListPublicly(s32 operation, struct menuitem *item, union handlerdata *data)
+// Editable name (with a trailing cursor) in the entry dialog.
+static const char *menutextHostServerNameEntry(struct menuitem *item)
+{
+	static char tmp[sizeof(g_NetServerName) + 2];
+	snprintf(tmp, sizeof(tmp), "%s_\n", g_NetServerName);
+	return tmp;
+}
+
+static MenuItemHandlerResult menuhandlerEnterHostServerName(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (!menuIsDialogOpen(&g_NetServerNameDialog)) {
+		return 0;
+	}
+	if (inputTextHandler(g_NetServerName, sizeof(g_NetServerName), &g_NetServerNamePtr, false) < 0) {
+		// ESC / Enter — keep whatever was typed and close
+		inputStopTextInput();
+		menuPopDialog();
+	}
+	return 0;
+}
+
+static struct menuitem g_NetServerNameMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE,
+		(uintptr_t)&menutextHostServerNameEntry,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0, 0, 0, 0, NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"ESC to save\n",
+		0,
+		menuhandlerEnterHostServerName,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_NetServerNameDialog = {
+	MENUDIALOGTYPE_SUCCESS,
+	(uintptr_t)"Server Name",
+	g_NetServerNameMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_IGNOREBACK | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+static MenuItemHandlerResult menuhandlerHostServerName(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
-		g_NetMasterAdvertise = !g_NetMasterAdvertise;
+		inputClearLastKey();
+		inputClearLastTextChar();
+		inputStartTextInput();
+		g_NetServerNamePtr = (s32)strlen(g_NetServerName);
+		menuPushDialog(&g_NetServerNameDialog);
 	}
 	return 0;
 }
 
 struct menuitem g_NetHostMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Server Name:\n",
+		(uintptr_t)&menutextHostServerName,
+		menuhandlerHostServerName,
+	},
 	{
 		MENUITEMTYPE_SLIDER,
 		0,
@@ -280,14 +346,6 @@ struct menuitem g_NetHostMenuItems[] = {
 		(uintptr_t)"Max Players",
 		NET_MAX_CLIENTS,
 		menuhandlerHostMaxPlayers,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Port\n",
-		(uintptr_t)&menuhandlerHostPortValue,
-		menuhandlerHostPort,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -301,24 +359,16 @@ struct menuitem g_NetHostMenuItems[] = {
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"List Publicly:\n",
-		(uintptr_t)&menutextListPublicly,
-		menuhandlerListPublicly,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Spectator Mode:\n",
 		(uintptr_t)&menutextHostSpectator,
 		menuhandlerHostSpectator,
 	},
 	{
-		MENUITEMTYPE_SLIDER,
+		MENUITEMTYPE_DROPDOWN,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Spectator Panels",
-		SPEC_MAX_PANELS,
+		0,
 		menuhandlerHostPanels,
 	},
 	{
@@ -1258,21 +1308,21 @@ static char *menutextBrowserEntry(struct menuitem *item)
 	}
 	const struct netserverentry *e = &g_NetServerList[i];
 
-	char ping[12];
+	char ping[10];
 	if (e->ping == NET_PING_PENDING) {
-		snprintf(ping, sizeof(ping), "...");
+		snprintf(ping, sizeof(ping), "--");
 	} else {
 		snprintf(ping, sizeof(ping), "%dms", (s32)e->ping);
 	}
 
-	char name[20];
-	snprintf(name, sizeof(name), "%s%.16s", (e->flags & NET_QF_PASSWORD) ? "#" : "", e->name);
-
-	snprintf(tmp, sizeof(tmp), "%-18s %d/%d %ds  %.10s  %.10s%s  %s\n",
-			name,
+	// Compact single line. The menu font is proportional so these don't truly
+	// align into columns (that needs the custom table render); this just keeps
+	// the row narrow enough to fit. Lock prefix = passworded.
+	snprintf(tmp, sizeof(tmp), "%s%.13s %d/%d %ds %.6s %.8s %s\n",
+			(e->flags & NET_QF_PASSWORD) ? "#" : "",
+			e->name,
 			(s32)e->num_clients, (s32)e->max_clients, (s32)e->num_sims,
 			netBrowserScenarioName(e->scenario), netBrowserMapName(e->stagenum),
-			(e->flags & NET_QF_CHALLENGE) ? " [C]" : "",
 			ping);
 	return tmp;
 }
@@ -1734,123 +1784,6 @@ static MenuItemHandlerResult menuhandlerServerBrowser(s32 operation, struct menu
 	return 0;
 }
 
-/* dedicated server */
-
-static const char *menutextDedicatedStatus(struct menuitem *item)
-{
-	static char tmp[160];
-	const u8 idx = item->param;
-
-	if (g_NetMode != NETMODE_SERVER) {
-		return (idx == 0) ? "Server not running\n" : "";
-	}
-
-	switch (idx) {
-	case 0:
-		snprintf(tmp, sizeof(tmp), "Server: %s\n", g_NetServerName);
-		return tmp;
-	case 1:
-		snprintf(tmp, sizeof(tmp), "Port %u  clients %d/%d  bots %d\n",
-				g_NetServerPort, g_NetNumClients, g_NetMaxClients, (s32)g_BotCount);
-		return tmp;
-	case 2:
-		snprintf(tmp, sizeof(tmp), "Stage 0x%02x  scenario %d  tick %u\n",
-				g_MpSetup.stagenum, g_MpSetup.scenario, g_NetTick);
-		return tmp;
-	case 3:
-		snprintf(tmp, sizeof(tmp), "Playlist: %d entries (%s)\n",
-				(s32)g_NetPlaylist.count, g_NetPlaylistPath);
-		return tmp;
-	case 4:
-		if (g_NetVote.state == NETVOTE_OPEN) {
-			const s32 remaining = (g_NetVote.deadline_tick > g_NetTick)
-					? (s32)((g_NetVote.deadline_tick - g_NetTick) / 60u) : 0;
-			snprintf(tmp, sizeof(tmp), "Vote open: %ds remaining, %d candidates\n",
-					remaining, (s32)g_NetVote.num_candidates);
-			return tmp;
-		}
-		return "";
-	default:
-		return "";
-	}
-}
-
-static MenuItemHandlerResult menuhandlerDedicatedShutdown(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation == MENUOP_SET) {
-		netDisconnect();
-		g_NetDedicatedMode = 0;
-		menuPopDialog();
-	}
-	return 0;
-}
-
-#define DEDLINE(n) \
-	{ MENUITEMTYPE_LABEL, (n), MENUITEMFLAG_SMALLFONT, \
-	  (uintptr_t)&menutextDedicatedStatus, 0, NULL }
-
-static struct menuitem g_NetDedicatedStatusMenuItems[] = {
-	DEDLINE(0),
-	DEDLINE(1),
-	DEDLINE(2),
-	DEDLINE(3),
-	DEDLINE(4),
-	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Shutdown Server\n",
-		0,
-		menuhandlerDedicatedShutdown,
-	},
-	{ MENUITEMTYPE_END },
-};
-
-#undef DEDLINE
-
-static struct menudialogdef g_NetDedicatedStatusDialog = {
-	MENUDIALOGTYPE_DEFAULT,
-	(uintptr_t)"Dedicated Server",
-	g_NetDedicatedStatusMenuItems,
-	NULL,
-	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_IGNOREBACK | MENUDIALOGFLAG_STARTSELECTS,
-	NULL,
-};
-
-static MenuItemHandlerResult menuhandlerDedicatedServer(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation != MENUOP_SET) return 0;
-
-	// Mode 2 = windowed dedicated. videoInit / audioInit have already run
-	// by now (we're in the menu), so we can't skip them — the window stays
-	// open showing the status dialog. The server-side behavior is the same
-	// as mode 1: no local combatant, playlist-driven match rotation, vote
-	// machine for round-to-round advancement.
-	g_NetDedicatedMode = 2;
-
-	// (Re)load the playlist now so the operator can edit and click in one
-	// session without restarting the game. Path comes from CLI / pd.ini.
-	playlistLoad(&g_NetPlaylist, g_NetPlaylistPath);
-
-	if (netStartServer(g_NetMenuPort ? g_NetMenuPort : g_NetServerPort,
-			g_NetMenuMaxPlayers ? g_NetMenuMaxPlayers : g_NetMaxClients) != 0) {
-		sysLogPrintf(LOG_CHAT, "dedicated: netStartServer failed");
-		g_NetDedicatedMode = 0;
-		return 0;
-	}
-
-	// Load the MP setup file so g_MpSetup is populated with defaults that
-	// playlistApply can override. Mirrors menuhandlerHostStart.
-	mpsetupCopyAllFromPak();
-	mpsetupLoadCurrentFile();
-
-	// Open the status dialog. Auto-start of the first match runs from
-	// netEndFrame's dedicated-poll once we sit in CITRAINING for ~1s.
-	menuPushDialog(&g_NetDedicatedStatusDialog);
-	return 0;
-}
-
 /* main */
 
 MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -1901,14 +1834,6 @@ struct menuitem g_NetMenuItems[] = {
 		(uintptr_t)"Server Browser\n",
 		0,
 		menuhandlerServerBrowser,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Dedicated Server\n",
-		0,
-		menuhandlerDedicatedServer,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

@@ -59,7 +59,7 @@ Used in the query summary and the master HEARTBEAT/LIST_RESPONSE:
 
 ---
 
-## A. Master protocol — UDP, magic `"PDMS\x01"` (5 bytes), default port **27200**
+## A. Master protocol — UDP, magic `"PDMS\x01"` (5 bytes), default port **27100**
 
 Every packet is `magic[5]`, `msgtype[1]`, then the payload below. **No app-layer
 checksum** (UDP's is relied on) — keep the master simple.
@@ -208,18 +208,19 @@ protocol version to its clients.
 ## Configuration (game side, `pd.ini`)
 
 ```
-Net.Master.Addr        master host/IP (compile-time default NET_MASTER_DEFAULT_ADDR; "" disables)
-Net.Master.Port        master UDP port (default 27200)
-Net.Master.Advertise   server registers with the master (0/1, default 1)
+Net.Master.Addr        user override; empty (default) = use the baked-in NET_MASTER_DEFAULT_ADDR
+Net.Master.Port        master UDP port (default 27100, same as the game port)
+Net.Master.Advertise   server registers with the master (0/1, default 1; 0 = don't advertise)
 Server.Password        host join password (default empty = open)
 ```
 
 CLI: `--master <addr>`, `--no-advertise`, `--password <pw>` (plus the existing
 `--server-name`, `--port`, `--dedicated`).
 
-> **Before shipping to testers:** set `NET_MASTER_DEFAULT_ADDR` in
-> `port/include/net/netmaster.h` to the VPS hostname/IP (or have testers set
-> `Net.Master.Addr`). Leaving the placeholder simply yields an empty browser.
+> `NET_MASTER_DEFAULT_ADDR` in `port/include/net/netmaster.h` is the baked-in VPS
+> IP (`204.152.192.106`). It is **not** written into the ini — only a user
+> override is. Testers can repoint to a different master by setting
+> `Net.Master.Addr` in `pd.ini`; leaving it blank uses the baked-in IP.
 
 ## Out of scope (current version)
 

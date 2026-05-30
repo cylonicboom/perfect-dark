@@ -139,6 +139,13 @@ int main(int argc, const char **argv)
 	} else if (sysArgCheck("--dedicated-windowed")) {
 		g_NetDedicatedMode = 2;
 	}
+#ifdef DEDICATED_SERVER
+	// Server-only build has no video/audio/input compiled in, so it must run
+	// headless regardless of flags. --dedicated is still expected (it also arms
+	// auto-host in netInit), but force the mode here so the no-op subsystem
+	// guards and the headless gameplay-tick path are always taken.
+	g_NetDedicatedMode = 1;
+#endif
 	if (g_NetDedicatedMode) {
 		sysLogPrintf(LOG_NOTE, "starting dedicated server (mode %d: %s)",
 				g_NetDedicatedMode,

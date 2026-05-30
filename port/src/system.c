@@ -9,7 +9,11 @@
 #include <strings.h>
 #include <time.h>
 #include <sys/time.h>
+#ifndef DEDICATED_SERVER
 #include <SDL.h>
+#else
+#include <unistd.h>
+#endif
 #include <PR/ultratypes.h>
 #include "platform.h"
 #include "console.h"
@@ -221,13 +225,16 @@ void sysFatalError(const char *fmt, ...)
 	fflush(stdout);
 	fflush(stderr);
 
+#ifndef DEDICATED_SERVER
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Fatal error", errmsg, NULL);
+#endif
 
 	exit(1);
 }
 
 void sysGetExecutablePath(char *outPath, const u32 outLen)
 {
+#ifndef DEDICATED_SERVER
 	// try asking SDL
 	char *sdlPath = SDL_GetBasePath();
 
@@ -258,10 +265,32 @@ void sysGetExecutablePath(char *outPath, const u32 outLen)
 #endif
 
 	SDL_free(sdlPath);
+#else
+	// Dedicated server build links no SDL: resolve the exe directory via the
+	// /proc/self/exe symlink, falling back to argv[0] then the cwd.
+	char buf[1024];
+	const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+	if (n > 0) {
+		buf[n] = '\0';
+		char *slash = strrchr(buf, '/');
+		if (slash) {
+			*slash = '\0';
+		}
+		strncpy(outPath, buf, outLen - 1);
+		outPath[outLen - 1] = '\0';
+	} else if (sysArgc && sysArgv[0] && sysArgv[0][0]) {
+		strncpy(outPath, sysArgv[0], outLen - 1);
+		outPath[outLen - 1] = '\0';
+	} else if (outLen > 1) {
+		outPath[0] = '.';
+		outPath[1] = '\0';
+	}
+#endif
 }
 
 void sysGetHomePath(char *outPath, const u32 outLen)
 {
+#ifndef DEDICATED_SERVER
 	// try asking SDL
 	char *sdlPath = SDL_GetPrefPath("", "perfectdark");
 
@@ -288,6 +317,18 @@ void sysGetHomePath(char *outPath, const u32 outLen)
 #endif
 
 	SDL_free(sdlPath);
+#else
+	// Dedicated server build links no SDL: mirror SDL_GetPrefPath's Linux
+	// layout ($HOME/.local/share/perfectdark). Normally overridden by
+	// --savedir (e.g. systemd StateDirectory), so this is just a fallback.
+	const char *home = getenv("HOME");
+	if (home && *home) {
+		snprintf(outPath, outLen, "%s/.local/share/perfectdark", home);
+	} else if (outLen > 1) {
+		outPath[0] = '.';
+		outPath[1] = '\0';
+	}
+#endif
 }
 
 void *sysMemAlloc(const u32 size)

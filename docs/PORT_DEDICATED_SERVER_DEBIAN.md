@@ -1,6 +1,7 @@
 # Headless Dedicated Server on Debian (SSH / systemd) — Design & Plan
 
-Status: **planning / in progress**. Living document — update as phases land.
+Status: **Phase 1 complete** (build-time strip validated on Linux). Living
+document — update as phases land.
 
 This describes the redesign of the Perfect Dark dedicated server for a GUI-less
 Debian box driven over SSH and run as a systemd service, replacing the current
@@ -110,9 +111,12 @@ dropped from `LIBS`.
 - **Phase 0 — Baseline.** Build the normal Linux client (toolchain check), then
   build/run the existing `--dedicated` mode on Debian as-is. Proves the engine
   runs headless on Linux before anything is stripped.
-- **Phase 1 — `-DDEDICATED_SERVER=ON` compile-out.** CMake option + the source
-  changes in §4. Deliverable: a server binary that physically can't render or be
-  a client.
+- **Phase 1 — `-DDEDICATED_SERVER=ON` compile-out. ✅ DONE.** CMake option + the
+  source changes in §4. Validated on Linux x86_64: the server binary
+  (`pd-server.x86_64`) links only `libz/libstdc++/libm/libgcc_s/libc` — **no SDL,
+  OpenGL, X11 or audio** (`ldd` confirmed); it boots headless, resolves paths via
+  POSIX (no SDL), and reports fatal errors to stderr (no GUI dialog). The default
+  client build (`-DDEDICATED_SERVER=OFF`) is unchanged and still links SDL2/GL.
 - **Phase 2 — Debian build & data.** apt deps, documented build recipe, ROM/asset
   placement, launch wrapper + sample `server_playlist.ini`.
 - **Phase 3 — systemd service.** Dedicated user, install layout, hardened unit,

@@ -33,6 +33,7 @@ endif()
 
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
 option(FORCE_CROSSCOMPILE "Force cross compiling" NO)
+option(DEDICATED_SERVER "Build a headless dedicated server (no SDL/OpenGL/audio/input; never a client)" OFF)
 
 # Determine target arch
 
@@ -150,6 +151,11 @@ if(TARGET_IS_64BIT)
   add_definitions(-DPLATFORM_64BIT=1)
 endif()
 
+if(DEDICATED_SERVER)
+  add_definitions(-DDEDICATED_SERVER=1)
+  message(STATUS "Building DEDICATED SERVER: headless, no SDL/OpenGL/audio/input")
+endif()
+
 # Compiler flags
 
 # Include directories
@@ -208,17 +214,19 @@ endif()
 
 set(LIBS )
 
-# SDL2
-find_package(SDL2 REQUIRED)
-if(NINTENDO_SWITCH)
-  if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR)
-    # sometimes FindSDL2 just wants us to suffer and does not set these
-    set(SDL2_LIBRARY "SDL2")
-    set(SDL2_INCLUDE_DIR "${DEVKITPRO}/portlibs/switch/include/SDL2")
+# SDL2 — not needed by the dedicated server (no window/audio/input).
+if(NOT DEDICATED_SERVER)
+  find_package(SDL2 REQUIRED)
+  if(NINTENDO_SWITCH)
+    if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR)
+      # sometimes FindSDL2 just wants us to suffer and does not set these
+      set(SDL2_LIBRARY "SDL2")
+      set(SDL2_INCLUDE_DIR "${DEVKITPRO}/portlibs/switch/include/SDL2")
+    endif()
   endif()
+  include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
+  list(APPEND LIBS "${SDL2_LIBRARY}")
 endif()
-include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
-list(APPEND LIBS "${SDL2_LIBRARY}")
 
 # ZLib
 find_package(ZLIB REQUIRED)
@@ -227,19 +235,21 @@ if(ZLIB_INCLUDE_DIR)
 endif()
 list(APPEND LIBS "${ZLIB_LIBRARY}")
 
-# GL
-if(NOT GL_LIBRARY)
-  if(WIN32)
-    set(GL_LIBRARY opengl32)
-  elseif(NINTENDO_SWITCH)
-    set(GL_LIBRARY EGL glapi drm_nouveau)
-  elseif(APPLE)
-    set(GL_LIBRARY "-framework OpenGL")
-  else()
-    set(GL_LIBRARY GL)
+# GL — not needed by the dedicated server (OpenGL backend is excluded).
+if(NOT DEDICATED_SERVER)
+  if(NOT GL_LIBRARY)
+    if(WIN32)
+      set(GL_LIBRARY opengl32)
+    elseif(NINTENDO_SWITCH)
+      set(GL_LIBRARY EGL glapi drm_nouveau)
+    elseif(APPLE)
+      set(GL_LIBRARY "-framework OpenGL")
+    else()
+      set(GL_LIBRARY GL)
+    endif()
   endif()
+  list(APPEND LIBS "${GL_LIBRARY}")
 endif()
-list(APPEND LIBS "${GL_LIBRARY}")
 
 # Platform-specific extra libs
 if(NOT EXTRA_LIBRARIES)
@@ -325,6 +335,25 @@ if(WIN32)
   list(APPEND SRC "${CMAKE_SOURCE_DIR}/dist/windows/icon.rc")
 endif()
 
+# dedicated_stubs.c is server-only; the recursive port/*.c glob picks it up
+# unconditionally, so always drop it and re-add it only for the server build
+# (otherwise the client links it alongside input.c -> duplicate symbols).
+list(REMOVE_ITEM SRC "${CMAKE_SOURCE_DIR}/port/src/dedicated_stubs.c")
+
+# Dedicated server: drop the SDL window backend, the OpenGL renderer + glad
+# loader, and the SDL input layer; swap in no-op input stubs. The remaining
+# fast3d files (gfx_pc/gfx_cc) only call through function pointers, so they
+# link without GL.
+if(DEDICATED_SERVER)
+  list(REMOVE_ITEM SRC
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdl2.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_opengl.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/glad/glad.c"
+    "${CMAKE_SOURCE_DIR}/port/src/input.c"
+  )
+  list(APPEND SRC "${CMAKE_SOURCE_DIR}/port/src/dedicated_stubs.c")
+endif()
+
 # Asset files
 
 generate_asset_headers("lang/" "${CMAKE_SOURCE_DIR}/tools/assetmgr/mklang" "en" JSON_HEADERS)
@@ -339,6 +368,9 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 # Game target
 
 set(BIN_NAME "pd${BIN_REGION}.${TARGET_ARCH}")
+if(DEDICATED_SERVER)
+  set(BIN_NAME "pd-server${BIN_REGION}.${TARGET_ARCH}")
+endif()
 add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
 target_link_libraries(pd ${LIBS})

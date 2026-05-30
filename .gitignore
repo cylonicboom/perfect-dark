@@ -31,3 +31,4 @@ CLAUDE.local.md
 # Local-only Go master server (pdmaster). Kept in-tree for convenience but never
 # committed/pushed — it deploys to the VPS separately.
 /pdmaster/
+build-*/

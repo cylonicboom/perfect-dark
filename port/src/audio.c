@@ -1,6 +1,8 @@
 #include <PR/ultratypes.h>
 #include <stdio.h>
+#ifndef DEDICATED_SERVER
 #include <SDL.h>
+#endif
 #include "platform.h"
 #include "config.h"
 #include "audio.h"
@@ -10,15 +12,21 @@
 // `bool` and would clash with SDL's <stdbool.h>.
 extern s32 g_NetDedicatedMode;
 
+#ifndef DEDICATED_SERVER
 static SDL_AudioDeviceID dev;
 static const s16 *nextBuf;
 static u32 nextSize = 0;
+#endif
 
 static s32 bufferSize = 512;
 static s32 queueLimit = 8192;
 
 s32 audioInit(void)
 {
+#ifdef DEDICATED_SERVER
+	// Server-only build: no audio device, no SDL.
+	return 0;
+#else
 	if (g_NetDedicatedMode == 1) {
 		// Headless dedicated: no audio device, no mixer output. dev stays 0;
 		// SDL_QueueAudio(0, ...) is a no-op so audioEndFrame won't crash if
@@ -51,11 +59,16 @@ s32 audioInit(void)
 	SDL_PauseAudioDevice(dev, 0);
 
 	return 0;
+#endif
 }
 
 s32 audioGetBytesBuffered(void)
 {
+#ifdef DEDICATED_SERVER
+	return 0;
+#else
 	return SDL_GetQueuedAudioSize(dev);
+#endif
 }
 
 s32 audioGetSamplesBuffered(void)
@@ -65,12 +78,18 @@ s32 audioGetSamplesBuffered(void)
 
 void audioSetNextBuffer(const s16 *buf, u32 len)
 {
+#ifdef DEDICATED_SERVER
+	(void)buf;
+	(void)len;
+#else
 	nextBuf = buf;
 	nextSize = len;
+#endif
 }
 
 void audioEndFrame(void)
 {
+#ifndef DEDICATED_SERVER
 	if (nextBuf && nextSize) {
 		if (audioGetSamplesBuffered() < queueLimit) {
 			SDL_QueueAudio(dev, nextBuf, nextSize);
@@ -78,6 +97,7 @@ void audioEndFrame(void)
 		nextBuf = NULL;
 		nextSize = 0;
 	}
+#endif
 }
 
 PD_CONSTRUCTOR static void audioConfigInit(void)

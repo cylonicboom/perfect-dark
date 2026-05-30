@@ -1,4 +1,3 @@
-#include <SDL.h>
 #include "platform.h"
 #include <PR/ultratypes.h>
 #include <stdlib.h>
@@ -84,7 +83,10 @@ void headlessPace(s32 target_hz)
 
 	if (s_nextTickUs > now_us + HEADLESS_SPIN_THRESHOLD_US) {
 		const u64 sleep_us = (s_nextTickUs - now_us) - HEADLESS_SPIN_THRESHOLD_US;
-		SDL_Delay((u32)(sleep_us / 1000ULL));
+		// sysSleep takes 100-nanosecond units (Windows FILETIME convention);
+		// 1us = 10 of those. Uses nanosleep on POSIX / waitable timer on
+		// Windows, so no SDL dependency for the headless pacer.
+		sysSleep((s64)sleep_us * 10);
 	}
 
 	while (sysGetMicroseconds() < s_nextTickUs) {

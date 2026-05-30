@@ -31,6 +31,7 @@
 #define SVC_LOBBY_STATE  0x49 // lobby info broadcast to clients waiting for game start
 #define SVC_VOTE_OPEN    0x4a // open a vote-for-next-map ballot at end-of-round
 #define SVC_VOTE_RESULTS 0x4b // close the vote: winning index + per-candidate tally
+#define SVC_ADMIN        0x4c // admin command response (one text line to the admin)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -40,6 +41,8 @@
 #define CLC_SETTINGS 0x05 // player settings changed
 #define CLC_HIT      0x06 // client-reported chr hit; server validates and applies damage
 #define CLC_VOTE     0x07 // client's vote-for-next-map ballot choice
+#define CLC_ADMIN    0x08 // admin command line (text), server-executed if authorized
+#define CLC_ADMIN_SETUP 0x09 // admin pushes a full g_MpSetup + bot config; server starts the match
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -139,5 +142,25 @@ u32 netmsgSvcVoteResultsWrite(struct netbuf *dst);
 u32 netmsgSvcVoteResultsRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcVoteWrite(struct netbuf *dst, u8 candidate_index);
 u32 netmsgClcVoteRead(struct netbuf *src, struct netclient *srccl);
+
+// Admin remote control. CLC_ADMIN carries a single text command line
+// (client -> server); the server runs it through netServerAdminCommand after
+// auth/permission checks. SVC_ADMIN carries one text response line back to the
+// admin (server -> client), printed to that client's console.
+//   CLC_ADMIN:  str line
+//   SVC_ADMIN:  str line
+u32 netmsgClcAdminWrite(struct netbuf *dst, const char *line);
+u32 netmsgClcAdminRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcAdminWrite(struct netbuf *dst, const char *line);
+u32 netmsgSvcAdminRead(struct netbuf *src, struct netclient *srccl);
+
+// Admin setup push (client -> server). Serializes the admin client's locally-
+// configured g_MpSetup + bot configs (same block layout as SVC_STAGE_START,
+// minus the server-authoritative per-client manifest). The server reads into
+// temporaries, and only if the sender is the in-control admin does it commit to
+// its own g_MpSetup/g_BotConfigsArray and mpStartMatch() — which broadcasts
+// SVC_STAGE_START to all clients as normal.
+u32 netmsgClcAdminSetupWrite(struct netbuf *dst);
+u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl);
 
 #endif

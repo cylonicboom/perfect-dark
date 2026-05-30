@@ -160,6 +160,25 @@ MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item,
 	return 0;
 }
 
+// Admin remote control: prepare the local Combat Sim setup so a connected admin
+// can configure a match via the normal built-in menu, then push it to the
+// server with /admin pushstart. Mirrors the menu prep the host flow does
+// (mpsetupLoadCurrentFile + the Combat Sim / Advanced Setup handlers), but
+// without netStartServer since the admin is a client of a remote dedicated
+// server. Reached from the /admin configure console command.
+void netAdminConfigure(void)
+{
+	if (g_NetMode != NETMODE_CLIENT) {
+		sysLogPrintf(LOG_CHAT, "admin: configure only works as a connected client");
+		return;
+	}
+	mpsetupCopyAllFromPak();
+	mpsetupLoadCurrentFile();
+	menuhandlerMainMenuCombatSimulator(MENUOP_SET, NULL, NULL);
+	menuhandlerMpAdvancedSetup(MENUOP_SET, NULL, NULL);
+	sysLogPrintf(LOG_CHAT, "admin: Combat Sim setup loaded — open the Combat Simulator menu, configure the match, then run /admin pushstart");
+}
+
 /* host: password + public listing */
 
 static s32 g_NetHostPasswordPtr = 0;

@@ -1,0 +1,127 @@
+name: Dedicated Server CI
+
+# Guards the headless dedicated-server build (-DDEDICATED_SERVER=ON) and the
+# default client build on the netplay branch, so neither can silently break when
+# the shared port code changes. Kept separate from the main release matrix so it
+# runs on port-net-predict / its PRs without dragging in the Windows/macOS/Switch
+# jobs or the release-publishing steps.
+
+on:
+  push:
+    branches: [ "port-net-predict" ]
+  pull_request:
+    branches: [ "port-net-predict" ]
+  workflow_dispatch:
+
+jobs:
+  # The server must build and link with NO SDL/OpenGL/X11/audio. We deliberately
+  # do NOT install libsdl2-dev here: if anything reintroduces an SDL/GL include
+  # into the server build, this job fails to compile — exactly the signal we want.
+  build-x86_64-linux-server:
+    name: "Build dedicated server (x86_64 linux, headless)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies (no SDL/GL on purpose)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git gcc g++ make zlib1g-dev cmake
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build pd-server.x86_64
+        run: |
+          cmake -G"Unix Makefiles" -Bbuild-server -DDEDICATED_SERVER=ON .
+          cmake --build build-server -j
+      - name: Verify the server links no SDL / OpenGL / X11 / audio
+        run: |
+          BIN=build-server/pd-server.x86_64
+          echo "Shared library dependencies:"
+          ldd "$BIN"
+          if ldd "$BIN" | grep -iE 'libSDL|libGL|libX11|libasound|libpulse|libwayland'; then
+            echo "::error::dedicated server linked a GUI/audio library — strip regressed"
+            exit 1
+          fi
+          echo "OK: server links no SDL/GL/X11/audio"
+      - name: Prepare artifact
+        run: |
+          mkdir -p bin/data
+          cp build-server/pd-server.x86_64 bin/
+          touch bin/data/put_your_rom_here.txt
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pd-server-x86_64-linux
+          path: bin/
+          retention-days: 0
+
+  # The dedicated server also builds for Windows (console app, no SDL/GL). We do
+  # NOT install SDL2 here, so any SDL/GL dependency creeping into the server
+  # build fails to compile.
+  build-x86_64-windows-server:
+    name: "Build dedicated server (x86_64 windows, headless)"
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Install MSYS2 (no SDL2 on purpose)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-cmake
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build pd-server.x86_64.exe
+        run: |
+          cmake -G"Unix Makefiles" -Bbuild-server -DDEDICATED_SERVER=ON .
+          cmake --build build-server -j
+      - name: Verify the server is a console app with no SDL/GL imports
+        run: |
+          BIN=build-server/pd-server.x86_64.exe
+          objdump -p "$BIN" | grep -i "Subsystem"
+          if objdump -p "$BIN" | grep -iE "SDL2|opengl"; then
+            echo "::error::windows dedicated server imported SDL/GL"
+            exit 1
+          fi
+          echo "OK: windows server links no SDL/GL"
+      - name: Prepare artifact
+        run: |
+          mkdir -p bin/data
+          cp build-server/pd-server.x86_64.exe bin/
+          cp /mingw64/bin/{zlib1.dll,libgcc_s_seh-1.dll,libwinpthread-1.dll} bin/
+          cp dist/windows/server/run-pd-server.bat bin/
+          touch bin/data/put_your_rom_here.txt
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pd-server-x86_64-windows
+          path: bin/
+          retention-days: 0
+
+  # Non-regression: the default build (DEDICATED_SERVER=OFF) must still build the
+  # full client with SDL2/GL, since the strip touches shared files.
+  build-x86_64-linux-client:
+    name: "Build client (x86_64 linux, non-regression)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git gcc g++ make libsdl2-dev zlib1g-dev cmake
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build pd.x86_64 (default = client)
+        run: |
+          cmake -G"Unix Makefiles" -Bbuild .
+          cmake --build build -j
+      - name: Verify the client still links SDL2
+        run: |
+          BIN=build/pd.x86_64
+          ldd "$BIN"
+          ldd "$BIN" | grep -iq 'libSDL2' || { echo "::error::client no longer links SDL2"; exit 1; }
+          echo "OK: client links SDL2 as expected"

@@ -11,6 +11,7 @@
 #include "net/netmsg.h"
 #include "net/netmaster.h"
 #include "net/playlist.h"
+#include "mpsetups.h"
 #include "types.h"
 #include "constants.h"
 #include "data.h"
@@ -56,6 +57,15 @@ char g_NetServerName[64] = "Perfect Dark Dedicated";
 // Join password (see net.h). Empty server password = open server.
 char g_NetServerPassword[NET_MAX_PASSWORD] = "";
 char g_NetJoinPassword[NET_MAX_PASSWORD] = "";
+// Admin remote control (see net.h). Empty password = admin disabled.
+char g_NetAdminPassword[NET_MAX_PASSWORD] = "";
+u32 g_NetAdminController = NET_NULL_CLIENT;
+
+// Admin scratch match config. The admin `set` commands edit this while holding
+// control; `apply` runs it through playlistApply + mpStartMatch, and
+// `saverotation` appends a copy to the live playlist. Captured from the current
+// g_MpSetup when an admin takes control so tweaks build on what's running.
+static struct playlistentry g_NetAdminSetup;
 // $S = save dir (same place pd.ini lives). Override via --playlist <path>
 // or Server.PlaylistPath in pd.ini; absolute / cwd-relative paths are
 // honored as-is by fsFullPath.
@@ -759,6 +769,12 @@ void netInit(void)
 		g_NetServerPassword[sizeof(g_NetServerPassword) - 1] = '\0';
 	}
 
+	const char *argadminpassword = sysArgGetString("--admin-password");
+	if (argadminpassword) {
+		strncpy(g_NetAdminPassword, argadminpassword, sizeof(g_NetAdminPassword) - 1);
+		g_NetAdminPassword[sizeof(g_NetAdminPassword) - 1] = '\0';
+	}
+
 	// Initialise playlist to empty defaults; an actual load (which logs if
 	// the file is missing) only runs when we're going to be a server.
 	playlistFree(&g_NetPlaylist);
@@ -1083,6 +1099,13 @@ static void netServerEvDisconnect(struct netclient *cl)
 		sysLogPrintf(LOG_CHAT, "NET: client %u disconnected", cl->id);
 	}
 
+	// If the disconnecting client held admin control, release it so the
+	// dedicated auto-start / vote machine resumes instead of staying frozen.
+	if (g_NetAdminController == cl->id) {
+		g_NetAdminController = NET_NULL_CLIENT;
+		sysLogPrintf(LOG_NOTE, "NET: admin controller (client %u) disconnected, releasing control", cl->id);
+	}
+
 	// Vote tally upkeep: if this client had a vote outstanding, drop it.
 	// The deadline isn't extended — the vote closes on schedule, just with
 	// one fewer ballot in the pool.
@@ -1124,6 +1147,8 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_SETTINGS: rc = netmsgClcSettingsRead(&cl->in, cl); break;
 			case CLC_HIT: rc = netmsgClcHitRead(&cl->in, cl); break;
 			case CLC_VOTE: rc = netmsgClcVoteRead(&cl->in, cl); break;
+			case CLC_ADMIN: rc = netmsgClcAdminRead(&cl->in, cl); break;
+			case CLC_ADMIN_SETUP: rc = netmsgClcAdminSetupRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1186,6 +1211,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_LOBBY_STATE: rc = netmsgSvcLobbyStateRead(&cl->in, cl); break;
 			case SVC_VOTE_OPEN: rc = netmsgSvcVoteOpenRead(&cl->in, cl); break;
 			case SVC_VOTE_RESULTS: rc = netmsgSvcVoteResultsRead(&cl->in, cl); break;
+			case SVC_ADMIN: rc = netmsgSvcAdminRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1537,7 +1563,8 @@ void netEndFrame(void)
 	}
 
 	if (g_NetMode == NETMODE_SERVER && g_NetDedicatedMode
-			&& g_StageNum == STAGE_CITRAINING && g_NetPlaylist.count > 0) {
+			&& g_StageNum == STAGE_CITRAINING && g_NetPlaylist.count > 0
+			&& g_NetAdminController == NET_NULL_CLIENT) {
 		// Gate the first-match start on min_humans_to_start. As soon as
 		// enough clients are in the lobby, arm a 1-second grace so any
 		// stragglers connecting in the same window land before the round
@@ -1577,7 +1604,8 @@ void netEndFrame(void)
 		static u8  s_vote_seen_gameover = 0;
 		static u32 s_vote_apply_at = 0;
 		if (g_NetMode == NETMODE_SERVER && g_NetPlaylist.count > 0
-				&& g_StageNum != STAGE_CITRAINING) {
+				&& g_StageNum != STAGE_CITRAINING
+				&& g_NetAdminController == NET_NULL_CLIENT) {
 			if (g_MpSetup.paused == MPPAUSEMODE_GAMEOVER) {
 				if (!s_vote_seen_gameover) {
 					s_vote_seen_gameover = 1;
@@ -2654,6 +2682,406 @@ void netSpectateAutoUpdate(void)
 // is open (~). Lines starting with '/' are routed here instead of being
 // broadcast as chat. Each command prints feedback via sysLogPrintf so the
 // result is visible in the console output area.
+void netAdminReply(struct netclient *cl, const char *fmt, ...)
+{
+	char tmp[512];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(tmp, sizeof(tmp) - 1, fmt, args);
+	va_end(args);
+	tmp[sizeof(tmp) - 1] = '\0';
+
+	// Local host admin, or a client with no live peer: log locally instead of
+	// trying to send a packet to nobody.
+	if (!cl || cl == g_NetLocalClient || !cl->peer) {
+		sysLogPrintf(LOG_CHAT, "%s", tmp);
+		return;
+	}
+
+	u8 bufdata[600];
+	struct netbuf buf = { NULL };
+	buf.data = bufdata;
+	buf.size = sizeof(bufdata);
+	netmsgSvcAdminWrite(&buf, tmp);
+	netSend(cl, &buf, true, NETCHAN_CONTROL);
+}
+
+void netAdminPushStart(void)
+{
+	if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+			&& g_NetLocalClient->state >= CLSTATE_LOBBY) {
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgClcAdminSetupWrite(&g_NetMsgRel);
+		netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		sysLogPrintf(LOG_CHAT, "admin: pushed match setup to server");
+	} else if (g_NetMode == NETMODE_SERVER) {
+		// Listen host: the config is already local, just start.
+		mpStartMatch();
+		g_NetVote.state = NETVOTE_IDLE;
+	} else {
+		sysLogPrintf(LOG_CHAT, "admin: not connected to a server");
+	}
+}
+
+// Copy the next whitespace-delimited token of `p` into out[], returning a
+// pointer just past it (ready for the following nextTok). out is always
+// NUL-terminated. Used to parse admin `set` arguments.
+static const char *nextTok(const char *p, char *out, s32 outsz)
+{
+	while (*p == ' ' || *p == '\t') { ++p; }
+	s32 i = 0;
+	while (*p && *p != ' ' && *p != '\t' && i < outsz - 1) { out[i++] = *p++; }
+	out[i] = '\0';
+	return p;
+}
+
+// Seed the admin scratch setup from the currently-running match config so
+// `set` tweaks build on what's live. Called when an admin takes control.
+static void netAdminCaptureSetup(void)
+{
+	struct playlistentry *e = &g_NetAdminSetup;
+	memset(e, 0, sizeof(*e));
+	e->stagenum = (s16)g_MpSetup.stagenum;
+	e->scenario = (s8)g_MpSetup.scenario;
+	e->weaponpreset = -1; // no preset -> keep current weapons unless `set preset`
+	e->preset_name[0] = '\0';
+	const u32 mask = playlistAllOptionBits();
+	e->mp_options = g_MpSetup.options & mask;
+	e->mp_options_mask = mask;
+	e->scorelimit = g_MpSetup.scorelimit;
+	e->timelimit = g_MpSetup.timelimit;
+	e->teamscorelimit = g_MpSetup.teamscorelimit;
+	e->bot_count = (u8)(g_BotCount > MAX_BOTS ? MAX_BOTS : g_BotCount);
+	e->bot_difficulty = BOTDIFF_NORMAL;
+	e->weight = 1;
+	strcpy(e->name, "admin");
+}
+
+void netServerAdminCommand(struct netclient *cl, const char *line)
+{
+	if (g_NetMode != NETMODE_SERVER || !cl || !line) {
+		return;
+	}
+
+	// Split into a lowercased command word + remainder, mirroring
+	// netConsoleCommand's tokeniser.
+	char cmd[24] = { 0 };
+	const char *p = line;
+	while (*p == ' ' || *p == '\t') { ++p; }
+	s32 ci = 0;
+	while (*p && *p != ' ' && *p != '\t' && ci < (s32)sizeof(cmd) - 1) {
+		cmd[ci++] = (char)tolower((unsigned char)*p);
+		++p;
+	}
+	cmd[ci] = '\0';
+	while (*p == ' ' || *p == '\t') { ++p; }
+	const char *arg = p; // remainder, may be ""
+
+	// The local host client (id 0) is always an implicit admin.
+	const s32 is_host = (cl->id == 0);
+	const s32 authed = is_host || cl->is_admin;
+
+	// `login` is the only command available before authentication.
+	if (strcmp(cmd, "login") == 0) {
+		if (g_NetAdminPassword[0] == '\0') {
+			netAdminReply(cl, "admin: disabled (no Server.AdminPassword / --admin-password set)");
+		} else if (strcmp(arg, g_NetAdminPassword) == 0) {
+			cl->is_admin = 1;
+			netAdminReply(cl, "admin: authenticated. type /admin help for commands.");
+			sysLogPrintf(LOG_NOTE, "NET: client %u (%s) authenticated as admin", cl->id, cl->settings.name);
+		} else {
+			netAdminReply(cl, "admin: wrong password");
+			sysLogPrintf(LOG_WARNING, "NET: client %u (%s) failed admin login", cl->id, cl->settings.name);
+		}
+		return;
+	}
+
+	if (!authed) {
+		netAdminReply(cl, "admin: not authenticated (use: login <password>)");
+		return;
+	}
+
+	if (cmd[0] == '\0' || strcmp(cmd, "help") == 0) {
+		netAdminReply(cl, "admin commands:");
+		netAdminReply(cl, "  login <pw>        authenticate as admin");
+		netAdminReply(cl, "  take | release    take/release exclusive control");
+		netAdminReply(cl, "  status            control + match state");
+		netAdminReply(cl, "  endmatch          end current match, return to lobby");
+		netAdminReply(cl, "  start [index]     start a playlist entry (random if omitted)");
+		netAdminReply(cl, "  set <field> <val> edit scratch config (see: set help)");
+		netAdminReply(cl, "  show              print the scratch config");
+		netAdminReply(cl, "  apply             start a match from the scratch config");
+		netAdminReply(cl, "  savepreset <name> save current weapons as a named preset");
+		netAdminReply(cl, "  saverotation <nm> add scratch config to the live rotation");
+		netAdminReply(cl, "  players           list connected clients");
+		netAdminReply(cl, "  kick <name|id>    disconnect a client");
+		netAdminReply(cl, "  say <message>     broadcast a server message");
+		return;
+	}
+
+	if (strcmp(cmd, "status") == 0) {
+		const u32 c = g_NetAdminController;
+		if (c == NET_NULL_CLIENT) {
+			netAdminReply(cl, "control: free");
+		} else {
+			const char *nm = (c < (u32)(NET_MAX_CLIENTS + 1)) ? g_NetClients[c].settings.name : "?";
+			netAdminReply(cl, "control: held by client %u (%s)%s", c, nm, c == cl->id ? " (you)" : "");
+		}
+		s32 humans = 0;
+		for (s32 i = 1; i < g_NetMaxClients; ++i) {
+			if (g_NetClients[i].state >= CLSTATE_LOBBY) { ++humans; }
+		}
+		netAdminReply(cl, "%s stage=0x%02x clients=%d bots=%d",
+				g_StageNum == STAGE_CITRAINING ? "lobby" : "match",
+				(u32)g_StageNum, humans, (s32)g_BotCount);
+		return;
+	}
+
+	if (strcmp(cmd, "take") == 0) {
+		if (g_NetAdminController != NET_NULL_CLIENT && g_NetAdminController != cl->id) {
+			netAdminReply(cl, "take: control already held by client %u", g_NetAdminController);
+		} else {
+			const s32 was_held = (g_NetAdminController == cl->id);
+			g_NetAdminController = cl->id;
+			if (!was_held) {
+				netAdminCaptureSetup(); // seed scratch from the running match
+			}
+			netAdminReply(cl, "take: you control the server now (auto-rotation suspended)");
+			sysLogPrintf(LOG_NOTE, "NET: client %u took admin control", cl->id);
+		}
+		return;
+	}
+
+	if (strcmp(cmd, "release") == 0) {
+		if (g_NetAdminController != cl->id) {
+			netAdminReply(cl, "release: you don't hold control");
+		} else {
+			g_NetAdminController = NET_NULL_CLIENT;
+			netAdminReply(cl, "release: control released (auto-rotation resumed)");
+			sysLogPrintf(LOG_NOTE, "NET: client %u released admin control", cl->id);
+		}
+		return;
+	}
+
+	// Match-control verbs require holding control so two admins can't fight.
+	const s32 in_control = (g_NetAdminController == cl->id);
+
+	if (strcmp(cmd, "endmatch") == 0) {
+		if (!in_control) { netAdminReply(cl, "endmatch: take control first (take)"); return; }
+		if (g_StageNum == STAGE_CITRAINING) {
+			netAdminReply(cl, "endmatch: no match in progress");
+		} else {
+			netAdminReply(cl, "endmatch: ending current match");
+			mainEndStage();
+		}
+		return;
+	}
+
+	if (strcmp(cmd, "start") == 0) {
+		if (!in_control) { netAdminReply(cl, "start: take control first (take)"); return; }
+		if (g_NetPlaylist.count == 0) { netAdminReply(cl, "start: playlist empty"); return; }
+		s32 idx = -1;
+		if (*arg) {
+			idx = (s32)strtol(arg, NULL, 0);
+			if (idx < 0 || idx >= g_NetPlaylist.count) {
+				netAdminReply(cl, "start: index %d out of range (0..%d)", idx, (s32)g_NetPlaylist.count - 1);
+				return;
+			}
+		} else {
+			u64 rng = ((u64)g_NetTick * 0x9E3779B97F4A7C15ULL) ^ sysGetMicroseconds();
+			idx = playlistPick(&g_NetPlaylist, &rng);
+		}
+		if (idx < 0) { netAdminReply(cl, "start: could not pick an entry"); return; }
+		struct playlistentry resolved;
+		playlistResolveRandoms(&g_NetPlaylist.entries[idx], &resolved);
+		playlistApply(&resolved);
+		netAdminReply(cl, "start: applying [%d] %s", idx, resolved.name);
+		mpStartMatch();
+		g_NetVote.state = NETVOTE_IDLE;
+		return;
+	}
+
+	if (strcmp(cmd, "set") == 0) {
+		if (!in_control) { netAdminReply(cl, "set: take control first (take)"); return; }
+		char field[20] = { 0 }, v1[40] = { 0 }, v2[16] = { 0 };
+		const char *q = nextTok(arg, field, sizeof field);
+		q = nextTok(q, v1, sizeof v1);
+		nextTok(q, v2, sizeof v2);
+		for (char *fp = field; *fp; ++fp) { *fp = (char)tolower((unsigned char)*fp); }
+		struct playlistentry *e = &g_NetAdminSetup;
+
+		if (field[0] == '\0' || strcmp(field, "help") == 0) {
+			netAdminReply(cl, "set fields: stage <name>, scenario <name>, timelimit <n>,");
+			netAdminReply(cl, "  scorelimit <n>, teamscorelimit <n>, bots <n> [diff],");
+			netAdminReply(cl, "  option <name> [on|off], preset <name>");
+		} else if (strcmp(field, "stage") == 0) {
+			const s32 id = playlistLookupStage(v1);
+			if (id < 0) { netAdminReply(cl, "set stage: unknown stage `%s`", v1); }
+			else { e->stagenum = (s16)id; netAdminReply(cl, "stage = %s", v1); }
+		} else if (strcmp(field, "scenario") == 0) {
+			const s32 id = playlistLookupScenario(v1);
+			if (id < 0) { netAdminReply(cl, "set scenario: unknown scenario `%s`", v1); }
+			else { e->scenario = (s8)id; netAdminReply(cl, "scenario = %s", v1); }
+		} else if (strcmp(field, "timelimit") == 0) {
+			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > 255) n = 255;
+			e->timelimit = (u8)n; netAdminReply(cl, "timelimit = %d", n);
+		} else if (strcmp(field, "scorelimit") == 0) {
+			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > 255) n = 255;
+			e->scorelimit = (u8)n; netAdminReply(cl, "scorelimit = %d", n);
+		} else if (strcmp(field, "teamscorelimit") == 0) {
+			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > 65535) n = 65535;
+			e->teamscorelimit = (u16)n; netAdminReply(cl, "teamscorelimit = %d", n);
+		} else if (strcmp(field, "bots") == 0) {
+			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > MAX_BOTS) n = MAX_BOTS;
+			e->bot_count = (u8)n;
+			if (v2[0]) {
+				const s32 d = playlistLookupBotDiff(v2);
+				if (d < 0) { netAdminReply(cl, "set bots: unknown difficulty `%s`", v2); return; }
+				e->bot_difficulty = (u8)d;
+			}
+			netAdminReply(cl, "bots = %d diff = %d", n, (s32)e->bot_difficulty);
+		} else if (strcmp(field, "option") == 0) {
+			const u32 bit = playlistLookupOption(v1);
+			if (!bit) { netAdminReply(cl, "set option: unknown option `%s`", v1); return; }
+			const s32 off = (strcasecmp(v2, "off") == 0 || strcmp(v2, "0") == 0
+					|| strcasecmp(v2, "false") == 0 || strcasecmp(v2, "no") == 0);
+			if (off) { e->mp_options &= ~bit; } else { e->mp_options |= bit; }
+			e->mp_options_mask |= bit;
+			netAdminReply(cl, "option %s = %s", v1, off ? "off" : "on");
+		} else if (strcmp(field, "preset") == 0) {
+			const s32 idx = mpWeaponPresetFind(v1);
+			if (idx < 0) { netAdminReply(cl, "set preset: no preset named `%s`", v1); return; }
+			e->weaponpreset = (s8)idx;
+			strncpy(e->preset_name, v1, sizeof(e->preset_name) - 1);
+			e->preset_name[sizeof(e->preset_name) - 1] = '\0';
+			netAdminReply(cl, "preset = %s (#%d)", v1, idx);
+		} else {
+			netAdminReply(cl, "set: unknown field `%s` (try: set help)", field);
+		}
+		return;
+	}
+
+	if (strcmp(cmd, "show") == 0) {
+		if (!in_control) { netAdminReply(cl, "show: take control first (take)"); return; }
+		const struct playlistentry *e = &g_NetAdminSetup;
+		netAdminReply(cl, "scratch: stage=0x%02x scenario=%d time=%d score=%d teamscore=%d",
+				(u32)(u16)e->stagenum, (s32)e->scenario, (s32)e->timelimit,
+				(s32)e->scorelimit, (s32)e->teamscorelimit);
+		netAdminReply(cl, "  bots=%d diff=%d options=0x%08x preset=%s",
+				(s32)e->bot_count, (s32)e->bot_difficulty, e->mp_options,
+				e->preset_name[0] ? e->preset_name : "(default weapons)");
+		return;
+	}
+
+	if (strcmp(cmd, "apply") == 0) {
+		if (!in_control) { netAdminReply(cl, "apply: take control first (take)"); return; }
+		playlistApply(&g_NetAdminSetup);
+		netAdminReply(cl, "apply: starting match from scratch config");
+		mpStartMatch();
+		g_NetVote.state = NETVOTE_IDLE;
+		return;
+	}
+
+	if (strcmp(cmd, "savepreset") == 0) {
+		if (!in_control) { netAdminReply(cl, "savepreset: take control first (take)"); return; }
+		if (!*arg) { netAdminReply(cl, "usage: savepreset <name>"); return; }
+		// Captures the *active* match weapons (g_MpSetup.weapons), so this is
+		// most useful after the GUI menu phase configures them; from the text
+		// interface it snapshots whatever the running match currently uses.
+		s32 idx = mpWeaponPresetFind(arg);
+		if (idx >= 0) {
+			mpWeaponPresetReplace(idx, g_MpSetup.weapons, g_MpSlotFnFlags);
+		} else {
+			idx = mpWeaponPresetAdd(arg, g_MpSetup.weapons, g_MpSlotFnFlags);
+		}
+		if (idx < 0) { netAdminReply(cl, "savepreset: failed (preset table full?)"); return; }
+		mpsetupSaveCurrentFile();
+		g_NetAdminSetup.weaponpreset = (s8)idx;
+		strncpy(g_NetAdminSetup.preset_name, arg, sizeof(g_NetAdminSetup.preset_name) - 1);
+		g_NetAdminSetup.preset_name[sizeof(g_NetAdminSetup.preset_name) - 1] = '\0';
+		netAdminReply(cl, "savepreset: saved `%s` (#%d) and persisted to mpsetups.bin", arg, idx);
+		return;
+	}
+
+	if (strcmp(cmd, "saverotation") == 0) {
+		if (!in_control) { netAdminReply(cl, "saverotation: take control first (take)"); return; }
+		if (!*arg) { netAdminReply(cl, "usage: saverotation <name>"); return; }
+		if (g_NetPlaylist.count >= PLAYLIST_MAX_ENTRIES) {
+			netAdminReply(cl, "saverotation: playlist full (%d entries)", PLAYLIST_MAX_ENTRIES);
+			return;
+		}
+		struct playlistentry *dst = &g_NetPlaylist.entries[g_NetPlaylist.count];
+		*dst = g_NetAdminSetup;
+		strncpy(dst->name, arg, sizeof(dst->name) - 1);
+		dst->name[sizeof(dst->name) - 1] = '\0';
+		if (dst->weight == 0) { dst->weight = 1; }
+		g_NetPlaylist.count++;
+		const s32 persisted = playlistAppendEntryToFile(dst);
+		netAdminReply(cl, "saverotation: added `%s` as entry [%d]%s",
+				dst->name, (s32)g_NetPlaylist.count - 1,
+				persisted == 0 ? " (persisted to playlist file)" : " (live only; file not writable)");
+		return;
+	}
+
+	if (strcmp(cmd, "players") == 0) {
+		s32 shown = 0;
+		for (s32 i = 0; i < g_NetMaxClients; ++i) {
+			const struct netclient *c = &g_NetClients[i];
+			if (c->state < CLSTATE_LOBBY) { continue; }
+			netAdminReply(cl, "  [%d] %s%s%s state=%d team=%d", i, c->settings.name,
+					c->is_spectator ? " (spec)" : "", c->is_admin ? " (admin)" : "",
+					(s32)c->state, (s32)c->settings.team);
+			++shown;
+		}
+		netAdminReply(cl, "players: %d connected, %d bots", shown, (s32)g_BotCount);
+		return;
+	}
+
+	if (strcmp(cmd, "kick") == 0) {
+		if (!*arg) { netAdminReply(cl, "usage: kick <name|id>"); return; }
+		char who[NET_MAX_NAME + 1] = { 0 };
+		s32 wi = 0;
+		const char *q = arg;
+		while (*q && *q != ' ' && *q != '\t' && wi < (s32)sizeof(who) - 1) { who[wi++] = *q++; }
+		who[wi] = '\0';
+		struct netclient *target = NULL;
+		char *endp = NULL;
+		const s32 id_try = (s32)strtol(who, &endp, 10);
+		if (endp && *endp == '\0' && id_try > 0 && id_try < g_NetMaxClients
+				&& g_NetClients[id_try].state >= CLSTATE_LOBBY) {
+			target = &g_NetClients[id_try];
+		}
+		if (!target) {
+			for (s32 i = 1; i < g_NetMaxClients; ++i) {
+				if (g_NetClients[i].state >= CLSTATE_LOBBY
+						&& strcasecmp(g_NetClients[i].settings.name, who) == 0) {
+					target = &g_NetClients[i];
+					break;
+				}
+			}
+		}
+		if (!target) {
+			netAdminReply(cl, "kick: no such client `%s`", who);
+		} else if (target == cl) {
+			netAdminReply(cl, "kick: refusing to kick yourself");
+		} else {
+			netAdminReply(cl, "kick: disconnecting %s", target->settings.name);
+			netChatPrintf(NULL, "%s was kicked by admin", target->settings.name);
+			netServerKick(target, DISCONNECT_KICKED);
+		}
+		return;
+	}
+
+	if (strcmp(cmd, "say") == 0) {
+		if (!*arg) { netAdminReply(cl, "usage: say <message>"); return; }
+		netChatPrintf(NULL, "[ADMIN] %s", arg);
+		netAdminReply(cl, "say: sent");
+		return;
+	}
+
+	netAdminReply(cl, "admin: unknown command `%s` (try: help)", cmd);
+}
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -2987,6 +3415,36 @@ s32 netConsoleCommand(const char *line)
 			sysLogPrintf(LOG_CHAT, "usage: /say <message>");
 		} else {
 			netChatPrintf(NULL, "[SERVER] %s", arg);
+		}
+	} else if (strcmp(cmd, "admin") == 0) {
+		// /admin <subcommand...> — remote server administration. Most subcommands
+		// are sent to the server (CLC_ADMIN) and executed there, gated by the
+		// admin password; responses arrive as SVC_ADMIN and print here. Two are
+		// handled locally on the client: `configure` (load the Combat Sim setup
+		// to edit via the normal menu) and `pushstart`/`go` (send the configured
+		// setup to the server, which starts the match for everyone).
+		char sub[16] = { 0 };
+		s32 si = 0;
+		const char *ap = arg;
+		while (*ap && *ap != ' ' && *ap != '\t' && si < (s32)sizeof(sub) - 1) {
+			sub[si++] = (char)tolower((unsigned char)*ap);
+			++ap;
+		}
+		sub[si] = '\0';
+
+		if (strcmp(sub, "pushstart") == 0 || strcmp(sub, "go") == 0) {
+			netAdminPushStart();
+		} else if (strcmp(sub, "configure") == 0 || strcmp(sub, "config") == 0) {
+			netAdminConfigure();
+		} else if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+				&& g_NetLocalClient->state >= CLSTATE_AUTH) {
+			netbufStartWrite(&g_NetMsgRel);
+			netmsgClcAdminWrite(&g_NetMsgRel, arg);
+			netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		} else if (g_NetMode == NETMODE_SERVER) {
+			netServerAdminCommand(g_NetLocalClient, arg);
+		} else {
+			sysLogPrintf(LOG_CHAT, "/admin requires being connected to a server");
 		}
 	} else if (strcmp(cmd, "endmatch") == 0) {
 		// /endmatch   server-only: triggers mainEndStage flow (score screen +
@@ -3463,4 +3921,5 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 
 	configRegisterString("Server.Name", g_NetServerName, sizeof(g_NetServerName) - 1);
 	configRegisterString("Server.PlaylistPath", g_NetPlaylistPath, sizeof(g_NetPlaylistPath) - 1);
+	configRegisterString("Server.AdminPassword", g_NetAdminPassword, sizeof(g_NetAdminPassword) - 1);
 }

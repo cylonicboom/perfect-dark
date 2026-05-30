@@ -9,7 +9,11 @@
 #include <strings.h>
 #include <time.h>
 #include <sys/time.h>
+#ifndef DEDICATED_SERVER
 #include <SDL.h>
+#elif !defined(_WIN32)
+#include <unistd.h> // readlink for the POSIX dedicated-server exe-path resolver
+#endif
 #include <PR/ultratypes.h>
 #include "platform.h"
 #include "console.h"
@@ -221,13 +225,16 @@ void sysFatalError(const char *fmt, ...)
 	fflush(stdout);
 	fflush(stderr);
 
+#ifndef DEDICATED_SERVER
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Fatal error", errmsg, NULL);
+#endif
 
 	exit(1);
 }
 
 void sysGetExecutablePath(char *outPath, const u32 outLen)
 {
+#ifndef DEDICATED_SERVER
 	// try asking SDL
 	char *sdlPath = SDL_GetBasePath();
 
@@ -258,10 +265,51 @@ void sysGetExecutablePath(char *outPath, const u32 outLen)
 #endif
 
 	SDL_free(sdlPath);
+#else
+	// Dedicated server build links no SDL: resolve the exe directory natively.
+	char buf[1024] = { 0 };
+	s32 got = 0;
+#ifdef _WIN32
+	const DWORD wn = GetModuleFileNameA(NULL, buf, sizeof(buf) - 1);
+	if (wn > 0 && wn < sizeof(buf)) {
+		buf[wn] = '\0';
+		got = 1;
+	}
+#else
+	const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+	if (n > 0) {
+		buf[n] = '\0';
+		got = 1;
+	}
+#endif
+	if (got) {
+		// strip the filename to leave the directory
+		char *bslash = strrchr(buf, '\\');
+		char *fslash = strrchr(buf, '/');
+		char *slash = (bslash > fslash) ? bslash : fslash;
+		if (slash) {
+			*slash = '\0';
+		}
+		strncpy(outPath, buf, outLen - 1);
+		outPath[outLen - 1] = '\0';
+	} else if (sysArgc && sysArgv[0] && sysArgv[0][0]) {
+		strncpy(outPath, sysArgv[0], outLen - 1);
+		outPath[outLen - 1] = '\0';
+	} else if (outLen > 1) {
+		outPath[0] = '.';
+		outPath[1] = '\0';
+	}
+#ifdef _WIN32
+	for (u32 i = 0; i < outLen && outPath[i]; ++i) {
+		if (outPath[i] == '\\') { outPath[i] = '/'; }
+	}
+#endif
+#endif
 }
 
 void sysGetHomePath(char *outPath, const u32 outLen)
 {
+#ifndef DEDICATED_SERVER
 	// try asking SDL
 	char *sdlPath = SDL_GetPrefPath("", "perfectdark");
 
@@ -288,6 +336,34 @@ void sysGetHomePath(char *outPath, const u32 outLen)
 #endif
 
 	SDL_free(sdlPath);
+#else
+	// Dedicated server build links no SDL: mirror SDL_GetPrefPath's per-OS
+	// layout. Normally overridden by --savedir (e.g. systemd StateDirectory or
+	// a Windows data dir), so this is just a fallback.
+#ifdef _WIN32
+	// %APPDATA%\perfectdark (org is empty, as passed to SDL_GetPrefPath).
+	const char *base = getenv("APPDATA");
+	if (!base || !*base) { base = getenv("USERPROFILE"); }
+	if (base && *base) {
+		snprintf(outPath, outLen, "%s/perfectdark", base);
+		for (u32 i = 0; i < outLen && outPath[i]; ++i) {
+			if (outPath[i] == '\\') { outPath[i] = '/'; }
+		}
+	} else if (outLen > 1) {
+		outPath[0] = '.';
+		outPath[1] = '\0';
+	}
+#else
+	// $HOME/.local/share/perfectdark
+	const char *home = getenv("HOME");
+	if (home && *home) {
+		snprintf(outPath, outLen, "%s/.local/share/perfectdark", home);
+	} else if (outLen > 1) {
+		outPath[0] = '.';
+		outPath[1] = '\0';
+	}
+#endif
+#endif
 }
 
 void *sysMemAlloc(const u32 size)

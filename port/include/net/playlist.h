@@ -94,4 +94,20 @@ extern struct playlist g_NetPlaylist;
 // a net session yet). For /playlist list console command.
 void playlistDumpToChat(void);
 
+// Name -> id lookups over the playlist parser's tables, for the admin `set`
+// command. Stage/scenario/bot-difficulty return -1 if the name is unknown;
+// option returns the MPOPTION_* bit (0 if unknown). playlistAllOptionBits
+// returns the OR of every settable option bit.
+s32 playlistLookupStage(const char *name);
+s32 playlistLookupScenario(const char *name);
+s32 playlistLookupBotDiff(const char *name);
+u32 playlistLookupOption(const char *name);
+u32 playlistAllOptionBits(void);
+
+// Append one entry to the playlist file the server last loaded (for the admin
+// `saverotation` command). Returns 0 on success, -1 if no file is known or it
+// can't be written. The in-memory g_NetPlaylist is updated separately by the
+// caller; this only persists to disk so the entry survives a restart.
+s32 playlistAppendEntryToFile(const struct playlistentry *e);
+
 #endif

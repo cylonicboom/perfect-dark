@@ -79,6 +79,12 @@ s32 videoInit(void)
 		return 0;
 	}
 
+#ifdef DEDICATED_SERVER
+	// Server-only build: the SDL window manager and OpenGL renderer are not
+	// compiled in, so videoInit is always a no-op (g_NetDedicatedMode is forced
+	// to 1 in main(), so we never reach here anyway).
+	return 0;
+#else
 	wmAPI = &gfx_sdl;
 	renderingAPI = &gfx_opengl_api;
 
@@ -116,6 +122,7 @@ s32 videoInit(void)
 
 	initDone = true;
 	return 0;
+#endif
 }
 
 void videoStartFrame(void)

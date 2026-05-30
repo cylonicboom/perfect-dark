@@ -308,6 +308,149 @@ u32 netmsgClcChatRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcAdminWrite(struct netbuf *dst, const char *line)
+{
+	netbufWriteU8(dst, CLC_ADMIN);
+	netbufWriteStr(dst, line);
+	return dst->error;
+}
+
+u32 netmsgClcAdminRead(struct netbuf *src, struct netclient *srccl)
+{
+	const char *line = netbufReadStr(src);
+	if (line && !src->error) {
+		netServerAdminCommand(srccl, line);
+	}
+	return src->error;
+}
+
+u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, CLC_ADMIN_SETUP);
+	netbufWriteU8(dst, g_MpSetup.stagenum);
+	netbufWriteU8(dst, g_MpSetup.scenario);
+	netbufWriteU8(dst, g_MpSetup.scorelimit);
+	netbufWriteU8(dst, g_MpSetup.timelimit);
+	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
+	netbufWriteU16(dst, g_MpSetup.chrslots);
+	netbufWriteU32(dst, g_MpSetup.options);
+	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
+	netbufWriteU8(dst, g_MpSetup.kohstatichill);
+	for (s32 i = 0; i < 4; ++i) {
+		netbufWriteU8(dst, g_MpSetup.ctcteambase[i]);
+	}
+	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
+	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
+	netbufWriteU8(dst, (u8)g_BotCount);
+	netbufWriteU8(dst, MAX_BOTS);
+	for (s32 i = 0; i < MAX_BOTS; ++i) {
+		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
+		netbufWriteU8(dst, bot->base.mpheadnum);
+		netbufWriteU8(dst, bot->base.mpbodynum);
+		netbufWriteU8(dst, bot->base.team);
+		netbufWriteU8(dst, bot->type);
+		netbufWriteU8(dst, bot->difficulty);
+		netbufWriteStr(dst, bot->base.name);
+	}
+	return dst->error;
+}
+
+u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
+{
+	// Read everything into temporaries first, so an unauthorized or malformed
+	// push never corrupts the server's pending g_MpSetup / bot configs.
+	const u8 stagenum = netbufReadU8(src);
+	const u8 scenario = netbufReadU8(src);
+	const u8 scorelimit = netbufReadU8(src);
+	const u8 timelimit = netbufReadU8(src);
+	const u16 teamscorelimit = netbufReadU16(src);
+	const u16 chrslots = netbufReadU16(src);
+	const u32 options = netbufReadU32(src);
+	u8 weapons[NUM_MPWEAPONSLOTS];
+	netbufReadData(src, weapons, sizeof(weapons));
+	const u8 kohstatichill = netbufReadU8(src);
+	u8 ctcteambase[4];
+	for (s32 i = 0; i < 4; ++i) {
+		ctcteambase[i] = netbufReadU8(src);
+	}
+	const u8 htbstaticpad = netbufReadU8(src);
+	const u8 htmstaticpad = netbufReadU8(src);
+	const u8 botcount = netbufReadU8(src);
+	const u8 numbots = netbufReadU8(src);
+
+	struct {
+		u8 head, body, team, type, diff;
+		char name[36];
+	} tmpbots[MAX_BOTS];
+	if (numbots > MAX_BOTS) {
+		sysLogPrintf(LOG_WARNING, "NET: CLC_ADMIN_SETUP bad bot count %u", numbots);
+		return 1;
+	}
+	for (u8 i = 0; i < numbots; ++i) {
+		tmpbots[i].head = netbufReadU8(src);
+		tmpbots[i].body = netbufReadU8(src);
+		tmpbots[i].team = netbufReadU8(src);
+		tmpbots[i].type = netbufReadU8(src);
+		tmpbots[i].diff = netbufReadU8(src);
+		const char *nm = netbufReadStr(src);
+		strncpy(tmpbots[i].name, nm ? nm : "", sizeof(tmpbots[i].name) - 1);
+		tmpbots[i].name[sizeof(tmpbots[i].name) - 1] = '\0';
+	}
+
+	if (src->error) {
+		sysLogPrintf(LOG_WARNING, "NET: malformed CLC_ADMIN_SETUP from client %u", srccl->id);
+		return 1;
+	}
+
+	// Authorization: must be the in-control admin, server-side, in the lobby.
+	if (g_NetMode != NETMODE_SERVER || !srccl->is_admin || g_NetAdminController != srccl->id) {
+		netAdminReply(srccl, "setup: not authorized (login + take control first)");
+		return 0;
+	}
+	if (g_StageNum != STAGE_CITRAINING) {
+		netAdminReply(srccl, "setup: end the current match first (endmatch)");
+		return 0;
+	}
+
+	// Commit.
+	g_MpSetup.stagenum = stagenum;
+	g_MpSetup.scenario = scenario;
+	g_MpSetup.scorelimit = scorelimit;
+	g_MpSetup.timelimit = timelimit;
+	g_MpSetup.teamscorelimit = teamscorelimit;
+	g_MpSetup.chrslots = chrslots;
+	// Preserve the sticky host-spectator flag (the dedicated host is a spectator).
+	g_MpSetup.options = (g_MpSetup.options & MPOPTION_HOSTSPECTATOR)
+			| (options & ~MPOPTION_HOSTSPECTATOR);
+	memcpy(g_MpSetup.weapons, weapons, sizeof(g_MpSetup.weapons));
+	g_MpSetup.kohstatichill = kohstatichill;
+	for (s32 i = 0; i < 4; ++i) {
+		g_MpSetup.ctcteambase[i] = ctcteambase[i];
+	}
+	g_MpSetup.htbstaticpad = htbstaticpad;
+	g_MpSetup.htmstaticpad = htmstaticpad;
+	strcpy(g_MpSetup.name, "server");
+
+	for (u8 i = 0; i < numbots; ++i) {
+		struct mpbotconfig *bot = &g_BotConfigsArray[i];
+		bot->base.mpheadnum = tmpbots[i].head;
+		bot->base.mpbodynum = tmpbots[i].body;
+		bot->base.team = tmpbots[i].team;
+		bot->type = tmpbots[i].type;
+		bot->difficulty = tmpbots[i].diff;
+		strncpy(bot->base.name, tmpbots[i].name, sizeof(bot->base.name) - 1);
+		bot->base.name[sizeof(bot->base.name) - 1] = '\0';
+	}
+	g_BotCount = botcount;
+
+	netAdminReply(srccl, "setup: starting match (stage=0x%02x scenario=%d bots=%d)",
+			(u32)stagenum, (s32)scenario, (s32)botcount);
+	sysLogPrintf(LOG_NOTE, "NET: admin client %u pushed setup, starting match", srccl->id);
+	mpStartMatch();
+	g_NetVote.state = NETVOTE_IDLE;
+	return 0;
+}
+
 u32 netmsgClcMoveWrite(struct netbuf *dst)
 {
 	netbufWriteU8(dst, CLC_MOVE);
@@ -533,6 +676,23 @@ u32 netmsgSvcChatRead(struct netbuf *src, struct netclient *srccl)
 	const char *msg = netbufReadStr(src);
 	if (msg && !src->error) {
 		sysLogPrintf(LOG_CHAT, "%s", msg);
+	}
+	return src->error;
+}
+
+u32 netmsgSvcAdminWrite(struct netbuf *dst, const char *line)
+{
+	netbufWriteU8(dst, SVC_ADMIN);
+	netbufWriteStr(dst, line);
+	return dst->error;
+}
+
+u32 netmsgSvcAdminRead(struct netbuf *src, struct netclient *srccl)
+{
+	const char *line = netbufReadStr(src);
+	if (line && !src->error) {
+		// Admin command output from the server — surface it in the console.
+		sysLogPrintf(LOG_CHAT, "%s", line);
 	}
 	return src->error;
 }

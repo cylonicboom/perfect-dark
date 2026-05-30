@@ -1382,20 +1382,6 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 	// actiontype from the wire but intentionally DISCARD it — see the comment
 	// below on why actiontype can't be safely applied on the client.
 	if (flags & (1 << 4)) {
-		// Crash-hunt diagnostic: log first N chr-state arrivals after match
-		// start. Lets us tell whether the client got as far as processing a
-		// sim's chr-state block before crashing. Static counter resets each
-		// run (it's a TU-local, only meaningful for the current process).
-		// Capped low (20) so a healthy match doesn't pollute the diag log
-		// past the initial-frame visibility we actually want.
-		static u32 chrstate_logged = 0;
-		if (chrstate_logged < 20u && prop && prop->chr) {
-			netDiagLogf("chrstate_enter", "sid=%u race=%d body=%d",
-				(u32)prop->syncid,
-				(s32)(prop->chr ? (s32)prop->chr->race : -1),
-				(s32)(prop->chr ? (s32)prop->chr->bodynum : -1));
-			chrstate_logged++;
-		}
 		// ACTIONTYPE: discarded, not applied. Reason: most action states
 		// (ACT_GOPOS, ACT_ATTACK, ACT_PATROL, ACT_THROWGRENADE, etc.) store
 		// per-state data in the chr->act_* union. The matching chrTick* functions
@@ -1460,21 +1446,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// wire pos in the teleport case (it's the default before the blend).
 			prop->pos = smoothpos;
 
-			// Crash-hunt: one shared counter gates all per-step diagnostic
-			// logs in this block. Limits total volume so the diag log stays
-			// readable while still bracketing the crash to a specific step
-			// (rootpos / rotY / setAnim / give-weapon).
-			static u32 chrstate_step_logged = 0;
-			const bool log_steps = (chrstate_step_logged < 60u);
-			if (log_steps) chrstate_step_logged++;
-
 			// POSITION TO MODEL: setting prop->pos alone isn't enough. Rendering
 			// reads rwdata->chrinfo.pos (the model's internal root), not prop->pos.
 			// modelSetRootPosition writes it. Without this call, the sim's running
 			// animation plays in place — the model root never moves to the new
 			// world position. This mirrors what botApplyMovement does server-side.
 			if (chr->model) {
-				if (log_steps) netDiagLogf("step_rootpos", "sid=%u", (u32)prop->syncid);
 				modelSetRootPosition(chr->model, &smoothpos);
 			}
 
@@ -1486,7 +1463,6 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// sims stay facing their spawn direction. The server keeps them in
 			// sync because botApplyMovement calls modelSetChrRotY directly after
 			// moving them — we replicate that here on the client.
-			if (log_steps) netDiagLogf("step_rotY", "sid=%u", (u32)prop->syncid);
 			// Smooth the BODY FACING like the position above: blend 50% toward
 			// the wire yrot instead of snapping, so the sim turns gradually
 			// rather than jerking between server updates (the "stuck facing one
@@ -1528,8 +1504,6 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				// sim's weapon appears in the wrong hand.
 				chr->model->anim->flip = 0;
 				if (chr->model->anim->animnum != animnum) {
-					if (log_steps) netDiagLogf("step_setanim", "sid=%u animnum=%d body=%d",
-							(u32)prop->syncid, (s32)animnum, (s32)chr->bodynum);
 					modelSetAnimation(chr->model, animnum, 0, (f32)animframe, animspeed, 0.0625f);
 				} else {
 					chr->model->anim->speed = animspeed;

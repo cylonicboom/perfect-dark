@@ -500,21 +500,6 @@ void mainLoop(void)
 
 		playermgrAllocatePlayers(numplayers);
 
-		// PROBE (remove after Bug B diagnosis): one line per stage load so we can
-		// compare round 1 (full screen) vs round 2 (split top-left). The viewport
-		// quadrant math keys off LOCALPLAYERCOUNT() == playerGetLocalCount(); for a
-		// playing net host that should stay 1 as long as netmode != 0 and spec == 0.
-		// If round 2 shows netmode=0, something cleared it on the round transition;
-		// if netmode still set + spec=0 but the screen splits, the split isn't from
-		// LOCALPLAYERCOUNT. `gnum` is g_NumPlayers (mpStartMatch sets it to the
-		// combatant count AFTER its mainChangeToStage, so it lands on the next
-		// stage). No-op unless /diag is open.
-		netDiagLogf("vp_setup",
-				"stage=%d netmode=%d spec=%d panels=%d gnum=%d numplayers=%d",
-				(s32)g_StageNum, g_NetMode,
-				(g_NetLocalClient ? (s32)g_NetLocalClient->is_spectator : -1),
-				g_SpectatorPanelCount, getNumPlayers(), numplayers);
-
 		if (argFindByPrefix(1, "-mpbots")) {
 			g_Vars.lvmpbotlevel = 1;
 		}
@@ -717,26 +702,6 @@ void mainTick(void)
 
 				for (i = 0; i < PLAYERCOUNT(); i++) {
 					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
-
-					// PROBE (remove after Bug B diagnosis): the host viewport is
-					// stuck small/top-left even solo / maxplayers=1. playerTick (via
-					// lvTickPlayer below) should set viewwidth to full every frame;
-					// 100x100 is playermgrAllocatePlayers' init default. vw==100 =>
-					// lvTickPlayer/playerTick didn't run for this slot — check cl/rem
-					// (cl=0 rem=1 means the orphan-skip fired). vw==full => viewport is
-					// fine and the shrink is downstream in the render/video layer.
-					// ~0.5 Hz, net-only (avoids non-net flood), /diag only.
-					if (g_NetTick > 0u && (g_NetTick % 120u) == 0u && g_Vars.currentplayer) {
-						netDiagLogf("vp_tick",
-								"i=%d cp=%d cl=%d rem=%d vw=%d vh=%d vl=%d vt=%d",
-								i, g_Vars.currentplayernum,
-								g_Vars.currentplayer->client ? 1 : 0,
-								(s32)g_Vars.currentplayer->isremote,
-								(s32)g_Vars.currentplayer->viewwidth,
-								(s32)g_Vars.currentplayer->viewheight,
-								(s32)g_Vars.currentplayer->viewleft,
-								(s32)g_Vars.currentplayer->viewtop);
-					}
 
 					if (g_StageNum != STAGE_TEST_OLD || !titleIsKeepingMode()) {
 						viSetViewPosition(g_Vars.currentplayer->viewleft, g_Vars.currentplayer->viewtop);

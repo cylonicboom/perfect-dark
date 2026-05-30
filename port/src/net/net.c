@@ -2029,17 +2029,25 @@ void netLagCompBegin(const struct netclient *shooter)
 
 	// Rewind remote players to where they were when the shooter fired, so
 	// hit-tests reflect what the shooter saw on their screen rather than the
-	// current server-authoritative pose. The rewind amount is approximated as
-	// one-way latency (RTT/2). Math: ms→ticks at 60 Hz is /16, the +8 rounds
-	// to the nearest tick. Doesn't account for the client's interp delay
-	// (g_NetInterpTicks) — close-range hits at high ping may still miss.
+	// current server-authoritative pose. The rewind amount is RTT/2 (network)
+	// plus the shooter's interpolation delay, computed in two steps below.
 	const u32 rtt_ms      = enet_peer_get_rtt(shooter->peer);
-	const u32 rewind_ticks = (rtt_ms / 2 + 8) / 16;
+	// Stack the shooter's INTERPOLATION delay on top of the network RTT/2: they
+	// render remote targets behind by g_NetInterpTicks + their measured interp_lag
+	// (Fix #1's snapshot-domain clock), so the pose they actually shot at was
+	// RTT/2 + interp_delay in the past. Omitting it under-rewound, so close-range
+	// and fast-strafe hits at high ping missed. interp_lag ~= one-way latency in
+	// ticks (the server's peak-hold of this client's snapshot staleness); under
+	// roughly symmetric latency it stands in for the shooter's own render-behind
+	// with no wire change (an exact shooter-sent render-tick would need a protocol
+	// bump). NET_LAGCOMP_SIZE (120 ticks / 2 s) covers the combined rewind at 350ms.
+	const u32 interp_ticks = g_NetInterpTicks + (u32)(shooter->interp_lag + 0.5f);
+	const u32 rewind_ticks = (rtt_ms / 2 + 8) / 16 + interp_ticks;
 	const u32 target_tick  = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
 
 	g_LagCompLastRewindTicks = rewind_ticks;
 
-	netDiagLogf("lagcomp", "shooter=%u rtt=%u rewind_ticks=%u", shooter->id, rtt_ms, rewind_ticks);
+	netDiagLogf("lagcomp", "shooter=%u rtt=%u interp=%u rewind_ticks=%u", shooter->id, rtt_ms, interp_ticks, rewind_ticks);
 
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
 		struct netclient *cl = &g_NetClients[i];

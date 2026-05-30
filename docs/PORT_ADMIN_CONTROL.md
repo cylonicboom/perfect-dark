@@ -69,6 +69,34 @@ to start it, or `saverotation` to add it to the rotation.
 Valid `option` names match the playlist `options=` vocabulary (see
 `docs/netplay.md` / `dist/linux/server/server_playlist.example.ini`).
 
+### Configure via the built-in Combat Simulator menu (recommended)
+
+Instead of the text `set` commands, an admin can configure the match with the
+**normal built-in Combat Simulator menu** and push the result to the server —
+exactly like hosting locally, but the dedicated server is the authoritative host:
+
+```
+/admin take                  take control (server holds in the lobby; clients see "waiting")
+/admin endmatch              if a match is running, end it so you're in the lobby
+/admin configure             load the Combat Sim setup so you can edit it
+   ... open the Combat Simulator menu and set stage / scenario / weapons /
+       options / bots exactly as you would when hosting a local game ...
+/admin pushstart             send the configured match to the server; it adopts the
+                             setup, starts the match, and broadcasts it to all clients
+```
+
+`pushstart` (alias `go`) serializes your locally-configured `g_MpSetup` + bot
+configs and sends them to the server via `CLC_ADMIN_SETUP`. The server validates
+that you're the in-control admin, commits the setup, and runs the same
+`mpStartMatch` → `SVC_STAGE_START` path a normal host uses — so clients
+transition into the match exactly as usual. While you're in the lobby
+configuring, the server only broadcasts lobby state, so your local edits aren't
+overwritten.
+
+> The `set`/`apply`/`show` text commands remain available as a scriptable
+> alternative (and for the Discord bot); the menu flow above is the "as if
+> hosting locally" experience.
+
 ### Presets & rotation
 
 ```

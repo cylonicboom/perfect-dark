@@ -450,6 +450,16 @@ void netServerAdminCommand(struct netclient *cl, const char *line);
 // output). On the local host (cl == g_NetLocalClient) it logs locally instead.
 void netAdminReply(struct netclient *cl, const char *fmt, ...);
 
+// Client-side admin "start": serialize the locally-configured g_MpSetup + bot
+// configs and push them to the server (CLC_ADMIN_SETUP), which then starts the
+// match and broadcasts it to all clients. On a listen host it just starts.
+void netAdminPushStart(void);
+
+// Client-side: load the Combat Sim setup file + prime the Combat Sim menu so the
+// admin can configure the match via the normal built-in menu before pushing it.
+// Defined in netmenu.c where the menu handlers live.
+void netAdminConfigure(void);
+
 void netServerStageStart(void);
 void netServerStageEnd(void);
 void netServerKick(struct netclient *cl, const u32 reason);

@@ -42,6 +42,7 @@
 #define CLC_HIT      0x06 // client-reported chr hit; server validates and applies damage
 #define CLC_VOTE     0x07 // client's vote-for-next-map ballot choice
 #define CLC_ADMIN    0x08 // admin command line (text), server-executed if authorized
+#define CLC_ADMIN_SETUP 0x09 // admin pushes a full g_MpSetup + bot config; server starts the match
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -152,5 +153,14 @@ u32 netmsgClcAdminWrite(struct netbuf *dst, const char *line);
 u32 netmsgClcAdminRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcAdminWrite(struct netbuf *dst, const char *line);
 u32 netmsgSvcAdminRead(struct netbuf *src, struct netclient *srccl);
+
+// Admin setup push (client -> server). Serializes the admin client's locally-
+// configured g_MpSetup + bot configs (same block layout as SVC_STAGE_START,
+// minus the server-authoritative per-client manifest). The server reads into
+// temporaries, and only if the sender is the in-control admin does it commit to
+// its own g_MpSetup/g_BotConfigsArray and mpStartMatch() — which broadcasts
+// SVC_STAGE_START to all clients as normal.
+u32 netmsgClcAdminSetupWrite(struct netbuf *dst);
+u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl);
 
 #endif

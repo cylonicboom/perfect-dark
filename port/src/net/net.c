@@ -1148,6 +1148,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_HIT: rc = netmsgClcHitRead(&cl->in, cl); break;
 			case CLC_VOTE: rc = netmsgClcVoteRead(&cl->in, cl); break;
 			case CLC_ADMIN: rc = netmsgClcAdminRead(&cl->in, cl); break;
+			case CLC_ADMIN_SETUP: rc = netmsgClcAdminSetupRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2705,6 +2706,23 @@ void netAdminReply(struct netclient *cl, const char *fmt, ...)
 	netSend(cl, &buf, true, NETCHAN_CONTROL);
 }
 
+void netAdminPushStart(void)
+{
+	if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+			&& g_NetLocalClient->state >= CLSTATE_LOBBY) {
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgClcAdminSetupWrite(&g_NetMsgRel);
+		netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		sysLogPrintf(LOG_CHAT, "admin: pushed match setup to server");
+	} else if (g_NetMode == NETMODE_SERVER) {
+		// Listen host: the config is already local, just start.
+		mpStartMatch();
+		g_NetVote.state = NETVOTE_IDLE;
+	} else {
+		sysLogPrintf(LOG_CHAT, "admin: not connected to a server");
+	}
+}
+
 // Copy the next whitespace-delimited token of `p` into out[], returning a
 // pointer just past it (ready for the following nextTok). out is always
 // NUL-terminated. Used to parse admin `set` arguments.
@@ -3399,11 +3417,26 @@ s32 netConsoleCommand(const char *line)
 			netChatPrintf(NULL, "[SERVER] %s", arg);
 		}
 	} else if (strcmp(cmd, "admin") == 0) {
-		// /admin <subcommand...> — remote server administration. On a client
-		// the line is sent to the server (CLC_ADMIN) and executed there, gated
-		// by the admin password; responses arrive as SVC_ADMIN and print here.
-		// On the local host it runs directly. Try `/admin help`.
-		if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+		// /admin <subcommand...> — remote server administration. Most subcommands
+		// are sent to the server (CLC_ADMIN) and executed there, gated by the
+		// admin password; responses arrive as SVC_ADMIN and print here. Two are
+		// handled locally on the client: `configure` (load the Combat Sim setup
+		// to edit via the normal menu) and `pushstart`/`go` (send the configured
+		// setup to the server, which starts the match for everyone).
+		char sub[16] = { 0 };
+		s32 si = 0;
+		const char *ap = arg;
+		while (*ap && *ap != ' ' && *ap != '\t' && si < (s32)sizeof(sub) - 1) {
+			sub[si++] = (char)tolower((unsigned char)*ap);
+			++ap;
+		}
+		sub[si] = '\0';
+
+		if (strcmp(sub, "pushstart") == 0 || strcmp(sub, "go") == 0) {
+			netAdminPushStart();
+		} else if (strcmp(sub, "configure") == 0 || strcmp(sub, "config") == 0) {
+			netAdminConfigure();
+		} else if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
 				&& g_NetLocalClient->state >= CLSTATE_AUTH) {
 			netbufStartWrite(&g_NetMsgRel);
 			netmsgClcAdminWrite(&g_NetMsgRel, arg);

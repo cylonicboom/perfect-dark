@@ -1,0 +1,27 @@
+# Per-instance config for pd-server@<name>.service.
+#
+# Copy to /etc/pd-server/<name>.conf (the <name> must match the systemd
+# instance, e.g. `pd-server@dm` reads /etc/pd-server/dm.conf), then edit.
+#
+# Values are passed straight to the server; do NOT quote them here (systemd
+# EnvironmentFile takes the whole line after `=` verbatim — quotes become
+# literal characters).
+
+# UDP port this instance listens on. Each instance needs a unique port.
+PORT=27100
+
+# Maximum connected clients (1..N).
+MAXCLIENTS=8
+
+# Server name shown in the browser / lobby. Spaces are fine (unquoted).
+NAME=Perfect Dark Dedicated
+
+# Absolute path to this instance's playlist (maps/modes rotation).
+PLAYLIST=/opt/pd-server/playlists/default.ini
+
+# Any extra flags, space-separated. Examples:
+#   EXTRA=--password hunter2
+#   EXTRA=--no-advertise
+#   EXTRA=--master master.example.net
+#   EXTRA=--netdiag /var/lib/pd-server/dm/netdiag.log
+EXTRA=

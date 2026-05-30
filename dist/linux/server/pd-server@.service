@@ -1,0 +1,56 @@
+# Perfect Dark — headless dedicated server (templated unit).
+#
+# One instance per name; each instance has its own config file, UDP port and
+# persistent state directory. Enable one with:
+#
+#     sudo systemctl enable --now pd-server@dm
+#
+# ...where /etc/pd-server/dm.conf supplies PORT / MAXCLIENTS / NAME / PLAYLIST /
+# EXTRA for that instance. The install dir /opt/pd-server (binary + ROM under
+# data/ + playlists/) is shared read-only; each instance writes only to its own
+# StateDirectory (/var/lib/pd-server/<instance>, passed as --savedir).
+#
+# The service runs unprivileged: DynamicUser fabricates a transient, per-instance
+# user at start and tears it down at stop (no account to manage). Switch to a
+# fixed user if external tooling needs to read the per-server state/stats with
+# stable ownership.
+
+[Unit]
+Description=Perfect Dark Dedicated Server (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=pd-server/%i
+WorkingDirectory=/opt/pd-server
+EnvironmentFile=/etc/pd-server/%i.conf
+ExecStart=/opt/pd-server/pd-server --dedicated \
+          --basedir /opt/pd-server/data \
+          --savedir ${STATE_DIRECTORY} \
+          --port ${PORT} \
+          --maxclients ${MAXCLIENTS} \
+          --server-name "${NAME}" \
+          --playlist ${PLAYLIST} \
+          $EXTRA
+Restart=on-failure
+RestartSec=3
+
+# Hardening — the server is network-facing and should hold no privileges.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+# AF_INET/AF_INET6 for the game socket; AF_UNIX for journald + the future
+# admin control socket.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

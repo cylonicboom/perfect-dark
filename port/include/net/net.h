@@ -257,6 +257,14 @@ struct netclient {
 	u32 outmoveack; // last acked outmove tick
 	u32 forcetick; // tick on which the client's position was forced, or 0 if not forcing
 	u32 lerpticks; // how many ticks we've been lerping the position
+	// Adaptive interpolation: smoothed peak-hold estimate of how many ticks the
+	// freshest received snapshot lags our local g_NetTick (≈ the full network
+	// path for this client, in ticks). Re-estimated on every snapshot arrival in
+	// netUpdateInterpLag. The interpolators subtract it so remote entities render
+	// behind the *snapshot stream* rather than behind the local free-running
+	// clock — which makes interpolation immune to the stage-start clock offset
+	// and to 60Hz drift, and lets it work at any ping. 0 until the first snapshot.
+	f32 interp_lag;
 
 	// Server-side only: ring buffer of recent world positions for lag
 	// compensation. Written each tick; indexed by lagcomp_head (newest).
@@ -415,6 +423,13 @@ void netClientSettingsChanged(void);
 void netPlayersAllocate(void);
 void netSyncIdsAllocate(void);
 
+// Entity interpolation: update a client's interp_lag estimate from a freshly
+// received snapshot's tick. Peak-holds the worst recent (g_NetTick - snaptick)
+// staleness and decays it slowly, giving a self-sizing jitter buffer. Called
+// from both move-read paths (server: netmsgClcMoveRead; client:
+// netmsgSvcPlayerMoveRead) after the inmove ring push. No-op when snaptick == 0.
+void netUpdateInterpLag(struct netclient *cl, u32 snaptick);
+
 // Client-side prediction: compare server's authoritative position at ack_tick
 // to what the client predicted, and schedule a smooth correction if the error
 // exceeds NET_CSP_CORR_THRESH_SQ.
@@ -466,6 +481,14 @@ void netSpectateStop(void);
 // camera pose to follow the target. Called from playerTick after physics so
 // it has the final-for-this-frame pos to read.
 void netSpectateApply(void);
+
+// Manual spectate toggle (client): enter spectate of the first live target if
+// not spectating, else return to first-person. For a key bind / console command.
+void netSpectateToggle(void);
+
+// Per-frame client hook: auto-spectate on death, return to own view on respawn.
+// Call once per frame for the local client (alongside netSpectateApply).
+void netSpectateAutoUpdate(void);
 
 // Append one line to the active diagnostic log if /diag has opened one.
 // Format is "<tick>,<realtime_s>,<event>,<formatted args>". No-op when the

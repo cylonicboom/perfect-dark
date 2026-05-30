@@ -324,6 +324,7 @@ u32 netmsgClcMoveRead(struct netbuf *src, struct netclient *srccl)
 		srccl->inmove_head = (srccl->inmove_head + 1) % NET_SNAPSHOT_COUNT;
 		srccl->inmove[srccl->inmove_head] = newmove;
 		srccl->lerpticks = 0;
+		netUpdateInterpLag(srccl, newmove.tick);
 	}
 
 	return src->error;
@@ -868,6 +869,7 @@ u32 netmsgSvcPlayerMoveRead(struct netbuf *src, struct netclient *srccl)
 	movecl->inmove[movecl->inmove_head] = newmove;
 	movecl->outmoveack = outmoveack;
 	movecl->lerpticks = 0;
+	netUpdateInterpLag(movecl, newmove.tick);
 
 	// Teleport/respawn: flood all ring buffer slots with the new position so
 	// entity interpolation can't reach any pre-teleport entry during the interp
@@ -1068,8 +1070,15 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 		playerStartNewLife();
 	}
 
+	// Skip the weapon/dual-wield apply for the local player, same reasoning as
+	// the ammo skip above: the local client switches weapons from its own input,
+	// so its gunctrl is ahead of the server by ~RTT. A stale SVC_PLAYER_STATS
+	// (now broadcast every second as a heartbeat, and on every shot) carries the
+	// server's pre-switch weapon and would bgunEquipWeapon() the player straight
+	// back to it — e.g. unarmed -> gun snaps back to unarmed mid-switch. Remote
+	// players stay server-authoritative (their gunctrl IS driven from the wire).
 	const bool dualwielding = (flags & (1 << 1)) != 0;
-	if (!pl->isdead && (newweaponnum != pl->gunctrl.weaponnum || dualwielding != pl->gunctrl.dualwielding)) {
+	if (!islocal && !pl->isdead && (newweaponnum != pl->gunctrl.weaponnum || dualwielding != pl->gunctrl.dualwielding)) {
 		pl->gunctrl.dualwielding = dualwielding;
 		bgunEquipWeapon(newweaponnum);
 	}
@@ -2599,6 +2608,17 @@ u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl)
 	const s16 room = netbufReadS16(src);
 
 	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	// Validate the wire room against the client's current stage before it
+	// reaches explosionCreate, which indexes g_Rooms[room] unchecked (and walks
+	// portals / calls roomFlashLighting from it). A room number that is in range
+	// on the server but out of range here — brief stage-transition skew, or a
+	// corrupt/forged packet — would otherwise be an out-of-bounds read and crash
+	// the client. The explosion is a cosmetic effect, so dropping one we can't
+	// resolve locally is harmless.
+	if (room < 0 || room >= g_Vars.roomcount) {
 		return src->error;
 	}
 

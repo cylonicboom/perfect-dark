@@ -246,9 +246,12 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 	bgunSetSightVisible(GUNSIGHTREASON_NOTAIMING, pl->insightaimmode);
 
 	// INTERPOLATION: find two snapshots in the ring buffer bracketing the desired
-	// interpolation point (g_NetTick - g_NetInterpTicks), then lerp angles/speeds
-	// between them. Ensures smooth motion despite discrete packet arrivals.
-	const u32 desired_tick = (g_NetTick > g_NetInterpTicks) ? (g_NetTick - g_NetInterpTicks) : 0;
+	// tick, then lerp speeds between them. The target is g_NetInterpTicks behind
+	// the freshest snapshot (interp_lag re-baselines our local clock into the
+	// snapshot clock domain — ping-independent; see netUpdateInterpLag), matching
+	// bwalkUpdateRemote so angles/speeds and position share one interp point.
+	const u32 lagticks = (u32)(pl->client->interp_lag + 0.5f) + g_NetInterpTicks;
+	const u32 desired_tick = (g_NetTick > lagticks) ? (g_NetTick - lagticks) : 0;
 
 	const struct netplayermove *snap_newer = NULL;
 	const struct netplayermove *snap_older = NULL;

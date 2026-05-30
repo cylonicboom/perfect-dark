@@ -1832,6 +1832,33 @@ void netSyncIdsAllocate(void)
 			g_NetNextSyncId - 1, g_NetNextSyncId);
 }
 
+// --- Entity interpolation clock ---
+
+void netUpdateInterpLag(struct netclient *cl, u32 snaptick)
+{
+	if (!cl || !snaptick) {
+		return;
+	}
+
+	// How stale this snapshot is in our local clock domain. For a client
+	// viewing a remote player this is roughly the full path (~2x one-way
+	// latency) because the snapshot carries the sender's clock and our
+	// g_NetTick was only ever baselined to the server's clock at stage start.
+	// Clamp at 0 in case clock drift briefly makes a snapshot look "future".
+	const f32 raw = (g_NetTick > snaptick) ? (f32)(g_NetTick - snaptick) : 0.f;
+
+	// Peak-hold with slow decay = self-sizing jitter buffer. Rise instantly to
+	// the worst recent staleness so a late packet is already absorbed; fall back
+	// slowly (~2% per snapshot) when the link improves so we don't over-tighten
+	// and start starving. The interpolators add g_NetInterpTicks on top of this
+	// as the steady-state margin behind the freshest snapshot.
+	if (raw > cl->interp_lag) {
+		cl->interp_lag = raw;
+	} else {
+		cl->interp_lag += (raw - cl->interp_lag) * 0.02f;
+	}
+}
+
 // --- Client-side prediction ---
 
 void netCspReconcile(u32 ack_tick, const struct coord *server_pos, f32 server_theta)
@@ -2412,14 +2439,32 @@ void netSpectateApply(void)
 	const f32 TWO_PI = 6.2831853071795865f;
 	const f32 thetaRad = TWO_PI - chrGetInverseTheta(t);
 
+	// Pitch: ride the target's vertical look so spectating is true first-person
+	// (up/down), not just yaw. Player targets sync vv_verta from SVC_PLAYER_MOVE
+	// (bmoveProcessRemoteInput applies it on the client too); sims don't expose a
+	// clean pitch, so they stay level — yaw-only reads fine for AI targets. If
+	// pitch comes out inverted in testing, negate pitchDeg (vv_verta convention).
+	f32 pitchDeg = 0.f;
+	if (t->prop->type == PROPTYPE_PLAYER) {
+		for (s32 pi = 0; pi < MAX_PLAYERS; ++pi) {
+			if (g_Vars.players[pi] && g_Vars.players[pi]->prop == t->prop) {
+				pitchDeg = g_Vars.players[pi]->vv_verta;
+				break;
+			}
+		}
+	}
+	const f32 pitchRad = pitchDeg * TWO_PI / 360.0f;
+
 	// For PROPTYPE_PLAYER, prop->pos.y is set by bondmovePlayer to
 	// groundy + vv_eyeheight — already at eye level. No Y offset needed.
 	struct coord eyepos = t->prop->pos;
 
-	// Look direction: forward vector derived from yaw. cam_up is world up.
+	// Look direction: forward vector from yaw + pitch. cam_up is world up.
 	const f32 sinT = sinf(thetaRad);
 	const f32 cosT = cosf(thetaRad);
-	struct coord camlook = { -sinT, 0.f, cosT };
+	const f32 sinP = sinf(pitchRad);
+	const f32 cosP = cosf(pitchRad);
+	struct coord camlook = { -sinT * cosP, sinP, cosT * cosP };
 	struct coord camup = { 0.f, 1.f, 0.f };
 
 	// Push into the camera. We have to call setCurrentPlayer because
@@ -2439,7 +2484,52 @@ void netSpectateApply(void)
 	// — sync them so those overlays match the spectated view direction.
 	// vv_theta is degrees in the game's convention.
 	pl->vv_theta = thetaRad * 360.0f / TWO_PI;
-	pl->vv_verta = 0.f;
+	pl->vv_verta = pitchDeg;
+}
+
+// Manual spectate toggle: enter spectate (first live target) if not currently
+// spectating, otherwise return to first-person. For a key bind / console
+// command so clients can watch others mid-match. No-op outside a net session.
+void netSpectateToggle(void)
+{
+	if (!g_NetMode) {
+		return;
+	}
+	if (g_NetSpectateChr) {
+		netSpectateStop();
+	} else {
+		netSpectateCycle(+1);
+	}
+}
+
+// Per-frame client hook: drive spectate automatically off the local player's
+// death state. On the death transition (alive -> dead) we start spectating a
+// live target; on the respawn transition (dead -> alive) we return to our own
+// view. Manual /spec / netSpectateToggle still works between transitions —
+// dying while manually spectating keeps the chosen target, and respawning
+// always hands control back. Client-only; the host runs its own view.
+void netSpectateAutoUpdate(void)
+{
+	static bool s_wasdead = false;
+
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient || !g_NetLocalClient->player) {
+		s_wasdead = false;
+		return;
+	}
+
+	const bool dead = (g_NetLocalClient->player->isdead != 0);
+
+	if (dead && !s_wasdead) {
+		// Just died — auto-spectate if we aren't already (manual target wins).
+		if (!g_NetSpectateChr) {
+			netSpectateCycle(+1); // picks first live target; no-op if none exist
+		}
+	} else if (!dead && s_wasdead) {
+		// Just respawned — always hand the camera back to our own pawn.
+		netSpectateStop();
+	}
+
+	s_wasdead = dead;
 }
 
 // Local-only console commands. Available any time the in-game chat console
@@ -2621,6 +2711,8 @@ s32 netConsoleCommand(const char *line)
 			netSpectateCycle(-1);
 		} else if (strcmp(arg, "off") == 0 || strcmp(arg, "stop") == 0 || strcmp(arg, "none") == 0) {
 			netSpectateStop();
+		} else if (strcmp(arg, "toggle") == 0) {
+			netSpectateToggle();
 		} else {
 			// Treat anything else as a name lookup against g_MpAllChrConfigPtrs.
 			// Case-sensitive prefix match keeps things predictable when the host
@@ -3178,10 +3270,10 @@ Gfx *netDebugRender(Gfx *gdl)
 		const char *name = cl->settings.name[0] ? cl->settings.name : "<?>";
 
 		off += snprintf(tmp + off, sizeof(tmp) - off,
-			"%s[%u] %-8.8s %s p=%ums in-%u out-%u lerp=%u\n"
+			"%s[%u] %-8.8s %s p=%ums in-%u out-%u lerp=%u il=%u\n"
 			"   pos=(%.0f,%.0f,%.0f) a=%d/%d [%s]\n",
 			youTag, cl->id, name, stateStr,
-			ping, inLag, outAckLag, cl->lerpticks,
+			ping, inLag, outAckLag, cl->lerpticks, (u32)(cl->interp_lag + 0.5f),
 			livepos.x, livepos.y, livepos.z,
 			m->animnum, m->animframe, flags);
 	}

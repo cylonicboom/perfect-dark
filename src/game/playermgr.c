@@ -89,6 +89,23 @@ void playermgrAllocatePlayers(s32 count)
 		if (g_NetMode && g_StageNum != STAGE_TITLE && g_StageNum != STAGE_CITRAINING) {
 			netPlayersAllocate();
 		}
+
+		// PROBE (remove after Fix #4): the host's player->client goes NULL after a
+		// round transition. One line per stage load. gate=1 means netPlayersAllocate
+		// ran above. hstate is the host netclient state (CLSTATE_LOBBY=3, GAME=4) —
+		// if < 3 here, netPlayersAllocate's `state < CLSTATE_LOBBY` skip drops the
+		// host so it's never bound. hbound=1 means the host's player->client got
+		// (re)bound this load; if hbound=1 but vp_tick later shows cl=0, something
+		// nulls it after. /diag only.
+		netDiagLogf("npa",
+				"stage=%d gate=%d hstate=%u hpnum=%d hspec=%d hbound=%d",
+				(s32)g_StageNum,
+				(g_NetMode && g_StageNum != STAGE_TITLE && g_StageNum != STAGE_CITRAINING) ? 1 : 0,
+				g_NetLocalClient ? g_NetLocalClient->state : 999u,
+				g_NetLocalClient ? (s32)g_NetLocalClient->playernum : -1,
+				g_NetLocalClient ? (s32)g_NetLocalClient->is_spectator : -1,
+				(g_NetLocalClient && g_NetLocalClient->player
+						&& g_NetLocalClient->player->client == g_NetLocalClient) ? 1 : 0);
 #endif
 
 		setCurrentPlayerNum(0);

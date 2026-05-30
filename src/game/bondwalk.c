@@ -122,9 +122,14 @@ static void bwalkUpdateRemote(void)
 	// Guard against inmove->tick == 0 (slot still empty, no snapshots
 	// received yet) — that's handled by the !inmoveprev->tick branch in
 	// the regular forcepos check below.
+	// Compare against interp_lag so a snapshot is "stale" only when it falls
+	// g_NetStaleSnapshotTicks BEYOND this client's expected path lag (a genuine
+	// stream stall), not merely because steady ping is high. Without the
+	// interp_lag term, constant high latency (~21 ticks at 350ms) would read as
+	// stale and force-snap every frame instead of interpolating.
 	const bool stale_snapshot = (inmove->tick != 0)
 		&& (g_NetTick > inmove->tick)
-		&& ((g_NetTick - inmove->tick) > g_NetStaleSnapshotTicks);
+		&& ((g_NetTick - inmove->tick) > (u32)(cl->interp_lag + 0.5f) + g_NetStaleSnapshotTicks);
 
 	// Explicit force or very large drift: snap to server position immediately.
 	const bool forcepos = !inmoveprev->tick ||
@@ -146,9 +151,14 @@ static void bwalkUpdateRemote(void)
 				cl->id, pl->prop->pos.x, pl->prop->pos.y, pl->prop->pos.z);
 		}
 	} else {
-		// Entity interpolation: find two snapshots bracketing
-		// (g_NetTick - g_NetInterpTicks) and interpolate between them.
-		const u32 desired_tick = (g_NetTick > g_NetInterpTicks) ? (g_NetTick - g_NetInterpTicks) : 0;
+		// Entity interpolation: find two snapshots bracketing the desired tick
+		// and interpolate between them. The target is g_NetInterpTicks behind the
+		// freshest snapshot we hold for this client, NOT behind our local clock:
+		// interp_lag re-baselines g_NetTick into the snapshot clock domain so the
+		// bracket search keeps finding data at any ping (see netUpdateInterpLag),
+		// while g_NetInterpTicks stays the steady-state jitter margin.
+		const u32 lagticks = (u32)(cl->interp_lag + 0.5f) + g_NetInterpTicks;
+		const u32 desired_tick = (g_NetTick > lagticks) ? (g_NetTick - lagticks) : 0;
 
 		const struct netplayermove *snap_newer = NULL;
 		const struct netplayermove *snap_older = NULL;

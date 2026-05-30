@@ -2539,6 +2539,9 @@ void lvTickPlayer(void)
 	// don't want to stomp their state. netSpectateApply itself bails if no
 	// target is set, so the cost when not spectating is one branch.
 	if (g_NetMode && g_NetLocalClient && g_Vars.currentplayer == g_NetLocalClient->player) {
+		// Auto-spectate on death / restore on respawn, then apply the camera
+		// override for whatever target is active (manual or death-driven).
+		netSpectateAutoUpdate();
 		netSpectateApply();
 	}
 #endif

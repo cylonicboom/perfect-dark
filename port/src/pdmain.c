@@ -974,6 +974,14 @@ void mainEndStage(void)
 {
 	sndStopNosedive();
 
+	// Stop any active spectate before the stage tears down: the spectated chr
+	// and its player slot are freed during this transition, so the spectate
+	// redirect (lvRender) and camera (netSpectateApply) must not keep pointing
+	// at a dangling chr into the next render. Reached on both host and client
+	// for any stage end (round over, "end match" menu, disconnect). No-op when
+	// not spectating; also unhides our own body.
+	netSpectateStop();
+
 	if (!g_MainIsEndscreen) {
 		pak0f11c6d0();
 		joyDisableTemporarily();

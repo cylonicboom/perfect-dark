@@ -1169,6 +1169,57 @@ Gfx *lvRender(Gfx *gdl)
 				s32 nextplayernum = i + 1;
 				setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 				islastplayer = playercount == nextplayernum;
+
+#ifndef PLATFORM_N64
+				// Client spectator (render redirect): when this iteration is our
+				// OWN pawn's viewport and we're spectating a live player target,
+				// render the TARGET's player slot here instead, so we get their
+				// full first-person frame (HUD / aim / weapon) — the clean
+				// JIP-reconnect-spectator behaviour made deliberate. The target is a
+				// real combatant, so currentplayerindex stays a valid player slot
+				// (unlike the fake-player spectator panels, which is why those
+				// break). Copy our full-screen viewport onto the target first; a
+				// remote player's own view* can be stale/small on the client.
+				// Gated to: any net session with a local pawn (a playing CLIENT
+				// or the playing HOST — a host /spec'ing a client needs this path
+				// too), and our own viewport iteration. The spectator-host (panels)
+				// has player==NULL so it's excluded.
+				//
+				// IMPORTANT: never dereference g_NetSpectateChr — it can dangle. The
+				// target client may leave (chr orphaned, freed at the next stage) or
+				// the chr may be torn down at round-end, and ending the match while
+				// spectating then runs this render body's gameplay on freed memory
+				// (the eyespy crash). So find the target by POINTER-comparing it
+				// against each live player slot's chr. If it matches no live,
+				// CONNECTED combatant slot (left / died / freed / orphan / a sim),
+				// tnum stays -1 and we render our own viewport. The ->client test
+				// drops orphan slots (disconnected client whose chr lingers until
+				// the next stage) — those crash the per-player gameplay below.
+				if (g_NetMode && g_NetSpectateChr
+						&& g_NetLocalClient && g_NetLocalClient->player
+						&& g_Vars.currentplayernum == g_NetLocalClient->playernum) {
+					s32 tnum = -1;
+					for (s32 pn = 0; pn < MAX_PLAYERS; ++pn) {
+						if (g_Vars.players[pn] && g_Vars.players[pn]->client
+								&& g_Vars.players[pn]->prop
+								&& g_Vars.players[pn]->prop->chr == g_NetSpectateChr) {
+							tnum = pn;
+							break;
+						}
+					}
+					if (tnum >= 0 && tnum != g_NetLocalClient->playernum) {
+						struct player *src = g_NetLocalClient->player;
+						struct player *dst = g_Vars.players[tnum];
+						dst->viewleft = src->viewleft;
+						dst->viewtop = src->viewtop;
+						dst->viewwidth = src->viewwidth;
+						dst->viewheight = src->viewheight;
+						dst->fovy = src->fovy;
+						dst->aspect = src->aspect;
+						setCurrentPlayerNum(tnum);
+					}
+				}
+#endif
 			}
 
 #ifndef PLATFORM_N64
@@ -1352,7 +1403,16 @@ Gfx *lvRender(Gfx *gdl)
 				}
 
 				// Handle eyespy Z presses
+				// eyespy->prop NULL-check: the block below dereferences
+				// eyespy->prop (dart fire / bomb detonation) unguarded. For a
+				// local player an active eyespy always has a prop, but the client
+				// spectator render-redirect runs this body with currentplayer set
+				// to a spectated REMOTE target, whose eyespy can be a stale pointer
+				// (non-NULL + camerabuttonheld but prop freed) during round-end
+				// teardown -> 0xc0000005. Always true on N64, so behaviour there is
+				// unchanged.
 				if (g_Vars.currentplayer->eyespy
+						&& g_Vars.currentplayer->eyespy->prop
 						&& (g_Vars.currentplayer->devicesactive & ~g_Vars.currentplayer->devicesinhibit & DEVICE_EYESPY)
 						&& g_Vars.currentplayer->eyespy->camerabuttonheld) {
 					if (g_Vars.currentplayer->eyespy->mode == EYESPYMODE_CAMSPY) {

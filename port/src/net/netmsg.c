@@ -1248,6 +1248,39 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 	return dst->error;
 }
 
+// Sim pose smoothing helpers (client-side, SVC_PROP_MOVE). Both EXPONENTIAL-blend
+// the current value toward the wire value by `alpha` each receive so sims glide
+// instead of snapping. Critically they are SELF-HEALING: if the current value is
+// not a sane finite number they snap to the wire value instead of blending. The
+// pre-blend code hard-assigned every field, which self-cleared any stray NaN/inf
+// next packet; a naive blend would instead perpetuate it forever (NaN*0.5 == NaN),
+// and a NaN in an aim joint yields degenerate geometry that doesn't render — an
+// invisible sim. The sane-range test also bounds the angle wrap so it can never
+// spin on a garbage value.
+static f32 netSimBlendLinear(f32 cur, f32 target, f32 alpha)
+{
+	// Limited-range fields (aim shoulders/waist). |value| stays well under 1e4.
+	if (cur > -1.0e4f && cur < 1.0e4f) {
+		return cur + (target - cur) * alpha;
+	}
+	return target;
+}
+
+static f32 netSimBlendAngle(f32 cur, f32 target, f32 alpha)
+{
+	// Radian angles (body yaw, angleoffset): blend along the shortest arc. The
+	// sane-range guard keeps both inputs within a few turns, so |d| < 200 and the
+	// wrap loops run a bounded number of times (never a hang on a huge/NaN value).
+	if (cur > -100.f && cur < 100.f && target > -100.f && target < 100.f) {
+		const f32 TWO_PI = 6.2831853071795865f;
+		f32 d = target - cur;
+		while (d >  TWO_PI * 0.5f) d -= TWO_PI;
+		while (d < -TWO_PI * 0.5f) d += TWO_PI;
+		return cur + d * alpha;
+	}
+	return target;
+}
+
 u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 flags = netbufReadU8(src);
@@ -1255,34 +1288,51 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 	struct coord pos; netbufReadCoord(src, &pos);
 	RoomNum rooms[8] = { -1 }; netbufReadRooms(src, rooms, ARRAYCOUNT(rooms));
 
-	if (src->error || !prop) {
+	if (src->error) {
 		return src->error;
 	}
 
+	// Do NOT bail when prop is NULL (an unresolved or stale syncid). The body
+	// below is still on the wire and MUST be consumed, or the rest of the ENet
+	// packet desyncs: the dispatcher reads a leftover body byte as the next
+	// message id, logs "malformed 0xNN", and drops every later message in the
+	// packet. The chr-state block reads its fields into locals before applying,
+	// so it consumes correctly even with prop == NULL; every prop deref below is
+	// guarded. (A projectile move for an unresolved prop still stops the packet —
+	// rare, and at least logged as SVC_PROP_MOVE rather than a garbage id.)
 	if (srccl->state < CLSTATE_GAME) {
 		return 1;
 	}
 
-	// Save the pre-update position so the chr-state block can blend toward
-	// the wire pos instead of snapping. Projectiles still hard-snap below.
-	const struct coord oldpos = prop->pos;
+	// Save the pre-update position so the chr-state block can blend toward the
+	// wire pos instead of snapping. Projectiles still hard-snap below. Default to
+	// the wire pos so the (prop-guarded) blend is a harmless no-op when prop is
+	// NULL — we still fall through to consume the body bytes.
+	struct coord oldpos = pos;
 
-	prop->pos = pos;
+	if (prop) {
+		oldpos = prop->pos;
+		prop->pos = pos;
 
-	if (!propRoomsEqual(rooms, prop->rooms)) {
-		if (prop->active) {
-			propDeregisterRooms(prop);
-		}
-		roomsCopy(rooms, prop->rooms);
-		if (prop->active) {
-			propRegisterRooms(prop);
+		if (!propRoomsEqual(rooms, prop->rooms)) {
+			if (prop->active) {
+				propDeregisterRooms(prop);
+			}
+			roomsCopy(rooms, prop->rooms);
+			if (prop->active) {
+				propRegisterRooms(prop);
+			}
 		}
 	}
 
 	// obj / projectile section — present only when bit 0 is set
 	if (flags & (1 << 0)) {
-		if (!prop->obj) {
-			sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't", prop->syncid);
+		if (!prop || !prop->obj) {
+			// Can't resolve the obj here, so we can't safely consume the
+			// flag-determined projectile body — stop the packet (logged as
+			// SVC_PROP_MOVE, not a garbage id). Rare: a projectile move normally
+			// arrives after its spawn. prop may be NULL (see header note).
+			sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't", prop ? prop->syncid : 0);
 			return 1;
 		}
 
@@ -1375,7 +1425,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		const f32 aimuplshoulder = netbufReadF32(src);
 		const f32 aimuprshoulder = netbufReadF32(src);
 		const f32 angleoffset = netbufReadF32(src);
-		if (prop->chr) {
+		if (prop && prop->chr) {
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
@@ -1398,8 +1448,17 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				smoothpos.x = oldpos.x + dx * alpha;
 				smoothpos.y = oldpos.y + dy * alpha;
 				smoothpos.z = oldpos.z + dz * alpha;
-				prop->pos = smoothpos;
 			}
+			// Always commit the position: blended when close, snapped to the wire
+			// pos on a teleport/respawn. Previously prop->pos was written only in
+			// the blend branch, so after a respawn more than 80 units away it stayed
+			// stuck at the death location FOR THE REST OF THE LIFE — every later
+			// packet still measured dist_sq from that stale pos, stayed >80^2, and
+			// kept skipping. The model rendered at the right spot but prop->pos
+			// (which room culling, collision and targeting all read) was frozen,
+			// which can cull the sim to invisibility. smoothpos already holds the
+			// wire pos in the teleport case (it's the default before the blend).
+			prop->pos = smoothpos;
 
 			// Crash-hunt: one shared counter gates all per-step diagnostic
 			// logs in this block. Limits total volume so the diag log stays
@@ -1428,9 +1487,19 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// sync because botApplyMovement calls modelSetChrRotY directly after
 			// moving them — we replicate that here on the client.
 			if (log_steps) netDiagLogf("step_rotY", "sid=%u", (u32)prop->syncid);
-			chrSetRotY(chr, yrot);
+			// Smooth the BODY FACING like the position above: blend 50% toward
+			// the wire yrot instead of snapping, so the sim turns gradually
+			// rather than jerking between server updates (the "stuck facing one
+			// direction" look while a bot tracks/shoots you). yrot is RADIANS
+			// (chrGetRotY / atan2f), so wrap the delta to (-PI, PI] for the
+			// shortest rotation. Reuse the position block's dist_sq guard: on a
+			// teleport/respawn (large move) snap the facing with the position
+			// rather than spinning the chr across the shortest arc.
+			const f32 applyyrot = (dist_sq < 80.f * 80.f)
+				? netSimBlendAngle(chrGetRotY(chr), yrot, 0.5f) : yrot;
+			chrSetRotY(chr, applyyrot);
 			if (chr->model) {
-				modelSetChrRotY(chr->model, yrot);
+				modelSetChrRotY(chr->model, applyyrot);
 			}
 
 			// ANIMATION: snap when animnum diverges from current. Guard against
@@ -1471,28 +1540,49 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// shoulders (aimuplshoulder/aimuprshoulder), waist rotation (aimupback +
 			// aimsideback + angleoffset). Without these, the chr's arms point
 			// straight forward regardless of aim direction, so the held weapon
-			// doesn't align with actual firing direction. We also set aimend*
-			// fields to the current values and zero aimendcount so that
-			// chrUpdateAimProperties (called on each fulltick) snaps aim* to
-			// aimend* immediately instead of slowly interpolating back to some
-			// previous AI state (which we don't receive on the client). This
-			// ensures the sim's posture matches the server immediately.
-			chr->aimupback = aimupback;
-			chr->aimsideback = aimsideback;
-			chr->aimuplshoulder = aimuplshoulder;
-			chr->aimuprshoulder = aimuprshoulder;
-			chr->aimendback = aimupback;
-			chr->aimendsideback = aimsideback;
-			chr->aimendlshoulder = aimuplshoulder;
-			chr->aimendrshoulder = aimuprshoulder;
+			// doesn't align with actual firing direction.
+			//
+			// Smooth the upper-body aim like the position/yrot blends above:
+			// glide the joint rotations 50% toward the wire values each receive
+			// instead of snapping, so the arms/weapon — and the head, which rides
+			// the aimed spine — track gradually rather than jerking. That jerk is
+			// the visible half of "a bot damages you without looking at you": the
+			// aim is synced but was applied as a hard snap. aim* joints are
+			// limited-range (waist twist / shoulder pitch), so a plain lerp is
+			// safe (no angle wrap). On a teleport/respawn the dist_sq guard snaps
+			// instead, matching the position. Damage is server-side hitscan, so
+			// this visual-only lag never affects hit registration.
+			if (dist_sq < 80.f * 80.f) {
+				chr->aimupback      = netSimBlendLinear(chr->aimupback,      aimupback,      0.5f);
+				chr->aimsideback    = netSimBlendLinear(chr->aimsideback,    aimsideback,    0.5f);
+				chr->aimuplshoulder = netSimBlendLinear(chr->aimuplshoulder, aimuplshoulder, 0.5f);
+				chr->aimuprshoulder = netSimBlendLinear(chr->aimuprshoulder, aimuprshoulder, 0.5f);
+			} else {
+				chr->aimupback = aimupback;
+				chr->aimsideback = aimsideback;
+				chr->aimuplshoulder = aimuplshoulder;
+				chr->aimuprshoulder = aimuprshoulder;
+			}
+			// Hold the blended/snapped pose: aimend* = aim*, count = 0 so the
+			// per-fulltick chrUpdateAimProperties keeps our value instead of
+			// easing back toward a stale AI target we never receive on the client.
+			chr->aimendback = chr->aimupback;
+			chr->aimendsideback = chr->aimsideback;
+			chr->aimendlshoulder = chr->aimuplshoulder;
+			chr->aimendrshoulder = chr->aimuprshoulder;
 			chr->aimendcount = 0;
 			if (chr->aibot) {
 				// angleoffset: added to waist yrot in chrHandleJointPositioned,
 				// used by botApplyMovement to decouple body-facing from animation
 				// direction during strafe runs (so the chr can fire left while
 				// running forward). Syncing it is essential for the weapon to
-				// align with the server's upper-body orientation.
-				chr->aibot->angleoffset = angleoffset;
+				// align with the server's upper-body orientation. Blend it with
+				// the same shortest-path wrap as yrot — angleoffset can span up to
+				// +-PI when the aim is opposite the run direction, so a plain lerp
+				// could spin the weapon the long way round for a frame.
+				chr->aibot->angleoffset = (dist_sq < 80.f * 80.f)
+					? netSimBlendAngle(chr->aibot->angleoffset, angleoffset, 0.5f)
+					: angleoffset;
 			}
 
 			// HELD WEAPONS: sync per-hand weapon choices. The server's bot AI

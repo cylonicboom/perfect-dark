@@ -1048,6 +1048,15 @@ static void netServerEvDisconnect(struct netclient *cl)
 		g_NetVote.client_vote[cl->id] = -1;
 	}
 
+	// If we were spectating this client's pawn, stop now — its chr is about to
+	// be orphaned (client->player->client cleared by netClientReset) and freed
+	// at the next stage. Leaving g_NetSpectateChr pointing at it makes the
+	// spectate redirect / camera chase a dangling pointer when the round ends.
+	if (g_NetSpectateChr && cl->player && cl->player->prop
+			&& cl->player->prop->chr == g_NetSpectateChr) {
+		netSpectateStop();
+	}
+
 	netClientReset(cl);
 
 	--g_NetNumClients;
@@ -2412,9 +2421,28 @@ void netSpectateApply(void)
 	if (!g_NetMode || !g_NetSpectateChr) {
 		return;
 	}
-	// Target validation: chr may have been freed (round end, sim removed),
-	// or hidden. Clear silently in those cases — user can re-/spec to pick
-	// someone else. Dead targets are still valid spectate subjects.
+	// Validate the target by POINTER against the live mpchr list before we touch
+	// it — g_NetSpectateChr can dangle (the target left, its chr was freed at
+	// round-end, or a sim was removed). A chr still in the list is safe to read
+	// (even if dead); a freed one is gone, so stop cleanly. This comparison
+	// never dereferences the possibly-freed pointer.
+	{
+		bool present = false;
+		for (s32 i = 0; i < MAX_MPCHRS; ++i) {
+			if (g_MpAllChrPtrs[i] == g_NetSpectateChr) {
+				present = true;
+				break;
+			}
+		}
+		if (!present) {
+			netSpectateHideLocal(false);
+			g_NetSpectateChr = NULL;
+			return;
+		}
+	}
+	// Target validation: hidden / despawned. Clear silently in those cases —
+	// user can re-/spec to pick someone else. Dead targets are still valid
+	// spectate subjects. Safe to dereference now: present in the mpchr list.
 	struct chrdata *t = g_NetSpectateChr;
 	if (!t->prop || (t->chrflags & CHRCFLAG_HIDDEN)) {
 		netSpectateHideLocal(false);
@@ -2425,6 +2453,7 @@ void netSpectateApply(void)
 	if (!pl || !pl->prop) {
 		return;
 	}
+
 	// Override the CAMERA only — leave prop->pos alone so the corpse stays
 	// where it died. The renderer's view matrix reads cam_pos / cam_look /
 	// cam_up (set up at the top of playerAllocateMatrices), so populating
@@ -2437,7 +2466,18 @@ void netSpectateApply(void)
 	// vv_theta downstream. TWO_PI literal so this TU doesn't need to pull
 	// in the game's math.h on top of <math.h>.
 	const f32 TWO_PI = 6.2831853071795865f;
-	const f32 thetaRad = TWO_PI - chrGetInverseTheta(t);
+	// Sims: take yaw from the MODEL's rotation (modelGetChrRotY / chrinfo.yrot),
+	// which Fix #2 syncs every SVC_PROP_MOVE via modelSetChrRotY and is exactly
+	// what visibly turns. We can't use chrGetInverseTheta (returns aibot->lookangle,
+	// never synced) NOR chrGetRotY (returns aibot->roty — the client's chrTick
+	// recomputes it from movement, so it diverges from the synced model yaw; that's
+	// why the camera stayed locked on clients while the model turned). On the host
+	// the AI keeps both fields in step, which is why it looked fine there. lookangle
+	// and roty are both assigned modelGetChrRotY server-side, so the TWO_PI - facing
+	// convention is unchanged. Players keep chrGetInverseTheta — vv_theta is synced.
+	const f32 facing = (t->prop->type == PROPTYPE_CHR && t->model)
+		? modelGetChrRotY(t->model) : chrGetInverseTheta(t);
+	const f32 thetaRad = TWO_PI - facing;
 
 	// Pitch: ride the target's vertical look so spectating is true first-person
 	// (up/down), not just yaw. Player targets sync vv_verta from SVC_PLAYER_MOVE
@@ -2456,8 +2496,15 @@ void netSpectateApply(void)
 	const f32 pitchRad = pitchDeg * TWO_PI / 360.0f;
 
 	// For PROPTYPE_PLAYER, prop->pos.y is set by bondmovePlayer to
-	// groundy + vv_eyeheight — already at eye level. No Y offset needed.
+	// groundy + vv_eyeheight — already at eye level. A sim (PROPTYPE_CHR) has
+	// prop->pos at the chr's CENTRE, so spectating it from there puts the camera
+	// inside the body (the "torso" view). Nudge up to head height — same +50 the
+	// host-spectator's spectatorTargetEyeAndForward uses, so /spec on a sim and
+	// the host panel's sim view line up.
 	struct coord eyepos = t->prop->pos;
+	if (t->prop->type == PROPTYPE_CHR) {
+		eyepos.y += 50.f;
+	}
 
 	// Look direction: forward vector from yaw + pitch. cam_up is world up.
 	const f32 sinT = sinf(thetaRad);
@@ -2466,6 +2513,19 @@ void netSpectateApply(void)
 	const f32 cosP = cosf(pitchRad);
 	struct coord camlook = { -sinT * cosP, sinP, cosT * cosP };
 	struct coord camup = { 0.f, 1.f, 0.f };
+
+	// A sim's eye nudge above sits at the head's CENTRE, so the camera looks out
+	// from inside the model — you see the inside of the face and the body clips in.
+	// Push forward along the view to the eye/face surface so the head and body sit
+	// behind the camera: first-person without clipping, and no model-hide needed
+	// (CHRCFLAG_HIDDEN only freezes a chr's animation, it does NOT stop the draw).
+	// ~28 units ~= head half-depth; small enough that the orbit as the bot turns is
+	// unnoticeable. Players are already at true eye level, so they're left alone.
+	if (t->prop->type == PROPTYPE_CHR) {
+		eyepos.x += camlook.x * 28.f;
+		eyepos.y += camlook.y * 28.f;
+		eyepos.z += camlook.z * 28.f;
+	}
 
 	// Push into the camera. We have to call setCurrentPlayer because
 	// playerSetCamProperties* writes to g_Vars.currentplayer, not the pl

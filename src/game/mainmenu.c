@@ -5075,15 +5075,152 @@ char *mainMenuTextLabel(struct menuitem *item)
 	return langGet(nocheats[item->param]);
 }
 
+#ifndef PLATFORM_N64
+// Port-only: Combat Simulator / Co-Operative / Counter-Operative each open a
+// small Local/Online submenu instead of launching directly. "Local" reuses the
+// original main-menu handler; "Online" routes to the network menu (Combat Sim)
+// or is a disabled placeholder (Co-op/Counter-op) pending later work.
+struct menuitem g_CombatSimModeMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Local",
+		0,
+		menuhandlerMainMenuCombatSimulator,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Online",
+		0,
+		(void *)&g_NetMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_CombatSimModeMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	L_OPTIONS_118, // "Combat Simulator"
+	g_CombatSimModeMenuItems,
+	NULL,
+	MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+struct menuitem g_CoopModeMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Local",
+		0,
+		menuhandlerMainMenuCooperative,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_ALWAYSDISABLED,
+		(uintptr_t)"Online",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_CoopModeMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	L_OPTIONS_119, // "Co-Operative"
+	g_CoopModeMenuItems,
+	NULL,
+	MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+struct menuitem g_AntiModeMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Local",
+		0,
+		menuhandlerMainMenuCounterOperative,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_ALWAYSDISABLED,
+		(uintptr_t)"Online",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_AntiModeMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	L_OPTIONS_120, // "Counter-Operative"
+	g_AntiModeMenuItems,
+	NULL,
+	MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+#endif
+
 struct menuitem g_MainMenuMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
-#ifdef PLATFORM_N64
 		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT,
-#else
-		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
-#endif
 		L_MISC_446, // "Carrington Institute"
 		0x00000001,
 		NULL,
@@ -5091,11 +5228,7 @@ struct menuitem g_MainMenuMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
-#ifdef PLATFORM_N64
 		MENUITEMFLAG_BIGFONT,
-#else
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
-#endif
 		(uintptr_t)&mainMenuTextLabel,
 		0x00000002,
 		menuhandlerMainMenuSoloMissions,
@@ -5106,11 +5239,15 @@ struct menuitem g_MainMenuMenuItems[] = {
 #ifdef PLATFORM_N64
 		MENUITEMFLAG_BIGFONT,
 #else
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT,
 #endif
 		(uintptr_t)&mainMenuTextLabel,
 		0x00000003,
+#ifdef PLATFORM_N64
 		menuhandlerMainMenuCombatSimulator,
+#else
+		(void *)&g_CombatSimModeMenuDialog,
+#endif
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -5118,11 +5255,15 @@ struct menuitem g_MainMenuMenuItems[] = {
 #ifdef PLATFORM_N64
 		MENUITEMFLAG_BIGFONT,
 #else
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT,
 #endif
 		(uintptr_t)&mainMenuTextLabel,
 		0x00000004,
+#ifdef PLATFORM_N64
 		menuhandlerMainMenuCooperative,
+#else
+		(void *)&g_CoopModeMenuDialog,
+#endif
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -5130,22 +5271,16 @@ struct menuitem g_MainMenuMenuItems[] = {
 #ifdef PLATFORM_N64
 		MENUITEMFLAG_BIGFONT,
 #else
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT,
 #endif
 		(uintptr_t)&mainMenuTextLabel,
 		0x00000005,
+#ifdef PLATFORM_N64
 		menuhandlerMainMenuCounterOperative,
-	},
-#ifndef PLATFORM_N64
-	{
-		MENUITEMTYPE_SELECTABLE,
-		4,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Network Game",
-		0x00000006,
-		(void *)&g_NetMenuDialog,
-	},
+#else
+		(void *)&g_AntiModeMenuDialog,
 #endif
+	},
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

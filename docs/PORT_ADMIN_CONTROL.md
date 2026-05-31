@@ -69,33 +69,45 @@ to start it, or `saverotation` to add it to the rotation.
 Valid `option` names match the playlist `options=` vocabulary (see
 `docs/netplay.md` / `dist/linux/server/server_playlist.example.ini`).
 
-### Configure via the built-in Combat Simulator menu (recommended)
+### Configure via the in-client menu (recommended)
 
-Instead of the text `set` commands, an admin can configure the match with the
-**normal built-in Combat Simulator menu** and push the result to the server —
-exactly like hosting locally, but the dedicated server is the authoritative host:
+Instead of the text `set` commands, an admin can configure the match in a small
+**Admin: Match Setup** menu and push the result to the server:
 
 ```
+/admin login <pw>            authenticate as admin
 /admin take                  take control (server holds in the lobby; clients see "waiting")
 /admin endmatch              if a match is running, end it so you're in the lobby
-/admin configure             load the Combat Sim setup so you can edit it
-   ... open the Combat Simulator menu and set stage / scenario / weapons /
-       options / bots exactly as you would when hosting a local game ...
-/admin pushstart             send the configured match to the server; it adopts the
-                             setup, starts the match, and broadcasts it to all clients
+/admin configure             open the Admin: Match Setup menu  (press ~ to close
+                             the console so the menu is visible)
+   ... set Arena / Scenario / Simulants + difficulty / Weapons / Limits /
+       Options ...
+   Push & Start Match         (menu button) — or type /admin pushstart
 ```
 
-`pushstart` (alias `go`) serializes your locally-configured `g_MpSetup` + bot
-configs and sends them to the server via `CLC_ADMIN_SETUP`. The server validates
-that you're the in-control admin, commits the setup, and runs the same
-`mpStartMatch` → `SVC_STAGE_START` path a normal host uses — so clients
-transition into the match exactly as usual. While you're in the lobby
-configuring, the server only broadcasts lobby state, so your local edits aren't
-overwritten.
+The menu edits your already-synced `g_MpSetup` + bot configs **in place** (it does
+*not* run the title-screen Combat Sim setup-load, so it's safe to open while
+you're connected — that crash is gone). "Push & Start" / `pushstart` (alias `go`)
+serializes `g_MpSetup` + bot configs to the server via `CLC_ADMIN_SETUP`; the
+server validates you're the in-control admin, commits, and runs the same
+`mpStartMatch` → `SVC_STAGE_START` path a normal host uses, so every client
+transitions into the match as usual. When the menu opens it seeds the current
+fields from the server's lobby state.
+
+The menu is a compact list of openers (like the real Combat Sim "Game Setup"):
+**Arena**, **Weapons**, and **Limits** open the *actual* Combat Sim sub-dialogs
+(so Weapons is the full per-slot picker + weapon sets / custom presets, not a
+single preset choice); **Scenario**, **Simulants** (0–8) and **Sim Difficulty**
+are inline dropdowns; **Options** opens a sub-dialog of the common game toggles
+(One Hit Kills, Slow Motion, Fast Movement, Teams, No Radar, No Auto-Aim,
+Friendly Fire, Kills = Score). For the niche options, use the text `set` commands.
 
 > The `set`/`apply`/`show` text commands remain available as a scriptable
-> alternative (and for the Discord bot); the menu flow above is the "as if
-> hosting locally" experience.
+> alternative (and for the Discord bot).
+>
+> Note: `/admin configure` pushes the menu onto the active lobby menu; in the
+> normal connected-lobby state that's fine. If you invoked it from an in-world
+> state and nothing appears, return to the lobby and try again.
 
 ### Presets & rotation
 
@@ -124,8 +136,11 @@ command says so.
 
 - The text/`/admin` interface is also the surface a Discord bot (or any tooling)
   can drive via `CLC_ADMIN`.
-- A full in-client GUI flow ("take control → drop into the real Combat Sim menu →
-  push") is a planned follow-up; it builds on this same server-side command set.
+- The in-client **Admin: Match Setup** menu (`/admin configure`, above) is the
+  GUI flow; it edits `g_MpSetup` in place and reuses this same `CLC_ADMIN_SETUP`
+  push. A *full* drop-into-the-real-Combat-Sim-menu flow was deliberately not
+  built — it requires tearing the client world down (see
+  `PORT_ADMIN_GUI_CONFIGURE.md`); the lightweight menu avoids that.
 - `savepreset` captures the *currently active* match weapons, so it's most
   useful once a GUI configures them; from the text interface it snapshots
   whatever the running match uses.

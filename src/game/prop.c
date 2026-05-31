@@ -1589,6 +1589,35 @@ struct prop *propFindForInteract(bool usingeyespy)
 
 	g_InteractProp = NULL;
 
+#ifndef PLATFORM_N64
+	// Headless/dedicated server: a remote player has no render pass, so its
+	// onscreen-prop list (g_Vars.onscreenprops) is empty and the per-prop
+	// PROPFLAG_ONTHISSCREENTHISTICK flag the *TestForInteract checks rely on is
+	// never set -- the normal scan below finds nothing and door / object
+	// interaction never fires. Scan the active prop list instead; the test
+	// functions still filter by distance / rooms / line-of-sight (and skip the
+	// onscreen-flag check for this case, see doorTestForInteract /
+	// objTestForInteract). A local (non-remote) player keeps the render path.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer
+			&& g_Vars.currentplayer->isremote) {
+		struct prop *prop = g_Vars.activeprops;
+		while (prop && prop != g_Vars.pausedprops) {
+			if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON) {
+				if (!usingeyespy) {
+					checkmore = objTestForInteract(prop);
+				}
+			} else if (prop->type == PROPTYPE_DOOR) {
+				checkmore = doorTestForInteract(prop);
+			}
+			if (!checkmore) {
+				break;
+			}
+			prop = prop->next;
+		}
+		return g_InteractProp;
+	}
+#endif
+
 	// Iterate onscreen list near to far
 	for (ptr = g_Vars.endonscreenprops - 1; ptr >= g_Vars.onscreenprops; ptr--) {
 		struct prop *prop = *ptr;

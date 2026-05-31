@@ -1,10 +1,52 @@
 # Session-Safe Admin GUI Configure — Design / Scope
 
-Status: **Scoped, not yet implemented.** Phase 0 stopgap (guard) applied — see below.
+Status: **Resolved via a different approach — see "Resolution" below.** The
+configure-session redesign in this doc (Option 2) was *not* built; instead a
+lightweight, purpose-built **Admin: Match Setup** menu replaced the Phase-0
+stopgap and sidesteps the crash class entirely. This doc is retained for the
+root-cause analysis and the options that were considered.
+
 Companion to [`PORT_ADMIN_CONTROL.md`](PORT_ADMIN_CONTROL.md) (the admin remote-control
 protocol) and [`PORT_DEDICATED_SERVER_TRIAGE.md`](PORT_DEDICATED_SERVER_TRIAGE.md).
 
-The goal: let a connected admin configure a match through the **built-in Combat
+The goal: let a connected admin configure a match through a menu ("as if hosting
+locally") and push it to a dedicated server, without crashing or dropping the
+connection.
+
+---
+
+## Resolution (implemented)
+
+Rather than reuse the **actual** Combat Simulator menu — whose entry runs the
+destructive title-screen setup-load (`mpsetupCopyAllFromPak` → `mpInit`) that is
+the entire source of the crash chain below — `/admin configure` now opens a small
+**Admin: Match Setup** dialog (`g_NetAdminSetupMenuDialog`, `port/src/net/netmenu.c`).
+Its handlers edit the already-synced `g_MpSetup` / `g_BotConfigsArray` **in
+place** (no `mpInit`, no pak reload, no world teardown), then the in-menu
+**"Push & Start Match"** button (or `/admin pushstart`) ships the result with the
+existing, unchanged `CLC_ADMIN_SETUP`. Because nothing resets the live world,
+there is no dangling-state class to chase — the menu is safe to open while the
+client's lobby world is ticking.
+
+It's a compact list of openers (modelled on the real "Game Setup" menu so it
+doesn't overflow): **Arena**, **Weapons** and **Limits** open the *actual*
+Combat Sim sub-dialogs (`g_MpArenaMenuDialog`, `g_MpWeaponsMenuDialog`,
+`g_MpLimitsMenuDialog`), so Weapons is the full per-slot picker; **Scenario** /
+**Simulants** / **Sim Difficulty** are inline dropdowns (`mpCreateBotFromProfile`);
+**Options** is a sub-dialog of curated toggles (`menuhandlerMpCheckboxOption`).
+Only the option list is curated, not every toggle — use the text `set` commands
+for the rest. No `NET_PROTOCOL_VER` bump (reuses `CLC_ADMIN_SETUP`).
+
+Known limitation: `/admin configure` pushes the dialog onto the active (lobby)
+menu root; in the normal connected-lobby state that works, but if invoked from an
+in-world state with no menu open the dialog may not appear — close/return to the
+lobby first. A gated lobby-menu entry + admin-status sync is a possible follow-up.
+
+The original analysis and the three design options follow, for the record.
+
+---
+
+The goal was: let a connected admin configure a match through the **built-in Combat
 Simulator menu** ("as if hosting locally") and push it to a dedicated server,
 without crashing or dropping the connection.
 

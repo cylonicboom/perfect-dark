@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 34 // 34: g_MpSetup.portoptions in SVC_STAGE_START / CLC_ADMIN_SETUP (MPOPTION_NODOORS)
+#define NET_PROTOCOL_VER 35 // 35: CLC_PROP_HIT (client-reported destructible-prop / glass damage)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -552,5 +552,15 @@ void netDiagLogf(const char *event, const char *fmt, ...);
 void netServerEnqueueHit(struct prop *target, f32 damage, const struct coord *vector,
         const struct gset *gset, s16 hitpart, s16 side, const s16 *arg10,
         s32 playernum, struct prop *shooter_prop);
+
+// Lag-style defer for client-reported destructible-prop hits (CLC_PROP_HIT).
+// Same rationale as netServerEnqueueHit: objDamage broadcasts SVC_PROP_DAMAGE,
+// so it must run in netEndFrame (after the buffer reset, before flush).
+void netServerEnqueuePropHit(struct prop *prop, f32 damage, const struct coord *pos,
+        s32 weaponnum, s32 playernum);
+
+// Client -> server: report our local player's gunfire hit on a destructible prop.
+// Called from objTakeGunfire; no-op unless we're a connected client in-game.
+void netClientReportPropHit(struct prop *prop, f32 damage, const struct coord *pos, s32 weaponnum);
 
 #endif // _IN_NET_H

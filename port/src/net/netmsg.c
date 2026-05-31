@@ -618,6 +618,42 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcPropHitWrite(struct netbuf *dst, struct prop *prop, f32 damage, struct coord *pos, s32 weaponnum)
+{
+	netbufWriteU8(dst, CLC_PROP_HIT);
+	netbufWritePropPtr(dst, prop);
+	netbufWriteF32(dst, damage);
+	netbufWriteCoord(dst, pos);
+	netbufWriteS8(dst, (s8)weaponnum);
+	return dst->error;
+}
+
+u32 netmsgClcPropHitRead(struct netbuf *src, struct netclient *srccl)
+{
+	struct prop *prop = netbufReadPropPtr(src);
+	const f32 damage = netbufReadF32(src);
+	struct coord pos; netbufReadCoord(src, &pos);
+	const s8 weaponnum = netbufReadS8(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME || g_NetMode != NETMODE_SERVER) {
+		return src->error;
+	}
+	// Destructible non-chr props only (chr hits use CLC_HIT). Reject zero/negative
+	// damage and anything that didn't resolve to a live obj prop.
+	if (damage <= 0.f || !prop || !prop->obj
+			|| prop->type == PROPTYPE_CHR || prop->type == PROPTYPE_PLAYER) {
+		return src->error;
+	}
+
+	// Defer the objDamage (which broadcasts SVC_PROP_DAMAGE) to netEndFrame --
+	// same reason as CLC_HIT: running it here writes to g_NetMsgRel just before
+	// netStartFrame resets the buffer, discarding the broadcast.
+	netServerEnqueuePropHit(prop, damage, &pos, (s32)weaponnum,
+			(srccl->playernum < MAX_PLAYERS) ? (s32)srccl->playernum : -1);
+
+	return src->error;
+}
+
 /* server -> client */
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl)

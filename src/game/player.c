@@ -267,6 +267,15 @@ f32 playerChooseSpawnLocation(f32 chrradius, struct coord *dstpos, RoomNum *dstr
 		// Note the closest chr's distance.
 		// Decide whether the pad is considered to be ok, bad or very bad.
 		for (i = 0; i < playercount; i++) {
+#ifndef PLATFORM_N64
+			// Netplay: a player slot can be NULL/unbound here at stage load when the
+			// synced chrslots player count disagrees with the combatants actually
+			// bound by netPlayersAllocate (spectator clients, stale round state).
+			// Skip rather than deref NULL->prop. See docs/PORT_DEDICATED_SERVER_TRIAGE.md.
+			if (!g_Vars.players[i]) {
+				continue;
+			}
+#endif
 			if (g_Vars.players[i]->prop
 					&& g_Vars.players[i]->prop != prop
 					&& (!prop || chrCompareTeams(prop->chr, g_Vars.players[i]->prop->chr, COMPARE_ENEMIES))) {

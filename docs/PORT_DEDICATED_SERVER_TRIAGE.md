@@ -396,6 +396,56 @@ Untracked: `run-dedicated.bat`, `server_playlist.ini` (operator-side, not source
 
 ---
 
+## RESOLVED — player prop interaction on a headless server (doors / glass / destructibles)
+
+**Confirmed working 2026-05-31** (user-verified: "doors open and glass breaks"). All player-initiated
+prop interaction failed *only* on a dedicated/headless server because it read render-populated state
+that no host populates. Bots were unaffected (AI paths don't use render state); a listen host worked
+(the host renders and populates the state). Map size was a red herring — "no rendering host" was the
+discriminator. Three distinct root causes:
+
+### 1. Doors / usable objects (activate interaction)
+- **Cause:** `propFindForInteract` (`prop.c`) scans `g_Vars.onscreenprops` — the renderer's on-screen
+  list, empty for a remote player headless — and `doorTestForInteract` / `objTestForInteract`
+  (`propobj.c`) gate on `PROPFLAG_ONTHISSCREENTHISTICK`, also never set. The player's activate found
+  nothing. (`lv.c:1479` confirmed PD opens doors through this interact path, so the headless `mainTick`
+  mirror already called it correctly — only the prop search was render-coupled.)
+- **Fix:** for a remote player on the server (`g_Vars.currentplayer->isremote`), `propFindForInteract`
+  scans the **active prop list** geometrically, and the two `*TestForInteract` functions skip the
+  on-screen-flag check (their distance / room / LoS checks still decide). Local players keep the render path.
+
+### 2. Glass / destructible props (shooting) — `CLC_PROP_HIT`
+- **Cause:** the server **cannot reliably simulate a remote player's shot** — their weapon `gset` is only
+  partially synced (`bondgun.c:2372`). Chr hits work only because they're *client-reported* via `CLC_HIT`;
+  props had no such path, so glass never registered server-side. (An earlier server-side screen-space
+  bypass in `prop.c` was the wrong layer — reverted.)
+- **Fix:** new **`CLC_PROP_HIT`** (`NET_PROTOCOL_VER` → 35) mirrors `CLC_HIT` for props. The client detects
+  the hit in its own `shotCalculateHits` (full state → correct prop *and* correct damage) and reports it
+  from `objTakeGunfire` (gunfire only, local player only) via `netClientReportPropHit`. The server
+  validates (`netmsgClcPropHitRead`), defers to a pending-prop-hit queue drained in `netEndFrame` (so the
+  `SVC_PROP_DAMAGE` broadcast survives the buffer reset, like the chr-hit queue), and `objDamage` applies
+  + broadcasts; clients apply via the existing `damage<0` path.
+
+### 3. Spawn-picker NULL-slot guard (separate crash, defensive)
+- `playerChooseSpawnLocation` (`player.c`) crashed deref'ing a NULL `g_Vars.players[i]` at stage load when
+  the synced `chrslots` player count disagreed with the bound combatants (round-transition / 2nd match).
+  Added a port-only NULL-skip guard. Root cause (why a slot is unbound across a round) not fully chased —
+  the guard prevents the crash; revisit if it recurs. (addr2line trace: `playerChooseSpawnLocation`
+  player.c:270 ← `lvReset` ← `mainLoop`.)
+
+### Also fixed alongside
+- **Sim prop-damage flood:** `objDamage` re-broadcast `SVC_PROP_DAMAGE` every tick for indestructible
+  doors sims sprayed (≈1600/session). Doors sync via `SVC_PROP_DOOR`, so they're now excluded from the
+  prop-damage broadcast. (Finer gate for indestructible *objects* sharing `PROPTYPE_OBJ` with glass is a
+  follow-up — can't blanket-exclude `PROPTYPE_OBJ`.)
+- **`--netdiag <path>` CLI flag:** the flag the docs referenced was never parsed in `netInit`, so
+  dedicated-server diag logging only worked via the `Net.Debug.LogPath` ini key. Now wired into `netInit`.
+
+Files: `prop.c`, `propobj.c`, `port/src/net/net.c`, `port/src/net/netmsg.c`, `port/include/net/net.h`,
+`port/include/net/netmsg.h`, `src/game/player.c`. Promote to `PORT_NET_PREDICT_CHANGES.md` at commit.
+
+---
+
 ## Conventions for this file
 
 - Append below the relevant section, don't rewrite history; we want to see dead ends.

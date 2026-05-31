@@ -1,0 +1,30 @@
+# Python / shell scripts are executed via their shebang (#!/usr/bin/env python3,
+# #!/bin/sh, ...) during the CMake build and when running the Linux/Debian
+# dedicated server. On Windows this repo is usually checked out with
+# core.autocrlf=true, which rewrites them to CRLF. That CRLF survives onto the
+# (shared) working tree, and when a script runs under Linux/WSL the kernel reads
+# the shebang as "python3\r" and aborts:
+#   env: 'python3\r': No such file or directory
+#
+# Force scripts to LF regardless of core.autocrlf so one checkout builds/runs on
+# both Windows (MSYS handles LF fine) and Linux. These files are stored LF in the
+# repo already, so this only corrects the working-tree checkout, not history.
+
+*.py  text eol=lf
+*.sh  text eol=lf
+
+# Extensionless asset/build helper scripts (won't match *.py / *.sh)
+tools/assetmgr/mkanims     text eol=lf
+tools/assetmgr/mklang      text eol=lf
+tools/assetmgr/mkpads      text eol=lf
+tools/assetmgr/mksequences text eol=lf
+tools/assetmgr/mktextures  text eol=lf
+tools/assetmgr/mktiles     text eol=lf
+tools/extract              text eol=lf
+tools/extract-segment      text eol=lf
+tools/mkrawobject          text eol=lf
+tools/mksimpleelf          text eol=lf
+tools/mktextures           text eol=lf
+tools/patchmips3           text eol=lf
+tools/rareunzip            text eol=lf
+tools/rarezip              text eol=lf

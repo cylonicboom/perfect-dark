@@ -15459,6 +15459,21 @@ bool objIsMortal(struct defaultobj *obj)
 void objTakeGunfire(struct defaultobj *obj, f32 damage, struct coord *pos, s32 weaponnum, s32 playernum)
 {
 	if ((obj->flags2 & OBJFLAG2_IMMUNETOGUNFIRE) == 0) {
+#ifndef PLATFORM_N64
+		// The server can't reliably re-simulate a remote player's shot (their
+		// weapon gset is only partially synced), so when our own local player's
+		// gunfire hits a destructible prop, report it to the server like a chr
+		// hit (CLC_HIT). The server validates, applies, and broadcasts
+		// SVC_PROP_DAMAGE -- which we then apply via objDamage's damage<0 path.
+		// objDamage below no-ops on the client for positive damage, so there's
+		// no local double-apply. Gunfire only -- explosions stay server-side.
+		if (g_NetMode == NETMODE_CLIENT && damage > 0.0f
+				&& g_Vars.currentplayer && !g_Vars.currentplayer->isremote
+				&& obj->prop && obj->prop->type != PROPTYPE_CHR
+				&& obj->prop->type != PROPTYPE_PLAYER) {
+			netClientReportPropHit(obj->prop, damage, pos, weaponnum);
+		}
+#endif
 		objDamage(obj, damage, pos, weaponnum, playernum);
 	}
 }
@@ -15475,8 +15490,11 @@ void objDamage(struct defaultobj *obj, f32 damage, struct coord *pos, s32 weapon
 			return;
 		}
 	} else if (g_NetMode == NETMODE_SERVER) {
-		if (obj->prop && obj->prop->type != PROPTYPE_CHR) {
-			// chr damage is handled by a separate message
+		// chr damage is handled by a separate message (SVC_CHR_DAMAGE); doors sync
+		// via SVC_PROP_DOOR, not prop-damage -- excluding them stops a reliable-
+		// channel flood when sims spray gunfire at indestructible doors.
+		if (obj->prop && obj->prop->type != PROPTYPE_CHR
+				&& obj->prop->type != PROPTYPE_DOOR) {
 			netmsgSvcPropDamageWrite(&g_NetMsgRel, obj->prop, damage, pos, weaponnum, playernum);
 		}
 	}
@@ -16169,8 +16187,16 @@ bool objTestForInteract(struct prop *prop)
 		maybe = false;
 	}
 
+#ifndef PLATFORM_N64
+	// Server-side remote player: no render pass sets PROPFLAG_ONTHISSCREENTHISTICK,
+	// so treat the object as eligible and rely on the geometric checks below.
+	const bool noscreen = g_NetMode == NETMODE_SERVER && g_Vars.currentplayer
+			&& g_Vars.currentplayer->isremote;
+#else
+	const bool noscreen = false;
+#endif
 	if (maybe
-			&& (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)
+			&& (noscreen || (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK))
 			&& objIsHealthy(obj)
 			&& (obj->flags & OBJFLAG_CANNOT_ACTIVATE) == 0) {
 		struct prop *playerprop = g_Vars.currentplayer->prop;
@@ -20800,9 +20826,18 @@ bool doorTestForInteract(struct prop *prop)
 	bool checkmore = true;
 	struct doorobj *door = prop->door;
 
+#ifndef PLATFORM_N64
+	// On the server a remote player has no render pass, so
+	// PROPFLAG_ONTHISSCREENTHISTICK is never set -- treat the door as eligible
+	// and let the geometric distance / room / LoS checks below decide.
+	const bool noscreen = g_NetMode == NETMODE_SERVER && g_Vars.currentplayer
+			&& g_Vars.currentplayer->isremote;
+#else
+	const bool noscreen = false;
+#endif
 	if ((door->base.flags & OBJFLAG_CANNOT_ACTIVATE) == 0
 			&& door->maxfrac > 0
-			&& (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)) {
+			&& (noscreen || (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK))) {
 		bool maybe = false;
 		bool usingeyespy = g_Vars.currentplayer->eyespy && g_Vars.currentplayer->eyespy->active;
 		struct prop *playerprop = usingeyespy ? g_Vars.currentplayer->eyespy->prop : g_Vars.currentplayer->prop;

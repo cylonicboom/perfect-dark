@@ -31,6 +31,7 @@
 #include "spectator.h"
 #include "game/chraction.h"
 #include "game/chr.h"
+#include "game/propobj.h"
 #include "lib/main.h"
 #include "lib/vi.h"
 #include "lib/model.h"
@@ -776,6 +777,16 @@ void netInit(void)
 		g_NetAdminPassword[sizeof(g_NetAdminPassword) - 1] = '\0';
 	}
 
+	// --netdiag <path>: diagnostic CSV log path. Same target as the
+	// Net.Debug.LogPath config key, but as a CLI flag for dedicated servers
+	// (which have no console for /diag). Overrides the config value if both are
+	// set; the file is opened by netDiagOpen at netStartServer / netStartClient.
+	const char *argnetdiag = sysArgGetString("--netdiag");
+	if (argnetdiag && argnetdiag[0]) {
+		strncpy(g_NetDiagPath, argnetdiag, sizeof(g_NetDiagPath) - 1);
+		g_NetDiagPath[sizeof(g_NetDiagPath) - 1] = '\0';
+	}
+
 	// Initialise playlist to empty defaults; an actual load (which logs if
 	// the file is missing) only runs when we're going to be a server.
 	playlistFree(&g_NetPlaylist);
@@ -1150,6 +1161,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_VOTE: rc = netmsgClcVoteRead(&cl->in, cl); break;
 			case CLC_ADMIN: rc = netmsgClcAdminRead(&cl->in, cl); break;
 			case CLC_ADMIN_SETUP: rc = netmsgClcAdminSetupRead(&cl->in, cl); break;
+			case CLC_PROP_HIT: rc = netmsgClcPropHitRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1287,6 +1299,50 @@ void netServerEnqueueHit(struct prop *target, f32 damage, const struct coord *ve
 	ph->arg10[0] = arg10 ? arg10[0] : 0;
 	ph->arg10[1] = arg10 ? arg10[1] : 0;
 	ph->arg10[2] = arg10 ? arg10[2] : 0;
+}
+
+// Same deferred-application pattern as the chr-hit queue above, for
+// client-reported destructible-prop hits (CLC_PROP_HIT). objDamage broadcasts
+// SVC_PROP_DAMAGE, so it must run in netEndFrame after the buffer reset.
+#define NET_PENDING_PROP_HITS_MAX 16
+
+struct net_pending_prop_hit {
+	struct prop *prop;
+	struct coord pos;
+	f32 damage;
+	s32 weaponnum;
+	s32 playernum;
+};
+
+static struct net_pending_prop_hit g_NetPendingPropHits[NET_PENDING_PROP_HITS_MAX];
+static s32 g_NetPendingPropHitCount = 0;
+
+void netServerEnqueuePropHit(struct prop *prop, f32 damage, const struct coord *pos,
+		s32 weaponnum, s32 playernum)
+{
+	if (g_NetPendingPropHitCount >= NET_PENDING_PROP_HITS_MAX) {
+		return;
+	}
+	struct net_pending_prop_hit *ph = &g_NetPendingPropHits[g_NetPendingPropHitCount++];
+	ph->prop = prop;
+	ph->pos = *pos;
+	ph->damage = damage;
+	ph->weaponnum = weaponnum;
+	ph->playernum = playernum;
+}
+
+// Client -> server: report our local player's gunfire hit on a destructible prop
+// (glass / object). Called from objTakeGunfire. No-op unless we're a connected
+// client in-game. The server validates + applies + broadcasts SVC_PROP_DAMAGE.
+void netClientReportPropHit(struct prop *prop, f32 damage, const struct coord *pos, s32 weaponnum)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient
+			|| g_NetLocalClient->state < CLSTATE_GAME || !prop || !prop->syncid) {
+		return;
+	}
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgClcPropHitWrite(&g_NetMsgRel, prop, damage, pos, weaponnum);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
 void netStartFrame(void)
@@ -1451,6 +1507,27 @@ void netEndFrame(void)
 		}
 		setCurrentPlayerNum(prevplayernum);
 		g_NetPendingHitCount = 0;
+	}
+
+	// Drain deferred CLC_PROP_HIT entries (client-reported glass / object damage).
+	// On the server objDamage applies the damage (shattering glass etc.) and
+	// broadcasts SVC_PROP_DAMAGE into the freshly-reset g_NetMsgRel; the flush
+	// below sends it, and clients apply it via objDamage's damage<0 path.
+	if (g_NetPendingPropHitCount > 0 && g_NetMode == NETMODE_SERVER) {
+		const s32 prevplayernum = g_Vars.currentplayernum;
+		for (s32 i = 0; i < g_NetPendingPropHitCount; ++i) {
+			const struct net_pending_prop_hit *ph = &g_NetPendingPropHits[i];
+			if (!ph->prop || !ph->prop->obj) {
+				continue;
+			}
+			if (ph->playernum >= 0) {
+				setCurrentPlayerNum(ph->playernum);
+			}
+			objDamage(ph->prop->obj, ph->damage, (struct coord *)&ph->pos,
+					ph->weaponnum, ph->playernum);
+		}
+		setCurrentPlayerNum(prevplayernum);
+		g_NetPendingPropHitCount = 0;
 	}
 
 	// send whatever messages have accumulated so far

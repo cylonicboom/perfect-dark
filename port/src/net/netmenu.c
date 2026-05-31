@@ -29,6 +29,15 @@ extern MenuItemHandlerResult menuhandlerMpAdvancedSetup(s32 operation, struct me
 extern struct menuitem g_MpPlayerSetup234MenuItems[];
 extern struct menudialogdef g_NetJoinPlayerSetupMenuDialog;
 
+// Combat Sim menu handlers + data reused by the admin match-setup menu below.
+// Declared here (rather than via setup.h) to match this file's existing pattern
+// of externing the specific Combat Sim entry points it drives. The reused
+// sub-dialogs g_MpArenaMenuDialog / g_MpWeaponsMenuDialog / g_MpLimitsMenuDialog
+// are already declared in data.h.
+extern MenuItemHandlerResult menuhandlerMpCheckboxOption(s32 operation, struct menuitem *item, union handlerdata *data);
+extern char *mpMenuTextArenaName(struct menuitem *item);
+extern void mpCreateBotFromProfile(s32 botnum, u8 difficulty);
+
 static s32 g_NetMenuMaxPlayers = NET_MAX_CLIENTS;
 static s32 g_NetMenuPort = NET_DEFAULT_PORT;
 // Host spectator-mode toggles. The host applies these when starting the
@@ -160,27 +169,275 @@ MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item,
 	return 0;
 }
 
-// Admin remote control: prepare the local Combat Sim setup so a connected admin
-// can configure a match via the normal built-in menu, then push it to the
-// server with /admin pushstart. Mirrors the menu prep the host flow does
-// (mpsetupLoadCurrentFile + the Combat Sim / Advanced Setup handlers), but
-// without netStartServer since the admin is a client of a remote dedicated
-// server. Reached from the /admin configure console command.
+/* admin: lightweight match-setup menu (see docs/PORT_ADMIN_GUI_CONFIGURE.md) */
+
+// Difficulty applied uniformly to the sims configured in this menu. Menu-local;
+// the resulting g_MpSetup / g_BotConfigsArray are what the push (CLC_ADMIN_SETUP)
+// actually serialises. Weapons are edited via the reused Combat Sim Weapons
+// sub-dialog (g_MpWeaponsMenuDialog), which writes g_MpSetup.weapons directly.
+static s32 g_NetAdminMenuSimDiff = BOTDIFF_NORMAL;
+
+// Rebuild g_BotConfigsArray for `count` sims at difficulty `diff`, exactly like
+// playlistApply's bot block: clear every bot slot (chrslots bit + name), then
+// create N from the difficulty profile. g_BotCount is the count the push
+// serialises. Pure config — no world props are touched (mpCreateBotFromProfile
+// only writes g_BotConfigsArray / chrslots and draws a head/body from the RNG),
+// so this is safe to run while the client's lobby world is ticking.
+static void netAdminMenuSetSims(s32 count, u8 diff)
+{
+	if (count < 0) {
+		count = 0;
+	}
+	if (count > MAX_BOTS) {
+		count = MAX_BOTS;
+	}
+	for (s32 i = 0; i < MAX_BOTS; ++i) {
+		g_MpSetup.chrslots &= ~(1u << (i + MAX_PLAYERS));
+		g_BotConfigsArray[i].base.name[0] = '\0';
+	}
+	for (s32 i = 0; i < count; ++i) {
+		mpCreateBotFromProfile(i, diff);
+	}
+	g_BotCount = count;
+}
+
+static MenuItemHandlerResult menuhandlerNetAdminScenario(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *const opts[] = {
+		"Combat", "Hold the Briefcase", "Hacker Central",
+		"Pop a Cap", "King of the Hill", "Capture the Case",
+	};
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_MpSetup.scenario = (u8)data->checkbox.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_MpSetup.scenario < sizeof(opts) / sizeof(opts[0])) ? g_MpSetup.scenario : 0;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetAdminSims(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *const opts[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8" }; // 0..MAX_BOTS
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = MAX_BOTS + 1;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		netAdminMenuSetSims((s32)data->checkbox.value, (u8)g_NetAdminMenuSimDiff);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_BotCount <= MAX_BOTS) ? (uintptr_t)g_BotCount : MAX_BOTS;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetAdminSimDiff(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *const opts[] = { "Meat", "Easy", "Normal", "Hard", "Perfect", "Dark" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_NetAdminMenuSimDiff = (s32)data->checkbox.value;
+		// Re-apply the new difficulty to the currently-configured sim count.
+		netAdminMenuSetSims(g_BotCount, (u8)g_NetAdminMenuSimDiff);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetAdminMenuSimDiff >= 0 && g_NetAdminMenuSimDiff <= BOTDIFF_DARK)
+				? (uintptr_t)g_NetAdminMenuSimDiff : BOTDIFF_NORMAL;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetAdminPushStart(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		// Serialise g_MpSetup + bot configs to the server (CLC_ADMIN_SETUP). The
+		// server validates admin/control, commits, and runs mpStartMatch;
+		// SVC_STAGE_START then transitions every client into the match. (On a
+		// listen host this starts the match locally instead.)
+		netAdminPushStart();
+		menuPopDialog();
+	}
+	return 0;
+}
+
+// Seed the editable setup from the server's broadcast lobby state when the menu
+// opens, so the admin starts from the running config rather than stale local
+// menu values. Sims are rebuilt to the lobby's bot count (at the menu's current
+// difficulty); weapons aren't reconstructable from the lobby display block, so
+// they keep their current loadout until a preset is picked.
+static s32 netAdminSetupDialogHandler(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_OPEN && g_NetLobbyState.valid) {
+		g_MpSetup.stagenum       = g_NetLobbyState.stagenum;
+		g_MpSetup.scenario       = g_NetLobbyState.scenario;
+		g_MpSetup.options        = g_NetLobbyState.options;
+		g_MpSetup.scorelimit     = g_NetLobbyState.scorelimit;
+		g_MpSetup.timelimit      = g_NetLobbyState.timelimit;
+		g_MpSetup.teamscorelimit = g_NetLobbyState.teamscorelimit;
+		// Rebuild the sim configs to match the server's current bot count so the
+		// pushed g_BotConfigsArray / chrslots / g_BotCount are always consistent,
+		// even if the admin pushes without touching the Simulants control.
+		netAdminMenuSetSims(g_NetLobbyState.num_bots, (u8)g_NetAdminMenuSimDiff);
+	}
+	return 0;
+}
+
+// Game options live in their own sub-dialog so the main menu stays compact (a
+// long flat menu overflowed the screen). Each checkbox reuses
+// menuhandlerMpCheckboxOption, which toggles its g_MpSetup.options bit
+// (item->param3) — same handler the Combat Sim options menu uses.
+static struct menuitem g_NetAdminOptionsMenuItems[] = {
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"One Hit Kills", MPOPTION_ONEHITKILLS,  menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Slow Motion",   MPOPTION_SLOWMOTION_ON, menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Fast Movement", MPOPTION_FASTMOVEMENT, menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Teams",         MPOPTION_TEAMSENABLED, menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"No Radar",      MPOPTION_NORADAR,      menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"No Auto-Aim",   MPOPTION_NOAUTOAIM,    menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Friendly Fire", MPOPTION_FRIENDLYFIRE, menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_CHECKBOX, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Kills = Score", MPOPTION_KILLSSCORE,   menuhandlerMpCheckboxOption },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Back\n", 0, NULL },
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_NetAdminOptionsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Match Options",
+	g_NetAdminOptionsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+static struct menuitem g_NetAdminSetupMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Arena\n",
+		(uintptr_t)&mpMenuTextArenaName,
+		(void *)&g_MpArenaMenuDialog,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Scenario",
+		0,
+		menuhandlerNetAdminScenario,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Simulants",
+		0,
+		menuhandlerNetAdminSims,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Sim Difficulty",
+		0,
+		menuhandlerNetAdminSimDiff,
+	},
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Weapons\n",
+		0,
+		(void *)&g_MpWeaponsMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Limits\n",
+		0,
+		(void *)&g_MpLimitsMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Options\n",
+		0,
+		(void *)&g_NetAdminOptionsMenuDialog,
+	},
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Push & Start Match\n",
+		0,
+		menuhandlerNetAdminPushStart,
+	},
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Back\n",
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_NetAdminSetupMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Admin: Match Setup",
+	g_NetAdminSetupMenuItems,
+	netAdminSetupDialogHandler,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+// Admin remote control: open the lightweight "Admin: Match Setup" menu so a
+// connected admin can configure the next match (arena, scenario, sims, limits,
+// options, weapons) and push it with the in-menu "Push & Start" button
+// (or /admin pushstart). Unlike the old menu-configure flow this edits the
+// already-synced g_MpSetup / g_BotConfigsArray in place — no mpInit / pak reload
+// / world teardown — so it is safe to open while the client's lobby world is
+// live. The server stays the sole authority: the push (CLC_ADMIN_SETUP) is
+// rejected unless the sender is the logged-in admin holding control, so opening
+// and editing the local copy is harmless. Reached from /admin configure.
 void netAdminConfigure(void)
 {
 	if (g_NetMode != NETMODE_CLIENT) {
 		sysLogPrintf(LOG_CHAT, "admin: configure only works as a connected client");
 		return;
 	}
-	// Phase 0 stopgap (see docs/PORT_ADMIN_GUI_CONFIGURE.md): the menu-based
-	// configure runs title-screen setup logic (mpsetupCopyAllFromPak -> mpInit,
-	// then opens the Combat Sim menu) while a connected client still has a live,
-	// ticking world. That mutates global MP/game state out from under the world;
-	// the next propsTick then dereferences now-dangling state (confirmed:
-	// g_ShieldHits[].prop in shieldhitsTick) and crashes the client. Making it
-	// session-safe needs the "configure session" redesign in that doc. Until it
-	// lands, refuse and point at the session-safe text commands.
-	sysLogPrintf(LOG_CHAT, "admin: menu configure is not session-safe yet - use '/admin set ...' then '/admin apply', or '/admin start <index>'");
+	if (!g_NetLocalClient || g_NetLocalClient->state < CLSTATE_LOBBY) {
+		sysLogPrintf(LOG_CHAT, "admin: connect to a server first");
+		return;
+	}
+	// The dialog is pushed onto the (lobby) menu underneath the console; tell the
+	// admin to close the console so it's visible. The push it produces is still
+	// gated server-side, so remind them to take control first.
+	menuPushDialog(&g_NetAdminSetupMenuDialog);
+	sysLogPrintf(LOG_CHAT, "admin: opened Match Setup menu - press ~ to close the console (login + take control to push)");
 }
 
 /* host: password + public listing */

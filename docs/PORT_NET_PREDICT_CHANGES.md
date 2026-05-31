@@ -312,6 +312,22 @@ external VPS master) in [`PORT_MASTER_SERVER.md`](PORT_MASTER_SERVER.md).
 - host menu: **Password** entry (`g_NetServerPassword`) + **List Publicly**
   toggle (`g_NetMasterAdvertise`)
 - client-side `stagenum`/`scenario` → name resolution via `g_MpArenas` / `langGet`
+- **Admin: Match Setup** menu (`g_NetAdminSetupMenuDialog`), opened by `/admin
+  configure` — lightweight in-place editor for the next match. Compact
+  opener-based layout (modelled on `g_MpAdvancedSetupMenuItems` so it doesn't
+  overflow the screen): **Arena** / **Weapons** / **Limits** open the *real*
+  Combat Sim sub-dialogs (`g_MpArenaMenuDialog`, `g_MpWeaponsMenuDialog`,
+  `g_MpLimitsMenuDialog` — all in `data.h`), so weapons is the full per-slot
+  picker; **Scenario** / **Simulants** / **Sim Difficulty** are inline dropdowns
+  (`mpCreateBotFromProfile`, mirroring `playlistApply`'s bot fill); **Options**
+  opens a sub-dialog (`g_NetAdminOptionsMenuDialog`) of common toggles via
+  `menuhandlerMpCheckboxOption`. Seeds from `g_NetLobbyState` on open.
+  - edits the already-synced `g_MpSetup` / `g_BotConfigsArray` **in place** — no
+    `mpInit` / pak reload / world teardown — then pushes via `netAdminPushStart`
+    (`CLC_ADMIN_SETUP`, unchanged). Replaces the Phase-0 refusing stopgap in
+    `netAdminConfigure`; sidesteps the live-world dangling-state crash class
+    (see `PORT_ADMIN_GUI_CONFIGURE.md`). Server stays the sole authority — the
+    push is rejected unless the sender is the in-control admin.
 
 ### `tools/query.py`
 

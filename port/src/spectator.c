@@ -31,7 +31,7 @@
 #include "game/shards.h"
 #include "game/sparks.h"
 #include "game/weather.h"
-#include "game/game_13c510.h"
+#include "game/artifact.h"
 #include "lib/vi.h"
 #include "net/net.h"
 
@@ -44,7 +44,7 @@
 //   propsSort, propsTickPlayer                                        (prop.h)
 //   propsRenderBeams                                                  (propobj.h)
 //   shardsRender, sparksRender, weatherRender                         (shards.h / sparks.h / weather.h)
-//   artifactsClear, artifactsTick                                     (game_13c510.h)
+//   artifactsClear, artifactsTick                                     (artifact.h)
 //   var800613a0[], var80061380[]                                      (data.h)
 
 struct spectatorpanel g_SpectatorPanels[SPEC_MAX_PANELS];

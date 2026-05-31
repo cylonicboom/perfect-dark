@@ -6,6 +6,11 @@
 
 char *mpGetCurrentPlayerName(struct menuitem *item);
 s16 mpChooseRandomStage(void);
+#ifndef PLATFORM_N64 // All Solos in Multi Mod
+s16 mpChooseRandomMultiStage(void);
+s16 mpChooseRandomSoloStage(void);
+s16 mpChooseRandomGexStage(void);
+#endif
 MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data);
 char *mpMenuTextWeaponNameForSlot(struct menuitem *item);
 char *mpMenuTextSetupName(struct menuitem *item);
@@ -125,6 +130,9 @@ MenuItemHandlerResult menuhandlerMpWeaponSetDropdown(s32 operation, struct menui
 MenuItemHandlerResult menuhandlerMpControlCheckbox(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult menuhandlerMpAimControl(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult menuhandlerMpCheckboxOption(s32 operation, struct menuitem *item, union handlerdata *data);
+#ifndef PLATFORM_N64
+MenuItemHandlerResult menuhandlerMpCheckboxPortOption(s32 operation, struct menuitem *item, union handlerdata *data);
+#endif
 MenuItemHandlerResult menuhandlerMpTeamsEnabled(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult menuhandlerMpDisplayOptionCheckbox(s32 operation, struct menuitem *item, union handlerdata *data);
 MenuItemHandlerResult menuhandlerMpConfirmSaveChr(s32 operation, struct menuitem *item, union handlerdata *data);

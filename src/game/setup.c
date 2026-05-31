@@ -1460,6 +1460,39 @@ void setupLoadFiles(s32 stagenum)
 	g_Vars.maxprops = numobjs + numchrs + extra + 40;
 }
 
+#ifndef PLATFORM_N64
+// Port-only helper for the "No Doors" MP option: marks every lift door so
+// setupCreateProps skips creating it. Only reachable from the portoptions
+// guard in setupCreateProps, so it's compiled out entirely on N64.
+static void setupMarkLiftDoors()
+{
+	s32 index = 0;
+
+	struct defaultobj *obj = (struct defaultobj *)g_StageSetup.props;
+	while (obj->type != OBJTYPE_END) {
+		if (obj->type == OBJTYPE_LIFT) {
+			struct liftobj *lift = (struct liftobj *)obj;
+			for (int i = 0; i < ARRAYCOUNT(lift->doors); i++) {
+				if (lift->doors[i]) {
+					s32 doorindex = index + *(s32*)&lift->doors[i];
+					struct doorobj *door = (struct doorobj *)setupGetCmdByIndex(doorindex);
+					// we use this 'extra1' field here to mark the door, since its not used anywhere else
+					door->extra1 = 1;
+
+					if (door->sibling) {
+						s32 siblingidx = *(s32 *) &door->sibling + doorindex;
+						struct doorobj *sibling = (struct doorobj *) setupGetCmdByIndex(siblingidx);
+						sibling->extra1 = 1;
+					}
+				}
+			}
+		}
+		obj = (struct defaultobj *) ((u32 *) obj + setupGetCmdLength((u32 *) obj));
+		index++;
+	}
+}
+#endif
+
 void setupCreateProps(s32 stagenum)
 {
 	s32 withchrs = !argFindByPrefix(1, "-nochr") && !argFindByPrefix(1, "-noprop");
@@ -1532,6 +1565,20 @@ void setupCreateProps(s32 stagenum)
 			botmgrRemoveAll();
 			index = 0;
 
+			// Port-only "No Doors" option lives in g_MpSetup.portoptions, not
+			// options (that word is full). It's read again at the OBJTYPE_DOOR
+			// case below to skip non-lift, unlocked doors. On N64 portoptions
+			// doesn't exist, so nodoors is hard-false and door creation is
+			// unchanged.
+#ifndef PLATFORM_N64
+			bool nodoors = (g_MpSetup.portoptions & MPOPTION_NODOORS) != 0;
+			if (nodoors) {
+				setupMarkLiftDoors();
+			}
+#else
+			bool nodoors = false;
+#endif
+
 			obj = (struct defaultobj *)g_StageSetup.props;
 
 			while (obj->type != OBJTYPE_END) {
@@ -1552,11 +1599,15 @@ void setupCreateProps(s32 stagenum)
 						bodyAllocateChr(stagenum, (struct packedchr *) obj, index);
 					}
 					break;
-				case OBJTYPE_DOOR:
-					if (withobjs && (obj->flags2 & diffflag) == 0) {
-						setupCreateDoor((struct doorobj *)obj, index);
+				case OBJTYPE_DOOR: {
+					struct doorobj *door = (struct doorobj *) obj;
+					// dont skip doors that are locked or are lift doors
+					bool skipdoor = nodoors && g_Vars.normmplayerisrunning && door->keyflags == 0 && door->extra1 == 0;
+					if (!skipdoor && withobjs && (obj->flags2 & diffflag) == 0) {
+						setupCreateDoor(door, index);
 					}
 					break;
+				}
 				case OBJTYPE_DOORSCALE:
 					{
 						struct doorscaleobj *scale = (struct doorscaleobj *)obj;

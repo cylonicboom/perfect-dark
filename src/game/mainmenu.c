@@ -38,6 +38,10 @@
 #include "mpsetups.h"
 #endif
 
+#ifndef PLATFORM_N64 // All Solos in Multi Mod
+#include "romdata.h"
+#endif
+
 u8 g_InventoryWeapon;
 
 struct menudialogdef g_2PMissionControlStyleMenuDialog;
@@ -50,6 +54,10 @@ extern MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem 
 extern MenuItemHandlerResult menuhandlerJoinStart(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item, union handlerdata *data);
+#endif
+
+#ifndef PLATFORM_N64 // All Solos in Multi Mod
+bool g_NotLoadMod;
 #endif
 
 char *menuTextCurrentStageName(struct menuitem *item)
@@ -727,6 +735,11 @@ MenuItemHandlerResult menuhandlerAcceptMission(s32 operation, struct menuitem *i
 {
 	if (operation == MENUOP_SET) {
 		menuStop();
+
+#ifndef PLATFORM_N64 // All Solos in Multi Mod
+		g_NotLoadMod = true;
+		romdataFileFreeForSolo();
+#endif
 
 		if (g_Vars.stagenum == g_MissionConfig.stagenum) {
 			g_Vars.restartlevel = true;
@@ -4962,6 +4975,10 @@ MenuItemHandlerResult menuhandlerMainMenuCombatSimulator(s32 operation, struct m
 		g_Vars.antiplayernum = -1;
 		challengeDetermineUnlockedFeatures();
 		g_Vars.mpsetupmenu = MPSETUPMENU_GENERAL;
+#ifndef PLATFORM_N64 // All Solos in Multi Mod
+		g_NotLoadMod = false;
+		romdataFileFreeForSolo();
+#endif
 		func0f0f820c(&g_CombatSimulatorMenuDialog, MENUROOT_MPSETUP);
 		func0f0f8300();
 	}

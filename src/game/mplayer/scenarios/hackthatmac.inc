@@ -7,6 +7,8 @@
  * cannot use weapons while uplinking.
  */
 
+extern struct menudialogdef g_ExtGameOptionsMenuDialog;
+
 #define HTM_NUM_TERMINALS 1
 
 #ifndef PLATFORM_N64
@@ -203,7 +205,7 @@ struct menudialogdef g_HtmOptionsMenuDialog = {
 	g_HtmOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE,
-	NULL,
+	&g_ExtGameOptionsMenuDialog,
 };
 
 struct weaponobj g_HtmUplinkObj;

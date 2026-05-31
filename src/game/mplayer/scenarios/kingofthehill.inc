@@ -13,6 +13,8 @@
  * Points are awarded to each player in the hill at the time that it is won.
  */
 
+extern struct menudialogdef g_ExtGameOptionsMenuDialog;
+
 MenuItemHandlerResult menuhandlerMpHillTime(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -303,7 +305,7 @@ struct menudialogdef g_KohOptionsMenuDialog = {
 	g_KohOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE,
-	NULL,
+	&g_ExtGameOptionsMenuDialog,
 };
 
 void kohReadSave(struct savebuffer *buffer, u8 version)

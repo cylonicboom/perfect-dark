@@ -3522,17 +3522,19 @@ struct audioconfig {
 
 struct artifact {
 	u16 type;
-	u16 unk02;
-	u16 unk04;
-	u16 unk06;
-	u16 *unk08;
+	u16 actualdepth;
+	u16 expecteddepth;
+	u16 *zbufptr;
+#ifndef PLATFORM_N64
+	u16 visiblelos;
+#endif
 	union {
-		u16 *u16p;
+		u16 *depthptr;
 		struct {
-			u16 u16_1;
-			u16 u16_2;
+			u16 screeny;
+			u16 screenx;
 		};
-	} unk0c;
+	};
 	struct light *light;
 };
 
@@ -3802,8 +3804,10 @@ struct menudata_main {
 struct menudata_mpsetup {
 	u32 slotindex;
 	u32 slotcount;
-	u8 showpresets;
 	u32 unke24;
+	u32 unke28;
+	u32 unke2c;
+	u8 showpresets;
 };
 
 struct menudata_mppause {
@@ -4016,9 +4020,9 @@ struct menu {
 		struct menudata_filemgr fm;
 		struct menudata_main4mb main4mb;
 		struct menudata_training training;
+		struct menudata_mpsetup mpsetup;
 	};
 
-	struct menudata_mpsetup mpsetup;
 };
 
 struct gamefile {
@@ -4143,6 +4147,7 @@ struct mpsetup {
 	u8 ctcteambase[4]; // 0 = Random; 1..4 = spawnpadsperteam[N-1] in CTC (port-only)
 	u8 htbstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HoldTheBriefcase (port-only)
 	u8 htmstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HackThatMac (port-only)
+	u32 portoptions;  // Port-only MPOPTION_* bits that overflow the now-full 32-bit `options` word (e.g. MPOPTION_NODOORS). Test against this field, not `options`. (port-only)
 #endif
 };
 
@@ -4828,8 +4833,8 @@ struct menudata_5d8 {
 struct menudata {
 	/*0x000*/ s32 count;
 	/*0x004*/ s32 root;
-	/*0x008*/ s32 unk008; // also a menuroot constant
-	/*0x00c*/ struct menudialogdef *unk00c;
+	/*0x008*/ s32 prevmenuroot; // also a menuroot constant
+	/*0x00c*/ struct menudialogdef *prevmenudialog;
 	/*0x010*/ f32 unk010;
 	/*0x014*/ u8 bg;
 	/*0x015*/ u8 nextbg;
@@ -4843,7 +4848,7 @@ struct menudata {
 	/*0x5d5*/ u8 usezbuf : 1;
 	/*0x5d5*/ u8 unk5d5_04 : 1;
 	/*0x5d5*/ u8 unk5d5_05 : 1;
-	/*0x5d5*/ u8 unk5d5_06 : 1;
+	/*0x5d5*/ u8 isdialogopen : 1;
 	/*0x5d5*/ u8 unk5d5_07 : 1;
 	/*0x5d5*/ u8 unk5d5_08 : 1;
 	/*0x5d8*/ struct menudata_5d8 unk5d8[12];
@@ -6069,7 +6074,7 @@ struct awardmetrics {
 };
 
 struct tex {
-	/*0x00*/ u16 texturenum : 12;
+	/*0x00*/ u16 texturenum;
 	/*0x04*/ u8 *data;
 	/*0x08*/ u8 width;
 	/*0x09*/ u8 height;

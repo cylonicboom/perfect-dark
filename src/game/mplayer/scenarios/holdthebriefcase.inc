@@ -201,7 +201,7 @@ struct menudialogdef g_HtbOptionsMenuDialog = {
 	g_HtbOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE,
-	NULL,
+	&g_ExtGameOptionsMenuDialog,
 };
 
 struct defaultobj *var800869ec = NULL;

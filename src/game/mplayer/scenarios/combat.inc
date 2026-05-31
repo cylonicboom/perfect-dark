@@ -6,6 +6,8 @@
  * There are no callback functions or special logic.
  */
 
+extern struct menudialogdef g_ExtGameOptionsMenuDialog;
+
 struct menuitem g_MpCombatOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -188,5 +190,5 @@ struct menudialogdef g_MpCombatOptionsMenuDialog = {
 	g_MpCombatOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE,
-	NULL,
+	&g_ExtGameOptionsMenuDialog,
 };

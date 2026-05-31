@@ -227,7 +227,8 @@ struct menudialogdef g_CtcOptionsMenuDialog = {
 	g_CtcOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE,
-	NULL,
+	&g_ExtGameOptionsMenuDialog,
+//	NULL,
 };
 
 struct weaponobj g_CtcTokenObj0;

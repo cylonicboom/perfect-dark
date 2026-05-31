@@ -342,6 +342,9 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	}
 	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
 	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
+	// Port-only options bitmask (NET_PROTOCOL_VER >= 34). Overflow word for MP
+	// options that don't fit g_MpSetup.options (e.g. MPOPTION_NODOORS).
+	netbufWriteU32(dst, g_MpSetup.portoptions);
 	netbufWriteU8(dst, (u8)g_BotCount);
 	netbufWriteU8(dst, MAX_BOTS);
 	for (s32 i = 0; i < MAX_BOTS; ++i) {
@@ -376,6 +379,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	const u8 htbstaticpad = netbufReadU8(src);
 	const u8 htmstaticpad = netbufReadU8(src);
+	const u32 portoptions = netbufReadU32(src);
 	const u8 botcount = netbufReadU8(src);
 	const u8 numbots = netbufReadU8(src);
 
@@ -430,6 +434,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	g_MpSetup.htbstaticpad = htbstaticpad;
 	g_MpSetup.htmstaticpad = htmstaticpad;
+	g_MpSetup.portoptions = portoptions;
 	strcpy(g_MpSetup.name, "server");
 
 	for (u8 i = 0; i < numbots; ++i) {
@@ -741,6 +746,9 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	// Server + client must agree before htbCreateToken / htbCreateUplink runs.
 	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
 	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
+	// Port-only options bitmask (NET_PROTOCOL_VER >= 34). Both sides must agree
+	// before setupCreateProps runs (MPOPTION_NODOORS marks lift doors).
+	netbufWriteU32(dst, g_MpSetup.portoptions);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -833,6 +841,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	}
 	g_MpSetup.htbstaticpad = netbufReadU8(src);
 	g_MpSetup.htmstaticpad = netbufReadU8(src);
+	g_MpSetup.portoptions = netbufReadU32(src);
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {

@@ -29,7 +29,7 @@ MP Setup File Format
 	[preset_m{sizeof(struct mpweaponpreset)}]
  */
 
-#define MPSETUP_VERSION 4
+#define MPSETUP_VERSION 5 // v5: per-setup wad carries g_MpSetup.portoptions (MPOPTION_NODOORS)
 
 #define MPSETUP_EXPORTDIR "$S/exported/"
 #define MPSETUP_FILENAME "mpsetups"
@@ -853,7 +853,7 @@ static MenuItemHandlerResult menuhandlerSetupSetDefault(s32 operation, struct me
 		s32 selected = g_Menus[g_MpPlayerNum].mpsetup.slotindex;
 		// clicked on "clear default"
 		if (selected == g_MpSetupFile.defaultsetup - 1) {
-			g_MpSetupFile.defaultsetup = -1;
+			g_MpSetupFile.defaultsetup = 0;
 			strcpy(g_LabelSetDefault, "Set Default\n");
 		} else {
 			g_MpSetupFile.defaultsetup = selected + 1;

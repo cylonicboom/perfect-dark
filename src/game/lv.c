@@ -28,7 +28,7 @@
 #include "game/portal.h"
 #include "game/fmb.h"
 #include "game/sky.h"
-#include "game/game_13c510.h"
+#include "game/artifact.h"
 #include "game/game_1531a0.h"
 #include "game/zbuf.h"
 #include "game/challenge.h"
@@ -405,6 +405,9 @@ void lvReset(s32 stagenum)
 	case STAGE_DEFECTION:
 	case STAGE_ATTACKSHIP:
 	case STAGE_TEST_OLD:
+#ifndef PLATFORM_N64
+	case STAGE_TEST_ARCH: // Suburb
+#endif
 		starsReset();
 		break;
 	}

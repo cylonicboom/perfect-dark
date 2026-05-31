@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 33 // 33: admin remote control (CLC_ADMIN / SVC_ADMIN)
+#define NET_PROTOCOL_VER 34 // 34: g_MpSetup.portoptions in SVC_STAGE_START / CLC_ADMIN_SETUP (MPOPTION_NODOORS)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 

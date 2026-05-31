@@ -44,6 +44,9 @@ s32 g_LuaAiEnabled = 1;
 static lua_State *g_LuaState = NULL;
 static s32 g_LuaCurStage = -0x7fffffff;
 static s32 g_LuaInitFailed = 0;
+/* Number of registered ailist overrides. When zero, the per-list override
+ * lookup (and its ailist id scan) is skipped entirely on the hot path. */
+static s32 g_LuaOverrideCount = 0;
 
 /* Registry keys for our internal tables. */
 static const char *const KEY_CHUNKS = "luaai.chunks";       /* lightuserdata(list) -> function */
@@ -51,6 +54,7 @@ static const char *const KEY_OVERRIDES = "luaai.overrides"; /* id (int) -> funct
 static const char *const KEY_CTX = "luaai.ctx";             /* the shared ctx table */
 
 extern u32 chraiGetCommandLength(u8 *ailist, u32 aioffset);
+extern u32 chraiGetAilistLength(u8 *list);
 
 /* ------------------------------------------------------------------------- *
  * ctx bridge (the C side of the Lua "ctx" object)
@@ -112,6 +116,8 @@ static int l_pd_register_ailist(lua_State *L)
 	lua_pushvalue(L, 2);
 	lua_settable(L, -3);
 	lua_pop(L, 1);
+
+	g_LuaOverrideCount++;
 	return 0;
 }
 
@@ -221,6 +227,7 @@ void luaaiReset(void)
 		g_LuaState = NULL;
 	}
 	g_LuaInitFailed = 0;
+	g_LuaOverrideCount = 0;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -232,20 +239,26 @@ void luaaiReset(void)
 
 static int luaai_get_chunk(lua_State *L, void *list)
 {
-	s32 id;
 	char *src;
+	u32 listlen;
 
-	/* 1) override by id */
-	id = chraiLuaGetListId(list);
-	if (id >= 0) {
-		lua_getfield(L, LUA_REGISTRYINDEX, KEY_OVERRIDES);
-		lua_pushinteger(L, id);
-		lua_gettable(L, -2);
-		if (lua_isfunction(L, -1)) {
-			lua_remove(L, -2); /* remove overrides table, keep function */
-			return 1;
+	/* 1) Lua override by ailist id. Consulted only when overrides are actually
+	 * registered (g_LuaOverrideCount), and never on a net client: AI is
+	 * server-authoritative, so clients always run the deterministic transpiled
+	 * chunk regardless of any locally-registered overrides. Skipping this when
+	 * there are no overrides also avoids a per-entity, per-frame id scan. */
+	if (g_LuaOverrideCount > 0 && chraiLuaOverridesAllowed()) {
+		s32 id = chraiLuaGetListId(list);
+		if (id >= 0) {
+			lua_getfield(L, LUA_REGISTRYINDEX, KEY_OVERRIDES);
+			lua_pushinteger(L, id);
+			lua_gettable(L, -2);
+			if (lua_isfunction(L, -1)) {
+				lua_remove(L, -2); /* remove overrides table, keep function */
+				return 1;
+			}
+			lua_pop(L, 2); /* nil + overrides table */
 		}
-		lua_pop(L, 2); /* nil + overrides table */
 	}
 
 	/* 2) cached transpiled chunk */
@@ -259,16 +272,19 @@ static int luaai_get_chunk(lua_State *L, void *list)
 	lua_pop(L, 1); /* nil */
 	/* chunks table still on stack at -1 */
 
-	/* 3) transpile now */
-	src = luaaiTranspile((const unsigned char *)list, 0xffff, luaai_cmdlen, CMD_END);
+	/* 3) transpile now. Bound the walk to the real list length so a missing end
+	 * marker cannot read past the buffer; the 0xffff cap is only a fallback if
+	 * the length is somehow unknown. */
+	listlen = chraiGetAilistLength((u8 *)list);
+	src = luaaiTranspile((const unsigned char *)list, listlen ? listlen : 0xffffu, luaai_cmdlen, CMD_END);
 	if (!src) {
 		lua_pop(L, 1); /* chunks table */
 		return 0;
 	}
 
 	if (luaL_loadstring(L, src) != LUA_OK) {
-		fprintf(stderr, "[luaai] transpile load error (id %d): %s\n", id,
-				lua_tostring(L, -1));
+		fprintf(stderr, "[luaai] transpile load error (id %d): %s\n",
+				chraiLuaGetListId(list), lua_tostring(L, -1));
 		free(src);
 		lua_pop(L, 2); /* error + chunks table */
 		return 0;
@@ -277,8 +293,8 @@ static int luaai_get_chunk(lua_State *L, void *list)
 
 	/* run the chunk to obtain the function it returns */
 	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-		fprintf(stderr, "[luaai] transpile run error (id %d): %s\n", id,
-				lua_tostring(L, -1));
+		fprintf(stderr, "[luaai] transpile run error (id %d): %s\n",
+				chraiLuaGetListId(list), lua_tostring(L, -1));
 		lua_pop(L, 2); /* error + chunks table */
 		return 0;
 	}

@@ -10,6 +10,9 @@
 #include "lib/model.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#endif
 
 bool (*g_CommandPointers[])(void) = {
 	/*0x0000*/ aiGoToNext,
@@ -712,9 +715,23 @@ s32 chraiLuaGetStageNum(void)
 	return g_Vars.stagenum;
 }
 
+s32 chraiLuaOverridesAllowed(void)
+{
+#ifndef PLATFORM_N64
+	// AI is server-authoritative in netplay: a net client must never apply a
+	// Lua ailist override, or its AI would diverge from the host's. The host
+	// (NETMODE_SERVER) and single-player (NETMODE_NONE) run overrides normally.
+	return g_NetMode != NETMODE_CLIENT;
+#else
+	return 1;
+#endif
+}
+
 s32 chraiLuaRunSynthetic(u32 opcode, const u8 *operands, u32 n)
 {
-	u8 buf[64];
+	// Zero-initialised so a handler that reads more operand bytes than the Lua
+	// caller supplied sees zeros rather than stack garbage.
+	u8 buf[64] = {0};
 	u8 *savelist = g_Vars.ailist;
 	u32 saveoff = g_Vars.aioffset;
 	s32 type = (s32)(opcode & 0xffff);

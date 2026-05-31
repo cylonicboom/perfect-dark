@@ -77,6 +77,14 @@ end)
 that id. The id is the ailist id (see the ranges documented in
 [`ailists.md`](ailists.md)).
 
+> **Netplay:** AI is server-authoritative. Overrides only run on the host
+> (`NETMODE_SERVER`) and in single-player (`NETMODE_NONE`); a connected client
+> ignores its own overrides and runs the deterministic transpiled chunk, so the
+> host's `scripts/init.lua` is the single source of truth for custom AI (e.g.
+> custom bots). Clients do not need a matching script, and a mismatched one
+> cannot desync AI. The auto-transpiled (non-override) path is identical to the
+> bytecode interpreter and is always safe on both sides.
+
 ### The `ctx` object
 
 | Call | Meaning |

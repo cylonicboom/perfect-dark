@@ -97,6 +97,14 @@ s32 chraiLuaGetListId(void *list);
 s32 chraiLuaGetStageNum(void);
 
 /**
+ * Non-zero when Lua ailist overrides may be applied. Returns false on a net
+ * client so that AI stays server-authoritative: clients always run the
+ * deterministic transpiled chunk regardless of any locally-registered
+ * overrides, which prevents host/client script divergence.
+ */
+s32 chraiLuaOverridesAllowed(void);
+
+/**
  * Build a synthetic single command (opcode + operand bytes) and run its
  * handler. Intended for hand-written Lua scripts that want to invoke engine
  * commands directly. Returns the handler's break flag (0/1). Note: control

@@ -3,6 +3,7 @@
 #include "game/chraction.h"
 #include "game/chrai.h"
 #include "game/chraicommands.h"
+#include "game/luaai.h"
 #include "bss.h"
 #include "lib/rng.h"
 #include "lib/ailist.h"
@@ -668,7 +669,81 @@ u32 chraiGoToLabel(u8 *ailist, u32 aioffset, u8 label)
 	} while (true);
 }
 
-void chraiExecute(void *entity, s32 proptype)
+s32 chraiLuaStep(u32 off)
+{
+	u8 *cmd;
+	s32 type;
+
+	g_Vars.aioffset = off;
+	cmd = g_Vars.aioffset + g_Vars.ailist;
+	type = (cmd[0] << 8) + cmd[1];
+
+	if (type >= 0 && type < ARRAYCOUNT(g_CommandPointers)) {
+		return g_CommandPointers[type]() ? 1 : 0;
+	}
+
+	g_Vars.aioffset += chraiGetCommandLength(g_Vars.ailist, g_Vars.aioffset);
+	return 0;
+}
+
+u32 chraiLuaGetOffset(void)
+{
+	return g_Vars.aioffset;
+}
+
+void *chraiLuaGetList(void)
+{
+	return g_Vars.ailist;
+}
+
+s32 chraiLuaGetListId(void *list)
+{
+	bool is_global;
+
+	if (list == NULL) {
+		return -1;
+	}
+
+	return chraiGetListIdByList((u8 *)list, &is_global);
+}
+
+s32 chraiLuaGetStageNum(void)
+{
+	return g_Vars.stagenum;
+}
+
+s32 chraiLuaRunSynthetic(u32 opcode, const u8 *operands, u32 n)
+{
+	u8 buf[64];
+	u8 *savelist = g_Vars.ailist;
+	u32 saveoff = g_Vars.aioffset;
+	s32 type = (s32)(opcode & 0xffff);
+	s32 ret = 0;
+	u32 i;
+
+	if (n > 60) {
+		n = 60;
+	}
+
+	buf[0] = (opcode >> 8) & 0xff;
+	buf[1] = opcode & 0xff;
+	for (i = 0; i < n; i++) {
+		buf[2 + i] = operands[i];
+	}
+
+	g_Vars.ailist = buf;
+	g_Vars.aioffset = 0;
+
+	if (type >= 0 && type < ARRAYCOUNT(g_CommandPointers)) {
+		ret = g_CommandPointers[type]() ? 1 : 0;
+	}
+
+	g_Vars.ailist = savelist;
+	g_Vars.aioffset = saveoff;
+	return ret;
+}
+
+void chraiPrepare(void *entity, s32 proptype)
 {
 	g_Vars.chrdata = NULL;
 	g_Vars.truck = NULL;
@@ -773,24 +848,42 @@ void chraiExecute(void *entity, s32 proptype)
 		} else {
 			// empty
 		}
+	}
+}
 
-		// Iterate and execute the ailist
-		while (g_Vars.ailist) {
-			u8 *cmd = g_Vars.aioffset + g_Vars.ailist;
-			s32 type = (cmd[0] << 8) + cmd[1];
+void chraiRunLoop(void)
+{
+	while (g_Vars.ailist) {
+		u8 *cmd = g_Vars.aioffset + g_Vars.ailist;
+		s32 type = (cmd[0] << 8) + cmd[1];
 
-			if (type >= 0 && type < ARRAYCOUNT(g_CommandPointers)) {
-				if (g_CommandPointers[type]()) {
-					break;
-				}
-			} else {
-				// This is attempting to handle situations where the command
-				// type is invalid by passing over them and continuing
-				// execution. This would very likely result in a crash though.
-				g_Vars.aioffset += chraiGetCommandLength(g_Vars.ailist, g_Vars.aioffset);
+		if (type >= 0 && type < ARRAYCOUNT(g_CommandPointers)) {
+			if (g_CommandPointers[type]()) {
+				break;
 			}
+		} else {
+			// This is attempting to handle situations where the command
+			// type is invalid by passing over them and continuing
+			// execution. This would very likely result in a crash though.
+			g_Vars.aioffset += chraiGetCommandLength(g_Vars.ailist, g_Vars.aioffset);
 		}
 	}
+}
+
+void chraiExecuteBytecode(void *entity, s32 proptype)
+{
+	chraiPrepare(entity, proptype);
+	chraiRunLoop();
+}
+
+void chraiExecute(void *entity, s32 proptype)
+{
+	if (g_LuaAiEnabled) {
+		luaaiExecute(entity, proptype);
+		return;
+	}
+
+	chraiExecuteBytecode(entity, proptype);
 }
 
 u32 chraiGetCommandLength(u8 *ailist, u32 aioffset)

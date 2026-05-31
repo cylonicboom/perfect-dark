@@ -161,6 +161,7 @@ include_directories("${CMAKE_BINARY_DIR}/src/generated/${ROMID}")
 include_directories("${CMAKE_SOURCE_DIR}/src/lib/ultra/audio")
 include_directories("${CMAKE_SOURCE_DIR}/port/include")
 include_directories("${CMAKE_BINARY_DIR}/port/include")
+include_directories("${CMAKE_SOURCE_DIR}/port/lua")
 
 # Set Release optimization to -Og until I fix the -O2 issues
 if(NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
@@ -260,6 +261,10 @@ list(APPEND LIBS "${EXTRA_LIBRARIES}")
 file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")
 file(GLOB_RECURSE SRC_PORT_CXX "${CMAKE_SOURCE_DIR}/port/*.cpp")
 
+# Exclude vendored Lua from the main target; it is built as its own library
+# (pd_lua) below so its sources are not compiled with the game's flags.
+list(FILTER SRC_PORT EXCLUDE REGEX "/port/lua/")
+
 file(GLOB_RECURSE SRC_GAME "${CMAKE_SOURCE_DIR}/src/game/*.c")
 
 file(GLOB SRC_LIB_MP3 "${CMAKE_SOURCE_DIR}/src/lib/mp3/*.c")
@@ -341,9 +346,15 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 # Game target
 
 set(BIN_NAME "pd${BIN_REGION}.${TARGET_ARCH}")
+# Vendored Lua scripting library (action block -> Lua layer)
+file(GLOB SRC_LUA "${CMAKE_SOURCE_DIR}/port/lua/*.c")
+list(FILTER SRC_LUA EXCLUDE REGEX "/(lua|luac|onelua)\\.c$")
+add_library(pd_lua STATIC ${SRC_LUA})
+target_include_directories(pd_lua PUBLIC "${CMAKE_SOURCE_DIR}/port/lua")
+
 add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
-target_link_libraries(pd ${LIBS})
+target_link_libraries(pd ${LIBS} pd_lua)
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
 if(WIN32)
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)

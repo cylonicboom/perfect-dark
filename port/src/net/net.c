@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 #include "platform.h"
 #include "net/netenet.h"
@@ -1316,6 +1317,27 @@ void netStartFrame(void)
 	}
 
 	const bool isClient = (g_NetMode == NETMODE_CLIENT);
+
+	// Admin "configure" opens the Combat Sim menu (MENUROOT_MPSETUP) over the
+	// live CITRAINING lobby straight from the console, bypassing the CI data-
+	// terminal interaction that normally strips player control. Without that,
+	// the admin's local pawn keeps reading input and the camera drifts around
+	// behind the menu. While that menu is open on a client, clear the local
+	// player's control gate (the bmoveTick(0,0,0,1) branch at player.c:4074);
+	// restore it once on close. A client's local player is always slot 0
+	// (netPlayersAllocate swaps it there). Runs pre-tick so the player read
+	// later this frame sees the cleared flag.
+	{
+		static bool s_adminMenuLockHeld = false;
+		const bool adminMenuOpen = (isClient && g_MenuData.root == MENUROOT_MPSETUP);
+		if (adminMenuOpen) {
+			g_PlayersWithControl[0] = false;
+			s_adminMenuLockHeld = true;
+		} else if (s_adminMenuLockHeld) {
+			g_PlayersWithControl[0] = true;
+			s_adminMenuLockHeld = false;
+		}
+	}
 	s32 polled = false;
 	ENetEvent ev = { .type = ENET_EVENT_TYPE_NONE };
 	while (!polled) {
@@ -2873,6 +2895,17 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 		} else {
 			netAdminReply(cl, "endmatch: ending current match");
 			mainEndStage();
+			// The vote/advance machine that normally returns the dedicated
+			// server to the Combat Sim lobby after a match is suppressed while
+			// an admin holds control (the g_NetAdminController gate ~line 1630),
+			// so nothing would bring g_StageNum back to CITRAINING — and the
+			// follow-up pushstart/go (gated on CITRAINING) would refuse with
+			// "end the current match first". Drive the clean lobby return here,
+			// mirroring the post-vote dedicated path.
+			mpSetPaused(MPPAUSEMODE_UNPAUSED);
+			titleSetNextStage(STAGE_CITRAINING);
+			titleSetNextMode(TITLEMODE_SKIP);
+			mainChangeToStage(STAGE_CITRAINING);
 		}
 		return;
 	}

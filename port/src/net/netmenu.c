@@ -172,11 +172,15 @@ void netAdminConfigure(void)
 		sysLogPrintf(LOG_CHAT, "admin: configure only works as a connected client");
 		return;
 	}
-	mpsetupCopyAllFromPak();
-	mpsetupLoadCurrentFile();
-	menuhandlerMainMenuCombatSimulator(MENUOP_SET, NULL, NULL);
-	menuhandlerMpAdvancedSetup(MENUOP_SET, NULL, NULL);
-	sysLogPrintf(LOG_CHAT, "admin: Combat Sim setup loaded — open the Combat Simulator menu, configure the match, then run /admin pushstart");
+	// Phase 0 stopgap (see docs/PORT_ADMIN_GUI_CONFIGURE.md): the menu-based
+	// configure runs title-screen setup logic (mpsetupCopyAllFromPak -> mpInit,
+	// then opens the Combat Sim menu) while a connected client still has a live,
+	// ticking world. That mutates global MP/game state out from under the world;
+	// the next propsTick then dereferences now-dangling state (confirmed:
+	// g_ShieldHits[].prop in shieldhitsTick) and crashes the client. Making it
+	// session-safe needs the "configure session" redesign in that doc. Until it
+	// lands, refuse and point at the session-safe text commands.
+	sysLogPrintf(LOG_CHAT, "admin: menu configure is not session-safe yet - use '/admin set ...' then '/admin apply', or '/admin start <index>'");
 }
 
 /* host: password + public listing */

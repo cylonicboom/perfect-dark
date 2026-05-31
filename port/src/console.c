@@ -95,6 +95,13 @@ void conPrint(s32 showmsg, const char *str)
 				ch = ' ';
 				/* fallthrough */
 			default:
+				// Non-ASCII bytes route to the JPN multibyte font path in
+				// textRenderProjected (fontjpn segment is unloaded on non-JPN
+				// ROMs), which crashes. The console is ASCII-only; strip them
+				// to '?'. Mirrors the F9 net-overlay strip in net.c.
+				if ((u8)ch >= 0x80) {
+					ch = '?';
+				}
 				conBuf[conPrintRow][conPrintCol++] = ch;
 				if (conPrintCol == CON_COLS) {
 					conPrintCol = 0;
@@ -207,6 +214,13 @@ Gfx *conRender(Gfx *gdl)
 			snprintf(tmp, sizeof(tmp), "[-%d] > %s", conScrollOfs, conInput);
 		} else {
 			snprintf(tmp, sizeof(tmp), "> %s", conInput);
+		}
+		// conInput may hold non-ASCII bytes (SDL text input / paste); strip
+		// them so the prompt line doesn't hit the JPN font path either.
+		for (char *t = tmp; *t; ++t) {
+			if ((u8)*t >= 0x80) {
+				*t = '?';
+			}
 		}
 		x = 18;
 		y = 4 + 8 * CON_VISROWS;

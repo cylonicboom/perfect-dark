@@ -1,4 +1,5 @@
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include "net/netenet.h"
 #include "types.h"

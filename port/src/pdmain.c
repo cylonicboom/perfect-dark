@@ -543,6 +543,9 @@ void mainLoop(void)
 			if (g_Vars.antiplayernum < 0) {
 				// Counter-Operative now uses a different approach which allows more than 2 players.
 				// Co-Operative, on the other hand, is currently limited to 2 players.
+				if (g_MpSetup.chrslots & 0xfff0) {
+					g_MpSetup.storedbotbits = g_MpSetup.chrslots & 0xfff0;
+				}
 				g_MpSetup.chrslots = 0x03;
 			}
 #endif

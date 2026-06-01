@@ -178,7 +178,26 @@ struct luaaiselfinfo {
 	s32 targetplayernum; // playernum if the target is a player, else -1
 };
 
+/** Read-only world position of a player, for pd.player_pos(). */
+struct luaaiplayerinfo {
+	s32 valid;
+	f32 x, y, z;
+	s32 room;
+};
+
 /** Fill `out` from the currently-executing chr. Returns out->valid. Defined in chrai.c. */
 s32 chraiLuaGetSelf(struct luaaiselfinfo *out);
+
+/** Fill `out` from any chr by literal chrnum (<0/unknown -> valid=0). Defined in chrai.c. */
+s32 chraiLuaGetChrInfo(s32 chrnum, struct luaaiselfinfo *out);
+
+/** Fill `out` from a player by index (0..MAX_PLAYERS-1). Returns out->valid. */
+s32 chraiLuaGetPlayerInfo(s32 playernum, struct luaaiplayerinfo *out);
+
+/** Number of active local players. */
+s32 chraiLuaGetPlayerCount(void);
+
+/** Push a Lua table describing a chr snapshot (shared by pd.chr_info + ctx:self). */
+void luaApiPushChrInfo(struct lua_State *L, const struct luaaiselfinfo *info);
 
 #endif

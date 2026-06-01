@@ -143,6 +143,28 @@ enemy entirely from Lua, see
 | `pd.draw_text(x, y, text, color, [secs])` | 2D overlay text |
 | `pd.each_chr(fn)` | iterate live characters this frame (see X-ray) |
 | `pd.log(msg)` | print to stderr **and** the in-game console |
+| `pd.chr_info(chrnum)` | table for any chr by id (same shape as `ctx:self()`), or `nil` |
+| `pd.chr_pos(chrnum)` | `x, y, z` of a chr, or `nil` |
+| `pd.chr_health(chrnum)` | `health, maxhealth` of a chr, or `nil` |
+| `pd.player_pos([n])` | `x, y, z` of player `n` (default 0), or `nil` |
+| `pd.player_count()` | number of active local players |
+| `pd.distance(x1,y1,z1, x2,y2,z2)` | Euclidean distance (helper) |
+
+### World / entity queries
+
+The `pd.chr_*` / `pd.player_*` accessors are **read-only** snapshots of current
+engine state — use them to make decisions (range, health, line-of-fire). They
+return `nil` (or no values) for an unknown chrnum or absent player. `chr_info`
+returns the same table shape as [`ctx:self()`](#the-ctx-object). Example —
+shoot only when the player is close:
+
+```lua
+local me = ctx:self()
+local px, py, pz = pd.player_pos(0)
+if px and pd.distance(me.x, me.y, me.z, px, py, pz) < 1500 then
+  ai.try_attack_stand(ctx, 0x220, 0, 0)
+end
+```
 
 Overlay coordinates are the lo-res virtual screen (~320x240, the same space the
 console uses); `color` is `0xRRGGBBAA`. Overlays with a `secs` lifetime persist

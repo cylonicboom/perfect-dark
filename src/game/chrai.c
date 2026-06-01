@@ -3,6 +3,7 @@
 #include "game/chraction.h"
 #include "game/chrai.h"
 #include "game/chraicommands.h"
+#include "game/chr.h"
 #include "game/luaai.h"
 #include "bss.h"
 #include "lib/rng.h"
@@ -737,14 +738,10 @@ s32 chraiLuaGetAlertness(void)
 	return g_Vars.chrdata ? (s32)g_Vars.chrdata->alertness : 0;
 }
 
-s32 chraiLuaGetSelf(struct luaaiselfinfo *out)
+// Fill a luaaiselfinfo snapshot from any chr (NULL -> valid=0). Shared by
+// ctx:self() (current chr) and pd.chr_info()/chr_pos()/etc (chr by chrnum).
+static void chraiLuaFillChrInfo(struct chrdata *chr, struct luaaiselfinfo *out)
 {
-	struct chrdata *chr = g_Vars.chrdata;
-
-	if (out == NULL) {
-		return 0;
-	}
-
 	out->chrnum = -1;
 	out->valid = 0;
 	out->x = out->y = out->z = 0.0f;
@@ -755,7 +752,7 @@ s32 chraiLuaGetSelf(struct luaaiselfinfo *out)
 	out->targetplayernum = -1;
 
 	if (chr == NULL) {
-		return 0;
+		return;
 	}
 
 	out->valid = 1;
@@ -798,8 +795,60 @@ s32 chraiLuaGetSelf(struct luaaiselfinfo *out)
 			}
 		}
 	}
+}
 
+s32 chraiLuaGetSelf(struct luaaiselfinfo *out)
+{
+	if (out == NULL) {
+		return 0;
+	}
+	chraiLuaFillChrInfo(g_Vars.chrdata, out);
+	return out->valid;
+}
+
+s32 chraiLuaGetChrInfo(s32 chrnum, struct luaaiselfinfo *out)
+{
+	if (out == NULL) {
+		return 0;
+	}
+	chraiLuaFillChrInfo(chrnum < 0 ? NULL : chrFindByLiteralId(chrnum), out);
+	return out->valid;
+}
+
+s32 chraiLuaGetPlayerInfo(s32 playernum, struct luaaiplayerinfo *out)
+{
+	struct player *pl;
+	struct prop *prop;
+
+	if (out == NULL) {
+		return 0;
+	}
+
+	out->valid = 0;
+	out->x = out->y = out->z = 0.0f;
+	out->room = -1;
+
+	if (playernum < 0 || playernum >= MAX_PLAYERS) {
+		return 0;
+	}
+
+	pl = g_Vars.players[playernum];
+	if (pl == NULL || pl->prop == NULL) {
+		return 0;
+	}
+
+	prop = pl->prop;
+	out->valid = 1;
+	out->x = prop->pos.x;
+	out->y = prop->pos.y;
+	out->z = prop->pos.z;
+	out->room = (s32)prop->rooms[0];
 	return 1;
+}
+
+s32 chraiLuaGetPlayerCount(void)
+{
+	return (s32)PLAYERCOUNT();
 }
 
 s32 chraiLuaRunSynthetic(u32 opcode, const u8 *operands, u32 n)

@@ -103,24 +103,7 @@ static int l_ctx_self(lua_State *L)
 		return 1;
 	}
 
-	lua_newtable(L);
-	lua_pushinteger(L, info.chrnum);        lua_setfield(L, -2, "chrnum");
-	lua_pushnumber(L, info.x);              lua_setfield(L, -2, "x");
-	lua_pushnumber(L, info.y);              lua_setfield(L, -2, "y");
-	lua_pushnumber(L, info.z);              lua_setfield(L, -2, "z");
-	lua_pushinteger(L, info.room);          lua_setfield(L, -2, "room");
-	lua_pushnumber(L, info.health);         lua_setfield(L, -2, "health");
-	lua_pushnumber(L, info.maxhealth);      lua_setfield(L, -2, "maxhealth");
-	lua_pushnumber(L, info.shield);         lua_setfield(L, -2, "shield");
-	lua_pushinteger(L, info.alertness);     lua_setfield(L, -2, "alertness");
-	if (info.targetchrnum >= 0) {
-		lua_pushinteger(L, info.targetchrnum);
-		lua_setfield(L, -2, "target_chrnum");
-	}
-	if (info.targetplayernum >= 0) {
-		lua_pushinteger(L, info.targetplayernum);
-		lua_setfield(L, -2, "target_playernum");
-	}
+	luaApiPushChrInfo(L, &info); /* shared shape with pd.chr_info */
 	return 1;
 }
 

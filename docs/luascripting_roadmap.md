@@ -19,24 +19,17 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | Generator folded into the build (can't drift) | `tools/gen_aicommands.py`, CMake `pd_aiscripts` |
 | Worked from-scratch Lua enemy example | `scripts/examples/lua_authored_enemy.lua` |
 | **Current-chr handle** `ctx:self()` (chrnum, pos, health, shield, alertness, target) | `luaai.c`, `chrai.c` |
+| **World / entity query API** `pd.chr_info/chr_pos/chr_health/player_pos/player_count/distance` | `luaai_api.c`, `chrai.c` |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
-without reading engine source. With `ctx:self()` an override can also make
-per-enemy decisions and keep per-`chrnum` state.
+without reading engine source. With `ctx:self()` + the query API an override can
+read the world (its own state, other chrs, the players, distances) and make
+real decisions.
 
 ## Next (high-value, feasibility checked)
 
 These are ordered by value-to-effort. Each builds on the shipped base.
-
-### 2. Entity / world query API (`pd.*` read accessors)
-**Why:** scripts need to *read* the world to make decisions (positions, rooms,
-distances, health, alertness, the player).
-**Plan:** add read-only `pd` accessors backed by existing engine getters
-(`chrGetPos`, room lookups, `g_Vars.players`, `chr->damage`, etc.), guarded
-`#ifndef PLATFORM_N64`. Start with: `pd.chr_pos(chrnum)`, `pd.player_pos(n)`,
-`pd.chr_health(chrnum)`, `pd.distance(a, b)`.
-**Feasibility:** moderate; wraps existing accessors, no new engine logic.
 
 ### 3. 3D marker / spawn at a kill (the "cube on death")
 **Why:** the requested visceral proof — spawn a world object where an enemy died.

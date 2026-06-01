@@ -62,11 +62,11 @@ When both apply (port-only AND server-only), nest:
 
 ---
 
-## 3. MPOPTION upper-byte budget
+## 3. MPOPTION budget — the field is now `u64`
 
-`g_MpSetup.options` is a `u32`. The original game uses the lower 24 bits. The upper byte (`0xff000000`) is **port-only territory** — N64 ignores it.
+`g_MpSetup.options` is a **`u64`** (it was a `u32` until the upper byte filled up, then was widened unconditionally — N64 included). The original game uses the lower 24 bits; the upper byte of the low word (`0xff000000`) **and all of bits 32-63** are port-only territory (N64 ignores them).
 
-On `port-net-predict` the upper byte is **fully allocated**:
+Low-word port bits in use on `port-net-predict`:
 
 | Bit | Symbol | Used by |
 |---|---|---|
@@ -75,11 +75,19 @@ On `port-net-predict` the upper byte is **fully allocated**:
 | `0x40000000` | `MPOPTION_HOSTSPECTATOR` | `docs/PORT_HOST_SPECTATOR.md` |
 | `0x80000000` | `MPOPTION_GOLDENEYE` | `docs/PORT_GOLDENEYE.md` |
 
-If your target branch already has some of these bits taken, **use the same bit values when porting** — file format compatibility depends on the bit positions. If your target branch needs to add a *new* port-only MP option beyond these four, your options are:
+High-word bits (32-63) in use:
 
-- Repurpose an unused lower-byte bit the original game ignores (audit carefully; some "unused" bits are still saved/loaded).
-- Widen the field. `g_MpSetup.options` is a u32 but `mpsetupfileLoadWad` reads it as 32 bits via `savebufferReadBits(buffer, 32)`; widening to u64 needs a wad version bump.
-- Move state out of `options` entirely — like `kohstatichill` (a separate `u8` field, not a bit).
+| Bit | Symbol | Used by |
+|---|---|---|
+| `0x0000000100000000` | `MPOPTION_NODOORS` | `docs/PORT_NODOORS.md` |
+
+**Adding a new port-only MP option:** claim the next free high-word bit, written with a `ULL` suffix (e.g. `0x0000000200000000ULL`). It then flows automatically over the wire (the 64-bit `options` is serialized in `SVC_STAGE_START` / `CLC_ADMIN_SETUP` / `SVC_LOBBY_STATE`) and to the mpsetups.bin wad (the inline 64-bit `options` write). Plumb it through the same choke points as `MPOPTION_NODOORS` — search the codebase for it as the worked example. Three gotchas:
+
+- **Menus can't carry a >32-bit mask in `menuitem.param3`** (it's 32-bit). High-word checkboxes use `menuhandlerMpCheckboxPortOption`, which shifts a 32-bit `param3` up by 32; the menu item passes `MYOPTION >> 32`.
+- **The per-setup wad block (`MPSETUP_BLOCKSIZE` = 80 bytes) is ~99% full** (~10 spare bits). A new *bit* on the existing 64-bit `options` costs nothing extra to save, but a new *field* needs the block enlarged (a wad-format migration).
+- **The dedicated-server playlist** (`port/src/net/playlist.c`) has its own 64-bit option vocabulary (`s_options` / `struct namedoption`). Add your option's name there so `options=` can set it.
+
+When porting to another branch, **use the same bit values** — save/wire compatibility depends on bit positions. If your target branch still has a 32-bit `options`, either widen it the same way or move state out of `options` entirely — like `kohstatichill` (a `u8` field, not a bit).
 
 ---
 

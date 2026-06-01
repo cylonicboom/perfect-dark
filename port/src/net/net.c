@@ -22,6 +22,7 @@
 #include "game/player.h"
 #include "game/bondgun.h"
 #include "game/cheats.h"
+#include "game/bg.h"
 #include "game/game_1531a0.h"
 #include "game/luaai.h"
 #include "game/game_0b0fd0.h"
@@ -2845,7 +2846,7 @@ static void netAdminCaptureSetup(void)
 	e->scenario = (s8)g_MpSetup.scenario;
 	e->weaponpreset = -1; // no preset -> keep current weapons unless `set preset`
 	e->preset_name[0] = '\0';
-	const u32 mask = playlistAllOptionBits();
+	const u64 mask = playlistAllOptionBits();
 	e->mp_options = g_MpSetup.options & mask;
 	e->mp_options_mask = mask;
 	e->scorelimit = g_MpSetup.scorelimit;
@@ -3052,7 +3053,7 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 			}
 			netAdminReply(cl, "bots = %d diff = %d", n, (s32)e->bot_difficulty);
 		} else if (strcmp(field, "option") == 0) {
-			const u32 bit = playlistLookupOption(v1);
+			const u64 bit = playlistLookupOption(v1);
 			if (!bit) { netAdminReply(cl, "set option: unknown option `%s`", v1); return; }
 			const s32 off = (strcasecmp(v2, "off") == 0 || strcmp(v2, "0") == 0
 					|| strcasecmp(v2, "false") == 0 || strcasecmp(v2, "no") == 0);
@@ -3078,8 +3079,8 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 		netAdminReply(cl, "scratch: stage=0x%02x scenario=%d time=%d score=%d teamscore=%d",
 				(u32)(u16)e->stagenum, (s32)e->scenario, (s32)e->timelimit,
 				(s32)e->scorelimit, (s32)e->teamscorelimit);
-		netAdminReply(cl, "  bots=%d diff=%d options=0x%08x preset=%s",
-				(s32)e->bot_count, (s32)e->bot_difficulty, e->mp_options,
+		netAdminReply(cl, "  bots=%d diff=%d options=0x%016llx preset=%s",
+				(s32)e->bot_count, (s32)e->bot_difficulty, (unsigned long long)e->mp_options,
 				e->preset_name[0] ? e->preset_name : "(default weapons)");
 		return;
 	}
@@ -3636,8 +3637,8 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "STATUS: name=\"%s\" mode=%d port=%u clients=%d/%d sims=%d tick=%u",
 				g_NetServerName, g_NetMode, g_NetServerPort,
 				g_NetNumClients, g_NetMaxClients, (s32)g_BotCount, g_NetTick);
-		sysLogPrintf(LOG_CHAT, "STATUS: stage=0x%02x scenario=%d options=0x%08x score=%d time=%d",
-				g_MpSetup.stagenum, g_MpSetup.scenario, g_MpSetup.options,
+		sysLogPrintf(LOG_CHAT, "STATUS: stage=0x%02x scenario=%d options=0x%016llx score=%d time=%d",
+				g_MpSetup.stagenum, g_MpSetup.scenario, (unsigned long long)g_MpSetup.options,
 				(s32)g_MpSetup.scorelimit, (s32)g_MpSetup.timelimit);
 		sysLogPrintf(LOG_CHAT, "STATUS: playlist=%s (%d entries, vote=%ds/%dcand)",
 				g_NetPlaylistPath, (s32)g_NetPlaylist.count,
@@ -3737,6 +3738,34 @@ s32 netConsoleCommand(const char *line)
 			}
 			sysLogPrintf(LOG_CHAT, "wireframe %s", on ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "octree") == 0) {
+		// /octree [on|off]    toggle outdoor-room octree frustum culling
+		// /octree forcecull   debug: cull every batch (flagged rooms go black)
+		// /octree stats       print last-frame culling counters
+		// Drives g_BgOctree* in bg.c (ROOMFLAG_EX_OCTREE rooms; see PORT_OCTREE.md).
+		if (strcmp(arg, "stats") == 0) {
+			sysLogPrintf(LOG_CHAT, "OCTREE: culling=%s forcecull=%s",
+					g_BgOctreeEnabled ? "ON" : "OFF",
+					g_BgOctreeForceCullAll ? "ON" : "OFF");
+			sysLogPrintf(LOG_CHAT, "OCTREE: passes=%d nodes tested=%d culled=%d",
+					g_BgOctreeStats.roomsculled, g_BgOctreeStats.nodestested,
+					g_BgOctreeStats.nodesculled);
+			sysLogPrintf(LOG_CHAT, "OCTREE: batches drawn=%d culled=%d",
+					g_BgOctreeStats.batchesdrawn, g_BgOctreeStats.batchesculled);
+		} else if (strcmp(arg, "forcecull") == 0 || strcmp(arg, "cull") == 0) {
+			g_BgOctreeForceCullAll = !g_BgOctreeForceCullAll;
+			sysLogPrintf(LOG_CHAT, "OCTREE: force-cull-all %s",
+					g_BgOctreeForceCullAll ? "ON (flagged rooms go black)" : "OFF");
+		} else {
+			bool on;
+			if (!arg[0]) {
+				on = !g_BgOctreeEnabled;
+			} else {
+				on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
+			}
+			g_BgOctreeEnabled = on;
+			sysLogPrintf(LOG_CHAT, "OCTREE: culling %s", on ? "ON" : "OFF");
+		}
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -3748,6 +3777,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]              toggle wireframe (CHEAT_WIREFRAME)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe bg|wire RRGGBB        sky / wire colour (wire off = natural)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");
+		sysLogPrintf(LOG_CHAT, "  /octree [on|off|forcecull|stats] outdoor-room octree culling");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
 		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");

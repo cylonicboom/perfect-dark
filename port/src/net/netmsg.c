@@ -334,7 +334,7 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
 	netbufWriteU16(dst, g_MpSetup.chrslots);
-	netbufWriteU32(dst, g_MpSetup.options);
+	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	netbufWriteU8(dst, g_MpSetup.kohstatichill);
 	for (s32 i = 0; i < 4; ++i) {
@@ -342,9 +342,6 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	}
 	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
 	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
-	// Port-only options bitmask (NET_PROTOCOL_VER >= 34). Overflow word for MP
-	// options that don't fit g_MpSetup.options (e.g. MPOPTION_NODOORS).
-	netbufWriteU32(dst, g_MpSetup.portoptions);
 	netbufWriteU8(dst, (u8)g_BotCount);
 	netbufWriteU8(dst, MAX_BOTS);
 	for (s32 i = 0; i < MAX_BOTS; ++i) {
@@ -369,7 +366,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	const u8 timelimit = netbufReadU8(src);
 	const u16 teamscorelimit = netbufReadU16(src);
 	const u16 chrslots = netbufReadU16(src);
-	const u32 options = netbufReadU32(src);
+	const u64 options = netbufReadU64(src);
 	u8 weapons[NUM_MPWEAPONSLOTS];
 	netbufReadData(src, weapons, sizeof(weapons));
 	const u8 kohstatichill = netbufReadU8(src);
@@ -379,7 +376,6 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	const u8 htbstaticpad = netbufReadU8(src);
 	const u8 htmstaticpad = netbufReadU8(src);
-	const u32 portoptions = netbufReadU32(src);
 	const u8 botcount = netbufReadU8(src);
 	const u8 numbots = netbufReadU8(src);
 
@@ -426,7 +422,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.chrslots = chrslots;
 	// Preserve the sticky host-spectator flag (the dedicated host is a spectator).
 	g_MpSetup.options = (g_MpSetup.options & MPOPTION_HOSTSPECTATOR)
-			| (options & ~MPOPTION_HOSTSPECTATOR);
+			| (options & ~(u64)MPOPTION_HOSTSPECTATOR);
 	memcpy(g_MpSetup.weapons, weapons, sizeof(g_MpSetup.weapons));
 	g_MpSetup.kohstatichill = kohstatichill;
 	for (s32 i = 0; i < 4; ++i) {
@@ -434,7 +430,6 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	g_MpSetup.htbstaticpad = htbstaticpad;
 	g_MpSetup.htmstaticpad = htmstaticpad;
-	g_MpSetup.portoptions = portoptions;
 	strcpy(g_MpSetup.name, "server");
 
 	for (u8 i = 0; i < numbots; ++i) {
@@ -767,7 +762,7 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
 	netbufWriteU16(dst, g_MpSetup.chrslots);
-	netbufWriteU32(dst, g_MpSetup.options);
+	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	// KotH static-hill index (NET_PROTOCOL_VER >= 28). 0 = Random; 1..N = hillpads[index-1].
 	// Both sides need the same value before kohInitProps runs to keep g_RngSeed in sync
@@ -782,9 +777,6 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	// Server + client must agree before htbCreateToken / htbCreateUplink runs.
 	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
 	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
-	// Port-only options bitmask (NET_PROTOCOL_VER >= 34). Both sides must agree
-	// before setupCreateProps runs (MPOPTION_NODOORS marks lift doors).
-	netbufWriteU32(dst, g_MpSetup.portoptions);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -869,7 +861,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.timelimit = netbufReadU8(src);
 	g_MpSetup.teamscorelimit = netbufReadU16(src);
 	g_MpSetup.chrslots = netbufReadU16(src);
-	g_MpSetup.options = netbufReadU32(src);
+	g_MpSetup.options = netbufReadU64(src);
 	netbufReadData(src, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	g_MpSetup.kohstatichill = netbufReadU8(src);
 	for (s32 i = 0; i < 4; ++i) {
@@ -877,7 +869,6 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	}
 	g_MpSetup.htbstaticpad = netbufReadU8(src);
 	g_MpSetup.htmstaticpad = netbufReadU8(src);
-	g_MpSetup.portoptions = netbufReadU32(src);
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {
@@ -3044,7 +3035,7 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 
 	netbufWriteU8(dst, g_MpSetup.scenario);
 	netbufWriteU8(dst, g_MpSetup.stagenum);
-	netbufWriteU32(dst, g_MpSetup.options);
+	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteU8(dst, g_MpSetup.scorelimit);
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
@@ -3126,7 +3117,7 @@ u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 scenario        = netbufReadU8(src);
 	const u8 stagenum        = netbufReadU8(src);
-	const u32 options        = netbufReadU32(src);
+	const u64 options        = netbufReadU64(src);
 	const u8 scorelimit      = netbufReadU8(src);
 	const u8 timelimit       = netbufReadU8(src);
 	const u16 teamscorelimit = netbufReadU16(src);

@@ -29,7 +29,7 @@ MP Setup File Format
 	[preset_m{sizeof(struct mpweaponpreset)}]
  */
 
-#define MPSETUP_VERSION 5 // v5: per-setup wad carries g_MpSetup.portoptions (MPOPTION_NODOORS)
+#define MPSETUP_VERSION 6 // v6: portoptions folded into the high 32 bits of g_MpSetup.options (64-bit inline; tail word removed)
 
 #define MPSETUP_EXPORTDIR "$S/exported/"
 #define MPSETUP_FILENAME "mpsetups"

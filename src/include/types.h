@@ -3628,6 +3628,10 @@ struct vtxbatch {
 	/*0x14*/ struct coord bbmax;
 };
 
+#ifndef PLATFORM_N64
+struct bgoctree; // port-only: per-room vtx-batch octree (defined in bg.c)
+#endif
+
 struct room {
 	/*0x00*/ u16 flags;
 	/*0x02*/ s16 loaded240; // 0 when unloaded, 1 when visible, ticks up to 120 when recently visible
@@ -3705,6 +3709,7 @@ struct room {
 
 #ifndef PLATFORM_N64
 	/*0x8c*/ u16 extra_flags;
+	struct bgoctree *octree; // port-only: NULL unless ROOMFLAG_EX_OCTREE is set and the room is loaded
 #endif
 };
 
@@ -4120,7 +4125,7 @@ struct missionconfig {
 
 struct mpsetup {
 	/*0x800acb88*/ char name[MPSETUP_MAXNAME+1];
-	/*0x800acb94*/ u32 options;
+	/*0x800acb94*/ u64 options; // Port: widened to 64-bit (bits 32-63 free for new MPOPTION_*). N64 offset comment is now stale for the fields below.
 	/*0x800acb98*/ u8 scenario;
 	/*0x800acb99*/ u8 stagenum;
 	/*0x800acb9a*/ u8 timelimit;
@@ -4149,7 +4154,6 @@ struct mpsetup {
 	u8 ctcteambase[4]; // 0 = Random; 1..4 = spawnpadsperteam[N-1] in CTC (port-only)
 	u8 htbstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HoldTheBriefcase (port-only)
 	u8 htmstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HackThatMac (port-only)
-	u32 portoptions;  // Port-only MPOPTION_* bits that overflow the now-full 32-bit `options` word (e.g. MPOPTION_NODOORS). Test against this field, not `options`. (port-only)
 	// Used to restore the non-player bits of chrslots upon entering Combat
 	// Simulator, after playing Co-Op/Counter-Op with a human sim.
 	u16 storedbotbits;

@@ -2971,16 +2971,16 @@
 #define MPOPTION_GOLDENEYE              0x80000000
 
 // ---------------------------------------------------------------------------
-// Port-only "portoptions" bits (g_MpSetup.portoptions, NOT g_MpSetup.options).
-// The original 32-bit `options` word is fully allocated (lower 24 bits are the
-// original game's, the upper byte holds the port options above), so any new
-// port-only MP option lives in the separate `portoptions` u32. These bits index
-// THAT field — never AND/OR them against g_MpSetup.options (0x00000001 there is
-// MPOPTION_ONEHITKILLS). Synced in SVC_STAGE_START / CLC_ADMIN_SETUP and saved
-// in the mpsetups.bin wad (MPSETUP_VERSION >= 5). PLATFORM_N64 has no
-// portoptions field, so these are unused on N64.
+// Port-only MP options in the HIGH 32 bits of the 64-bit g_MpSetup.options.
+// The original 32-bit word (lower 24 bits original-game, upper byte the port
+// options above) is full, so port-only options added after the u64 widening
+// live in bits 32-63. Write them with a ULL suffix and AND/OR against
+// g_MpSetup.options. Synced in SVC_STAGE_START / CLC_ADMIN_SETUP / SVC_LOBBY_STATE
+// and saved in the mpsetups.bin wad (MPSETUP_VERSION >= 6). The port-only features
+// that use these bits are compiled out on PLATFORM_N64, so the high bits are
+// unused there (the options field itself is u64 on every build).
 // ---------------------------------------------------------------------------
-#define MPOPTION_NODOORS                0x00000001 // portoptions: lift doors stay open
+#define MPOPTION_NODOORS                0x0000000100000000ULL // options bit 32: lift doors stay open
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1
@@ -3712,6 +3712,7 @@
 
 // flags for the extra_flags field
 #define ROOMFLAG_EX_WEATHERPROOF       0x0001
+#define ROOMFLAG_EX_OCTREE             0x0002 // port-only: build/use a per-room octree to frustum-cull vtx batches
 
 #define RUMBLESTATE_1                 1
 #define RUMBLESTATE_ENABLED_STOPPED   2

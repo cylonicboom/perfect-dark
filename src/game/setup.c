@@ -1462,8 +1462,8 @@ void setupLoadFiles(s32 stagenum)
 
 #ifndef PLATFORM_N64
 // Port-only helper for the "No Doors" MP option: marks every lift door so
-// setupCreateProps skips creating it. Only reachable from the portoptions
-// guard in setupCreateProps, so it's compiled out entirely on N64.
+// setupCreateProps skips creating it. Only reachable from the No Doors guard
+// (g_MpSetup.options bit 32) in setupCreateProps, so it's compiled out entirely on N64.
 static void setupMarkLiftDoors()
 {
 	s32 index = 0;
@@ -1565,13 +1565,13 @@ void setupCreateProps(s32 stagenum)
 			botmgrRemoveAll();
 			index = 0;
 
-			// Port-only "No Doors" option lives in g_MpSetup.portoptions, not
-			// options (that word is full). It's read again at the OBJTYPE_DOOR
-			// case below to skip non-lift, unlocked doors. On N64 portoptions
-			// doesn't exist, so nodoors is hard-false and door creation is
-			// unchanged.
+			// Port-only "No Doors" option lives in the high 32 bits of
+			// g_MpSetup.options (bit 32). It's read again at the OBJTYPE_DOOR
+			// case below to skip non-lift, unlocked doors. The whole block is
+			// port-only (#ifndef PLATFORM_N64); on N64 nodoors is hard-false and
+			// door creation is unchanged.
 #ifndef PLATFORM_N64
-			bool nodoors = (g_MpSetup.portoptions & MPOPTION_NODOORS) != 0;
+			bool nodoors = (g_MpSetup.options & MPOPTION_NODOORS) != 0;
 			if (nodoors) {
 				setupMarkLiftDoors();
 			}

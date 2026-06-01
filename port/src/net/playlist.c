@@ -31,6 +31,14 @@ struct namedid {
 	s32 id;
 };
 
+// Options need 64-bit values — port-only options live in bits 32-63 of
+// g_MpSetup.options (e.g. MPOPTION_NODOORS at bit 32) — so they use their own
+// table rather than the s32-id `namedid` shared by stages/scenarios/bot-diffs.
+struct namedoption {
+	const char *name;
+	u64 bit;
+};
+
 static const struct namedid s_stages[] = {
 	{ "SKEDAR",     STAGE_MP_SKEDAR },
 	{ "PIPES",      STAGE_MP_PIPES },
@@ -79,7 +87,7 @@ static const struct namedid s_botdiffs[] = {
 	{ NULL, 0 }
 };
 
-static const struct namedid s_options[] = {
+static const struct namedoption s_options[] = {
 	{ "ONEHITKILLS",   MPOPTION_ONEHITKILLS },
 	{ "TEAMS",         MPOPTION_TEAMSENABLED },
 	{ "NORADAR",       MPOPTION_NORADAR },
@@ -101,6 +109,7 @@ static const struct namedid s_options[] = {
 	{ "NOCULL",             MPOPTION_NOCULL },
 	{ "NOOMLIMIT",          MPOPTION_NOOMLIMIT },
 	{ "GOLDENEYE",          MPOPTION_GOLDENEYE },
+	{ "NODOORS",            MPOPTION_NODOORS }, // port-only, high word (bit 32)
 	// MPOPTION_HOSTSPECTATOR intentionally not exposed — set by netStartServer in dedicated.
 	{ NULL, 0 }
 };
@@ -124,6 +133,16 @@ static s32 lookupNamedId(const struct namedid *tbl, const char *name, s32 fallba
 	return fallback;
 }
 
+// Option lookup over the 64-bit option table. Returns the option's bit, or 0 if
+// the name is unknown (every real option bit is nonzero).
+static u64 lookupOptionBit(const char *name)
+{
+	for (const struct namedoption *p = s_options; p->name; ++p) {
+		if (ieq(p->name, name)) return p->bit;
+	}
+	return 0;
+}
+
 // Public name->id lookups, reusing the parser tables above. Used by the admin
 // `set` command (net.c) to accept human-readable stage/scenario/option/bot-diff
 // names. Stage/scenario/bot-diff return -1 on no match; option returns the
@@ -131,13 +150,13 @@ static s32 lookupNamedId(const struct namedid *tbl, const char *name, s32 fallba
 s32 playlistLookupStage(const char *name)    { return lookupNamedId(s_stages, name, -1); }
 s32 playlistLookupScenario(const char *name) { return lookupNamedId(s_scenarios, name, -1); }
 s32 playlistLookupBotDiff(const char *name)  { return lookupNamedId(s_botdiffs, name, -1); }
-u32 playlistLookupOption(const char *name)   { return (u32)lookupNamedId(s_options, name, 0); }
+u64 playlistLookupOption(const char *name)   { return lookupOptionBit(name); }
 
-u32 playlistAllOptionBits(void)
+u64 playlistAllOptionBits(void)
 {
-	u32 m = 0;
-	for (const struct namedid *p = s_options; p->name; ++p) {
-		m |= (u32)p->id;
+	u64 m = 0;
+	for (const struct namedoption *p = s_options; p->name; ++p) {
+		m |= p->bit;
 	}
 	return m;
 }
@@ -215,20 +234,20 @@ static void stripComment(char *s)
 
 // Parse the comma-separated MPOPTION list into a bitmask. Recognised names
 // from s_options; unknown names are logged.
-static u32 parseOptionList(const char *list)
+static u64 parseOptionList(const char *list)
 {
-	u32 bits = 0;
+	u64 bits = 0;
 	char buf[256];
 	strncpy(buf, list, sizeof(buf) - 1);
 	buf[sizeof(buf) - 1] = '\0';
 
 	char *save = NULL;
 	for (char *tok = strtok(buf, ", \t"); tok; tok = strtok(NULL, ", \t")) {
-		const s32 v = lookupNamedId(s_options, tok, -1);
-		if (v < 0) {
+		const u64 bit = lookupOptionBit(tok);
+		if (bit == 0) {
 			sysLogPrintf(LOG_WARNING, "playlist: unknown option `%s`", tok);
 		} else {
-			bits |= (u32)v;
+			bits |= bit;
 		}
 	}
 	(void)save;
@@ -438,11 +457,11 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 			} else if (ieq(key, "teamscorelimit")) {
 				cur->teamscorelimit = (u16)strtol(val, NULL, 0);
 			} else if (ieq(key, "options")) {
-				const u32 bits = parseOptionList(val);
+				const u64 bits = parseOptionList(val);
 				cur->mp_options |= bits;
 				cur->mp_options_mask |= bits;
 			} else if (ieq(key, "options_clear")) {
-				const u32 bits = parseOptionList(val);
+				const u64 bits = parseOptionList(val);
 				cur->mp_options &= ~bits;
 				cur->mp_options_mask |= bits;
 			} else if (ieq(key, "bots")) {
@@ -588,8 +607,11 @@ void playlistApply(const struct playlistentry *resolved)
 	// host-session flag (set by netStartServer in dedicated mode, by
 	// menuhandlerHostStart in host-and-play with the Host Spectator menu
 	// option) — not a per-match toggle. Clearing it here would break
-	// SVC_LOBBY_STATE / SVC_STAGE_START's spectator-status broadcast.
-	const u32 sticky = MPOPTION_HOSTSPECTATOR;
+	// SVC_LOBBY_STATE / SVC_STAGE_START's spectator-status broadcast. Everything
+	// else — including the high-word port options like MPOPTION_NODOORS (bit 32) —
+	// is authoritative from the playlist: bits listed in `options=` are ON, the
+	// rest OFF. resolved->mp_options is a full 64-bit value.
+	const u64 sticky = MPOPTION_HOSTSPECTATOR;
 	g_MpSetup.options = (g_MpSetup.options & sticky)
 			| (resolved->mp_options & ~sticky);
 
@@ -668,8 +690,8 @@ s32 playlistAppendEntryToFile(const struct playlistentry *e)
 	// Emit the options that are forced ON (set in both options and mask).
 	char opts[256];
 	opts[0] = '\0';
-	for (const struct namedid *p = s_options; p->name; ++p) {
-		if ((e->mp_options & e->mp_options_mask) & (u32)p->id) {
+	for (const struct namedoption *p = s_options; p->name; ++p) {
+		if ((e->mp_options & e->mp_options_mask) & p->bit) {
 			if (opts[0]) {
 				strncat(opts, ",", sizeof(opts) - strlen(opts) - 1);
 			}

@@ -25,8 +25,8 @@ struct playlistentry {
 	s16 stagenum;            // STAGE_MP_* or PLAYLIST_RANDOM_STAGE
 	s8  scenario;            // MPSCENARIO_* or PLAYLIST_RANDOM_SCENARIO
 	s8  weaponpreset;        // g_MpWeaponPresets index, -2 = built-in by name lookup
-	u32 mp_options;          // override bits
-	u32 mp_options_mask;     // which mp_options bits are authoritative
+	u64 mp_options;          // override bits (64-bit; high bits 32-63 are port-only options like MPOPTION_NODOORS)
+	u64 mp_options_mask;     // which mp_options bits are authoritative
 	u8  scorelimit;
 	u8  timelimit;
 	u16 teamscorelimit;
@@ -96,13 +96,15 @@ void playlistDumpToChat(void);
 
 // Name -> id lookups over the playlist parser's tables, for the admin `set`
 // command. Stage/scenario/bot-difficulty return -1 if the name is unknown;
-// option returns the MPOPTION_* bit (0 if unknown). playlistAllOptionBits
-// returns the OR of every settable option bit.
+// option returns the MPOPTION_* bit (0 if unknown — every real option bit is
+// nonzero). The option bit is 64-bit so high-word options (e.g. MPOPTION_NODOORS
+// at bit 32) are representable. playlistAllOptionBits returns the OR of every
+// settable option bit.
 s32 playlistLookupStage(const char *name);
 s32 playlistLookupScenario(const char *name);
 s32 playlistLookupBotDiff(const char *name);
-u32 playlistLookupOption(const char *name);
-u32 playlistAllOptionBits(void);
+u64 playlistLookupOption(const char *name);
+u64 playlistAllOptionBits(void);
 
 // Append one entry to the playlist file the server last loaded (for the admin
 // `saverotation` command). Returns 0 on success, -1 if no file is known or it

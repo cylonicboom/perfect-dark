@@ -627,22 +627,24 @@ MenuItemHandlerResult menuhandlerMpCheckboxOption(s32 operation, struct menuitem
 }
 
 #ifndef PLATFORM_N64
-// Port-only twin of menuhandlerMpCheckboxOption for options stored in
-// g_MpSetup.portoptions (the original 32-bit options word is full). item->param3
-// is the portoptions bit, e.g. MPOPTION_NODOORS. Do NOT use the options-based
-// handler for these — 0x00000001 in options is MPOPTION_ONEHITKILLS.
+// Port-only twin of menuhandlerMpCheckboxOption for options in the HIGH 32 bits
+// of g_MpSetup.options (bits 32-63; the lower 32-bit word is full). item->param3
+// holds the high-word bit (e.g. MPOPTION_NODOORS >> 32) and is shifted up by 32
+// here. The standard options handler can't reach these bits because item->param3
+// is only 32-bit.
 MenuItemHandlerResult menuhandlerMpCheckboxPortOption(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	const u64 bit = (u64)item->param3 << 32;
 	switch (operation) {
 	case MENUOP_GET:
-		if ((g_MpSetup.portoptions & item->param3) == 0) {
+		if ((g_MpSetup.options & bit) == 0) {
 			return false;
 		}
 		return true;
 	case MENUOP_SET:
-		g_MpSetup.portoptions = g_MpSetup.portoptions & ~item->param3;
+		g_MpSetup.options = g_MpSetup.options & ~bit;
 		if (data->checkbox.value) {
-			g_MpSetup.portoptions = g_MpSetup.portoptions | item->param3;
+			g_MpSetup.options = g_MpSetup.options | bit;
 		}
 	}
 
@@ -7153,14 +7155,15 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		menuhandlerMpCheckboxOption,
 	},
 #ifndef PLATFORM_N64
-	// Port-only: "No Doors" lives in g_MpSetup.portoptions, so it uses the
-	// portoptions checkbox handler rather than the options-based one.
+	// Port-only: "No Doors" lives in the high 32 bits of g_MpSetup.options, so it
+	// uses the high-word checkbox handler. param3 carries the high-word bit index
+	// (MPOPTION_NODOORS >> 32), which the handler shifts back up by 32.
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
 		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"No Doors",
-		MPOPTION_NODOORS,
+		MPOPTION_NODOORS >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 #endif

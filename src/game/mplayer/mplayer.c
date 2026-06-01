@@ -4522,7 +4522,14 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 
 	scenarioReadSave(buffer, version);
 
-	if (version > 0) {
+	// options is a 64-bit field. v6+ stores all 64 bits inline (the old 32-bit
+	// portoptions tail word was removed to make room, so the wad stays the same
+	// size). v1-5 stored 32 bits here; for v5 the high bits (e.g. NODOORS) are
+	// migrated from the portoptions tail word below.
+	if (version >= 6) {
+		g_MpSetup.options = savebufferReadBits(buffer, 64);
+	}
+	else if (version > 0) {
 		g_MpSetup.options = savebufferReadBits(buffer, 32);
 	}
 	else {
@@ -4576,7 +4583,6 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 	g_MpSetup.kohstatichill = 0;
 	g_MpSetup.htbstaticpad = 0;
 	g_MpSetup.htmstaticpad = 0;
-	g_MpSetup.portoptions = 0;
 	for (i = 0; i < (s32)ARRAYCOUNT(g_MpSetup.ctcteambase); i++) {
 		g_MpSetup.ctcteambase[i] = 0;
 	}
@@ -4590,8 +4596,10 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 		g_MpSetup.htbstaticpad = savebufferReadBits(buffer, 6);
 		g_MpSetup.htmstaticpad = savebufferReadBits(buffer, 6);
 	}
-	if (version >= 5) {
-		g_MpSetup.portoptions = savebufferReadBits(buffer, 32);
+	if (version == 5) {
+		// v5 stored the port-only options (NODOORS) in a separate 32-bit tail
+		// word; v6+ folds them into the high 32 bits of g_MpSetup.options.
+		g_MpSetup.options |= (u64)savebufferReadBits(buffer, 32) << 32;
 	}
 #endif
 
@@ -4618,7 +4626,7 @@ void mpsetupfileSaveWad(struct savebuffer *buffer)
 
 	scenarioWriteSave(buffer);
 
-	savebufferOr(buffer, g_MpSetup.options, 32);
+	savebufferOr(buffer, g_MpSetup.options, 64); // all 64 bits; the old 32-bit portoptions tail word was removed to make room
 
 	for (i = 0; i < MAX_BOTS; i++) {
 		savebufferOr(buffer, g_BotConfigsArray[i].type, 5);
@@ -4670,7 +4678,6 @@ void mpsetupfileSaveWad(struct savebuffer *buffer)
 	}
 	savebufferOr(buffer, g_MpSetup.htbstaticpad, 6);
 	savebufferOr(buffer, g_MpSetup.htmstaticpad, 6);
-	savebufferOr(buffer, g_MpSetup.portoptions, 32); // MPSETUP_VERSION >= 5
 #endif
 }
 

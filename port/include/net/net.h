@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 35 // 35: CLC_PROP_HIT (client-reported destructible-prop / glass damage)
+#define NET_PROTOCOL_VER 37 // 37: portoptions folded into 64-bit g_MpSetup.options (overflow word removed from CLC_ADMIN_SETUP / SVC_STAGE_START)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -123,7 +123,7 @@ struct netlobbystate {
 	u8 valid;
 	u8 scenario;
 	u8 stagenum;
-	u32 options;
+	u64 options; // mirrors g_MpSetup.options (64-bit)
 	u8 scorelimit;
 	u8 timelimit;
 	u16 teamscorelimit;

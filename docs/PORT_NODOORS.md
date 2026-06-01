@@ -8,6 +8,17 @@ Everything is gated under `#ifndef PLATFORM_N64`. The N64 build is byte-identica
 
 ---
 
+> **⚠️ UPDATED (u64 `options` merge):** The separate `g_MpSetup.portoptions` overflow
+> word described below **no longer exists.** `g_MpSetup.options` was widened to `u64`
+> and `MPOPTION_NODOORS` now lives in **bit 32** of `options`:
+> `#define MPOPTION_NODOORS 0x0000000100000000ULL`. Test it with
+> `g_MpSetup.options & MPOPTION_NODOORS` (the old cross-field footgun is gone). It rides
+> the 64-bit `options` on the wire (no separate `portoptions` bytes) and is saved in the
+> high 32 bits of the inline options word (`MPSETUP_VERSION >= 6`; v5 saves are migrated
+> on load). The menu still uses `menuhandlerMpCheckboxPortOption`, now retargeted to the
+> high 32 bits of `options` (`param3 = MPOPTION_NODOORS >> 32`, shifted back up by 32).
+> The sections below describe the original `portoptions` design for historical context.
+
 ## Why this one is different: the `portoptions` overflow word
 
 Every other MP option is a bit in `g_MpSetup.options` (a `u32`). By the time this

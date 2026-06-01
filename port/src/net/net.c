@@ -3217,6 +3217,60 @@ static bool netParseHexColour(const char *s, u8 out[3])
 	return true;
 }
 
+// --- /wireframe save|load: persist the wireframe appearance (sky + wire colour
+// + thickness) to pd.ini. config.c only saves/loads *registered* variables, so
+// these shadow vars are registered lazily (idempotent) and synced to the live
+// globals; the u8 sky colour packs into a u32.
+static u32 g_WfCfgBg = 0; // packed 0x00RRGGBB
+static f32 g_WfCfgWireR = 0.0f, g_WfCfgWireG = 0.0f, g_WfCfgWireB = 0.0f;
+static s32 g_WfCfgWireEnabled = 0;
+static f32 g_WfCfgThick = 1.0f;
+
+static void netWireframeCfgRegister(void)
+{
+	configRegisterUInt("Wireframe.BgColour", &g_WfCfgBg, 0, 0xffffff);
+	configRegisterFloat("Wireframe.WireColourR", &g_WfCfgWireR, 0.0f, 1.0f);
+	configRegisterFloat("Wireframe.WireColourG", &g_WfCfgWireG, 0.0f, 1.0f);
+	configRegisterFloat("Wireframe.WireColourB", &g_WfCfgWireB, 0.0f, 1.0f);
+	configRegisterInt("Wireframe.WireColourEnabled", &g_WfCfgWireEnabled, 0, 1);
+	configRegisterFloat("Wireframe.Thickness", &g_WfCfgThick, 0.5f, 16.0f); // 0.5 floor: glLineWidth(0) is invalid
+}
+
+// Copy the live wireframe appearance into the shadows (before save, and before
+// load so file-absent keys leave the current look unchanged).
+static void netWireframeCfgSnapshot(void)
+{
+	extern u8 g_WireframeBgColour[3];
+	extern int gfx_wireframe_wire_color_enabled;
+	extern f32 gfx_wireframe_wire_color[3];
+	extern f32 gfx_wireframe_line_width;
+	g_WfCfgBg = ((u32)g_WireframeBgColour[0] << 16)
+	          | ((u32)g_WireframeBgColour[1] << 8)
+	          |  (u32)g_WireframeBgColour[2];
+	g_WfCfgWireR = gfx_wireframe_wire_color[0];
+	g_WfCfgWireG = gfx_wireframe_wire_color[1];
+	g_WfCfgWireB = gfx_wireframe_wire_color[2];
+	g_WfCfgWireEnabled = gfx_wireframe_wire_color_enabled;
+	g_WfCfgThick = gfx_wireframe_line_width;
+}
+
+// Apply the shadows to the live wireframe appearance (after load).
+static void netWireframeCfgApply(void)
+{
+	extern u8 g_WireframeBgColour[3];
+	extern int gfx_wireframe_wire_color_enabled;
+	extern f32 gfx_wireframe_wire_color[3];
+	extern f32 gfx_wireframe_line_width;
+	g_WireframeBgColour[0] = (g_WfCfgBg >> 16) & 0xff;
+	g_WireframeBgColour[1] = (g_WfCfgBg >> 8) & 0xff;
+	g_WireframeBgColour[2] = g_WfCfgBg & 0xff;
+	gfx_wireframe_wire_color[0] = g_WfCfgWireR;
+	gfx_wireframe_wire_color[1] = g_WfCfgWireG;
+	gfx_wireframe_wire_color[2] = g_WfCfgWireB;
+	gfx_wireframe_wire_color_enabled = g_WfCfgWireEnabled;
+	gfx_wireframe_line_width = g_WfCfgThick;
+}
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -3649,14 +3703,18 @@ s32 netConsoleCommand(const char *line)
 		// /wireframe bg RRGGBB       sky backdrop colour (default black)
 		// /wireframe wire RRGGBB|off flat wire colour, or off = natural/textured
 		// /wireframe thick N         wire thickness in pixels (1..16)
-		// Bare RRGGBB is also accepted as a bg shortcut. Setting bg/wire/thick
-		// turns wireframe on. Works outside a net session.
+		// /wireframe vomit           animate bg/wire hue + thickness (seizure mode)
+		// /wireframe trip            same animation, 4x slower
+		// /wireframe save / load     persist sky/wire colour + thickness to pd.ini
+		// Bare RRGGBB is also accepted as a bg shortcut. Setting bg/wire/thick/
+		// vomit/trip turns wireframe on. Works outside a net session.
 		extern u32 g_CheatsActiveBank1;
 		extern u32 g_CheatsEnabledBank1;
 		extern u8 g_WireframeBgColour[3];
 		extern int gfx_wireframe_wire_color_enabled;
 		extern f32 gfx_wireframe_wire_color[3];
 		extern f32 gfx_wireframe_line_width;
+		extern s32 g_WireframeAnimSpeed;
 		const u32 bit = 1u << (CHEAT_WIREFRAME - 32);
 
 		// Split arg into <sub> (first token) and <val> (the remainder).
@@ -3714,6 +3772,44 @@ s32 netConsoleCommand(const char *line)
 			} else {
 				sysLogPrintf(LOG_CHAT, "wireframe thick=%.1f (usage: /wireframe thick N)", gfx_wireframe_line_width);
 			}
+		} else if (strcmp(sub, "vomit") == 0 || strcmp(sub, "trip") == 0) {
+			// Same animation; vomit = fast (4 deg/frame), trip = 4x slower.
+			const s32 myspeed = (sub[0] == 'v') ? 4 : 1;
+			if (strcmp(val, "off") == 0 || strcmp(val, "0") == 0) {
+				g_WireframeAnimSpeed = 0;
+			} else if (strcmp(val, "on") == 0 || strcmp(val, "1") == 0) {
+				g_WireframeAnimSpeed = myspeed;
+			} else {
+				g_WireframeAnimSpeed = (g_WireframeAnimSpeed == myspeed) ? 0 : myspeed;
+			}
+			if (g_WireframeAnimSpeed != 0) {
+				// Animation drives the flat wire colour; turn wireframe on too so
+				// there's something to look at.
+				g_CheatsActiveBank1 |= bit;
+				g_CheatsEnabledBank1 |= bit;
+			}
+			sysLogPrintf(LOG_CHAT, "wireframe %s %s", sub,
+					g_WireframeAnimSpeed != 0 ? "ON" : "OFF");
+		} else if (strcmp(sub, "save") == 0) {
+			netWireframeCfgRegister();
+			netWireframeCfgSnapshot();
+			if (configSave(CONFIG_PATH)) {
+				sysLogPrintf(LOG_CHAT, "wireframe: saved sky/wire colour + thickness to " CONFIG_FNAME);
+			} else {
+				sysLogPrintf(LOG_CHAT, "wireframe: save failed");
+			}
+		} else if (strcmp(sub, "load") == 0) {
+			netWireframeCfgRegister();
+			netWireframeCfgSnapshot(); // current look = fallback for keys absent from the file
+			if (configLoad(CONFIG_PATH)) {
+				netWireframeCfgApply();
+				g_WireframeAnimSpeed = 0; // stop vomit/trip so the loaded static look shows
+				g_CheatsActiveBank1 |= bit;
+				g_CheatsEnabledBank1 |= bit;
+				sysLogPrintf(LOG_CHAT, "wireframe: loaded from " CONFIG_FNAME);
+			} else {
+				sysLogPrintf(LOG_CHAT, "wireframe: load failed (no " CONFIG_FNAME "?)");
+			}
 		} else if (netParseHexColour(sub, rgb)) {
 			// Bare RRGGBB shortcut == /wireframe bg RRGGBB.
 			g_WireframeBgColour[0] = rgb[0];
@@ -3756,6 +3852,20 @@ s32 netConsoleCommand(const char *line)
 			g_BgOctreeForceCullAll = !g_BgOctreeForceCullAll;
 			sysLogPrintf(LOG_CHAT, "OCTREE: force-cull-all %s",
 					g_BgOctreeForceCullAll ? "ON (flagged rooms go black)" : "OFF");
+		} else if (strcmp(arg, "mark") == 0) {
+			s32 r = bgOctreeMarkCurrentRoom();
+			if (r > 0) {
+				sysLogPrintf(LOG_CHAT, "OCTREE: marked current room %d (try /octree forcecull)", r);
+			} else {
+				sysLogPrintf(LOG_CHAT, "OCTREE: couldn't mark current room (in a loaded room?)");
+			}
+		} else if (strcmp(arg, "markall") == 0 || strcmp(arg, "mark all") == 0) {
+			g_BgOctreeMarkAll = !g_BgOctreeMarkAll;
+			sysLogPrintf(LOG_CHAT, "OCTREE: mark-all %s (every loaded room octree-culled, lazy-built)",
+					g_BgOctreeMarkAll ? "ON" : "OFF");
+		} else if (strcmp(arg, "unmark") == 0) {
+			bgOctreeUnmarkAll();
+			sysLogPrintf(LOG_CHAT, "OCTREE: cleared all runtime marks (octree culling off everywhere)");
 		} else {
 			bool on;
 			if (!arg[0]) {
@@ -3777,7 +3887,10 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]              toggle wireframe (CHEAT_WIREFRAME)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe bg|wire RRGGBB        sky / wire colour (wire off = natural)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");
+		sysLogPrintf(LOG_CHAT, "  /wireframe vomit|trip            animate bg/wire hue + thickness (trip = 4x slower)");
+		sysLogPrintf(LOG_CHAT, "  /wireframe save|load             persist sky/wire colour + thickness to pd.ini");
 		sysLogPrintf(LOG_CHAT, "  /octree [on|off|forcecull|stats] outdoor-room octree culling");
+		sysLogPrintf(LOG_CHAT, "  /octree mark|markall|unmark      flag current room / every room (test anywhere)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
 		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");

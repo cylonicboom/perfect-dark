@@ -97,9 +97,27 @@ Argument forms:
 - `wire RRGGBB` — flat wire colour (overrides the textured/shaded line colour). `wire off`
   (or `natural`) reverts to the natural look.
 - `thick N` — wire line width in pixels, clamped 1..16 (`gfx_wireframe_line_width`).
+- `vomit` / `trip` — gag/seizure mode (each toggles, or `on`/`off`). While wireframe is
+  on, an animation in `bgTickPortals` scrolls the sky colour through the hue wheel one
+  way and the flat wire colour the other, and ping-pongs the line width 0→16→0.
+  `g_WireframeAnimSpeed` holds the hue degrees/frame: **`vomit` = 4, `trip` = 1 (4×
+  slower)**; the thickness period scales inversely (`256/speed`) so both sweep the full
+  range. Each command toggles its own speed and switches from the other. Frame-based on
+  `g_Vars.lvframe60` (no double-speed in splitscreen); integer hue→RGB via
+  `bgWireframeHueToRgb`. Width floored at 0.5 because `glLineWidth(0)` is
+  `GL_INVALID_VALUE`. Cosmetic only — overrides the manual `bg`/`wire`/`thick` while on.
+- `save` / `load` — persist the appearance (sky colour, flat wire colour + its
+  enabled flag, thickness) to `pd.ini` under a `[Wireframe]` section, and read it back.
+  Because `config.c` only handles **registered** variables and rewrites the whole file,
+  the values are backed by shadow vars (`g_WfCfg*` in `net.c`) registered lazily and
+  synced to the live globals — the `u8[3]` sky colour packs into a `u32`. `load`
+  pre-snapshots the current look so keys absent from the file leave it unchanged, then
+  stops `vomit`/`trip` and turns wireframe on so the loaded static look shows. Note:
+  `save`/`load` call `configSave`/`configLoad`, which act on the **whole** `pd.ini`
+  (every registered setting), not just the wireframe keys.
 - bare `RRGGBB` — accepted as a `bg` shortcut for back-compat.
 
-Setting `bg` / `wire` / `thick` also turns wireframe on. Hex accepts an optional leading
+Setting `bg` / `wire` / `thick` / `vomit` / `trip` also turns wireframe on. Hex accepts an optional leading
 `#`. e.g. `/wireframe bg 000000`, `/wireframe wire 00ff00`, `/wireframe thick 3`. Parsing
 uses the shared `netParseHexColour` helper.
 

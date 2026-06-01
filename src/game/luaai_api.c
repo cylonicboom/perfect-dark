@@ -31,6 +31,7 @@
 #include "game/luaai.h"
 #include "game/game_1531a0.h" /* text0f153628 / text0f153780 / textRenderProjected */
 #include "game/hudmsg.h"      /* hudmsgRenderBox */
+#include "game/bg.h"          /* g_BgOctreeStats (port-only octree cull counters) */
 #include "data.h"             /* g_FontHandelGothicXs / g_CharsHandelGothicXs */
 #include "lib/vi.h"           /* viGetWidth / viGetHeight */
 
@@ -566,6 +567,22 @@ void luaMenuInvoke(s32 i)
 }
 
 /* Called by luaai.c's luaai_build_pd with the pd table on top of the stack. */
+#ifndef PLATFORM_N64
+/* pd.octree_stats() -> table { drawn, culled, nodes, nodesculled, passes }.
+ * Live per-frame counters from the outdoor-room octree culling in bg.c (see
+ * docs/PORT_OCTREE.md). All zero on frames where no octree room rendered. */
+static int l_pd_octree_stats(lua_State *L)
+{
+	lua_createtable(L, 0, 5);
+	lua_pushinteger(L, g_BgOctreeStats.batchesdrawn);  lua_setfield(L, -2, "drawn");
+	lua_pushinteger(L, g_BgOctreeStats.batchesculled); lua_setfield(L, -2, "culled");
+	lua_pushinteger(L, g_BgOctreeStats.nodestested);   lua_setfield(L, -2, "nodes");
+	lua_pushinteger(L, g_BgOctreeStats.nodesculled);   lua_setfield(L, -2, "nodesculled");
+	lua_pushinteger(L, g_BgOctreeStats.roomsculled);   lua_setfield(L, -2, "passes");
+	return 1;
+}
+#endif
+
 void luaApiRegister(lua_State *L)
 {
 	/* create the events registry table (replaces any previous one) */
@@ -577,6 +594,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_draw_box);    lua_setfield(L, -2, "draw_box");
 	lua_pushcfunction(L, l_pd_draw_text);   lua_setfield(L, -2, "draw_text");
 	lua_pushcfunction(L, l_pd_each_chr);    lua_setfield(L, -2, "each_chr");
+#ifndef PLATFORM_N64
+	lua_pushcfunction(L, l_pd_octree_stats);lua_setfield(L, -2, "octree_stats");
+#endif
 	/* world / entity queries */
 	lua_pushcfunction(L, l_pd_chr_info);    lua_setfield(L, -2, "chr_info");
 	lua_pushcfunction(L, l_pd_chr_pos);     lua_setfield(L, -2, "chr_pos");

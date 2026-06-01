@@ -235,7 +235,7 @@ Each ROM variant (`ntsc-final`, `pal-final`, `jpn-final`, `ntsc-1.0`, betas) has
 | File | Purpose |
 |---|---|
 | `lv.c` | Level tick and render orchestrator (the per-frame game driver) |
-| `bg.c` | Room BSP portal-culling and level background geometry rendering |
+| `bg.c` | Room BSP portal-culling and level background geometry rendering; port-only outdoor-room octree sub-room culling (`docs/PORT_OCTREE.md`) |
 | `bgbss.c` | BSS section for `bg.c` globals |
 | `portal.c` | Portal-graph BSP visibility determination |
 | `portalconv_c.c` | Portal binary data loading and internal pointer fixup |

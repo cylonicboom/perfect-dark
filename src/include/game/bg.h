@@ -106,4 +106,25 @@ void bgFindEnteredRooms(struct coord *bbmin, struct coord *upper, RoomNum *rooms
 void bgCalculateGlaresForVisibleRooms(void);
 #endif
 
+#ifndef PLATFORM_N64
+// Port-only: per-room octree frustum-culling of vtx batches (outdoor rooms).
+struct bgoctreestats {
+	s32 roomsculled;    // rooms that took the octree path this frame
+	s32 nodestested;    // octree nodes frustum-tested
+	s32 nodesculled;    // nodes (subtrees) rejected as offscreen
+	s32 batchesdrawn;   // vtx batches submitted
+	s32 batchesculled;  // vtx batches skipped
+};
+
+extern bool g_BgOctreeEnabled;       // master toggle (/octree on|off)
+extern bool g_BgOctreeForceCullAll;  // debug: cull everything (/octree forcecull)
+extern bool g_BgOctreeMarkAll;       // debug: treat every loaded room as octree-enabled (/octree markall)
+extern struct bgoctreestats g_BgOctreeStats;
+
+void bgBuildRoomOctree(s32 roomnum);
+void bgFreeRoomOctree(s32 roomnum);
+s32 bgOctreeMarkCurrentRoom(void); // /octree mark — returns marked room or -1
+void bgOctreeUnmarkAll(void);      // /octree unmark
+#endif
+
 #endif

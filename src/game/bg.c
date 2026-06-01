@@ -157,6 +157,12 @@ bool g_BgNoDrawSlotLimit = false;
 // Declared as a 1-byte type and assigned a normalized 0/1 (cheatIsActive
 // returns the raw bitmask, e.g. 0x4000, whose low byte is 0).
 extern unsigned char gfx_wireframe_mode;
+// Renderer flat-wire colour + line width (port/fast3d). Written by /wireframe and
+// by the vomit animation in bgTickPortals.
+extern int gfx_wireframe_wire_color_enabled;
+extern f32 gfx_wireframe_wire_color[3];
+extern f32 gfx_wireframe_line_width;
+s32 g_WireframeAnimSpeed = 0; // /wireframe vomit|trip: 0=off, else hue degrees/frame (vomit 4, trip 1)
 #endif
 s32 g_BgMostAttemptedDrawSlots = 0;
 s32 g_BgNumRoomLoadCandidates = 0;
@@ -164,6 +170,47 @@ u16 g_BgFrameCount = 0xfffe;
 s32 g_BgNumPortalCameraCacheItems = 0;
 #ifndef PLATFORM_N64
 bool g_BgHitXluDisabled = false;
+#endif
+
+#ifndef PLATFORM_N64
+// === Port-only: per-room octree frustum-culling of vtx batches ============
+// Rooms flagged ROOMFLAG_EX_OCTREE submit only the vtx/tri batches whose octree
+// node survives a frustum test, instead of the whole room display list. The
+// octree is built once per room load from the existing vtxbatches[] world AABBs
+// (the same batches bgFindRoomVtxBatches builds for hit detection) and is
+// traversed + emitted per render pass. The non-octree path is untouched.
+//
+// Each node stores the union AABB of its whole subtree, so culling a node never
+// drops a batch that pokes into view. Batches are assigned to nodes by their
+// centre (a centre-split octree / BVH hybrid).
+#define PD_OCTREE_DEBUG 0
+
+struct bgoctreenode {
+	f32 bbmin[3];      // union AABB of this subtree (world space)
+	f32 bbmax[3];
+	s32 children[8];   // child node indices, -1 if absent
+	s32 firstbatch;    // offset into bgoctree.batchindices
+	s32 numbatches;    // batches stored directly at this node
+};
+
+struct bgoctree {
+	struct bgoctreenode *nodes;
+	s32 numnodes;
+	s32 *batchindices; // batch indices grouped by owning node
+	s32 numbatchindices;
+	s32 maxdepth;
+};
+
+bool g_BgOctreeEnabled = true;       // master toggle (/octree on|off)
+bool g_BgOctreeForceCullAll = false; // debug: cull everything (/octree forcecull)
+bool g_BgOctreeMarkAll = false;      // debug: treat every loaded room as octree-enabled (/octree markall)
+struct bgoctreestats g_BgOctreeStats;
+
+// Set by bgCullBeginPass for the duration of one room's render pass; read by the
+// LEAF case of bgRenderRoomPass via bgEmitLeafCulled. NULL = cull inactive (the
+// room emits its full display list unchanged).
+static u8 *g_BgCullVisible = NULL;
+static s32 g_BgCullRoom = -1;
 #endif
 
 void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly)
@@ -1038,6 +1085,13 @@ Gfx *bgRenderScene(Gfx *gdl)
 #ifdef PLATFORM_N64
 	g_NumRoomsWithGlares = 0;
 #endif
+#ifndef PLATFORM_N64
+	g_BgOctreeStats.roomsculled = 0;
+	g_BgOctreeStats.nodestested = 0;
+	g_BgOctreeStats.nodesculled = 0;
+	g_BgOctreeStats.batchesdrawn = 0;
+	g_BgOctreeStats.batchesculled = 0;
+#endif
 
 	if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
 		gdl = bgRenderSceneInXray(gdl);
@@ -1760,6 +1814,7 @@ void bgBuildTables(s32 stagenum)
 		g_Rooms[i].unk4e_04 = 0;
 #ifndef PLATFORM_N64
 		g_Rooms[i].extra_flags = 0;
+		g_Rooms[i].octree = NULL;
 #endif
 	}
 
@@ -3092,6 +3147,28 @@ void bgLoadRoom(s32 roomnum)
 		// Create vertex batches - these are used for hit detection
 		bgFindRoomVtxBatches(roomnum);
 
+#ifndef PLATFORM_N64
+		// TEMPORARY manual test: flag Pelagic II ("dam") outdoor rooms for
+		// octree culling until the flag is wired to setup data. Then build the
+		// octree for any octree-flagged room from the vtx batches just created.
+		if (g_Vars.stagenum == STAGE_PELAGIC) {
+			static const u8 damoutdoor[] = {
+				0x60, 0x61, 0x64, 0x67, 0x68, 0x69, 0x6a, 0x6b,
+				0x6d, 0x6e, 0x6f, 0x70, 0x71, 0x72,
+			};
+			s32 k;
+			for (k = 0; k < (s32)(sizeof(damoutdoor) / sizeof(damoutdoor[0])); k++) {
+				if (damoutdoor[k] == roomnum) {
+					g_Rooms[roomnum].extra_flags |= ROOMFLAG_EX_OCTREE;
+					break;
+				}
+			}
+		}
+		if (g_Rooms[roomnum].extra_flags & ROOMFLAG_EX_OCTREE) {
+			bgBuildRoomOctree(roomnum);
+		}
+#endif
+
 		g_Rooms[roomnum].flags |= ROOMFLAG_LIGHTS_DIRTY;
 		g_Rooms[roomnum].flags |= ROOMFLAG_BRIGHTNESS_DIRTY_PERM;
 
@@ -3142,6 +3219,10 @@ void bgUnloadRoom(s32 roomnum)
 #endif
 		g_Rooms[roomnum].vtxbatches = NULL;
 	}
+
+#ifndef PLATFORM_N64
+	bgFreeRoomOctree(roomnum);
+#endif
 
 	if (g_Rooms[roomnum].gfxdatalen > 0) {
 #ifdef PLATFORM_N64
@@ -3267,6 +3348,611 @@ void bgTickRooms(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+#define BG_OCTREE_LEAF_THRESHOLD 8
+#define BG_OCTREE_MAX_DEPTH      6
+
+struct bgoctreebuild {
+	struct bgoctreenode *nodes;
+	s32 numnodes;
+	s32 maxnodes;
+	s32 *batchnode; // per-batch -> owning node index
+	struct vtxbatch *batches;
+	s32 maxdepth;
+	s32 builtdepth;
+};
+
+static s32 bgOctreeNewNode(struct bgoctreebuild *b)
+{
+	s32 idx = b->numnodes;
+	struct bgoctreenode *node;
+	s32 i;
+
+	if (idx >= b->maxnodes) {
+		return -1;
+	}
+
+	b->numnodes++;
+	node = &b->nodes[idx];
+	node->bbmin[0] = node->bbmin[1] = node->bbmin[2] = 1.0e30f;
+	node->bbmax[0] = node->bbmax[1] = node->bbmax[2] = -1.0e30f;
+
+	for (i = 0; i < 8; i++) {
+		node->children[i] = -1;
+	}
+
+	node->firstbatch = 0;
+	node->numbatches = 0;
+
+	return idx;
+}
+
+static s32 bgOctreeOctantOf(struct vtxbatch *batch, f32 *gc)
+{
+	f32 cx = (batch->bbmin.x + batch->bbmax.x) * 0.5f;
+	f32 cy = (batch->bbmin.y + batch->bbmax.y) * 0.5f;
+	f32 cz = (batch->bbmin.z + batch->bbmax.z) * 0.5f;
+	s32 o = 0;
+
+	if (cx >= gc[0]) o |= 1;
+	if (cy >= gc[1]) o |= 2;
+	if (cz >= gc[2]) o |= 4;
+
+	return o;
+}
+
+static void bgOctreeChildBox(f32 *gmin, f32 *gmax, f32 *gc, s32 o, f32 *cmin, f32 *cmax)
+{
+	cmin[0] = (o & 1) ? gc[0] : gmin[0];
+	cmax[0] = (o & 1) ? gmax[0] : gc[0];
+	cmin[1] = (o & 2) ? gc[1] : gmin[1];
+	cmax[1] = (o & 2) ? gmax[1] : gc[1];
+	cmin[2] = (o & 4) ? gc[2] : gmin[2];
+	cmax[2] = (o & 4) ? gmax[2] : gc[2];
+}
+
+static void bgOctreeMergeBatch(struct bgoctreenode *node, struct vtxbatch *batch)
+{
+	if (batch->bbmin.x < node->bbmin[0]) node->bbmin[0] = batch->bbmin.x;
+	if (batch->bbmin.y < node->bbmin[1]) node->bbmin[1] = batch->bbmin.y;
+	if (batch->bbmin.z < node->bbmin[2]) node->bbmin[2] = batch->bbmin.z;
+	if (batch->bbmax.x > node->bbmax[0]) node->bbmax[0] = batch->bbmax.x;
+	if (batch->bbmax.y > node->bbmax[1]) node->bbmax[1] = batch->bbmax.y;
+	if (batch->bbmax.z > node->bbmax[2]) node->bbmax[2] = batch->bbmax.z;
+}
+
+static void bgOctreeMergeNode(struct bgoctreenode *dst, struct bgoctreenode *src)
+{
+	s32 i;
+
+	for (i = 0; i < 3; i++) {
+		if (src->bbmin[i] < dst->bbmin[i]) dst->bbmin[i] = src->bbmin[i];
+		if (src->bbmax[i] > dst->bbmax[i]) dst->bbmax[i] = src->bbmax[i];
+	}
+}
+
+/**
+ * Recursively subdivide the candidate batches into octants by their centre.
+ * Returns the index of the created node, or -1 if the node pool is exhausted
+ * (the caller then stores those batches at itself - coarser culling, still
+ * correct). Each node's stored AABB is the union of its whole subtree.
+ */
+static s32 bgOctreeBuildNode(struct bgoctreebuild *b, f32 *gmin, f32 *gmax, s32 *cand, s32 m, s32 depth)
+{
+	s32 me = bgOctreeNewNode(b);
+	f32 gc[3];
+	s32 octcount[8];
+	s32 octstart[8];
+	s32 fillp[8];
+	s32 nonempty;
+	s32 acc;
+	s32 *tmp;
+	s32 k;
+	s32 o;
+
+	if (me < 0) {
+		return -1;
+	}
+
+	if (depth > b->builtdepth) {
+		b->builtdepth = depth;
+	}
+
+	// Leaf: few enough batches, or hit the depth limit.
+	if (m <= BG_OCTREE_LEAF_THRESHOLD || depth >= b->maxdepth) {
+		for (k = 0; k < m; k++) {
+			b->batchnode[cand[k]] = me;
+			bgOctreeMergeBatch(&b->nodes[me], &b->batches[cand[k]]);
+		}
+		b->nodes[me].numbatches = m;
+		return me;
+	}
+
+	gc[0] = (gmin[0] + gmax[0]) * 0.5f;
+	gc[1] = (gmin[1] + gmax[1]) * 0.5f;
+	gc[2] = (gmin[2] + gmax[2]) * 0.5f;
+
+	for (o = 0; o < 8; o++) {
+		octcount[o] = 0;
+	}
+	for (k = 0; k < m; k++) {
+		octcount[bgOctreeOctantOf(&b->batches[cand[k]], gc)]++;
+	}
+
+	nonempty = 0;
+	for (o = 0; o < 8; o++) {
+		if (octcount[o]) nonempty++;
+	}
+
+	// All batches landed in one octant - splitting won't separate them.
+	// OOM on the scratch buffer also degrades to a leaf.
+	tmp = (nonempty <= 1) ? NULL : (s32 *)sysMemAlloc(m * sizeof(s32));
+
+	if (tmp == NULL) {
+		for (k = 0; k < m; k++) {
+			b->batchnode[cand[k]] = me;
+			bgOctreeMergeBatch(&b->nodes[me], &b->batches[cand[k]]);
+		}
+		b->nodes[me].numbatches = m;
+		return me;
+	}
+
+	acc = 0;
+	for (o = 0; o < 8; o++) {
+		octstart[o] = acc;
+		fillp[o] = acc;
+		acc += octcount[o];
+	}
+	for (k = 0; k < m; k++) {
+		o = bgOctreeOctantOf(&b->batches[cand[k]], gc);
+		tmp[fillp[o]++] = cand[k];
+	}
+
+	b->nodes[me].numbatches = 0;
+	for (o = 0; o < 8; o++) {
+		f32 cmin[3];
+		f32 cmax[3];
+		s32 child;
+
+		if (octcount[o] == 0) {
+			continue;
+		}
+
+		bgOctreeChildBox(gmin, gmax, gc, o, cmin, cmax);
+		child = bgOctreeBuildNode(b, cmin, cmax, &tmp[octstart[o]], octcount[o], depth + 1);
+
+		// b->nodes is a fixed (never-realloc'd) buffer, so &b->nodes[me] is
+		// still valid after the recursive call grew b->numnodes.
+		if (child < 0) {
+			// Node pool exhausted: store this octant's batches at this node.
+			for (k = octstart[o]; k < octstart[o] + octcount[o]; k++) {
+				b->batchnode[tmp[k]] = me;
+				bgOctreeMergeBatch(&b->nodes[me], &b->batches[tmp[k]]);
+				b->nodes[me].numbatches++;
+			}
+		} else {
+			b->nodes[me].children[o] = child;
+			bgOctreeMergeNode(&b->nodes[me], &b->nodes[child]);
+		}
+	}
+
+	sysMemFree(tmp);
+
+	return me;
+}
+
+void bgBuildRoomOctree(s32 roomnum)
+{
+	struct room *room = &g_Rooms[roomnum];
+	struct bgoctreebuild build;
+	struct bgoctree *tree;
+	s32 n = room->numvtxbatches;
+	s32 *cand;
+	s32 *fillpos;
+	f32 gmin[3];
+	f32 gmax[3];
+	s32 acc;
+	s32 i;
+
+	if (room->octree != NULL) {
+		return; // already built
+	}
+	if (room->vtxbatches == NULL || n <= 0) {
+		return;
+	}
+
+	build.maxnodes = n * 2 + 32;
+	build.nodes = (struct bgoctreenode *)sysMemAlloc(build.maxnodes * sizeof(struct bgoctreenode));
+	build.batchnode = (s32 *)sysMemAlloc(n * sizeof(s32));
+	cand = (s32 *)sysMemAlloc(n * sizeof(s32));
+
+	if (build.nodes == NULL || build.batchnode == NULL || cand == NULL) {
+		if (build.nodes) sysMemFree(build.nodes);
+		if (build.batchnode) sysMemFree(build.batchnode);
+		if (cand) sysMemFree(cand);
+		return;
+	}
+
+	build.numnodes = 0;
+	build.batches = room->vtxbatches;
+	build.maxdepth = BG_OCTREE_MAX_DEPTH;
+	build.builtdepth = 0;
+
+	for (i = 0; i < n; i++) {
+		cand[i] = i;
+	}
+
+	// Root geometric box = room world bbox (same space as the batch AABBs,
+	// which bgPopulateVtxBatchType offsets by g_BgRooms[roomnum].pos).
+	for (i = 0; i < 3; i++) {
+		gmin[i] = room->bbmin[i];
+		gmax[i] = room->bbmax[i];
+	}
+
+	bgOctreeBuildNode(&build, gmin, gmax, cand, n, 0);
+
+	tree = (struct bgoctree *)sysMemAlloc(sizeof(struct bgoctree));
+	if (tree != NULL) {
+		tree->nodes = (struct bgoctreenode *)sysMemAlloc(build.numnodes * sizeof(struct bgoctreenode));
+		tree->batchindices = (s32 *)sysMemAlloc(n * sizeof(s32));
+	}
+
+	if (tree == NULL || tree->nodes == NULL || tree->batchindices == NULL) {
+		// Allocation failure: leave the room without an octree (feature
+		// inactive for it; it renders via the normal path).
+		if (tree != NULL) {
+			if (tree->nodes) sysMemFree(tree->nodes);
+			if (tree->batchindices) sysMemFree(tree->batchindices);
+			sysMemFree(tree);
+		}
+		sysMemFree(build.nodes);
+		sysMemFree(build.batchnode);
+		sysMemFree(cand);
+		return;
+	}
+
+	for (i = 0; i < build.numnodes; i++) {
+		tree->nodes[i] = build.nodes[i];
+	}
+	tree->numnodes = build.numnodes;
+	tree->numbatchindices = n;
+	tree->maxdepth = build.builtdepth;
+
+	// Pack batch indices grouped by owning node (prefix sum over numbatches).
+	// If this small alloc fails, abort the build (an unfilled batchindices would
+	// let bgOctreeMarkNode index visible[] with garbage), leaving octree == NULL.
+	fillpos = (s32 *)sysMemAlloc(build.numnodes * sizeof(s32));
+	if (fillpos == NULL) {
+		sysMemFree(tree->nodes);
+		sysMemFree(tree->batchindices);
+		sysMemFree(tree);
+		sysMemFree(build.nodes);
+		sysMemFree(build.batchnode);
+		sysMemFree(cand);
+		return;
+	}
+
+	acc = 0;
+	for (i = 0; i < build.numnodes; i++) {
+		tree->nodes[i].firstbatch = acc;
+		fillpos[i] = acc;
+		acc += tree->nodes[i].numbatches;
+	}
+	for (i = 0; i < n; i++) {
+		s32 node = build.batchnode[i];
+		tree->batchindices[fillpos[node]++] = i;
+	}
+	sysMemFree(fillpos);
+
+	room->octree = tree;
+
+	sysMemFree(build.nodes);
+	sysMemFree(build.batchnode);
+	sysMemFree(cand);
+
+#if PD_OCTREE_DEBUG
+	sysLogPrintf(LOG_NOTE, "bgBuildRoomOctree: room %d batches=%d nodes=%d depth=%d",
+			roomnum, n, tree->numnodes, tree->maxdepth);
+#endif
+}
+
+void bgFreeRoomOctree(s32 roomnum)
+{
+	struct bgoctree *tree = g_Rooms[roomnum].octree;
+
+	if (tree == NULL) {
+		return;
+	}
+
+	if (tree->nodes) sysMemFree(tree->nodes);
+	if (tree->batchindices) sysMemFree(tree->batchindices);
+	sysMemFree(tree);
+
+	g_Rooms[roomnum].octree = NULL;
+}
+
+/**
+ * Console test helper: flag the room the local player is standing in for octree
+ * culling and build it now. Returns the marked room number, or -1. (/octree mark)
+ */
+s32 bgOctreeMarkCurrentRoom(void)
+{
+	s32 roomnum;
+
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		return -1;
+	}
+
+	roomnum = g_Vars.currentplayer->prop->rooms[0];
+
+	if (roomnum <= 0 || roomnum >= g_Vars.roomcount) {
+		return -1;
+	}
+	if (!g_Rooms[roomnum].loaded240 || g_Rooms[roomnum].vtxbatches == NULL) {
+		return -1;
+	}
+
+	g_Rooms[roomnum].extra_flags |= ROOMFLAG_EX_OCTREE;
+	bgBuildRoomOctree(roomnum);
+
+	return roomnum;
+}
+
+/**
+ * Console test helper: clear every runtime octree mark - the global markall mode,
+ * all per-room ROOMFLAG_EX_OCTREE flags, and all built octrees - restoring the
+ * unculled render path. Rooms flagged by the load-time hook re-acquire the flag
+ * (and rebuild) on their next load. (/octree unmark)
+ */
+void bgOctreeUnmarkAll(void)
+{
+	s32 i;
+
+	g_BgOctreeMarkAll = false;
+
+	for (i = 1; i < g_Vars.roomcount; i++) {
+		g_Rooms[i].extra_flags &= ~ROOMFLAG_EX_OCTREE;
+		bgFreeRoomOctree(i); // no-op when octree == NULL
+	}
+}
+
+/**
+ * AABB-vs-viewport test, generalised from bgRoomIntersectsScreenBox. Projects
+ * the eight corners and rejects only when all eight fall to one side.
+ */
+static bool bgBboxOnScreen(f32 *bbmin, f32 *bbmax, struct screenbox *screen)
+{
+	s32 i;
+	struct coord screenpos;
+	struct coord corner;
+	s32 numbehind = 0;
+	s32 numfar = 0;
+	s32 numleft = 0;
+	s32 numright = 0;
+	s32 numbelow = 0;
+	s32 numabove = 0;
+
+	for (i = 0; i != 8; i++) {
+		corner.x = (i & 1) ? bbmin[0] : bbmax[0];
+		corner.y = (i & 2) ? bbmin[1] : bbmax[1];
+		corner.z = (i & 4) ? bbmin[2] : bbmax[2];
+
+		if (bg3dPosTo2dPos(&corner, &screenpos) == 0) {
+			if (g_BgSnake.zrange.far <= -screenpos.z) numfar++;
+			if (screenpos.x > screen->xmin) numleft++;
+			if (screenpos.x < screen->xmax) numright++;
+			if (screenpos.y > screen->ymin) numbelow++;
+			if (screenpos.y < screen->ymax) numabove++;
+			numbehind++;
+		} else {
+			if (g_BgSnake.zrange.far <= -screenpos.z) numfar++;
+			if (screenpos.x < screen->xmin) numleft++;
+			else if (screenpos.x > screen->xmax) numright++;
+			if (screenpos.y < screen->ymin) numbelow++;
+			else if (screenpos.y > screen->ymax) numabove++;
+		}
+	}
+
+	if (numbehind == 8 || numfar == 8 || numleft == 8
+			|| numright == 8 || numbelow == 8 || numabove == 8) {
+		return false;
+	}
+
+	return true;
+}
+
+static void bgOctreeMarkNode(struct bgoctree *tree, s32 nodeidx, u8 *visible, struct screenbox *screen)
+{
+	struct bgoctreenode *node = &tree->nodes[nodeidx];
+	s32 i;
+
+	g_BgOctreeStats.nodestested++;
+
+	if (!bgBboxOnScreen(node->bbmin, node->bbmax, screen)) {
+		g_BgOctreeStats.nodesculled++;
+		return; // whole subtree offscreen
+	}
+
+	for (i = 0; i < node->numbatches; i++) {
+		visible[tree->batchindices[node->firstbatch + i]] = 1;
+	}
+
+	for (i = 0; i < 8; i++) {
+		if (node->children[i] >= 0) {
+			bgOctreeMarkNode(tree, node->children[i], visible, screen);
+		}
+	}
+}
+
+static void bgOctreeMarkVisible(s32 roomnum, u8 *visible)
+{
+	struct bgoctree *tree = g_Rooms[roomnum].octree;
+	s32 n = g_Rooms[roomnum].numvtxbatches;
+	s32 i;
+
+	for (i = 0; i < n; i++) {
+		visible[i] = 0;
+	}
+
+	if (g_BgOctreeForceCullAll || tree == NULL || tree->numnodes == 0) {
+		return; // everything culled
+	}
+
+	bgOctreeMarkNode(tree, 0, visible, &g_BgSpecialDrawSlot->box);
+}
+
+/**
+ * If this room should be octree-culled this pass, allocate a per-batch
+ * visibility array from the per-frame vtx pool, fill it from the frustum
+ * traversal, and arm bgEmitLeafCulled via the file-static context. A no-op
+ * (leaves g_BgCullVisible NULL) for non-octree rooms or when the pool is low.
+ */
+static void bgCullBeginPass(s32 roomnum)
+{
+	struct room *room = &g_Rooms[roomnum];
+	s32 n = room->numvtxbatches;
+	u8 *visible;
+
+	g_BgCullVisible = NULL;
+	g_BgCullRoom = -1;
+
+	if (!g_BgOctreeEnabled) return;
+	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll) return;
+	if (n <= 0) return;
+	if (room->octree == NULL) {
+		// Lazy build for /octree markall (and any room flagged after load). A
+		// no-op for the load-time path, where the octree already exists.
+		bgBuildRoomOctree(roomnum);
+		if (room->octree == NULL) return;
+	}
+	if (gfxGetFreeVtx() < (u32)ALIGN16(n)) return;
+
+	visible = (u8 *)gfxAllocate(n);
+	bgOctreeMarkVisible(roomnum, visible);
+
+	g_BgCullVisible = visible;
+	g_BgCullRoom = roomnum;
+	g_BgOctreeStats.roomsculled++;
+}
+
+static void bgCullEndPass(void)
+{
+	g_BgCullVisible = NULL;
+	g_BgCullRoom = -1;
+}
+
+/**
+ * Emit one room leaf, dropping the geometry of culled batches. State commands
+ * (texture/combine/tile/othermode/...) are always copied so survivors keep
+ * correct render state; only G_VTX/G_TRI* of culled batches are skipped. The
+ * k-th G_VTX in block->gdl maps to vtxbatches[startidx + k] (see
+ * bgPopulateVtxBatchType). All-visible takes the original zero-copy branch.
+ */
+static Gfx *bgEmitLeafCulled(Gfx *gdl, s32 roomnum, struct roomblock *block)
+{
+	struct room *room = &g_Rooms[roomnum];
+	struct vtxbatch *batches = room->vtxbatches;
+	s32 numbatches = room->numvtxbatches;
+	Gfx *src = block->gdl;
+	s32 startidx = -1;
+	s32 numcmds;
+	s32 numvisible;
+	s32 numinleaf;
+	s32 cursor;
+	s32 i;
+	bool culled;
+	Gfx *scratch;
+	Gfx *out;
+
+	for (i = 0; i < numbatches; i++) {
+		if (batches[i].gdl == src) {
+			startidx = i;
+			break;
+		}
+	}
+
+	if (startidx < 0) {
+		// No batch info for this leaf - emit unchanged.
+		gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(src));
+		return gdl;
+	}
+
+	// Pass 1: count commands and how many of this leaf's batches survive.
+	numvisible = 0;
+	numinleaf = 0;
+	cursor = startidx;
+	for (i = 0; src[i].dma.cmd != G_ENDDL; i++) {
+		if (src[i].dma.cmd == G_VTX) {
+			if (cursor < numbatches && batches[cursor].gdl == src) {
+				if (g_BgCullVisible[cursor]) {
+					numvisible++;
+				}
+				cursor++;
+				numinleaf++;
+			}
+		}
+	}
+	numcmds = i;
+
+	// All visible -> original list verbatim (byte-identical fast path).
+	if (numvisible == numinleaf) {
+		g_BgOctreeStats.batchesdrawn += numinleaf;
+		gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(src));
+		return gdl;
+	}
+
+	// Nothing visible -> emit no geometry for this leaf.
+	if (numvisible == 0) {
+		g_BgOctreeStats.batchesculled += numinleaf;
+		return gdl;
+	}
+
+	// Partial: build a filtered copy and branch to it. Fall back to the
+	// original list if the per-frame vtx pool can't hold the worst case.
+	if (gfxGetFreeVtx() < (u32)((numcmds + 1) * sizeof(Gfx))) {
+		g_BgOctreeStats.batchesdrawn += numinleaf;
+		gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(src));
+		return gdl;
+	}
+
+	g_BgOctreeStats.batchesdrawn += numvisible;
+	g_BgOctreeStats.batchesculled += numinleaf - numvisible;
+
+	scratch = (Gfx *)gfxAllocate((numcmds + 1) * sizeof(Gfx));
+	out = scratch;
+	cursor = startidx;
+	culled = false;
+
+	for (i = 0; src[i].dma.cmd != G_ENDDL; i++) {
+		u32 cmd = src[i].dma.cmd;
+
+		if (cmd == G_VTX) {
+			culled = true;
+			if (cursor < numbatches && batches[cursor].gdl == src) {
+				culled = !g_BgCullVisible[cursor];
+				cursor++;
+			}
+			if (!culled) {
+				*out++ = src[i];
+			}
+		} else if (cmd == G_TRI1 || cmd == G_TRI4) {
+			if (!culled) {
+				*out++ = src[i];
+			}
+		} else {
+			// State command - always keep.
+			*out++ = src[i];
+		}
+	}
+
+	gSPEndDisplayList(out++);
+
+	gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(scratch));
+
+	return gdl;
+}
+#endif
+
 Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 {
 	uintptr_t v0;
@@ -3301,7 +3987,14 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 
 		gSPSegment(gdl++, SPSEGMENT_BG_COL, OS_PHYSICAL_TO_K0(v0));
 
-		gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(block->gdl));
+#ifndef PLATFORM_N64
+		if (g_BgCullVisible != NULL && g_BgCullRoom == roomnum) {
+			gdl = bgEmitLeafCulled(gdl, roomnum, block);
+		} else
+#endif
+		{
+			gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(block->gdl));
+		}
 
 		if (arg3) {
 			gdl = bgRenderRoomPass(gdl, roomnum, block->next, true);
@@ -3360,7 +4053,13 @@ Gfx *bgRenderRoomOpaque(Gfx *gdl, s32 roomnum)
 	gdl = roomApplyMtx(gdl, roomnum);
 
 	gdl = lightsSetForRoom(gdl, roomnum);
+#ifndef PLATFORM_N64
+	bgCullBeginPass(roomnum);
+#endif
 	gdl = bgRenderRoomPass(gdl, roomnum, g_Rooms[roomnum].gfxdata->opablocks, true);
+#ifndef PLATFORM_N64
+	bgCullEndPass();
+#endif
 	gdl = lightsSetDefault(gdl);
 
 	g_Rooms[roomnum].loaded240 = 1;
@@ -3390,7 +4089,13 @@ Gfx *bgRenderRoomXlu(Gfx *gdl, s32 roomnum)
 		if (g_Rooms[roomnum].gfxdata);
 
 		gdl = roomApplyMtx(gdl, roomnum);
+#ifndef PLATFORM_N64
+		bgCullBeginPass(roomnum);
+#endif
 		gdl = bgRenderRoomPass(gdl, roomnum, g_Rooms[roomnum].gfxdata->xlublocks, true);
+#ifndef PLATFORM_N64
+		bgCullEndPass();
+#endif
 
 		g_Rooms[roomnum].loaded240 = 1;
 	} else {
@@ -5862,6 +6567,26 @@ void bgChooseRoomsToLoad(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Integer hue (0..359) -> full-saturation RGB (0..255). Used by /wireframe vomit.
+static void bgWireframeHueToRgb(s32 hue, u8 *out)
+{
+	s32 seg = (hue / 60) % 6;
+	s32 f = hue % 60;
+	s32 up = (f * 255) / 60;
+	s32 dn = 255 - up;
+
+	switch (seg) {
+	case 0:  out[0] = 255; out[1] = up;  out[2] = 0;   break;
+	case 1:  out[0] = dn;  out[1] = 255; out[2] = 0;   break;
+	case 2:  out[0] = 0;   out[1] = 255; out[2] = up;  break;
+	case 3:  out[0] = 0;   out[1] = dn;  out[2] = 255; break;
+	case 4:  out[0] = up;  out[1] = 0;   out[2] = 255; break;
+	default: out[0] = 255; out[1] = 0;   out[2] = dn;  break;
+	}
+}
+#endif
+
 void bgTickPortals(void)
 {
 	s32 i;
@@ -5913,6 +6638,41 @@ void bgTickPortals(void)
 		g_BgNoDrawSlotLimit = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOOMLIMIT))
 		                   || cheatIsActive(CHEAT_NODRAWLIMIT);
 		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
+
+		// /wireframe vomit|trip: while wireframe is on, scroll the sky colour
+		// through the hue wheel one way and the wire colour the other, and
+		// ping-pong the line width 0..16. g_WireframeAnimSpeed is the hue
+		// degrees/frame (vomit=4, trip=1 → 4x slower); the thickness period
+		// scales inversely so both sweep the full range. Frame-based
+		// (g_Vars.lvframe60) so it doesn't double-speed in splitscreen.
+		// Cosmetic gag - no gameplay effect.
+		if (g_WireframeAnimSpeed > 0 && gfx_wireframe_mode) {
+			s32 t = g_Vars.lvframe60;
+			s32 spd = g_WireframeAnimSpeed;
+			s32 period = 256 / spd;
+			s32 bghue = (t * spd) % 360;
+			s32 wirehue = ((360 - (t * spd) % 360) + 120) % 360;
+			s32 tp = t % period;
+			s32 half = period / 2;
+			s32 tri = (tp <= half) ? tp : (period - tp); // 0..half
+			u8 col[3];
+
+			bgWireframeHueToRgb(bghue, col);
+			g_WireframeBgColour[0] = col[0];
+			g_WireframeBgColour[1] = col[1];
+			g_WireframeBgColour[2] = col[2];
+
+			bgWireframeHueToRgb(wirehue, col);
+			gfx_wireframe_wire_color[0] = col[0] / 255.0f;
+			gfx_wireframe_wire_color[1] = col[1] / 255.0f;
+			gfx_wireframe_wire_color[2] = col[2] / 255.0f;
+			gfx_wireframe_wire_color_enabled = 1;
+
+			gfx_wireframe_line_width = (f32)tri * 32.0f / (f32)period; // 0..16
+			if (gfx_wireframe_line_width < 0.5f) {
+				gfx_wireframe_line_width = 0.5f; // glLineWidth(0) is GL_INVALID_VALUE
+			}
+		}
 #endif
 
 		bgCmdExecute(g_BgCommands);

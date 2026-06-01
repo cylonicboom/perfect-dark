@@ -97,6 +97,12 @@ that id. The id is the ailist id (see the ranges documented in
 Note that control-flow commands (labels, gotos) are not meaningful in synthetic
 mode — use Lua's own `if`/`while`/`goto` instead.
 
+**Every engine AI command (all ~440), with its opcode and exact operand byte
+layout, is documented in [`aicommands.md`](aicommands.md)** — that is the
+reference for what to pass to `ctx:run`. For a complete, commented example that
+drives an enemy entirely from Lua, see
+[`scripts/examples/lua_authored_enemy.lua`](../scripts/examples/lua_authored_enemy.lua).
+
 ### The `pd` table
 
 | Call | Meaning |

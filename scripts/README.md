@@ -8,6 +8,23 @@ executable / in your game data folder) on startup, on each stage load, and on
 - `init.lua` — entry point; loads `showcase.lua`.
 - `showcase.lua` — demo: weapon-fire / enemy-alert / kill events, a live AI
   "X-ray" overlay, and an (optional) fully Lua-authored enemy.
+- `examples/lua_authored_enemy.lua` — a fully-commented enemy whose combat
+  behaviour is written from scratch in Lua via `ctx:run`; the "if this works,
+  almost anything will" proof.
+
+## Authoring AI in Lua
+
+Two references make this writable by a human or an agent:
+
+- [`../docs/aicommands.md`](../docs/aicommands.md) — **every** engine AI command
+  (~440), each with its opcode, operand **byte layout**, engine handler, and a
+  description. The lookup table for `ctx:run(opcode, bytes...)`.
+- [`../docs/luascripting.md`](../docs/luascripting.md) — the `ctx` / `pd` API,
+  events, the override mechanism, and the return-value contract.
+
+`aicommands.md` is generated from the engine source by
+[`../tools/gen_aicommands.py`](../tools/gen_aicommands.py); re-run it after any
+change to the AI command set so the reference can't drift.
 
 ## Console (open with `~`)
 

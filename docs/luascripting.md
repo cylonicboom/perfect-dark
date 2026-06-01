@@ -92,6 +92,24 @@ that id. The id is the ailist id (see the ranges documented in
 | `ctx:cur()` | current command offset (program counter) |
 | `ctx:exec(off)` | run the original command at `off`; returns 0/1/2 as above |
 | `ctx:run(opcode, b0, b1, ...)` | build a synthetic command and run its handler; returns its break flag |
+| `ctx:self()` | read-only snapshot of the chr currently running this ailist, or `nil` |
+
+`ctx:self()` returns a table describing *which* chr the callback is running for,
+so an override can make per-enemy decisions and keep per-`chrnum` state:
+
+| Field | Meaning |
+| --- | --- |
+| `chrnum` | the chr's id (stable for its lifetime; key your state table by this) |
+| `x`, `y`, `z` | world position |
+| `room` | first room number (`-1` if unknown) |
+| `health`, `maxhealth` | `maxdamage - damage`, and `maxdamage` |
+| `shield` | current shield |
+| `alertness` | `0..255` |
+| `target_chrnum` | the chr it is targeting, if that target is another chr (else absent) |
+| `target_playernum` | the player it is targeting, if the target is a player (else absent) |
+
+It is a snapshot for that call — re-call each frame for fresh values. Returns
+`nil` for object-driven lists (trucks/helis/hovercars) which have no chr.
 
 `ctx:run` is for hand-written lists that want to call engine commands directly.
 Note that control-flow commands (labels, gotos) are not meaningful in synthetic

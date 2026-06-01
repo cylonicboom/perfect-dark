@@ -18,22 +18,16 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | **Generated Lua helper library** (`ai.<command>(ctx, ...)`) | `scripts/ai.lua` |
 | Generator folded into the build (can't drift) | `tools/gen_aicommands.py`, CMake `pd_aiscripts` |
 | Worked from-scratch Lua enemy example | `scripts/examples/lua_authored_enemy.lua` |
+| **Current-chr handle** `ctx:self()` (chrnum, pos, health, shield, alertness, target) | `luaai.c`, `chrai.c` |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
-without reading engine source.
+without reading engine source. With `ctx:self()` an override can also make
+per-enemy decisions and keep per-`chrnum` state.
 
 ## Next (high-value, feasibility checked)
 
 These are ordered by value-to-effort. Each builds on the shipped base.
-
-### 1. Current-chr handle inside ailist callbacks
-**Why:** today an override function knows it is running but not *which* chr it
-is (no `self`). That blocks per-enemy state and most interesting AI.
-**Plan:** expose the active chr to Lua — extend `ctx` with `ctx:self()` returning
-a light handle (chrnum + accessors). `chrai.c` already tracks `g_Vars.chrdata`
-during execution, so this is a bridge accessor, not new state.
-**Feasibility:** straightforward; same bridge pattern as `chraiLuaGetChrNum`.
 
 ### 2. Entity / world query API (`pd.*` read accessors)
 **Why:** scripts need to *read* the world to make decisions (positions, rooms,

@@ -91,6 +91,39 @@ static int l_ctx_exec(lua_State *L)
 	return 1;
 }
 
+/* ctx:self() -> table describing the chr currently running this ailist, or nil
+ * if there is no current chr (e.g. an object-driven list). The table is a
+ * read-only snapshot for this call; re-call each frame for fresh values. */
+static int l_ctx_self(lua_State *L)
+{
+	struct luaaiselfinfo info;
+
+	if (!chraiLuaGetSelf(&info) || !info.valid) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	lua_newtable(L);
+	lua_pushinteger(L, info.chrnum);        lua_setfield(L, -2, "chrnum");
+	lua_pushnumber(L, info.x);              lua_setfield(L, -2, "x");
+	lua_pushnumber(L, info.y);              lua_setfield(L, -2, "y");
+	lua_pushnumber(L, info.z);              lua_setfield(L, -2, "z");
+	lua_pushinteger(L, info.room);          lua_setfield(L, -2, "room");
+	lua_pushnumber(L, info.health);         lua_setfield(L, -2, "health");
+	lua_pushnumber(L, info.maxhealth);      lua_setfield(L, -2, "maxhealth");
+	lua_pushnumber(L, info.shield);         lua_setfield(L, -2, "shield");
+	lua_pushinteger(L, info.alertness);     lua_setfield(L, -2, "alertness");
+	if (info.targetchrnum >= 0) {
+		lua_pushinteger(L, info.targetchrnum);
+		lua_setfield(L, -2, "target_chrnum");
+	}
+	if (info.targetplayernum >= 0) {
+		lua_pushinteger(L, info.targetplayernum);
+		lua_setfield(L, -2, "target_playernum");
+	}
+	return 1;
+}
+
 /* ctx:run(opcode, b0, b1, ...) -> break flag
  * Invoke an arbitrary engine command from Lua with explicit operand bytes. */
 static int l_ctx_run(lua_State *L)
@@ -176,6 +209,8 @@ static void luaai_build_ctx(lua_State *L)
 	lua_setfield(L, -2, "exec");
 	lua_pushcfunction(L, l_ctx_run);
 	lua_setfield(L, -2, "run");
+	lua_pushcfunction(L, l_ctx_self);
+	lua_setfield(L, -2, "self");
 
 	lua_setfield(L, LUA_REGISTRYINDEX, KEY_CTX);
 }

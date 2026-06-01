@@ -1543,6 +1543,11 @@ s32 inputTextHandler(char *out, const u32 outSize, s32 *curCol, s32 oskCharsOnly
 		}
 	} else if (key == VK_ESCAPE) {
 		return -1;
+	} else if (key == VK_RETURN || key == (VK_KEYBOARD_BEGIN + SDL_SCANCODE_KP_ENTER)) {
+		// Enter / numpad-Enter submits the entered text. Callers treat a
+		// positive return as "submit" (e.g. console command, menu text field)
+		// and a negative return as "cancel" (ESC).
+		return 1;
 	}
 
 	return 0;

@@ -5207,6 +5207,12 @@ Gfx *playerRenderHud(Gfx *gdl)
 		gdl = radarRender(gdl);
 #endif
 
+#ifndef PLATFORM_N64
+		// Port-only: vanity easter-egg banner on the HUD layer, just above the
+		// pickup messages it mimics (no-op unless toggled via /graslu).
+		gdl = netGrasluRender(gdl);
+#endif
+
 		gdl = playerDrawStoredFade(gdl);
 	} else {
 		gdl = bgRenderArtifacts(gdl);

@@ -18,6 +18,7 @@
 #include "data.h"
 #include "bss.h"
 #include "game/hudmsg.h"
+#include "game/menugfx.h"
 #include "game/playermgr.h"
 #include "game/player.h"
 #include "game/bondgun.h"
@@ -3271,6 +3272,11 @@ static void netWireframeCfgApply(void)
 	gfx_wireframe_line_width = g_WfCfgThick;
 }
 
+// Local vanity easter egg: when set, netGrasluRender draws a "Graslu" banner in
+// the lower-left HUD corner during gameplay. Toggled by the hidden /graslu
+// console command; purely local (nothing about it goes on the wire).
+static s32 g_GrasluEgg = 0;
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -3708,6 +3714,11 @@ s32 netConsoleCommand(const char *line)
 		extern s32 g_LuaShowMem;
 		g_LuaShowMem = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_LuaShowMem;
 		sysLogPrintf(LOG_CHAT, "OVERLAY: memory (vtx pool) %s", g_LuaShowMem ? "ON" : "OFF");
+	} else if (strcmp(cmd, "graslu") == 0) {
+		// Hidden vanity easter egg — toggle the lower-left "Graslu" HUD banner
+		// (netGrasluRender). Local-only; deliberately omitted from /help.
+		g_GrasluEgg = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_GrasluEgg;
+		sysLogPrintf(LOG_CHAT, "Graslu: %s", g_GrasluEgg ? "ON" : "OFF");
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.
@@ -4121,6 +4132,136 @@ Gfx *netKillFeedRender(Gfx *gdl)
 		}
 
 		++visible;
+	}
+
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+	gdl = text0f153780(gdl);
+	return gdl;
+}
+
+// Hidden vanity easter egg honouring the Perfect Dark content creator Graslu.
+// Deliberately mirrors the weapon/ammo pickup message style (HUDMSGTYPE_DEFAULT
+// in hudmsg.c is a *boxed* message): Handel Gothic Sm font, green text inside a
+// green-bordered translucent box. Drawn on the HUD layer — called from
+// playerRenderHud right after hudmsgsRender so it shares the pickups' layer —
+// and stacked one row above them. Toggled by /graslu. Local-only: not networked.
+Gfx *netGrasluRender(Gfx *gdl)
+{
+	if (!g_GrasluEgg) {
+		return gdl;
+	}
+
+	// In-game only — suppress on the title / main menu.
+	if (g_Vars.stagenum == STAGE_TITLE) {
+		return gdl;
+	}
+
+	// Same font the pickup messages use; bail silently if assets aren't loaded.
+	if (!g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
+		return gdl;
+	}
+
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
+
+	// Box the text exactly like a one-line pickup. textMeasure only accrues
+	// height on a newline, and the pickup lang strings end in '\n', so a plain
+	// "Graslu" measures height 0 (a 5px sliver box). Measure "Graslu\n" for the
+	// real single-line height the ammo/weapon pickups use, and plain "Graslu"
+	// for the width we actually render. Pickups (hudmsgsRender,
+	// HUDMSGALIGN_LEFT/BOTTOM) bottom-anchor at y = viewheight - lineheight - 14
+	// in this same viGetWidth()/viGetHeight() space, indented
+	// x = xmarginextra(24) + 3 = 27; g_ScaleX is left set by the hudmsgsRender
+	// call that immediately precedes us in playerRenderHud.
+	s32 lineh = 0;
+	s32 tw = 0;
+	s32 discard = 0;
+	textMeasure(&lineh, &discard, "Graslu\n", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+	textMeasure(&discard, &tw, "Graslu", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+
+	// Lift two line-heights (plus a few px clearance) above the bottom so our box
+	// sits just above the pickup row's box without overlapping it.
+	s32 x = 27;
+	s32 y = screenh - 2 * lineh - 24;
+	const s32 boxr = x + tw + 3; // right edge: 1px wider than the text + pad
+
+	// Driven off g_Vars.lvframe60 (60Hz ticks since stage start, reset in lvReset,
+	// so it restarts each mission/match):
+	//   * for the first ~fadeintime ticks, the exact weapon/ammo pickup fade-in
+	//     (box fill alpha ramps while the name wipes in along the diagonal blend);
+	//   * afterwards the box holds steady with solid text and a bright highlight
+	//     marching around its outline ("the line around the box").
+	const f32 fadeintime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
+	const s32 lvf = g_Vars.lvframe60;
+
+	gdl = text0f153628(gdl);
+	// Anchor to the left edge so the banner hugs the HUD edge in widescreen,
+	// the same flag the kill feed and console message strip use.
+	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_LEFT_EXT);
+
+	// Box like the pickup messages: green border (pickup textcolour | 0x40) over a
+	// dark translucent fill, then the green text (textcolour | 0xa0) on top via
+	// textRenderProjected — the same renderer boxed hud messages use.
+	if ((f32)lvf < fadeintime) {
+		// First draw of the mission — identical to a weapon/ammo pickup fade-in:
+		// box fill alpha (spc0) ramps while the text wipes in along the blend.
+		f32 dur = fadeintime > 30.0f ? 30.0f : fadeintime;
+		f32 spc0 = (f32)lvf / dur;
+		if (spc0 > 1.0f) {
+			spc0 = 1.0f;
+		}
+		if (spc0 < 0.0f) {
+			spc0 = 0.0f;
+		}
+
+		textSetDiagonalBlend(x, y, (f32)lvf * PALUPF(7.0f), DIAGMODE_FADEIN);
+		gdl = hudmsgRenderBox(gdl, x - 3, y - 3, boxr, y + lineh + 2, 1.0f, 0x00ff0040, spc0);
+		if (spc0 > 0.0f) {
+			gdl = textRenderProjected(gdl, &x, &y, "Graslu",
+					g_CharsHandelGothicSm, g_FontHandelGothicSm,
+					0x00ff00a0, screenw, screenh, 0, 0);
+		}
+		textResetBlends();
+	} else {
+		// Settled: solid box + solid text, with a bright highlight marching around
+		// the outline (top -> right -> bottom -> left, looping). The blend system
+		// can only tint text, so the moving line is drawn as a small filled rect.
+		const s32 bx1 = x - 3;
+		const s32 by1 = y - 3;
+		const s32 bx2 = boxr;
+		const s32 by2 = y + lineh + 2;
+		const s32 bw = bx2 - bx1;
+		const s32 bh = by2 - by1;
+		const s32 perim = 2 * (bw + bh);
+		const s32 seg = 10;                          // highlight length along the edge
+		const u32 hi = 0x80ff80ff;                   // bright green highlight
+		const s32 p = perim > 0 ? (lvf * 2) % perim : 0; // ~2px/tick around the border
+		s32 sx1, sy1, sx2, sy2;
+
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, 0x00ff0040, 1.0f);
+		gdl = textRenderProjected(gdl, &x, &y, "Graslu",
+				g_CharsHandelGothicSm, g_FontHandelGothicSm,
+				0x00ff00a0, screenw, screenh, 0, 0);
+
+		// Map the perimeter position p to a short segment on the matching edge.
+		if (p < bw) {                   // top: left -> right
+			sx1 = bx1 + p;       sy1 = by1;
+			sx2 = sx1 + seg;     sy2 = by1 + 2;
+			if (sx2 > bx2) sx2 = bx2;
+		} else if (p < bw + bh) {       // right: top -> bottom
+			sx1 = bx2 - 1;       sy1 = by1 + (p - bw);
+			sx2 = bx2 + 1;       sy2 = sy1 + seg;
+			if (sy2 > by2) sy2 = by2;
+		} else if (p < 2 * bw + bh) {   // bottom: right -> left
+			sx2 = bx2 - (p - bw - bh); sy1 = by2 - 1;
+			sx1 = sx2 - seg;     sy2 = by2 + 1;
+			if (sx1 < bx1) sx1 = bx1;
+		} else {                        // left: bottom -> top
+			sx1 = bx1;           sy2 = by2 - (p - 2 * bw - bh);
+			sx2 = bx1 + 2;       sy1 = sy2 - seg;
+			if (sy1 < by1) sy1 = by1;
+		}
+		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hi, hi);
 	}
 
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);

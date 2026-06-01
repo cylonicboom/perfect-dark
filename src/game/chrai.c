@@ -727,6 +727,16 @@ s32 chraiLuaOverridesAllowed(void)
 #endif
 }
 
+s32 chraiLuaGetChrNum(void)
+{
+	return g_Vars.chrdata ? (s32)g_Vars.chrdata->chrnum : -1;
+}
+
+s32 chraiLuaGetAlertness(void)
+{
+	return g_Vars.chrdata ? (s32)g_Vars.chrdata->alertness : 0;
+}
+
 s32 chraiLuaRunSynthetic(u32 opcode, const u8 *operands, u32 n)
 {
 	// Zero-initialised so a handler that reads more operand bytes than the Lua
@@ -815,6 +825,9 @@ void chraiPrepare(void *entity, s32 proptype)
 				g_Vars.chrdata->chrflags &= ~CHRCFLAG_TRIGGERSHOTLIST;
 				g_Vars.ailist = ailistFindById(g_Vars.chrdata->aishotlist);
 				g_Vars.aioffset = 0;
+#ifndef PLATFORM_N64
+				luaEmitAlert((s32)g_Vars.chrdata->chrnum, -1);
+#endif
 			}
 		} else if (g_Vars.chrdata && (g_Vars.chrdata->chrflags & CHRCFLAG_CONSIDER_DODGE)) {
 			g_Vars.chrdata->chrflags &= ~CHRCFLAG_CONSIDER_DODGE;
@@ -836,6 +849,9 @@ void chraiPrepare(void *entity, s32 proptype)
 				g_Vars.ailist = ailistFindById(g_Vars.chrdata->aishootingatmelist);
 				g_Vars.aioffset = 0;
 				g_Vars.chrdata->dodgerating = 0;
+#ifndef PLATFORM_N64
+				luaEmitAlert((s32)g_Vars.chrdata->chrnum, -1);
+#endif
 			} else {
 				// Increase dodge rating
 				g_Vars.chrdata->dodgerating *= 2;

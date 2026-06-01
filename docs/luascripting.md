@@ -102,10 +102,48 @@ mode — use Lua's own `if`/`while`/`goto` instead.
 | Call | Meaning |
 | --- | --- |
 | `pd.register_ailist(id, fn)` | override the ailist with the given id |
-| `pd.log(msg)` | print a message to stderr |
+| `pd.on(event, fn)` | register an event handler (see Events) |
+| `pd.draw_box(x, y, w, h, color, [secs])` | 2D overlay box; `secs` omitted/0 = one frame |
+| `pd.draw_text(x, y, text, color, [secs])` | 2D overlay text |
+| `pd.each_chr(fn)` | iterate live characters this frame (see X-ray) |
+| `pd.log(msg)` | print to stderr **and** the in-game console |
 
-This API is intentionally small for now and will grow (helper wrappers for the
-most common commands, entity/world queries, networking hooks).
+Overlay coordinates are the lo-res virtual screen (~320x240, the same space the
+console uses); `color` is `0xRRGGBBAA`. Overlays with a `secs` lifetime persist
+and fade out on their own; one-frame overlays are meant to be re-issued every
+frame from a `"draw"` handler.
+
+### Events (`pd.on`)
+
+| Event | Handler args | Fires when |
+| --- | --- | --- |
+| `"weaponfire"` | `(weaponnum, playernum)` | a player fires a shot |
+| `"alert"` | `(chrnum, playernum)` | an enemy reacts to / targets the player (its action block switches to its shot / shooting-at-me list) |
+| `"kill"` | `(chrnum, killerplayernum)` | a character dies |
+| `"draw"` | `()` | once per frame, for immediate-mode drawing |
+
+Handlers run through `pcall`, so an error in one is logged and skipped — it never
+crashes the game. Events are **local and cosmetic**: they fire wherever that code
+runs (campaign = locally; netplay = where AI/guns run, i.e. the host) and have no
+effect on game state or the network protocol.
+
+### AI X-ray (`pd.each_chr`)
+
+Inside a `"draw"` handler, `pd.each_chr(fn)` calls
+`fn(chrnum, ailistid, aioffset, alertness, islua)` for every character whose AI
+ran this frame — `ailistid`/`aioffset` are sampled straight from the Lua exec
+loop, so drawing them proves each action block is transpiled to Lua and executed
+live. See `scripts/showcase.lua`.
+
+### Console
+
+Open the console with `~`:
+
+- `/lua reload` — reset and re-run `scripts/init.lua` immediately.
+- `/lua <expr>` — evaluate a Lua string now (result/errors print to the console).
+
+This API will keep growing (engine-command helpers, entity/world queries,
+networking hooks).
 
 ## Disabling
 

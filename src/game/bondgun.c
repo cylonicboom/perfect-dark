@@ -2047,6 +2047,14 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 
 			if (gsetGetSingleShootSound(&hand->gset)) {
 				struct sndstate *handle = NULL;
+#ifndef PLATFORM_N64
+				{
+					/* declared in game/luaai.h; local extern keeps this TU
+					 * self-sufficient regardless of include ordering */
+					extern void luaEmitWeaponFire(s32 weaponnum, s32 playernum);
+					luaEmitWeaponFire((s32)hand->gset.weaponnum, g_Vars.currentplayernum);
+				}
+#endif
 
 #ifndef PLATFORM_N64
 				if (hand->audiohandle2 == NULL) {

@@ -23,6 +23,7 @@
 #include "game/bondgun.h"
 #include "game/cheats.h"
 #include "game/game_1531a0.h"
+#include "game/luaai.h"
 #include "game/game_0b0fd0.h"
 #include "game/title.h"
 #include "game/menu.h"
@@ -3212,6 +3213,11 @@ s32 netConsoleCommand(const char *line)
 		++p;
 	}
 	const char *arg = p; // may be ""
+
+	if (strcmp(cmd, "lua") == 0) {
+		luaaiConsoleCommand(*arg ? arg : NULL);
+		return 1;
+	}
 
 	if (strcmp(cmd, "lag") == 0) {
 		if (*arg) {

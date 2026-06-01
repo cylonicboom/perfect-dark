@@ -27,6 +27,10 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
+#ifndef PLATFORM_N64
+#include "console.h" /* conPrintf — route pd.log to the in-game console */
+#endif
+
 /* On by default, per design. Can be toggled at runtime. */
 s32 g_LuaAiEnabled = 1;
 
@@ -126,6 +130,9 @@ static int l_pd_log(lua_State *L)
 {
 	const char *s = luaL_optstring(L, 1, "");
 	fprintf(stderr, "[luaai] %s\n", s);
+#ifndef PLATFORM_N64
+	conPrintf(1, "[lua] %s", s);
+#endif
 	return 0;
 }
 
@@ -182,6 +189,8 @@ static void luaai_build_pd(lua_State *L)
 	lua_pushcfunction(L, l_pd_log);
 	lua_setfield(L, -2, "log");
 
+	luaApiRegister(L); /* adds pd.on / draw_box / draw_text / each_chr */
+
 	lua_setglobal(L, "pd");
 }
 
@@ -228,6 +237,17 @@ void luaaiReset(void)
 	}
 	g_LuaInitFailed = 0;
 	g_LuaOverrideCount = 0;
+	luaApiResetFrame();
+}
+
+struct lua_State *luaaiGetState(void)
+{
+	return g_LuaState;
+}
+
+s32 luaaiEnsureState(void)
+{
+	return luaai_ensure_state();
 }
 
 /* ------------------------------------------------------------------------- *
@@ -360,6 +380,12 @@ void luaaiExecute(void *entity, s32 proptype)
 	if (chraiLuaGetList() == NULL) {
 		return;
 	}
+
+	/* Sample this chr's live AI state for the pd.each_chr X-ray overlay. */
+	luaApiRecordChr(chraiLuaGetChrNum(),
+			chraiLuaGetListId(chraiLuaGetList()),
+			chraiLuaGetOffset(),
+			chraiLuaGetAlertness(), 1);
 
 	if (!luaai_ensure_state()) {
 		/* No Lua available: run the bytecode loop from the prepared state. */

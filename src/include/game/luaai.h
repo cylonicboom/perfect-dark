@@ -115,4 +115,49 @@ s32 chraiLuaRunSynthetic(u32 opcode, const u8 *operands, u32 n);
 /** The bytecode interpreter (original behaviour); used when Lua is disabled. */
 void chraiExecuteBytecode(void *entity, s32 proptype);
 
+/* ------------------------------------------------------------------------- *
+ * Scripting API + dev overlay (luaai_api.c). Port-only in practice.
+ * ------------------------------------------------------------------------- */
+
+struct lua_State; /* avoid pulling lua.h into game headers */
+
+/** Live Lua state, or NULL if not yet built. */
+struct lua_State *luaaiGetState(void);
+
+/** Ensure the Lua state is built and scripts/init.lua loaded. Returns 1 on success. */
+s32 luaaiEnsureState(void);
+
+/** Reload scripts now (reset + rebuild + re-run scripts/init.lua). */
+void luaaiReload(void);
+
+/** Run a Lua string now; logs result/error to the console. */
+void luaaiDoString(const char *expr);
+
+/** Handle a "/lua ..." console command (args may be NULL/empty). */
+void luaaiConsoleCommand(const char *args);
+
+/** Per-frame tick (ensure state, age overlays). Call once per frame. */
+void luaTick(void);
+
+/** Render the 2D scripting overlays. Call once per frame in the 2D pass. */
+Gfx *luaHudRender(Gfx *gdl);
+
+/** Register the pd.on/draw_box/draw_text/each_chr functions (pd table on stack top). */
+void luaApiRegister(struct lua_State *L);
+
+/** Clear C-side overlay + X-ray state (called on luaaiReset). */
+void luaApiResetFrame(void);
+
+/** Record one chr's live AI state for the X-ray (called from luaaiExecute). */
+void luaApiRecordChr(s32 chrnum, s32 ailistid, s32 aioffset, s32 alertness, s32 islua);
+
+/** Event emitters, called from game code (no-op if no script is listening). */
+void luaEmitWeaponFire(s32 weaponnum, s32 playernum);
+void luaEmitAlert(s32 chrnum, s32 playernum);
+void luaEmitKill(s32 chrnum, s32 killerplayernum);
+
+/** chr-state bridges for the X-ray (defined in chrai.c). */
+s32 chraiLuaGetChrNum(void);
+s32 chraiLuaGetAlertness(void);
+
 #endif

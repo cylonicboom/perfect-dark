@@ -7950,6 +7950,40 @@ bool chrConsiderGrenadeThrow(struct chrdata *chr, u32 attackflags, u32 entityid)
 	return done;
 }
 
+#ifndef PLATFORM_N64
+// Lua bridge: spawn a weapon/item world object at the given chr's location, by
+// chrnum. Reuses chrDropItem -- the same engine-blessed path the drop_item AI
+// command and chrDie's own loot-drop use -- so object init, model load, and
+// floor placement are handled correctly (no manual prop-pos / room math). This
+// is the mutating counterpart to the read-only pd.* queries; it is server-side
+// only (AI/world mutation must not run on a net client) and a no-op if the
+// chrnum is unknown or the weapon has no world model. Returns 1 on success.
+//
+// Intended for the kill event (spawn a marker where an enemy died); chrDie
+// itself drops the chr's weapons at this same point, so spawning here is safe.
+s32 chraiLuaSpawnAtChr(s32 chrnum, s32 weaponnum)
+{
+	struct chrdata *chr;
+	s32 modelnum;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0; // world mutation is server-authoritative
+	}
+
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL || chr->prop == NULL) {
+		return 0;
+	}
+
+	modelnum = playermgrGetModelOfWeapon(weaponnum);
+	if (modelnum < 0) {
+		return 0; // weapon has no droppable world model
+	}
+
+	return chrDropItem(chr, (u32)modelnum, (u32)weaponnum) ? 1 : 0;
+}
+#endif
+
 bool chrDropItem(struct chrdata *chr, u32 modelnum, u32 weaponnum)
 {
 	struct weaponobj *weapon;

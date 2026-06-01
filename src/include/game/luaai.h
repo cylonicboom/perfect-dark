@@ -197,6 +197,14 @@ s32 chraiLuaGetPlayerInfo(s32 playernum, struct luaaiplayerinfo *out);
 /** Number of active local players. */
 s32 chraiLuaGetPlayerCount(void);
 
+/**
+ * Spawn a weapon/item world object at chr `chrnum`'s location (model derived
+ * from `weaponnum`). Server-side only; no-op if chrnum unknown or weapon has no
+ * world model. Returns 1 on success. Backs pd.spawn_at_chr(). Defined in
+ * chraction.c (next to chrDropItem, which it reuses).
+ */
+s32 chraiLuaSpawnAtChr(s32 chrnum, s32 weaponnum);
+
 /** Push a Lua table describing a chr snapshot (shared by pd.chr_info + ctx:self). */
 void luaApiPushChrInfo(struct lua_State *L, const struct luaaiselfinfo *info);
 

@@ -5136,6 +5136,9 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				chr->damage += damage;
 				chr->lastattacker = (aprop ? aprop->chr : NULL);
 				chr->chrflags |= CHRCFLAG_JUST_INJURED;
+#ifndef PLATFORM_N64
+				luaEmitDamage((s32)chr->chrnum, aplayernum, (s32)damage);
+#endif
 
 #ifndef PLATFORM_N64
 				// Start the GE i-frame window for this sim/chr now

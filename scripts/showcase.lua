@@ -28,7 +28,17 @@ pd.on("alert", function(chrnum)
   pd.draw_text(108, 50, string.format("! ENEMY %d ALERTED", chrnum), C_RED, 2.5)
 end)
 
--- 3) Kill -> running counter + a marker flash.
+-- 3) Damage -> brief flash showing who was hurt and by how much.
+pd.on("damage", function(chrnum, attacker, amount)
+  pd.draw_text(108, 60, string.format("HIT chr %d  -%d  (by p%d)", chrnum, amount, attacker), C_YELLOW, 1.0)
+end)
+
+-- 4) Spawn -> note when a chr is created (reinforcements / mid-level spawns).
+pd.on("spawn", function(chrnum)
+  pd.draw_text(108, 40, string.format("SPAWN chr %d", chrnum), C_GREEN, 1.5)
+end)
+
+-- 5) Kill -> running counter + a marker flash.
 local WEAPON_PROXIMITYMINE = 0x21  -- a small object that sits on the ground
 
 pd.on("kill", function(chrnum, killer)

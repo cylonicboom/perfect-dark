@@ -21,6 +21,7 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | **Current-chr handle** `ctx:self()` (chrnum, pos, health, shield, alertness, target) | `luaai.c`, `chrai.c` |
 | **World / entity query API** `pd.chr_info/chr_pos/chr_health/player_pos/player_count/distance` | `luaai_api.c`, `chrai.c` |
 | **World mutation** `pd.spawn_at_chr(chrnum, weaponnum)` (spawn an object where a chr is) | `luaai_api.c`, `chraction.c` |
+| **Events** `weaponfire`, `alert`, `damage`, `kill`, `spawn`, `draw` | `luaai_api.c` + hook sites |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
@@ -43,8 +44,10 @@ rooms), confirm it renders and collides, then generalise.
 **Feasibility:** nontrivial; gated on a play-test of `spawn_at_chr` first.
 
 ### 4. More events
-`pd.on("spawn" / "damage" / "objective" / "roomenter")`. Each is one guarded
-emit call at the relevant engine site, mirroring the existing three.
+`damage` and `spawn` are now shipped. Remaining candidates: `objective`
+(objective completed/updated) and `roomenter` (player changed room). Each is one
+guarded emit at the relevant engine site, mirroring the existing ones — the work
+is locating a clean, single firing point for each.
 **Feasibility:** easy, incremental; add as needed.
 
 ## Later (ambitious, needs a research spike)

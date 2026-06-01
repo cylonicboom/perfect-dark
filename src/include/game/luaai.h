@@ -155,6 +155,8 @@ void luaApiRecordChr(s32 chrnum, s32 ailistid, s32 aioffset, s32 alertness, s32 
 void luaEmitWeaponFire(s32 weaponnum, s32 playernum);
 void luaEmitAlert(s32 chrnum, s32 playernum);
 void luaEmitKill(s32 chrnum, s32 killerplayernum);
+void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount);
+void luaEmitSpawn(s32 chrnum);
 
 /** chr-state bridges for the X-ray (defined in chrai.c). */
 s32 chraiLuaGetChrNum(void);

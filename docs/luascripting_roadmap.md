@@ -20,35 +20,26 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | Worked from-scratch Lua enemy example | `scripts/examples/lua_authored_enemy.lua` |
 | **Current-chr handle** `ctx:self()` (chrnum, pos, health, shield, alertness, target) | `luaai.c`, `chrai.c` |
 | **World / entity query API** `pd.chr_info/chr_pos/chr_health/player_pos/player_count/distance` | `luaai_api.c`, `chrai.c` |
-| **World mutation** `pd.spawn_at_chr(chrnum, weaponnum)` (spawn an object where a chr is) | `luaai_api.c`, `chraction.c` |
-| **Events** `weaponfire`, `alert`, `damage`, `kill`, `spawn`, `draw` | `luaai_api.c` + hook sites |
+| **World mutation** `pd.spawn_at_chr(chrnum, weaponnum)` + `pd.spawn(weaponnum, x,y,z, [ref])` | `luaai_api.c`, `chraction.c` |
+| **Events** `weaponfire`, `alert`, `damage`, `kill`, `spawn`, `roomenter`, `draw` | `luaai_api.c` + hook sites |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
 without reading engine source. With `ctx:self()` + the query API an override can
-read the world and make real decisions, and `pd.spawn_at_chr` (the first
-mutating call) drops a world object — e.g. a marker where an enemy dies.
+read the world and make real decisions, and the spawn calls drop world objects
+at a chr or at arbitrary coords.
 
 ## Next (high-value, feasibility checked)
 
 These are ordered by value-to-effort. Each builds on the shipped base.
 
-### 3b. Position-based spawn (`pd.spawn(modelnum, x, y, z, room)`)
-**Why:** `spawn_at_chr` covers the kill-marker case, but a free-position spawn
-unlocks arbitrary world placement.
-**Plan:** allocate via `weaponCreateProjectileFromGset` then set `prop->pos` and
-re-register rooms/ground (`cdFindGroundInfoAtCyl`, the same primitive `chrSetPos`
-uses) — the careful part is the floor/room math, exactly the class of bug seen
-in the CSP snap. Do a spike: spawn at a player's own pos+room first (known-good
-rooms), confirm it renders and collides, then generalise.
-**Feasibility:** nontrivial; gated on a play-test of `spawn_at_chr` first.
-
-### 4. More events
-`damage` and `spawn` are now shipped. Remaining candidates: `objective`
-(objective completed/updated) and `roomenter` (player changed room). Each is one
-guarded emit at the relevant engine site, mirroring the existing ones — the work
-is locating a clean, single firing point for each.
-**Feasibility:** easy, incremental; add as needed.
+### 4b. `objective` event (remaining from #4)
+`roomenter` is now shipped (synthesised per-frame in `luaTick` by diffing player
+0's room — there is no single engine call site for it). `objective` (a criterion
+or objective completing) is still open: completion is spread across many criteria
+types in `objectives.c` (`criteria_roomentered`, `criteria_throwinroom`,
+`criteria_holograph`, ...), so a clean single firing point needs a small design
+pass rather than a one-line emit. Deferred until that's worth doing.
 
 ## Later (ambitious, needs a research spike)
 

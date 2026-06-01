@@ -38,6 +38,16 @@ pd.on("spawn", function(chrnum)
   pd.draw_text(108, 40, string.format("SPAWN chr %d", chrnum), C_GREEN, 1.5)
 end)
 
+-- 4b) Room change -> show which room the player entered. Also demonstrates the
+--     free-position spawn: drop a pistol at the player's feet on room entry.
+pd.on("roomenter", function(room, fromroom)
+  pd.draw_text(108, 30, string.format("ROOM %d (from %d)", room, fromroom), C_WHITE, 1.5)
+  local px, py, pz = pd.player_pos(0)
+  if px then
+    pd.spawn(0x02, px, py, pz)  -- WEAPON_FALCON2 at the player's position
+  end
+end)
+
 -- 5) Kill -> running counter + a marker flash.
 local WEAPON_PROXIMITYMINE = 0x21  -- a small object that sits on the ground
 

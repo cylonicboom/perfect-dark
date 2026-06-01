@@ -71,6 +71,10 @@ struct luaxray {
 static struct luaxray g_LuaXray[LUA_MAX_XRAY];
 static s32 g_LuaXrayCount = 0;
 
+/* Last-seen room of player 0, for synthesising the "roomenter" event in luaTick
+ * (there is no single engine call site for it). -0x7fffffff = "unknown yet". */
+static s32 g_LuaLastPlayerRoom = -0x7fffffff;
+
 /* registry table: event name -> array of handler functions */
 static const char *const KEY_EVENTS = "luaai.events";
 
@@ -360,6 +364,21 @@ static int l_pd_spawn_at_chr(lua_State *L)
 	return 1;
 }
 
+/* pd.spawn(weaponnum, x, y, z, [ref_chrnum]) -> true on success.
+ * Spawns a weapon/item object at an arbitrary world position; rooms are seeded
+ * from ref_chrnum (or the local player's chr if omitted) and the object is
+ * floor-snapped at the target. Server-side only. */
+static int l_pd_spawn(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	f32 x = (f32)luaL_checknumber(L, 2);
+	f32 y = (f32)luaL_checknumber(L, 3);
+	f32 z = (f32)luaL_checknumber(L, 4);
+	s32 ref = (s32)luaL_optinteger(L, 5, -1);
+	lua_pushboolean(L, chraiLuaSpawnAtPos(ref, weaponnum, x, y, z) != 0);
+	return 1;
+}
+
 /* Called by luaai.c's luaai_build_pd with the pd table on top of the stack. */
 void luaApiRegister(lua_State *L)
 {
@@ -381,6 +400,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_distance);    lua_setfield(L, -2, "distance");
 	/* world mutation (server-side) */
 	lua_pushcfunction(L, l_pd_spawn_at_chr);lua_setfield(L, -2, "spawn_at_chr");
+	lua_pushcfunction(L, l_pd_spawn);       lua_setfield(L, -2, "spawn");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events
@@ -389,6 +409,7 @@ void luaApiResetFrame(void)
 {
 	g_LuaOverlayCount = 0;
 	g_LuaXrayCount = 0;
+	g_LuaLastPlayerRoom = -0x7fffffff; /* re-baseline room tracking on reset */
 }
 
 /* ------------------------------------------------------------------------- *
@@ -455,6 +476,14 @@ void luaEmitSpawn(s32 chrnum)
 	luaEventDispatchInts("spawn", 1, a);
 }
 
+void luaEmitRoomEnter(s32 room, s32 fromroom)
+{
+	lua_Integer a[2];
+	a[0] = room;
+	a[1] = fromroom;
+	luaEventDispatchInts("roomenter", 2, a);
+}
+
 /* ------------------------------------------------------------------------- *
  * Per-frame tick + render (called from the port frame loop)
  * ------------------------------------------------------------------------- */
@@ -466,6 +495,23 @@ void luaTick(void)
 	/* Make sure scripts are loaded even when no AI is running (title/CI), so
 	 * the console and event handlers work everywhere. */
 	luaaiEnsureState();
+
+	/* Synthesise the "roomenter" event by watching player 0's room each frame
+	 * (there is no single engine call site that means "player changed room").
+	 * Only emits on an actual change; the first observed room is recorded
+	 * silently so we don't fire a spurious enter at stage start. */
+	{
+		struct luaaiplayerinfo pi;
+		if (chraiLuaGetPlayerInfo(0, &pi) && pi.valid) {
+			if (g_LuaLastPlayerRoom == -0x7fffffff) {
+				g_LuaLastPlayerRoom = pi.room;
+			} else if (pi.room != g_LuaLastPlayerRoom) {
+				s32 from = g_LuaLastPlayerRoom;
+				g_LuaLastPlayerRoom = pi.room;
+				luaEmitRoomEnter(pi.room, from);
+			}
+		}
+	}
 
 	/* Age timed overlays. One-frame overlays are removed by luaHudRender after
 	 * they're drawn, so they shouldn't normally be present here. */

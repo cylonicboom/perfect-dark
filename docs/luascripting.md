@@ -150,19 +150,32 @@ enemy entirely from Lua, see
 | `pd.player_count()` | number of active local players |
 | `pd.distance(x1,y1,z1, x2,y2,z2)` | Euclidean distance (helper) |
 | `pd.spawn_at_chr(chrnum, weaponnum)` | spawn a weapon/item object at that chr's location; `true` on success |
+| `pd.spawn(weaponnum, x, y, z, [ref_chrnum])` | spawn a weapon/item object at an arbitrary world position; `true` on success |
 
-`pd.spawn_at_chr` is the first **mutating** world call (everything above is
-read-only). It reuses the engine's own item-drop path, so model load and floor
-placement are handled for you; pass a `WEAPON_*` id (e.g. `0x21` proximity mine)
-and the matching world model is derived. It is **server-side only** (world
-mutation must not run on a net client) and a no-op for an unknown chrnum or a
-weapon with no world model. It's designed for the `kill` event — drop a marker
-where an enemy died (the chr is still valid at that point):
+These are the **mutating** world calls (everything above is read-only). Both
+reuse the engine's own object-creation + floor-placement primitives (model load,
+ground snap, room registration are handled for you), are **server-side only**
+(world mutation must not run on a net client), and are a no-op for a weapon with
+no world model. Pass a `WEAPON_*` id (e.g. `0x02` Falcon 2, `0x21` proximity
+mine); the matching world model is derived.
+
+- `pd.spawn_at_chr` drops the object at a chr — ideal for the `kill` event
+  (marker where an enemy died; the chr is still valid at that point).
+- `pd.spawn` places the object at world coords `(x,y,z)`. Rooms are seeded from
+  `ref_chrnum` (or the local player's chr if omitted), and the object is
+  floor-snapped at the target. Placement is reliable when the target is
+  reachable through portals from the reference chr; if no floor is found the
+  object is placed at the raw position (it may float rather than fail). For
+  free-roam placement, pass coords near the player (default ref) — e.g. from
+  `pd.player_pos` — so the room seed is valid.
 
 ```lua
 pd.on("kill", function(chrnum)
-  pd.spawn_at_chr(chrnum, 0x21)  -- WEAPON_PROXIMITYMINE
+  pd.spawn_at_chr(chrnum, 0x21)              -- mine where the enemy died
 end)
+
+local px, py, pz = pd.player_pos(0)
+if px then pd.spawn(0x02, px, py, pz) end    -- Falcon 2 at the player's feet
 ```
 
 ### World / entity queries
@@ -195,6 +208,7 @@ frame from a `"draw"` handler.
 | `"damage"` | `(chrnum, attackerplayernum, amount)` | a chr takes damage (`attackerplayernum` is -1 if not a player; `amount` is the hit's damage) |
 | `"kill"` | `(chrnum, killerplayernum)` | a character dies |
 | `"spawn"` | `(chrnum)` | a chr is created/initialised |
+| `"roomenter"` | `(room, fromroom)` | player 0 moved into a different room (detected per-frame; first room at stage start is recorded silently, not emitted) |
 | `"draw"` | `()` | once per frame, for immediate-mode drawing |
 
 Handlers run through `pcall`, so an error in one is logged and skipped — it never

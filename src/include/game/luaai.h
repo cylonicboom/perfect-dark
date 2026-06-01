@@ -157,6 +157,7 @@ void luaEmitAlert(s32 chrnum, s32 playernum);
 void luaEmitKill(s32 chrnum, s32 killerplayernum);
 void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount);
 void luaEmitSpawn(s32 chrnum);
+void luaEmitRoomEnter(s32 room, s32 fromroom);
 
 /** chr-state bridges for the X-ray (defined in chrai.c). */
 s32 chraiLuaGetChrNum(void);
@@ -206,6 +207,14 @@ s32 chraiLuaGetPlayerCount(void);
  * chraction.c (next to chrDropItem, which it reuses).
  */
 s32 chraiLuaSpawnAtChr(s32 chrnum, s32 weaponnum);
+
+/**
+ * Spawn a weapon/item object at an arbitrary world position (x,y,z). Rooms are
+ * seeded from `refchrnum` (or the local player's chr if refchrnum < 0) and the
+ * object is floor-snapped at the target. Server-side only; returns 1 on success.
+ * Backs pd.spawn(). Defined in chraction.c.
+ */
+s32 chraiLuaSpawnAtPos(s32 refchrnum, s32 weaponnum, f32 x, f32 y, f32 z);
 
 /** Push a Lua table describing a chr snapshot (shared by pd.chr_info + ctx:self). */
 void luaApiPushChrInfo(struct lua_State *L, const struct luaaiselfinfo *info);

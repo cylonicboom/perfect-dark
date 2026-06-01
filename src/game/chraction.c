@@ -14,6 +14,7 @@
 #include "game/chr.h"
 #include "game/chraction.h"
 #include "game/chrai.h"
+#include "game/luaai.h"
 #include "game/debug.h"
 #include "game/dlights.h"
 #include "game/env.h"
@@ -5289,6 +5290,9 @@ void chrDie(struct chrdata *chr, s32 aplayernum)
 	if (chr->actiontype != ACT_DIE) {
 		chrStopFiring(chr);
 		chrUncloak(chr, true);
+#ifndef PLATFORM_N64
+		luaEmitKill((s32)chr->chrnum, aplayernum);
+#endif
 
 		chr->actiontype = ACT_DIE;
 		chr->act_die.notifychrindex = 0;

@@ -4,6 +4,7 @@
 #include "lib/sched.h"
 #include "constants.h"
 #include "game/menugfx.h"
+#include "game/luaai.h"
 #include "bss.h"
 #include "lib/args.h"
 #include "lib/audiomgr.h"
@@ -302,6 +303,7 @@ void schedEndFrame(OSSched *sc)
 
 	inputUpdate();
 	conTick();
+	luaTick();
 
 	const bool newKey = inputKeyPressed(VK_F9);
 	if (!netDebugKey && newKey) {

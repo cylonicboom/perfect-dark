@@ -935,6 +935,12 @@ void mainTick(void)
 				}
 
 				gdl = conRender(gdl);
+				{
+					/* declared in game/luaai.h; local extern keeps this TU
+					 * self-sufficient if the include ordering shifts */
+					extern Gfx *luaHudRender(Gfx *gdl);
+					gdl = luaHudRender(gdl);
+				}
 				gdl = netKillFeedRender(gdl);
 				gdl = netDebugRender(gdl);
 

@@ -38,6 +38,13 @@ local ANIM_GAG = 0x67
 local WEAPON_FALCON2       = 0x02
 local WEAPON_PROXIMITYMINE = 0x21
 
+-- Body ids for the "Turn Everyone Into..." gag (BODY_* enum, constants.h).
+-- pd.chr_set_body is SOLO/MISSIONS ONLY (no-op in Combat Sim) and skips the
+-- player; it transforms NPC/guard actors. Try any BODY_* number here.
+local BODY_SKEDAR   = 0x5c
+local BODY_DRCAROLL = 0x6b
+local BODY_MRBLONDE = 0x5b
+
 -- Director state the event handlers below react to.
 local D = { scenario = nil, waves = 0 }
 
@@ -73,6 +80,17 @@ end
 
 local function shield_all()
   pd.all_chrs(function(chrnum) pd.chr_set_shield(chrnum, 8.0) end)
+end
+
+-- "Turn Everyone Into X" -- runtime body swap on every actor. Solo/missions
+-- only; the player and (in Combat Sim) all actors are refused by the bridge, so
+-- this transforms NPC/guard actors in single-player.
+local function turn_everyone_into(body)
+  local n = 0
+  pd.all_chrs(function(chrnum)
+    if pd.chr_set_body(chrnum, body) then n = n + 1 end
+  end)
+  pd.log("director: transformed " .. n .. " actors")
 end
 
 -- ---------------------------------------------------------------------------
@@ -120,6 +138,10 @@ pd.menu_add("Spawn Wave",           spawn_wave)
 pd.menu_add("Hive Mind (alert all)", hive_mind)
 pd.menu_add("Make Everyone Sneeze", make_everyone_sneeze)
 pd.menu_add("Shield All",           shield_all)
+-- "Turn Everyone Into..." (solo/missions only; no-op in Combat Sim)
+pd.menu_add("Everyone -> Skedar",   function() turn_everyone_into(BODY_SKEDAR) end)
+pd.menu_add("Everyone -> Dr Caroll", function() turn_everyone_into(BODY_DRCAROLL) end)
+pd.menu_add("Everyone -> Mr Blonde", function() turn_everyone_into(BODY_MRBLONDE) end)
 -- scenario picker
 pd.menu_add("Scenario: Last Stand", scenario_last_stand)
 pd.menu_add("Scenario: Escort",     scenario_escort)

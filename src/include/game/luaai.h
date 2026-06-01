@@ -229,6 +229,7 @@ s32 chraiLuaGetChrNumBySlot(s32 slot);        /* chrnum at slot, or -1 if empty 
 s32 chraiLuaChrAnim(s32 chrnum, s32 animnum, f32 speed);
 s32 chraiLuaChrSetShield(s32 chrnum, f32 value);
 s32 chraiLuaChrAlert(s32 chrnum);
+s32 chraiLuaChrSetBody(s32 chrnum, s32 bodynum, s32 headnum); /* runtime model swap, solo only */
 
 /* ------------------------------------------------------------------------- *
  * Director pause-menu registry. Scripts register entries via pd.menu_add; the

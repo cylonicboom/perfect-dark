@@ -155,6 +155,7 @@ enemy entirely from Lua, see
 | `pd.chr_anim(chrnum, animnum, [speed])` | play an animation on a chr; `true` on success |
 | `pd.chr_set_shield(chrnum, value)` | set a chr's shield; `true` on success |
 | `pd.chr_alert(chrnum)` | put a chr on alert (switch to its shot/alert list); `true` on success |
+| `pd.chr_set_body(chrnum, bodynum, [headnum])` | swap a chr's body model at runtime; `true` on success. **Solo/missions only** (no-op in Combat Sim), player refused |
 | `pd.menu_add(label, fn)` | add a "Lua Director" pause-menu entry; selecting it calls `fn()`; returns the index |
 | `pd.menu_clear()` | remove all registered Director entries |
 
@@ -204,7 +205,16 @@ end)
 Animation ids are ROM-generated (`src/assets/*/animations.json`), so `pd.chr_anim`
 takes a plain number — pick one that looks right in your build. See
 [`scripts/director.lua`](../scripts/director.lua) for a full toolkit (spawn
-waves, hive-mind, scenarios) and a "how to add your own effect" guide.
+waves, hive-mind, "turn everyone into X", scenarios) and a "how to add your own
+effect" guide.
+
+`pd.chr_set_body(chrnum, bodynum, [headnum])` is the runtime model swap (the
+"turn everyone into X" gag). It rebuilds the actor's model from a `BODY_*` id
+(`constants.h`), preserving position and re-giving held weapons. It is
+**solo/missions only** — a no-op in Combat Sim, because `bodynum` is synced only
+at stage start, so a runtime swap there wouldn't replicate to other machines —
+and it refuses the player's own body. `headnum` omitted/`<0` picks a head valid
+for the body.
 
 ### World / entity queries
 

@@ -24,6 +24,7 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | **Events** `weaponfire`, `alert`, `damage`, `kill`, `spawn`, `roomenter`, `draw` | `luaai_api.c` + hook sites |
 | **Toolkit framework** `pd.all_chrs` + per-chr mutators (`chr_anim`/`chr_set_shield`/`chr_alert`) | `luaai_api.c`, `chraction.c` |
 | **Mission Director + pause-menu integration** `pd.menu_add`/`menu_clear` → "Lua Director" submenu | `luaai_api.c`, `mainmenu.c`, `mplayer/ingame.c`, `scripts/director.lua` |
+| **Runtime model swap** `pd.chr_set_body(chrnum, bodynum, [headnum])` ("turn everyone into X", solo-only) | `chraction.c`, `luaai_api.c`, `scripts/director.lua` |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
@@ -47,11 +48,10 @@ pass rather than a one-line emit. Deferred until that's worth doing.
 
 ## Later (ambitious, needs a research spike)
 
-- **Mass actor model swap** ("turn everyone into X") — own plan. No clean
-  one-call body setter; needs the model-reload path (body/headnum + re-instantiate
-  the chr model). The toolkit framework (`pd.all_chrs` + per-chr mutators) is
-  already in place, so this becomes "add one `pd.chr_set_model` primitive + its
-  bridge" once the reload path is worked out. Effects then compose in `director.lua`.
+- **Net-synced model swap** — `pd.chr_set_body` is shipped but solo-only; a
+  Combat-Sim version would need a new SVC message carrying the runtime body change
+  (the bridge refuses Combat Sim today). Worth it only if remote model swaps are
+  actually wanted.
 - **Controllable custom entity** ("run around as a cube") — entity create +
   input/camera routing; the largest item, builds on the spawn + query work.
 - **More Director scenarios/effects** — pure Lua in `scripts/director.lua` now

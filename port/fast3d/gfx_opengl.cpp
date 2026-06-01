@@ -33,6 +33,7 @@ struct ShaderProgram {
     GLint frame_count_location;
     GLint noise_scale_location;
     GLint three_point_filter_locations[2];
+    GLint wireframe_color_location;
 };
 
 struct Framebuffer {
@@ -70,6 +71,10 @@ static bool gl_core_profile = false;
 // draws (world, props, viewmodel) become outlines while 2D HUD/menus (no
 // depth test) stay solid.
 static bool s_wireframe_depth_test = false;
+
+// Currently-bound shader program, tracked so draw_triangles can set the
+// per-draw wireframe wire-colour uniform on it.
+static struct ShaderProgram *gfx_current_shader_program = NULL;
 
 static int gfx_opengl_get_max_texture_size() {
     GLint max_texture_size;
@@ -126,6 +131,7 @@ static void gfx_opengl_unload_shader(struct ShaderProgram* old_prg) {
 
 static void gfx_opengl_load_shader(struct ShaderProgram* new_prg) {
     // if (!new_prg) return;
+    gfx_current_shader_program = new_prg;
     glUseProgram(new_prg->opengl_program_id);
     gfx_opengl_vertex_array_set_attribs(new_prg);
     gfx_opengl_set_uniforms(new_prg);
@@ -388,6 +394,8 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
 
     append_line(fs_buf, &fs_len, "uniform int frame_count;");
     append_line(fs_buf, &fs_len, "uniform float noise_scale;");
+    // Wireframe cheat flat wire colour: rgb = colour, a > 0.5 enables the override.
+    append_line(fs_buf, &fs_len, "uniform vec4 wireframe_color;");
 
     append_line(fs_buf, &fs_len, "float random(in vec3 value) {");
     append_line(fs_buf, &fs_len, "    float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));");
@@ -532,6 +540,9 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, &fs_len, "    texel.rgb = mix(texel.rgb, new_texel, vGrayscaleColor.a);");
     }
 
+    // Wireframe cheat: replace the surface colour with a flat wire colour when enabled.
+    append_line(fs_buf, &fs_len, "    if (wireframe_color.a > 0.5) texel.rgb = wireframe_color.rgb;");
+
     if (cc_features.opt_alpha) {
         if (cc_features.opt_alpha_threshold) {
             append_line(fs_buf, &fs_len, "    if (texel.a < 8.0 / 256.0) discard;");
@@ -658,6 +669,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     prg->noise_scale_location = glGetUniformLocation(shader_program, "noise_scale");
     prg->three_point_filter_locations[0] = glGetUniformLocation(shader_program, "three_point_filter0");
     prg->three_point_filter_locations[1] = glGetUniformLocation(shader_program, "three_point_filter1");
+    prg->wireframe_color_location = glGetUniformLocation(shader_program, "wireframe_color");
 
     gfx_opengl_load_shader(prg);
 
@@ -824,14 +836,27 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // Wireframe cheat: draw depth-tested 3D geometry as polygon outlines. Skipped
     // for 2D HUD/menus (no depth test) and on GL ES (glPolygonMode is desktop-GL only).
     const bool wireframe = gfx_wireframe_mode && s_wireframe_depth_test && !gl_es;
+    const bool wire_colour = wireframe && gfx_wireframe_wire_color_enabled
+            && gfx_current_shader_program && gfx_current_shader_program->wireframe_color_location >= 0;
     if (wireframe) {
+        glLineWidth(gfx_wireframe_line_width);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    }
+    if (wire_colour) {
+        // Force a flat wire colour instead of the surface's textured/shaded colour.
+        glUniform4f(gfx_current_shader_program->wireframe_color_location,
+                gfx_wireframe_wire_color[0], gfx_wireframe_wire_color[1], gfx_wireframe_wire_color[2], 1.0f);
     }
 
     glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
 
+    if (wire_colour) {
+        // Reset so subsequent draws sharing this program (e.g. the HUD) are unaffected.
+        glUniform4f(gfx_current_shader_program->wireframe_color_location, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
     if (wireframe) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glLineWidth(1.0f);
     }
 }
 

@@ -217,6 +217,9 @@ float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 bool gfx_wireframe_mode = false;
+int gfx_wireframe_wire_color_enabled = 0;
+float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
+float gfx_wireframe_line_width = 1.0f;
 
 static bool game_renders_to_framebuffer;
 static int game_framebuffer;

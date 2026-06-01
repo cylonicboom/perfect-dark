@@ -19,6 +19,7 @@
 #include "game/gfxmemory.h"
 #include "game/artifact.h"
 #include "game/player.h"
+#include "game/cheats.h"
 #endif
 
 #define SKYABS(val) (val >= 0.0f ? (val) : -(val))
@@ -266,12 +267,22 @@ Gfx *skyRender(Gfx *gdl)
 	sp430 = false;
 	env = envGetCurrent();
 
-	if (!env->clouds_enabled || g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
+	if (!env->clouds_enabled || g_Vars.currentplayer->visionmode == VISIONMODE_XRAY
+#ifndef PLATFORM_N64
+			// Wireframe cheat: skip the textured sky dome entirely and just fill
+			// the viewport with the backdrop colour (g_WireframeBgColour).
+			|| cheatIsActive(CHEAT_WIREFRAME)
+#endif
+			) {
 		if (PLAYERCOUNT() == 1) {
 			gDPSetCycleType(gdl++, G_CYC_FILL);
 
 			if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
 				gdl = viSetFillColour(gdl, 0, 0, 0);
+#ifndef PLATFORM_N64
+			} else if (cheatIsActive(CHEAT_WIREFRAME)) {
+				gdl = viSetFillColour(gdl, g_WireframeBgColour[0], g_WireframeBgColour[1], g_WireframeBgColour[2]);
+#endif
 			} else {
 				gdl = viSetFillColour(gdl, env->sky_r, env->sky_g, env->sky_b);
 			}
@@ -289,6 +300,10 @@ Gfx *skyRender(Gfx *gdl)
 
 		if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
 			gdl = viSetFillColour(gdl, 0, 0, 0);
+#ifndef PLATFORM_N64
+		} else if (cheatIsActive(CHEAT_WIREFRAME)) {
+			gdl = viSetFillColour(gdl, g_WireframeBgColour[0], g_WireframeBgColour[1], g_WireframeBgColour[2]);
+#endif
 		} else {
 			gdl = viSetFillColour(gdl, env->sky_r, env->sky_g, env->sky_b);
 		}

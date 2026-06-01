@@ -23,6 +23,12 @@ u32 g_CheatsActiveBank1;
 u32 g_CheatsEnabledBank0;
 u32 g_CheatsEnabledBank1;
 
+#ifndef PLATFORM_N64
+// Wireframe cheat backdrop colour (RGB), set via the `/wireframe RRGGBB`
+// console command. Defaults to black. Read by sky.c.
+u8 g_WireframeBgColour[3] = {0, 0, 0};
+#endif
+
 struct menuitem g_CheatsBuddiesMenuItems[];
 struct menudialogdef g_CheatsBuddiesMenuDialog;
 

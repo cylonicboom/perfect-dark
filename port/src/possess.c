@@ -181,9 +181,11 @@ void luaPossessReadInput(void)
 	g_Possess.look.z = cy * cp;
 	g_Possess.up.x = 0.f; g_Possess.up.y = 1.f; g_Possess.up.z = 0.f;
 
-	// Pan in the cam's horizontal plane (yaw-only forward, like spectator).
+	// Pan in the cam's horizontal plane (yaw-only forward). Right vector is
+	// negated vs. a naive perpendicular to match PD's coordinate handedness --
+	// without this, left/right strafe is inverted.
 	fwdx = sy; fwdz = cy;
-	rgtx = cy; rgtz = -sy;
+	rgtx = -cy; rgtz = sy;
 	g_Possess.pos.x += (fwdx * ly + rgtx * lx) * POSSESS_MOVE_SPEED * boost;
 	g_Possess.pos.z += (fwdz * ly + rgtz * lx) * POSSESS_MOVE_SPEED * boost;
 	g_Possess.pos.y += alt * POSSESS_VERT_SPEED * boost;
@@ -194,11 +196,18 @@ void luaPossessReadInput(void)
 	}
 }
 
+// Third-person camera offset behind + above the cube, so you SEE the cube you're
+// driving. The cube sits at g_Possess.pos; the camera is pulled back along the
+// (negated) look vector and lifted a little.
+#define POSSESS_CAM_BACK 140.f
+#define POSSESS_CAM_UP   60.f
+
 // Point the active player's render camera at the fly pose. Called from the
 // per-player render/tick path when possession is active.
 void luaPossessApplyCamera(void)
 {
 	struct player *pl;
+	struct coord campos;
 
 	if (!g_Possess.active) {
 		return;
@@ -208,10 +217,16 @@ void luaPossessApplyCamera(void)
 		return;
 	}
 
-	pl->cam_pos = g_Possess.pos;
+	// Camera = cube position - look*back + up*lift. Look stays aimed forward, so
+	// the cube is framed ahead-and-below centre.
+	campos.x = g_Possess.pos.x - g_Possess.look.x * POSSESS_CAM_BACK;
+	campos.y = g_Possess.pos.y - g_Possess.look.y * POSSESS_CAM_BACK + POSSESS_CAM_UP;
+	campos.z = g_Possess.pos.z - g_Possess.look.z * POSSESS_CAM_BACK;
+
+	pl->cam_pos = campos;
 	pl->cam_look = g_Possess.look;
 	pl->cam_up = g_Possess.up;
-	playerSetCamPropertiesWithoutRoom(&g_Possess.pos, &g_Possess.up, &g_Possess.look, pl->cam_room);
+	playerSetCamPropertiesWithoutRoom(&campos, &g_Possess.up, &g_Possess.look, pl->cam_room);
 	playerAllocateMatrices(&pl->cam_pos, &pl->cam_look, &pl->cam_up);
 }
 

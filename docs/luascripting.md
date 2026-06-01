@@ -97,10 +97,22 @@ that id. The id is the ailist id (see the ranges documented in
 Note that control-flow commands (labels, gotos) are not meaningful in synthetic
 mode — use Lua's own `if`/`while`/`goto` instead.
 
-**Every engine AI command (all ~440), with its opcode and exact operand byte
-layout, is documented in [`aicommands.md`](aicommands.md)** — that is the
-reference for what to pass to `ctx:run`. For a complete, commented example that
-drives an enemy entirely from Lua, see
+**You usually don't need raw `ctx:run`.** The generated helper library
+[`scripts/ai.lua`](../scripts/ai.lua) wraps *every* command (all ~440) as a
+named function that packs the operands for you:
+
+```lua
+local ai = dofile("scripts/ai.lua")
+ai.set_target_chr(ctx, 0xf6)          -- CHR_TARGET
+ai.try_attack_stand(ctx, 0x220, 0, 0) -- vs ctx:run(0x15, 0x02,0x20, 0,0, 0)
+```
+
+Every command's opcode, exact operand byte layout, engine handler, and
+description are in [`aicommands.md`](aicommands.md) — the reference for both the
+`ai.*` wrappers and raw `ctx:run`. Both `ai.lua` and `aicommands.md` are
+generated from the engine source by `tools/gen_aicommands.py` (wired into the
+build), so they can't drift. For a complete, commented example that drives an
+enemy entirely from Lua, see
 [`scripts/examples/lua_authored_enemy.lua`](../scripts/examples/lua_authored_enemy.lua).
 
 ### The `pd` table

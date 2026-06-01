@@ -36,6 +36,13 @@
 #define POSSESS_VERT_SPEED 25.f
 #define POSSESS_PITCH_LIMIT 1.45f // just under pi/2
 
+// Raw SDL scancodes for WASD (the VK_ enum in input.h only names a few keys;
+// these match spectator.c's SPEC_VK_* values).
+#define POSSESS_VK_W 26
+#define POSSESS_VK_A 4
+#define POSSESS_VK_S 22
+#define POSSESS_VK_D 7
+
 struct possessstate {
 	s32 active;
 	s32 chrnum;        // the spawned cube's chrnum (-1 if a bare freecam)
@@ -138,10 +145,10 @@ void luaPossessReadInput(void)
 	ry = possessStick(joyGetRStickY(0));
 
 	// Keyboard WASD + altitude, summed with stick so both work.
-	if (inputKeyPressed(VK_D)) lx += 1.f;
-	if (inputKeyPressed(VK_A)) lx -= 1.f;
-	if (inputKeyPressed(VK_W)) ly += 1.f;
-	if (inputKeyPressed(VK_S)) ly -= 1.f;
+	if (inputKeyPressed(POSSESS_VK_D)) lx += 1.f;
+	if (inputKeyPressed(POSSESS_VK_A)) lx -= 1.f;
+	if (inputKeyPressed(POSSESS_VK_W)) ly += 1.f;
+	if (inputKeyPressed(POSSESS_VK_S)) ly -= 1.f;
 
 	boost = ((held & R_TRIG) || inputKeyPressed(VK_LSHIFT)) ? POSSESS_BOOST_MULT : 1.f;
 

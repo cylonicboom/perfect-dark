@@ -7,6 +7,7 @@
 #include "constants.h"
 #include "game/camdraw.h"
 #include "game/cheats.h"
+#include "game/luaai.h"
 #include "game/debug.h"
 #include "game/file.h"
 #include "game/lang.h"
@@ -942,12 +943,7 @@ void mainTick(void)
 				}
 
 				gdl = conRender(gdl);
-				{
-					/* declared in game/luaai.h; local extern keeps this TU
-					 * self-sufficient if the include ordering shifts */
-					extern Gfx *luaHudRender(Gfx *gdl);
-					gdl = luaHudRender(gdl);
-				}
+				gdl = luaHudRender(gdl); /* declared in game/luaai.h */
 				gdl = netKillFeedRender(gdl);
 				gdl = netDebugRender(gdl);
 

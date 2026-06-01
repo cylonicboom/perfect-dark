@@ -47,6 +47,7 @@
 #include "data.h"
 #include "gbiex.h"
 #include "types.h"
+#include "game/luaai.h"
 #ifndef PLATFORM_N64
 #include "video.h"
 #include "net/net.h"
@@ -1304,6 +1305,10 @@ void chrInit(struct prop *prop, u8 *ailist)
 #endif
 
 	splatResetChr(chr);
+
+#ifndef PLATFORM_N64
+	luaEmitSpawn((s32)chr->chrnum);
+#endif
 }
 
 struct prop *chr0f020b14(struct prop *prop, struct model *model,

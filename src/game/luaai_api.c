@@ -439,6 +439,22 @@ void luaEmitKill(s32 chrnum, s32 killerplayernum)
 	luaEventDispatchInts("kill", 2, a);
 }
 
+void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount)
+{
+	lua_Integer a[3];
+	a[0] = chrnum;
+	a[1] = attackerplayernum;
+	a[2] = amount;
+	luaEventDispatchInts("damage", 3, a);
+}
+
+void luaEmitSpawn(s32 chrnum)
+{
+	lua_Integer a[1];
+	a[0] = chrnum;
+	luaEventDispatchInts("spawn", 1, a);
+}
+
 /* ------------------------------------------------------------------------- *
  * Per-frame tick + render (called from the port frame loop)
  * ------------------------------------------------------------------------- */

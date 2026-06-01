@@ -192,13 +192,21 @@ frame from a `"draw"` handler.
 | --- | --- | --- |
 | `"weaponfire"` | `(weaponnum, playernum)` | a player fires a shot |
 | `"alert"` | `(chrnum, playernum)` | an enemy reacts to / targets the player (its action block switches to its shot / shooting-at-me list) |
+| `"damage"` | `(chrnum, attackerplayernum, amount)` | a chr takes damage (`attackerplayernum` is -1 if not a player; `amount` is the hit's damage) |
 | `"kill"` | `(chrnum, killerplayernum)` | a character dies |
+| `"spawn"` | `(chrnum)` | a chr is created/initialised |
 | `"draw"` | `()` | once per frame, for immediate-mode drawing |
 
 Handlers run through `pcall`, so an error in one is logged and skipped — it never
 crashes the game. Events are **local and cosmetic**: they fire wherever that code
 runs (campaign = locally; netplay = where AI/guns run, i.e. the host) and have no
 effect on game state or the network protocol.
+
+> **`spawn` timing:** chrs created during level load, before `scripts/init.lua`
+> has been run, are not seen (the Lua state doesn't exist yet, so the emit is a
+> silent no-op). `spawn` fires for chrs created afterwards (and for all chrs
+> after a `/lua reload`, since reload happens with the state live). Use it for
+> reinforcements / mid-level spawns rather than the initial enemy set.
 
 ### AI X-ray (`pd.each_chr`)
 

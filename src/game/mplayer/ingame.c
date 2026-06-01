@@ -351,6 +351,15 @@ struct menuitem g_MpPauseControlMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
+#ifndef PLATFORM_N64
+// Lua Director (mainmenu.c): appended as the last swipe-tab sibling of the
+// Combat Sim PAUSE chain only (this Control dialog is not reachable from the
+// endscreen chain, so the Director never shows there). The Director dialog
+// itself hides its lack of content via its own rebuild, and the tab is harmless
+// when no script registered entries.
+extern struct menudialogdef g_LuaDirectorMenuDialog;
+#endif
+
 struct menudialogdef g_MpPauseControlMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 #if VERSION >= VERSION_JPN_FINAL
@@ -361,7 +370,11 @@ struct menudialogdef g_MpPauseControlMenuDialog = {
 	g_MpPauseControlMenuItems,
 	NULL,
 	0,
+#ifndef PLATFORM_N64
+	&g_LuaDirectorMenuDialog,
+#else
 	NULL,
+#endif
 };
 
 #if VERSION >= VERSION_JPN_FINAL

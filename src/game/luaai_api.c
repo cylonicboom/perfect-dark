@@ -49,6 +49,8 @@
 #define LUA_MAX_OVERLAYS 96
 #define LUA_MAX_XRAY     48
 #define LUA_TEXT_MAX     56
+/* LUA_MENU_MAX is defined in game/luaai.h (shared with mainmenu.c). */
+#define LUA_MENU_LABEL   40
 
 enum { OVL_BOX, OVL_TEXT };
 
@@ -74,6 +76,17 @@ static s32 g_LuaXrayCount = 0;
 /* Last-seen room of player 0, for synthesising the "roomenter" event in luaTick
  * (there is no single engine call site for it). -0x7fffffff = "unknown yet". */
 static s32 g_LuaLastPlayerRoom = -0x7fffffff;
+
+/* Director menu registry: scripts register pause-menu entries via pd.menu_add,
+ * the Lua Director dialog (mainmenu.c) renders them and dispatches selection back
+ * to the stored Lua function by index. */
+struct luamenuentry {
+	char label[LUA_MENU_LABEL];
+	int luaref; /* LUA_NOREF if unused */
+};
+
+static struct luamenuentry g_LuaMenu[LUA_MENU_MAX];
+static s32 g_LuaMenuCount = 0;
 
 /* registry table: event name -> array of handler functions */
 static const char *const KEY_EVENTS = "luaai.events";
@@ -379,6 +392,144 @@ static int l_pd_spawn(lua_State *L)
 	return 1;
 }
 
+/* ------------------------------------------------------------------------- *
+ * Toolkit framework: all-actor iteration + per-chr mutation primitives.
+ * These let scripts apply mass effects (sneeze everyone, shield all, hive mind)
+ * in Lua alone; adding a new effect = one wrapper here + one bridge in
+ * chraction.c. All mutators are server-side (guarded in the bridge).
+ * ------------------------------------------------------------------------- */
+
+/* pd.all_chrs(fn): call fn(chrnum) for EVERY live actor (not just those whose AI
+ * ran this frame, which is pd.each_chr). */
+static int l_pd_all_chrs(lua_State *L)
+{
+	s32 i, n;
+
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+
+	n = chraiLuaGetChrSlotCount();
+	for (i = 0; i < n; i++) {
+		s32 chrnum = chraiLuaGetChrNumBySlot(i);
+		if (chrnum < 0) {
+			continue; /* empty slot */
+		}
+		lua_pushvalue(L, 1); /* fn */
+		lua_pushinteger(L, chrnum);
+		if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+			luaApiLog2("all_chrs error: ", lua_tostring(L, -1));
+			lua_pop(L, 1);
+		}
+	}
+	return 0;
+}
+
+/* pd.chr_anim(chrnum, animnum, [speed]) -> bool. Play an animation on a chr. */
+static int l_pd_chr_anim(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 animnum = (s32)luaL_checkinteger(L, 2);
+	f32 speed = (f32)luaL_optnumber(L, 3, 1.0);
+	lua_pushboolean(L, chraiLuaChrAnim(chrnum, animnum, speed) != 0);
+	return 1;
+}
+
+/* pd.chr_set_shield(chrnum, value) -> bool. */
+static int l_pd_chr_set_shield(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	f32 value = (f32)luaL_checknumber(L, 2);
+	lua_pushboolean(L, chraiLuaChrSetShield(chrnum, value) != 0);
+	return 1;
+}
+
+/* pd.chr_alert(chrnum) -> bool. Put the chr on alert / onto its shot list. */
+static int l_pd_chr_alert(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrAlert(chrnum) != 0);
+	return 1;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Director menu registry (pd.menu_add / pd.menu_clear + C accessors)
+ * ------------------------------------------------------------------------- */
+
+static void luaMenuClearAll(lua_State *L)
+{
+	s32 i;
+	for (i = 0; i < g_LuaMenuCount; i++) {
+		if (L && g_LuaMenu[i].luaref != LUA_NOREF) {
+			luaL_unref(L, LUA_REGISTRYINDEX, g_LuaMenu[i].luaref);
+		}
+		g_LuaMenu[i].luaref = LUA_NOREF;
+		g_LuaMenu[i].label[0] = '\0';
+	}
+	g_LuaMenuCount = 0;
+}
+
+/* pd.menu_add(label, fn) -> index (or -1 if the registry is full). Adds a Lua
+ * Director pause-menu entry; selecting it later calls fn(). */
+static int l_pd_menu_add(lua_State *L)
+{
+	const char *label = luaL_checkstring(L, 1);
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+
+	if (g_LuaMenuCount >= LUA_MENU_MAX) {
+		luaApiLog("menu_add: registry full");
+		lua_pushinteger(L, -1);
+		return 1;
+	}
+
+	strncpy(g_LuaMenu[g_LuaMenuCount].label, label, LUA_MENU_LABEL - 1);
+	g_LuaMenu[g_LuaMenuCount].label[LUA_MENU_LABEL - 1] = '\0';
+
+	lua_pushvalue(L, 2); /* the fn */
+	g_LuaMenu[g_LuaMenuCount].luaref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+	lua_pushinteger(L, g_LuaMenuCount);
+	g_LuaMenuCount++;
+	return 1;
+}
+
+/* pd.menu_clear(): drop all registered Director entries (e.g. before a script
+ * re-registers them on reload). */
+static int l_pd_menu_clear(lua_State *L)
+{
+	luaMenuClearAll(L);
+	return 0;
+}
+
+/* C accessors used by the Lua Director dialog in mainmenu.c. */
+s32 luaMenuCount(void)
+{
+	return g_LuaMenuCount;
+}
+
+const char *luaMenuLabel(s32 i)
+{
+	if (i < 0 || i >= g_LuaMenuCount) {
+		return "";
+	}
+	return g_LuaMenu[i].label;
+}
+
+void luaMenuInvoke(s32 i)
+{
+	lua_State *L = luaaiGetState();
+	if (!L || i < 0 || i >= g_LuaMenuCount || g_LuaMenu[i].luaref == LUA_NOREF) {
+		return;
+	}
+	lua_rawgeti(L, LUA_REGISTRYINDEX, g_LuaMenu[i].luaref);
+	if (lua_isfunction(L, -1)) {
+		if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+			luaApiLog2("menu item error: ", lua_tostring(L, -1));
+			lua_pop(L, 1);
+		}
+	} else {
+		lua_pop(L, 1);
+	}
+}
+
 /* Called by luaai.c's luaai_build_pd with the pd table on top of the stack. */
 void luaApiRegister(lua_State *L)
 {
@@ -401,6 +552,14 @@ void luaApiRegister(lua_State *L)
 	/* world mutation (server-side) */
 	lua_pushcfunction(L, l_pd_spawn_at_chr);lua_setfield(L, -2, "spawn_at_chr");
 	lua_pushcfunction(L, l_pd_spawn);       lua_setfield(L, -2, "spawn");
+	/* toolkit: all-actor iteration + per-chr mutators (server-side) */
+	lua_pushcfunction(L, l_pd_all_chrs);    lua_setfield(L, -2, "all_chrs");
+	lua_pushcfunction(L, l_pd_chr_anim);    lua_setfield(L, -2, "chr_anim");
+	lua_pushcfunction(L, l_pd_chr_set_shield); lua_setfield(L, -2, "chr_set_shield");
+	lua_pushcfunction(L, l_pd_chr_alert);   lua_setfield(L, -2, "chr_alert");
+	/* director pause-menu registry */
+	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
+	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events
@@ -410,6 +569,16 @@ void luaApiResetFrame(void)
 	g_LuaOverlayCount = 0;
 	g_LuaXrayCount = 0;
 	g_LuaLastPlayerRoom = -0x7fffffff; /* re-baseline room tracking on reset */
+	/* The Lua state is closing on reset, so the refs go with it; just drop the
+	 * count + clear labels (don't luaL_unref against a dead state). */
+	{
+		s32 i;
+		for (i = 0; i < g_LuaMenuCount; i++) {
+			g_LuaMenu[i].luaref = LUA_NOREF;
+			g_LuaMenu[i].label[0] = '\0';
+		}
+		g_LuaMenuCount = 0;
+	}
 }
 
 /* ------------------------------------------------------------------------- *

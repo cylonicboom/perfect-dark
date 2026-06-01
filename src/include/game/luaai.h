@@ -219,4 +219,25 @@ s32 chraiLuaSpawnAtPos(s32 refchrnum, s32 weaponnum, f32 x, f32 y, f32 z);
 /** Push a Lua table describing a chr snapshot (shared by pd.chr_info + ctx:self). */
 void luaApiPushChrInfo(struct lua_State *L, const struct luaaiselfinfo *info);
 
+/* ------------------------------------------------------------------------- *
+ * Toolkit framework bridges (defined in chraction.c). All-actor iteration +
+ * per-chr mutators backing pd.all_chrs / pd.chr_anim / chr_set_shield / chr_alert.
+ * Mutators are server-side (no-op on a net client) and return 1 on success.
+ * ------------------------------------------------------------------------- */
+s32 chraiLuaGetChrSlotCount(void);            /* total chr slots to iterate */
+s32 chraiLuaGetChrNumBySlot(s32 slot);        /* chrnum at slot, or -1 if empty */
+s32 chraiLuaChrAnim(s32 chrnum, s32 animnum, f32 speed);
+s32 chraiLuaChrSetShield(s32 chrnum, f32 value);
+s32 chraiLuaChrAlert(s32 chrnum);
+
+/* ------------------------------------------------------------------------- *
+ * Director pause-menu registry. Scripts register entries via pd.menu_add; the
+ * Lua Director dialog (mainmenu.c) reads these accessors to render + dispatch.
+ * Defined in luaai_api.c.
+ * ------------------------------------------------------------------------- */
+#define LUA_MENU_MAX 24            /* max Director entries (shared with mainmenu.c) */
+s32 luaMenuCount(void);            /* number of registered Director entries */
+const char *luaMenuLabel(s32 i);   /* label of entry i ("" if out of range) */
+void luaMenuInvoke(s32 i);         /* call entry i's Lua fn (guarded, logged) */
+
 #endif

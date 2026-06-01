@@ -8069,6 +8069,72 @@ s32 chraiLuaSpawnAtPos(s32 refchrnum, s32 weaponnum, f32 x, f32 y, f32 z)
 	objSetDropped(weapon->base.prop, DROPTYPE_DEFAULT);
 	return 1;
 }
+
+// ---- Toolkit framework bridges (all-actor iteration + per-chr mutators) ----
+// These back pd.all_chrs / pd.chr_anim / pd.chr_set_shield / pd.chr_alert. They
+// are thin wrappers over existing engine setters so the toolkit is easy to grow:
+// adding a new mass-effect primitive = one wrapper here + one pd.* in luaai_api.c.
+// All are server-side (world/AI mutation must not run on a net client).
+
+s32 chraiLuaGetChrSlotCount(void)
+{
+	return chrsGetNumSlots();
+}
+
+s32 chraiLuaGetChrNumBySlot(s32 slot)
+{
+	if (slot < 0 || slot >= chrsGetNumSlots()) {
+		return -1;
+	}
+	return (s32)g_ChrSlots[slot].chrnum; // < 0 for an empty slot; caller skips it
+}
+
+s32 chraiLuaChrAnim(s32 chrnum, s32 animnum, f32 speed)
+{
+	struct chrdata *chr;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL || chr->model == NULL) {
+		return 0;
+	}
+	// flip 0, start frame 0, given speed, short merge for a smooth cut-in.
+	modelSetAnimation(chr->model, (s16)animnum, 0, 0, speed, 16);
+	return 1;
+}
+
+s32 chraiLuaChrSetShield(s32 chrnum, f32 value)
+{
+	struct chrdata *chr;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL) {
+		return 0;
+	}
+	chrSetShield(chr, value);
+	return 1;
+}
+
+s32 chraiLuaChrAlert(s32 chrnum)
+{
+	struct chrdata *chr;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL) {
+		return 0;
+	}
+	// Same flag the damage path sets to make a chr switch to its shot/alert list.
+	chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
+	return 1;
+}
 #endif
 
 bool chrDropItem(struct chrdata *chr, u32 modelnum, u32 weaponnum)

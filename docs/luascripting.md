@@ -151,6 +151,12 @@ enemy entirely from Lua, see
 | `pd.distance(x1,y1,z1, x2,y2,z2)` | Euclidean distance (helper) |
 | `pd.spawn_at_chr(chrnum, weaponnum)` | spawn a weapon/item object at that chr's location; `true` on success |
 | `pd.spawn(weaponnum, x, y, z, [ref_chrnum])` | spawn a weapon/item object at an arbitrary world position; `true` on success |
+| `pd.all_chrs(fn)` | call `fn(chrnum)` for **every** live actor (not just AI-ran ones) |
+| `pd.chr_anim(chrnum, animnum, [speed])` | play an animation on a chr; `true` on success |
+| `pd.chr_set_shield(chrnum, value)` | set a chr's shield; `true` on success |
+| `pd.chr_alert(chrnum)` | put a chr on alert (switch to its shot/alert list); `true` on success |
+| `pd.menu_add(label, fn)` | add a "Lua Director" pause-menu entry; selecting it calls `fn()`; returns the index |
+| `pd.menu_clear()` | remove all registered Director entries |
 
 These are the **mutating** world calls (everything above is read-only). Both
 reuse the engine's own object-creation + floor-placement primitives (model load,
@@ -177,6 +183,28 @@ end)
 local px, py, pz = pd.player_pos(0)
 if px then pd.spawn(0x02, px, py, pz) end    -- Falcon 2 at the player's feet
 ```
+
+### Toolkit: mass effects + the Lua Director pause menu
+
+`pd.all_chrs(fn)` iterates **every** actor (unlike `pd.each_chr`, which only
+covers chrs whose AI ran this frame), and the per-chr mutators (`pd.chr_anim`,
+`pd.chr_set_shield`, `pd.chr_alert`) are thin server-side wrappers — together they
+let you apply mass effects in Lua. `pd.menu_add(label, fn)` registers an entry in
+the **"Lua Director"** pause-menu submenu: open the pause menu, choose *Lua
+Director*, and your registered actions/scenarios appear; selecting one calls your
+`fn()`. The entry is hidden (solo/2P) when no script has registered anything.
+
+```lua
+-- make every actor play an animation, exposed as a pause-menu button
+pd.menu_add("Make Everyone Sneeze", function()
+  pd.all_chrs(function(chrnum) pd.chr_anim(chrnum, 0x67, 1.0) end)
+end)
+```
+
+Animation ids are ROM-generated (`src/assets/*/animations.json`), so `pd.chr_anim`
+takes a plain number — pick one that looks right in your build. See
+[`scripts/director.lua`](../scripts/director.lua) for a full toolkit (spawn
+waves, hive-mind, scenarios) and a "how to add your own effect" guide.
 
 ### World / entity queries
 

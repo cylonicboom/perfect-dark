@@ -36,6 +36,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "mpsetups.h"
+#include "game/luaai.h"
 #endif
 
 #ifndef PLATFORM_N64 // All Solos in Multi Mod
@@ -54,6 +55,8 @@ extern MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem 
 extern MenuItemHandlerResult menuhandlerJoinStart(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item, union handlerdata *data);
+struct menudialogdef g_LuaDirectorMenuDialog;
+MenuItemHandlerResult menuhandlerLuaDirector(s32 operation, struct menuitem *item, union handlerdata *data);
 #endif
 
 #ifndef PLATFORM_N64 // All Solos in Multi Mod
@@ -4673,6 +4676,16 @@ struct menuitem g_2PMissionPauseVMenuItems[] = {
 		0,
 		(void *)&g_2PMissionAbortVMenuDialog,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Lua Director",
+		0,
+		menuhandlerLuaDirector, // hidden unless a script registered entries
+	},
+#endif
 	{ MENUITEMTYPE_END },
 };
 
@@ -4693,6 +4706,16 @@ struct menuitem g_MissionPauseMenuItems[] = {
 		0,
 		(void *)&g_MissionAbortMenuDialog,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Lua Director",
+		0,
+		menuhandlerLuaDirector, // hidden unless a script registered entries
+	},
+#endif
 	{ MENUITEMTYPE_END },
 };
 
@@ -5051,6 +5074,91 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 
 	return false;
 }
+
+#ifndef PLATFORM_N64
+// ------------------------------------------------------------------------- //
+// Lua Director pause-menu submenu. Entries are registered from Lua via
+// pd.menu_add(label, fn); this dialog renders whatever the script registered and
+// dispatches selection back to the Lua function by index. The items array is
+// rebuilt from the registry on MENUOP_OPEN so /lua reload changes show up.
+// ------------------------------------------------------------------------- //
+
+// +2 = a "(no entries)" placeholder slot reuse + the Back item + END terminator
+// headroom; sized to the registry cap.
+static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + 2];
+
+MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		luaMenuInvoke((s32)item->param);
+	}
+	return 0;
+}
+
+static void luaDirectorRebuildItems(void)
+{
+	s32 n = luaMenuCount();
+	s32 i = 0;
+	s32 w = 0;
+
+	if (n > LUA_MENU_MAX) {
+		n = LUA_MENU_MAX;
+	}
+
+	for (i = 0; i < n; i++) {
+		g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
+		g_LuaDirectorMenuItems[w].param = i; // index into the Lua registry
+		g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_LITERAL_TEXT;
+		g_LuaDirectorMenuItems[w].param2 = (uintptr_t)luaMenuLabel(i);
+		g_LuaDirectorMenuItems[w].param3 = 0;
+		g_LuaDirectorMenuItems[w].handler = menuhandlerLuaDirectorItem;
+		w++;
+	}
+
+	// Back
+	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
+	g_LuaDirectorMenuItems[w].param = 0;
+	g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_SELECTABLE_CLOSESDIALOG;
+	g_LuaDirectorMenuItems[w].param2 = L_OPTIONS_213; // "Back"
+	g_LuaDirectorMenuItems[w].param3 = 0;
+	g_LuaDirectorMenuItems[w].handler = NULL;
+	w++;
+
+	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_END;
+}
+
+MenuDialogHandlerResult menudialogLuaDirector(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_OPEN) {
+		luaDirectorRebuildItems();
+	}
+	return false;
+}
+
+struct menudialogdef g_LuaDirectorMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Lua Director",
+	g_LuaDirectorMenuItems,
+	menudialogLuaDirector,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+// Pause-menu entry item for the Lua Director. Hidden unless a script registered
+// at least one entry; opens the Director dialog on select. Used a plain
+// SELECTABLE (not OPENSDIALOG) because OPENSDIALOG repurposes the handler slot as
+// the dialog pointer, leaving no room for the CHECKHIDDEN gate.
+MenuItemHandlerResult menuhandlerLuaDirector(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_CHECKHIDDEN) {
+		return luaMenuCount() == 0; // hide when no script registered entries
+	}
+	if (operation == MENUOP_SET) {
+		menuPushDialog(&g_LuaDirectorMenuDialog);
+	}
+	return 0;
+}
+#endif
 
 char *mainMenuTextLabel(struct menuitem *item)
 {

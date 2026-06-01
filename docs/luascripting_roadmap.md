@@ -22,12 +22,16 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | **World / entity query API** `pd.chr_info/chr_pos/chr_health/player_pos/player_count/distance` | `luaai_api.c`, `chrai.c` |
 | **World mutation** `pd.spawn_at_chr(chrnum, weaponnum)` + `pd.spawn(weaponnum, x,y,z, [ref])` | `luaai_api.c`, `chraction.c` |
 | **Events** `weaponfire`, `alert`, `damage`, `kill`, `spawn`, `roomenter`, `draw` | `luaai_api.c` + hook sites |
+| **Toolkit framework** `pd.all_chrs` + per-chr mutators (`chr_anim`/`chr_set_shield`/`chr_alert`) | `luaai_api.c`, `chraction.c` |
+| **Mission Director + pause-menu integration** `pd.menu_add`/`menu_clear` → "Lua Director" submenu | `luaai_api.c`, `mainmenu.c`, `mplayer/ingame.c`, `scripts/director.lua` |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
 without reading engine source. With `ctx:self()` + the query API an override can
 read the world and make real decisions, and the spawn calls drop world objects
-at a chr or at arbitrary coords.
+at a chr or at arbitrary coords. The Mission Director surfaces Lua-registered
+actions/scenarios directly in the pause menu, and the toolkit framework
+(`pd.all_chrs` + per-chr mutators) makes new mass-effects pure-Lua to add.
 
 ## Next (high-value, feasibility checked)
 
@@ -43,12 +47,15 @@ pass rather than a one-line emit. Deferred until that's worth doing.
 
 ## Later (ambitious, needs a research spike)
 
-- **Switch player models at runtime** — model/config swap path not yet located;
-  spike needed before committing.
+- **Mass actor model swap** ("turn everyone into X") — own plan. No clean
+  one-call body setter; needs the model-reload path (body/headnum + re-instantiate
+  the chr model). The toolkit framework (`pd.all_chrs` + per-chr mutators) is
+  already in place, so this becomes "add one `pd.chr_set_model` primitive + its
+  bridge" once the reload path is worked out. Effects then compose in `director.lua`.
 - **Controllable custom entity** ("run around as a cube") — entity create +
-  input/camera routing; the largest item, depends on #2 + #3 landing first.
-- **Mission director toolkit** — higher-level helpers over events + spawn +
-  query (reinforcement waves, scripted encounters, hive-mind alerts).
+  input/camera routing; the largest item, builds on the spawn + query work.
+- **More Director scenarios/effects** — pure Lua in `scripts/director.lua` now
+  (no C needed unless a new primitive is wanted); the toolkit is built to grow.
 
 ## Principles (carry forward)
 

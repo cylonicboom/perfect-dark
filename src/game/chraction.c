@@ -8217,6 +8217,90 @@ s32 chraiLuaChrSetBody(s32 chrnum, s32 bodynum, s32 headnum)
 
 	return 1;
 }
+
+// Move a chr prop to a position without physics (used by the possession freecam
+// to keep the visible cube under the fly pose). Mirrors how eyespy moves its
+// prop: chr0f021fa8 + modelSetRootPosition. Server-side. Returns 1 on success.
+s32 chraiLuaSetChrPos(s32 chrnum, f32 x, f32 y, f32 z)
+{
+	struct chrdata *chr;
+	struct coord pos;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL || chr->prop == NULL) {
+		return 0;
+	}
+	pos.x = x;
+	pos.y = y;
+	pos.z = z;
+	chr0f021fa8(chr, &pos, chr->prop->rooms);
+	if (chr->model) {
+		modelSetRootPosition(chr->model, &pos);
+	}
+	return 1;
+}
+
+// Spawn a "cube" entity (BODY_EYESPY model -- a small controllable device) at
+// the player's location and possess it (free-fly). Solo/missions only. Returns
+// the spawned chrnum, or -1 on failure. Backs pd.possess_spawn().
+s32 chraiLuaPossessSpawn(s32 bodynum)
+{
+	struct player *pl;
+	struct model *model;
+	struct prop *prop;
+	RoomNum rooms[8];
+	struct coord pos;
+
+	if (g_NetMode == NETMODE_CLIENT || g_Vars.normmplayerisrunning) {
+		return -1;
+	}
+	pl = g_Vars.players ? g_Vars.players[0] : NULL;
+	if (pl == NULL || pl->prop == NULL) {
+		return -1;
+	}
+
+	if (bodynum < 0) {
+		bodynum = BODY_EYESPY;
+	}
+
+	model = bodyAllocateModel(bodynum, bodyChooseHead(bodynum), 0);
+	if (model == NULL) {
+		return -1;
+	}
+
+	pos = pl->prop->pos;
+	pos.y += 60.f; // float a touch above the player
+	roomsCopy(pl->prop->rooms, rooms);
+
+	prop = chrAllocate(model, &pos, rooms, 0.0f, NULL);
+	if (prop == NULL || prop->chr == NULL) {
+		return -1;
+	}
+	propActivate(prop);
+	propEnable(prop);
+	prop->chr->chrflags |= CHRCFLAG_INVINCIBLE;
+
+	if (!luaPossessBegin((s32)prop->chr->chrnum)) {
+		return -1;
+	}
+	return (s32)prop->chr->chrnum;
+}
+
+// Stop possessing and return control to the player body. Frees the cube prop.
+void chraiLuaUnpossess(void)
+{
+	s32 chrnum = luaPossessGetChrNum();
+	luaPossessEnd();
+	if (chrnum >= 0) {
+		struct chrdata *chr = chrFindByLiteralId(chrnum);
+		if (chr && chr->prop) {
+			chr->hidden |= CHRHFLAG_DELETING; // remove the cube
+		}
+	}
+}
 #endif
 
 bool chrDropItem(struct chrdata *chr, u32 modelnum, u32 weaponnum)

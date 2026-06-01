@@ -156,6 +156,8 @@ enemy entirely from Lua, see
 | `pd.chr_set_shield(chrnum, value)` | set a chr's shield; `true` on success |
 | `pd.chr_alert(chrnum)` | put a chr on alert (switch to its shot/alert list); `true` on success |
 | `pd.chr_set_body(chrnum, bodynum, [headnum])` | swap a chr's body model at runtime; `true` on success. **Solo/missions only** (no-op in Combat Sim), player refused |
+| `pd.possess_spawn([bodynum])` | spawn a "cube" and fly it around (free-fly); returns chrnum or `nil`. **Solo/missions only** |
+| `pd.unpossess()` | stop possessing, return control to the player body |
 | `pd.menu_add(label, fn)` | add a "Lua Director" pause-menu entry; selecting it calls `fn()`; returns the index |
 | `pd.menu_clear()` | remove all registered Director entries |
 
@@ -215,6 +217,18 @@ effect" guide.
 at stage start, so a runtime swap there wouldn't replicate to other machines —
 and it refuses the player's own body. `headnum` omitted/`<0` picks a head valid
 for the body.
+
+### Controllable entity ("become a cube")
+
+`pd.possess_spawn([bodynum])` spawns a small entity (default `BODY_EYESPY`) at
+the player and hands you free-fly control of it — left stick / WASD to move, right
+stick / mouse to look, R-trigger / Shift to boost, D-pad up-down or Space/LCtrl
+for altitude. The camera follows the entity; your body is frozen (and safe)
+meanwhile. **START / ESC**, or `pd.unpossess()`, returns control to your body and
+removes the entity. **Solo/missions only** (refused in Combat Sim — no netplay
+sync for player-driven entities). Modeled on the engine's eyespy + spectator
+freecam. See the "Become A Cube" / "Stop Possessing" entries in
+[`scripts/director.lua`](../scripts/director.lua).
 
 ### World / entity queries
 

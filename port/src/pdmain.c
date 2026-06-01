@@ -7,6 +7,7 @@
 #include "constants.h"
 #include "game/camdraw.h"
 #include "game/cheats.h"
+#include "game/luaai.h"
 #include "game/debug.h"
 #include "game/file.h"
 #include "game/lang.h"
@@ -734,6 +735,9 @@ void mainTick(void)
 				// only modifies the active panel's freecam state. Cheap no-op
 				// when the host isn't spectating.
 				spectatorReadInput();
+				// Lua possession (controllable cube) freecam input — once per
+				// frame; no-op unless pd.possess_spawn is active.
+				luaPossessReadInput();
 
 				for (i = 0; i < PLAYERCOUNT(); i++) {
 					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
@@ -778,6 +782,10 @@ void mainTick(void)
 					} else {
 						lvTickPlayer();
 					}
+					// Possession: after the body ticks, override this player's
+					// camera to follow the controllable cube's fly pose. No-op
+					// unless possession is active (and only for the local player).
+					luaPossessApplyCamera();
 					if (mt_log) { netDiagLogf("mt_lvtickplayer_post", "i=%d", i); }
 				}
 			}
@@ -935,12 +943,7 @@ void mainTick(void)
 				}
 
 				gdl = conRender(gdl);
-				{
-					/* declared in game/luaai.h; local extern keeps this TU
-					 * self-sufficient if the include ordering shifts */
-					extern Gfx *luaHudRender(Gfx *gdl);
-					gdl = luaHudRender(gdl);
-				}
+				gdl = luaHudRender(gdl); /* declared in game/luaai.h */
 				gdl = netKillFeedRender(gdl);
 				gdl = netDebugRender(gdl);
 

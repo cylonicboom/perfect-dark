@@ -349,6 +349,17 @@ static int l_pd_distance(lua_State *L)
 	return 1;
 }
 
+/* pd.spawn_at_chr(chrnum, weaponnum) -> true on success.
+ * Spawns a weapon/item world object at that chr's location (server-side only).
+ * The first mutating pd.* call; everything else above is read-only. */
+static int l_pd_spawn_at_chr(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 weaponnum = (s32)luaL_checkinteger(L, 2);
+	lua_pushboolean(L, chraiLuaSpawnAtChr(chrnum, weaponnum) != 0);
+	return 1;
+}
+
 /* Called by luaai.c's luaai_build_pd with the pd table on top of the stack. */
 void luaApiRegister(lua_State *L)
 {
@@ -368,6 +379,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_pos);  lua_setfield(L, -2, "player_pos");
 	lua_pushcfunction(L, l_pd_player_count);lua_setfield(L, -2, "player_count");
 	lua_pushcfunction(L, l_pd_distance);    lua_setfield(L, -2, "distance");
+	/* world mutation (server-side) */
+	lua_pushcfunction(L, l_pd_spawn_at_chr);lua_setfield(L, -2, "spawn_at_chr");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events

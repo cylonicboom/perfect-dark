@@ -29,10 +29,15 @@ pd.on("alert", function(chrnum)
 end)
 
 -- 3) Kill -> running counter + a marker flash.
+local WEAPON_PROXIMITYMINE = 0x21  -- a small object that sits on the ground
+
 pd.on("kill", function(chrnum, killer)
   KILLS = KILLS + 1
   pd.draw_text(118, 70, string.format("KILL #%d  (chr %d)", KILLS, chrnum), C_CYAN, 2.0)
   pd.draw_box(150, 80, 18, 18, C_CYAN, 1.0)
+  -- Spawn a real 3D object in the world where the enemy died (server-side).
+  -- chrnum is still valid here -- chrDie drops the chr's own loot at this point.
+  pd.spawn_at_chr(chrnum, WEAPON_PROXIMITYMINE)
 end)
 
 -- 4) AI X-RAY: each frame, label every live enemy with the exact ailist id and

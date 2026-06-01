@@ -20,25 +20,27 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | Worked from-scratch Lua enemy example | `scripts/examples/lua_authored_enemy.lua` |
 | **Current-chr handle** `ctx:self()` (chrnum, pos, health, shield, alertness, target) | `luaai.c`, `chrai.c` |
 | **World / entity query API** `pd.chr_info/chr_pos/chr_health/player_pos/player_count/distance` | `luaai_api.c`, `chrai.c` |
+| **World mutation** `pd.spawn_at_chr(chrnum, weaponnum)` (spawn an object where a chr is) | `luaai_api.c`, `chraction.c` |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
 without reading engine source. With `ctx:self()` + the query API an override can
-read the world (its own state, other chrs, the players, distances) and make
-real decisions.
+read the world and make real decisions, and `pd.spawn_at_chr` (the first
+mutating call) drops a world object — e.g. a marker where an enemy dies.
 
 ## Next (high-value, feasibility checked)
 
 These are ordered by value-to-effort. Each builds on the shipped base.
 
-### 3. 3D marker / spawn at a kill (the "cube on death")
-**Why:** the requested visceral proof — spawn a world object where an enemy died.
-**Plan:** `kill` event already fires (`chraction.c` `chrDie`). Add a `pd.spawn`
-that allocates a prop at a position. `propAllocate` and
-`weaponCreateProjectileFromWeaponNum` exist; the work is object
-initialisation/registration (model, room, type) done safely.
-**Feasibility:** feasible-but-nontrivial — needs object-init investigation; do a
-small spike first (spawn one known model at a fixed pad, then generalise).
+### 3b. Position-based spawn (`pd.spawn(modelnum, x, y, z, room)`)
+**Why:** `spawn_at_chr` covers the kill-marker case, but a free-position spawn
+unlocks arbitrary world placement.
+**Plan:** allocate via `weaponCreateProjectileFromGset` then set `prop->pos` and
+re-register rooms/ground (`cdFindGroundInfoAtCyl`, the same primitive `chrSetPos`
+uses) — the careful part is the floor/room math, exactly the class of bug seen
+in the CSP snap. Do a spike: spawn at a player's own pos+room first (known-good
+rooms), confirm it renders and collides, then generalise.
+**Feasibility:** nontrivial; gated on a play-test of `spawn_at_chr` first.
 
 ### 4. More events
 `pd.on("spawn" / "damage" / "objective" / "roomenter")`. Each is one guarded

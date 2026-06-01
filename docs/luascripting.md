@@ -149,6 +149,21 @@ enemy entirely from Lua, see
 | `pd.player_pos([n])` | `x, y, z` of player `n` (default 0), or `nil` |
 | `pd.player_count()` | number of active local players |
 | `pd.distance(x1,y1,z1, x2,y2,z2)` | Euclidean distance (helper) |
+| `pd.spawn_at_chr(chrnum, weaponnum)` | spawn a weapon/item object at that chr's location; `true` on success |
+
+`pd.spawn_at_chr` is the first **mutating** world call (everything above is
+read-only). It reuses the engine's own item-drop path, so model load and floor
+placement are handled for you; pass a `WEAPON_*` id (e.g. `0x21` proximity mine)
+and the matching world model is derived. It is **server-side only** (world
+mutation must not run on a net client) and a no-op for an unknown chrnum or a
+weapon with no world model. It's designed for the `kill` event — drop a marker
+where an enemy died (the chr is still valid at that point):
+
+```lua
+pd.on("kill", function(chrnum)
+  pd.spawn_at_chr(chrnum, 0x21)  -- WEAPON_PROXIMITYMINE
+end)
+```
 
 ### World / entity queries
 

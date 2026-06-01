@@ -465,6 +465,7 @@ static void luaMenuClearAll(lua_State *L)
 		g_LuaMenu[i].label[0] = '\0';
 	}
 	g_LuaMenuCount = 0;
+	luaDirectorRebuild(); /* array back to just the terminator */
 }
 
 /* pd.menu_add(label, fn) -> index (or -1 if the registry is full). Adds a Lua
@@ -488,6 +489,7 @@ static int l_pd_menu_add(lua_State *L)
 
 	lua_pushinteger(L, g_LuaMenuCount);
 	g_LuaMenuCount++;
+	luaDirectorRebuild(); /* keep the menu items array valid + current */
 	return 1;
 }
 
@@ -579,6 +581,7 @@ void luaApiResetFrame(void)
 		}
 		g_LuaMenuCount = 0;
 	}
+	luaDirectorRebuild(); /* drop stale entries from the menu items array */
 }
 
 /* ------------------------------------------------------------------------- *

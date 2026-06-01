@@ -240,4 +240,9 @@ s32 luaMenuCount(void);            /* number of registered Director entries */
 const char *luaMenuLabel(s32 i);   /* label of entry i ("" if out of range) */
 void luaMenuInvoke(s32 i);         /* call entry i's Lua fn (guarded, logged) */
 
+/* Rebuild the Director menu items array from the registry (defined in
+ * mainmenu.c). Called by pd.menu_add/menu_clear so the array is always valid +
+ * current before any dialog open. No-op stub when the menu isn't compiled. */
+void luaDirectorRebuild(void);
+
 #endif

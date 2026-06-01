@@ -5079,13 +5079,23 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 // ------------------------------------------------------------------------- //
 // Lua Director pause-menu submenu. Entries are registered from Lua via
 // pd.menu_add(label, fn); this dialog renders whatever the script registered and
-// dispatches selection back to the Lua function by index. The items array is
-// rebuilt from the registry on MENUOP_OPEN so /lua reload changes show up.
+// dispatches selection back to the Lua function by index.
+//
+// IMPORTANT: the items array must hold a valid MENUITEMTYPE_END terminator
+// BEFORE the dialog opens -- menuOpenDialog walks/counts the items (and runs
+// dialogInitItems) at line ~1491, which is BEFORE it dispatches MENUOP_OPEN
+// (~1532). A zero-initialised array has type==0 (not END==0x1a), so walking it
+// reads off the end into garbage and crashes in menuitemDropdownInit. We
+// therefore (a) static-init the array terminated, and (b) rebuild it eagerly
+// from the registry whenever it changes (luaDirectorRebuild, called by
+// pd.menu_add/menu_clear), NOT on MENUOP_OPEN.
 // ------------------------------------------------------------------------- //
 
-// +2 = a "(no entries)" placeholder slot reuse + the Back item + END terminator
-// headroom; sized to the registry cap.
-static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + 2];
+// Sized to: LUA_MENU_MAX entries + Back + END terminator. Statically terminated
+// so it is safe to open before any rebuild.
+static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + 2] = {
+	{ MENUITEMTYPE_END },
+};
 
 MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -5095,7 +5105,10 @@ MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem 
 	return 0;
 }
 
-static void luaDirectorRebuildItems(void)
+// Rebuild the items array from the Lua registry. Called from luaai_api.c
+// (pd.menu_add / pd.menu_clear) so the array is always valid + current before
+// any dialog open. Exposed (non-static) via game/luaai.h.
+void luaDirectorRebuild(void)
 {
 	s32 n = luaMenuCount();
 	s32 i = 0;
@@ -5129,8 +5142,11 @@ static void luaDirectorRebuildItems(void)
 
 MenuDialogHandlerResult menudialogLuaDirector(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
 {
+	// The array is kept current eagerly via luaDirectorRebuild() on registry
+	// change (it MUST be valid before this dialog's items are walked, which
+	// happens before MENUOP_OPEN fires). This is just a defensive refresh.
 	if (operation == MENUOP_OPEN) {
-		luaDirectorRebuildItems();
+		luaDirectorRebuild();
 	}
 	return false;
 }

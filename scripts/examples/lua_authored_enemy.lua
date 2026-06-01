@@ -29,19 +29,16 @@
 
 local TARGET_AILIST = 0x0021  -- <-- set to an id you saw in the AI X-ray
 
--- byte-encoding helpers (mirror mkshort/mkword in src/include/util.h)
-local function u16(v) return (v >> 8) & 0xff, v & 0xff end
-
--- Opcodes (see docs/aicommands.md). Layout in comments = bytes AFTER the opcode.
-local OP_SET_TARGET_CHR  = 0x0106 -- chr(u8) + 0(u8) + 0(u8)
-local OP_FACE_ENTITY     = 0x0018 -- attackflags(u16 BE) + entity_id(u16 BE) + label(u8)
-local OP_TRY_ATTACK_STAND= 0x0015 -- attackflags(u16 BE) + entity_id(u16 BE) + label(u8)
-local OP_IF_LOS_TO_TARGET= 0x003F -- label(u8)   (returns break flag; label ignored here)
+-- The generated helper library turns raw opcode/byte calls into named
+-- functions (one per command in docs/aicommands.md). Compare:
+--   ctx:run(0x0015, u16(0x220), u16(0), 0)   -- raw
+--   ai.try_attack_stand(ctx, 0x220, 0, 0)    -- with ai.lua
+local ai = dofile("scripts/ai.lua")
 
 -- Constants from src/include/constants.h
 local CHR_TARGET = 0xf6
-local ATTACKFLAG_AIMONLY    = 0x0020
-local ATTACKFLAG_AIMATTARGET= 0x0200
+local ATTACKFLAG_AIMONLY     = 0x0020
+local ATTACKFLAG_AIMATTARGET = 0x0200
 
 -- per-chr state keyed by chrnum (stable for the chr's lifetime)
 local state = {}
@@ -49,16 +46,16 @@ local state = {}
 -- Engine calls this each frame for any chr whose active ailist is TARGET_AILIST.
 local function my_ai(ctx)
   -- 1) Target the player and turn to face them. entity_id 0 = "use target".
-  ctx:run(OP_SET_TARGET_CHR, CHR_TARGET, 0, 0)
-  ctx:run(OP_FACE_ENTITY, u16(ATTACKFLAG_AIMATTARGET), u16(0), 0)
+  ai.set_target_chr(ctx, CHR_TARGET)
+  ai.try_face_entity(ctx, ATTACKFLAG_AIMATTARGET, 0, 0)
 
   -- 2) If we have line of sight, attempt a standing shot. We decide with Lua
-  --    (ctx:run returns the command's break flag); the engine's own label-jump
-  --    is unused in synthetic mode.
-  local los = ctx:run(OP_IF_LOS_TO_TARGET, 0)
+  --    (the wrapper returns the command's break flag); the engine's own
+  --    label-jump is unused in synthetic mode.
+  local los = ai.if_los_to_target(ctx, 0)
   if los ~= 0 then
     local flags = ATTACKFLAG_AIMATTARGET | ATTACKFLAG_AIMONLY  -- 0x0220
-    ctx:run(OP_TRY_ATTACK_STAND, u16(flags), u16(0), 0)
+    ai.try_attack_stand(ctx, flags, 0, 0)
   end
 
   -- 3) Visible heartbeat: a marker + a periodic console log.
@@ -84,7 +81,8 @@ pd.log(string.format("registered Lua-authored AI for ailist 0x%04x", TARGET_AILI
 --   * Everything the original bytecode could do is reachable the same way --
 --     all ~440 commands in docs/aicommands.md are callable via ctx:run.
 --
--- Extend it: patrol with run_to_pad (0x0020, pad u16), throw grenades with
--- consider_throwing_grenade (0x001B), play barks, branch on health/alertness,
--- etc. Look each command up in docs/aicommands.md for the exact bytes.
+-- Extend it: patrol with ai.run_to_pad(ctx, pad), throw grenades with
+-- ai.consider_throwing_grenade(ctx, ...), play barks, branch on health /
+-- alertness, etc. Every command is in ai.lua; see docs/aicommands.md for what
+-- each one does and its exact operands.
 -- ============================================================================

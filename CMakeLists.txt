@@ -372,6 +372,31 @@ generate_asset_headers("textures.json" "${CMAKE_SOURCE_DIR}/tools/assetmgr/mktex
 
 add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 
+# Generated AI scripting artifacts: docs/aicommands.md (command reference) and
+# scripts/ai.lua (Lua helper library) are produced from the engine source
+# (src/include/commands.h + src/game/chrai.c) by tools/gen_aicommands.py so they
+# can never drift. Regenerate them at build time when those inputs change. If no
+# Python interpreter is found we silently use the committed copies.
+find_program(PYTHON3_EXECUTABLE NAMES python3 python)
+if(PYTHON3_EXECUTABLE)
+  set(AISCRIPT_GEN "${CMAKE_SOURCE_DIR}/tools/gen_aicommands.py")
+  set(AISCRIPT_OUTPUTS
+    "${CMAKE_SOURCE_DIR}/docs/aicommands.md"
+    "${CMAKE_SOURCE_DIR}/scripts/ai.lua")
+  add_custom_command(
+    OUTPUT ${AISCRIPT_OUTPUTS}
+    COMMAND "${PYTHON3_EXECUTABLE}" "${AISCRIPT_GEN}"
+    DEPENDS "${AISCRIPT_GEN}"
+            "${CMAKE_SOURCE_DIR}/src/include/commands.h"
+            "${CMAKE_SOURCE_DIR}/src/game/chrai.c"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Generating AI command reference + Lua helper library"
+    VERBATIM)
+  add_custom_target(pd_aiscripts ALL DEPENDS ${AISCRIPT_OUTPUTS})
+else()
+  message(STATUS "python not found: using committed docs/aicommands.md + scripts/ai.lua")
+endif()
+
 # Game target
 
 set(BIN_NAME "pd${BIN_REGION}.${TARGET_ARCH}")
@@ -387,6 +412,9 @@ target_include_directories(pd_lua PUBLIC "${CMAKE_SOURCE_DIR}/port/lua")
 
 add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
+if(TARGET pd_aiscripts)
+  add_dependencies(pd pd_aiscripts)
+endif()
 target_link_libraries(pd ${LIBS} pd_lua)
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
 if(WIN32 AND NOT DEDICATED_SERVER)

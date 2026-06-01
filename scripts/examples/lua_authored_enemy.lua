@@ -3,12 +3,14 @@
 --
 -- This is the "if this works, almost anything will" proof. Instead of letting
 -- the engine run an enemy's original action block (bytecode -> transpiled Lua),
--- we REPLACE one ailist with a hand-written Lua loop that calls engine AI
--- commands directly via ctx:run(opcode, bytes...).
+-- we REPLACE one ailist with a hand-written Lua loop that:
+--   * uses the generated helper library scripts/ai.lua (ai.<command>(ctx, ...))
+--     instead of raw ctx:run(opcode, bytes...), and
+--   * reads ctx:self() to make per-enemy decisions (this chr's health, target,
+--     position) and keep per-chr memory.
 --
--- Every opcode + operand layout used below is taken verbatim from
--- docs/aicommands.md (the generated command reference). Read that alongside
--- docs/luascripting.md (the ctx / pd API).
+-- Command names/operands come from docs/aicommands.md (the generated reference);
+-- the ctx / pd / ctx:self API is in docs/luascripting.md.
 --
 -- HOW TO USE
 --   1. Start a level, open the ~ console, watch the AI X-ray overlay, and note
@@ -41,28 +43,44 @@ local ATTACKFLAG_AIMONLY     = 0x0020
 local ATTACKFLAG_AIMATTARGET = 0x0200
 
 -- per-chr state keyed by chrnum (stable for the chr's lifetime)
+-- Per-chr memory, keyed by chrnum so each enemy running this list has its own
+-- state (ctx:self().chrnum is stable for the chr's lifetime).
 local state = {}
 
 -- Engine calls this each frame for any chr whose active ailist is TARGET_AILIST.
 local function my_ai(ctx)
+  -- 0) Who am I? ctx:self() tells us this specific chr's state so we can make
+  --    per-enemy decisions and keep per-enemy memory.
+  local me = ctx:self()
+  if not me then return 1 end           -- object-driven list, nothing to do
+  local mem = state[me.chrnum]
+  if not mem then mem = { ticks = 0 }; state[me.chrnum] = mem end
+  mem.ticks = mem.ticks + 1
+
   -- 1) Target the player and turn to face them. entity_id 0 = "use target".
   ai.set_target_chr(ctx, CHR_TARGET)
   ai.try_face_entity(ctx, ATTACKFLAG_AIMATTARGET, 0, 0)
 
-  -- 2) If we have line of sight, attempt a standing shot. We decide with Lua
-  --    (the wrapper returns the command's break flag); the engine's own
-  --    label-jump is unused in synthetic mode.
+  -- 2) Decide what to do based on MY health (real per-enemy behaviour). When
+  --    badly hurt, dive sideways instead of standing still to shoot.
+  local hurt = me.maxhealth > 0 and (me.health / me.maxhealth) < 0.35
   local los = ai.if_los_to_target(ctx, 0)
-  if los ~= 0 then
+
+  if los ~= 0 and not hurt then
     local flags = ATTACKFLAG_AIMATTARGET | ATTACKFLAG_AIMONLY  -- 0x0220
     ai.try_attack_stand(ctx, flags, 0, 0)
+  elseif hurt then
+    ai.try_sidestep(ctx, 0)             -- evade while low
   end
 
-  -- 3) Visible heartbeat: a marker + a periodic console log.
-  pd.draw_text(8, 200, "LUA-AUTHORED AI ACTIVE", 0x40ff40ff)
-  state.t = (state.t or 0) + 1
-  if state.t % 120 == 0 then
-    pd.log("lua_authored_enemy: tick " .. state.t .. (los ~= 0 and " (LOS, shooting)" or " (no LOS)"))
+  -- 3) Per-enemy HUD label above-ish, plus a periodic per-chr log.
+  pd.draw_text(8, 200, string.format("LUA AI: chr %d  hp %d/%d  %s",
+      me.chrnum, math.floor(me.health), math.floor(me.maxhealth),
+      hurt and "EVADING" or (los ~= 0 and "SHOOTING" or "SEEKING")),
+      hurt and 0xff4040ff or 0x40ff40ff)
+  if mem.ticks % 120 == 0 then
+    pd.log(string.format("chr %d: tick %d hp=%.0f alert=%d",
+        me.chrnum, mem.ticks, me.health, me.alertness))
   end
 
   -- 4) Yield -- done for this frame. (Never fall through without yielding.)
@@ -70,7 +88,9 @@ local function my_ai(ctx)
 end
 
 pd.register_ailist(TARGET_AILIST, my_ai)
-pd.log(string.format("registered Lua-authored AI for ailist 0x%04x", TARGET_AILIST))
+pd.log(string.format(
+  "lua_authored_enemy: registered for ailist 0x%04x -- set TARGET_AILIST to an "
+  .. "id from the AI X-ray, then /lua reload", TARGET_AILIST))
 
 -- ============================================================================
 -- WHY THIS PROVES THE PIPELINE

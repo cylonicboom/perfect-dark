@@ -160,4 +160,25 @@ void luaEmitKill(s32 chrnum, s32 killerplayernum);
 s32 chraiLuaGetChrNum(void);
 s32 chraiLuaGetAlertness(void);
 
+/**
+ * Read-only snapshot of the chr currently running its ailist, for ctx:self().
+ * Populated by chraiLuaGetSelf() from g_Vars.chrdata. All fields are 0 / -1 when
+ * there is no current chr (e.g. an object-driven list).
+ */
+struct luaaiselfinfo {
+	s32 chrnum;      // -1 if none
+	s32 valid;       // 1 if a chr is currently executing, else 0
+	f32 x, y, z;     // world position
+	s32 room;        // first room number, -1 if unknown
+	f32 health;      // maxdamage - damage (clamped >= 0)
+	f32 maxhealth;   // maxdamage
+	f32 shield;
+	s32 alertness;   // 0..255
+	s32 targetchrnum;   // chrnum of the chr's current target, or -1
+	s32 targetplayernum; // playernum if the target is a player, else -1
+};
+
+/** Fill `out` from the currently-executing chr. Returns out->valid. Defined in chrai.c. */
+s32 chraiLuaGetSelf(struct luaaiselfinfo *out);
+
 #endif

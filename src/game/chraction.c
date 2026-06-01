@@ -7985,6 +7985,90 @@ s32 chraiLuaSpawnAtChr(s32 chrnum, s32 weaponnum)
 
 	return chrDropItem(chr, (u32)modelnum, (u32)weaponnum) ? 1 : 0;
 }
+
+// Lua bridge: spawn a weapon/item world object at an arbitrary position, with
+// rooms seeded from a reference chr (refchrnum, default-resolved by the caller).
+// Backs pd.spawn(). The object is created anchored to the reference chr (so the
+// engine's MP-index / creation paths stay valid), then repositioned to the
+// target and floor-snapped using the same primitives the engine uses for normal
+// object placement: cdFindFloorRoomYColourFlagsAtPos walks the portal graph from
+// the reference chr's (known-valid) rooms to find the real floor room + height
+// at the target, then func0f06a580 sets pos + re-registers rooms. Placement is
+// reliable when the target is reachable through portals from the reference chr;
+// if no floor is found we fall back to the raw pos with the seed rooms (the
+// object may float rather than crash). Server-side only.
+s32 chraiLuaSpawnAtPos(s32 refchrnum, s32 weaponnum, f32 x, f32 y, f32 z)
+{
+	struct chrdata *refchr;
+	struct weaponobj *weapon;
+	s32 modelnum;
+	struct coord pos;
+	Mtxf mtx;
+	RoomNum seedrooms[8];
+	RoomNum floorroom;
+	f32 floory;
+	struct modelrodata_bbox *bbox;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0; // world mutation is server-authoritative
+	}
+
+	// refchrnum < 0 means "use the local player's chr" -- the common case for
+	// spawning near the player, and a guaranteed-valid seed-rooms source.
+	if (refchrnum < 0) {
+		refchr = (g_Vars.currentplayer && g_Vars.currentplayer->prop)
+				? g_Vars.currentplayer->prop->chr : NULL;
+	} else {
+		refchr = chrFindByLiteralId(refchrnum);
+	}
+	if (refchr == NULL || refchr->prop == NULL) {
+		return 0; // need a valid reference chr for creation + seed rooms
+	}
+
+	modelnum = playermgrGetModelOfWeapon(weaponnum);
+	if (modelnum < 0) {
+		return 0;
+	}
+
+	weapon = weaponCreateProjectileFromWeaponNum(modelnum, (u8)weaponnum, refchr);
+	if (weapon == NULL || weapon->base.prop == NULL || weapon->base.model == NULL) {
+		return 0;
+	}
+
+	modelSetScale(weapon->base.model, weapon->base.model->scale);
+	weapon->timer240 = TICKS(720);
+
+	pos.x = x;
+	pos.y = y;
+	pos.z = z;
+	mtx4LoadIdentity(&mtx);
+	roomsCopy(refchr->prop->rooms, seedrooms);
+
+	// Floor-snap: find the real floor room + Y at the target (portal-walk from the
+	// reference rooms), then place resting on the floor. Mirrors func0f06a650.
+	bbox = modelFindBboxRodata(weapon->base.model);
+#if VERSION >= VERSION_NTSC_1_0
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &weapon->base.floorcol, NULL);
+#else
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &weapon->base.floorcol);
+#endif
+
+	if (floorroom > 0) {
+		RoomNum placerooms[2];
+		struct coord placepos;
+		placepos.x = pos.x;
+		placepos.y = floory - objGetRotatedLocalYMinByMtx4(bbox, &mtx);
+		placepos.z = pos.z;
+		placerooms[0] = floorroom;
+		placerooms[1] = -1;
+		func0f06a580(&weapon->base, &placepos, &mtx, placerooms);
+	} else {
+		func0f06a580(&weapon->base, &pos, &mtx, seedrooms);
+	}
+
+	objSetDropped(weapon->base.prop, DROPTYPE_DEFAULT);
+	return 1;
+}
 #endif
 
 bool chrDropItem(struct chrdata *chr, u32 modelnum, u32 weaponnum)

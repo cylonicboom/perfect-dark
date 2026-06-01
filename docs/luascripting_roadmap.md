@@ -25,6 +25,7 @@ See [`luascripting.md`](luascripting.md) for the current API and
 | **Toolkit framework** `pd.all_chrs` + per-chr mutators (`chr_anim`/`chr_set_shield`/`chr_alert`) | `luaai_api.c`, `chraction.c` |
 | **Mission Director + pause-menu integration** `pd.menu_add`/`menu_clear` → "Lua Director" submenu | `luaai_api.c`, `mainmenu.c`, `mplayer/ingame.c`, `scripts/director.lua` |
 | **Runtime model swap** `pd.chr_set_body(chrnum, bodynum, [headnum])` ("turn everyone into X", solo-only) | `chraction.c`, `luaai_api.c`, `scripts/director.lua` |
+| **Controllable entity** `pd.possess_spawn`/`pd.unpossess` ("become a cube", free-fly, solo-only) | `port/src/possess.c`, `chraction.c`, `pdmain.c`, `scripts/director.lua` |
 
 The pipeline is proven end to end: every enemy's AI runs through Lua, and a
 human or agent can author new behaviour from the reference + helper library
@@ -52,8 +53,10 @@ pass rather than a one-line emit. Deferred until that's worth doing.
   Combat-Sim version would need a new SVC message carrying the runtime body change
   (the bridge refuses Combat Sim today). Worth it only if remote model swaps are
   actually wanted.
-- **Controllable custom entity** ("run around as a cube") — entity create +
-  input/camera routing; the largest item, builds on the spawn + query work.
+- **Controllable entity follow-ups** — v1 (`pd.possess_spawn`, free-fly cube) is
+  shipped. Possible extensions: possess an *existing* actor (`pd.possess(chrnum)`,
+  same control path; its AI/anim complicate it), grounded/physical movement
+  instead of free-fly, or letting the cube shoot. Each its own small pass.
 - **More Director scenarios/effects** — pure Lua in `scripts/director.lua` now
   (no C needed unless a new primitive is wanted); the toolkit is built to grow.
 

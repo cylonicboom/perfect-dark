@@ -230,6 +230,22 @@ s32 chraiLuaChrAnim(s32 chrnum, s32 animnum, f32 speed);
 s32 chraiLuaChrSetShield(s32 chrnum, f32 value);
 s32 chraiLuaChrAlert(s32 chrnum);
 s32 chraiLuaChrSetBody(s32 chrnum, s32 bodynum, s32 headnum); /* runtime model swap, solo only */
+s32 chraiLuaSetChrPos(s32 chrnum, f32 x, f32 y, f32 z); /* move a chr prop (no physics) */
+
+/* ------------------------------------------------------------------------- *
+ * Controllable entity / possession (port/src/possess.c + chraction.c bridges).
+ * Solo/missions only; lets the player fly a spawned "cube" (free-fly) and return
+ * to their body. Backs pd.possess_spawn / pd.unpossess.
+ * ------------------------------------------------------------------------- */
+s32 chraiLuaPossessSpawn(s32 bodynum); /* spawn + possess a cube; returns chrnum or -1 */
+void chraiLuaUnpossess(void);          /* stop + free the cube */
+/* possess.c internals (called by the bridges + the pdmain frame loop): */
+s32 luaPossessBegin(s32 cube_chrnum);
+void luaPossessEnd(void);
+s32 luaPossessIsActive(void);
+s32 luaPossessGetChrNum(void);
+void luaPossessReadInput(void);   /* per-frame input + pose integration */
+void luaPossessApplyCamera(void); /* point the render camera at the fly pose */
 
 /* ------------------------------------------------------------------------- *
  * Director pause-menu registry. Scripts register entries via pd.menu_add; the

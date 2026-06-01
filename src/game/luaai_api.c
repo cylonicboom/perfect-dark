@@ -462,6 +462,27 @@ static int l_pd_chr_set_body(lua_State *L)
 	return 1;
 }
 
+/* pd.possess_spawn([bodynum]) -> chrnum | nil. Spawn a "cube" and fly it around
+ * (free-fly). Solo/missions only; START/ESC or pd.unpossess() returns to Bond. */
+static int l_pd_possess_spawn(lua_State *L)
+{
+	s32 bodynum = (s32)luaL_optinteger(L, 1, -1);
+	s32 chrnum = chraiLuaPossessSpawn(bodynum);
+	if (chrnum < 0) {
+		lua_pushnil(L);
+	} else {
+		lua_pushinteger(L, chrnum);
+	}
+	return 1;
+}
+
+/* pd.unpossess(): stop possessing and return control to the player body. */
+static int l_pd_unpossess(lua_State *L)
+{
+	chraiLuaUnpossess();
+	return 0;
+}
+
 /* ------------------------------------------------------------------------- *
  * Director menu registry (pd.menu_add / pd.menu_clear + C accessors)
  * ------------------------------------------------------------------------- */
@@ -572,6 +593,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_set_shield); lua_setfield(L, -2, "chr_set_shield");
 	lua_pushcfunction(L, l_pd_chr_alert);   lua_setfield(L, -2, "chr_alert");
 	lua_pushcfunction(L, l_pd_chr_set_body); lua_setfield(L, -2, "chr_set_body");
+	lua_pushcfunction(L, l_pd_possess_spawn); lua_setfield(L, -2, "possess_spawn");
+	lua_pushcfunction(L, l_pd_unpossess);   lua_setfield(L, -2, "unpossess");
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");

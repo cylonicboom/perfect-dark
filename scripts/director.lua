@@ -142,6 +142,10 @@ pd.menu_add("Shield All",           shield_all)
 pd.menu_add("Everyone -> Skedar",   function() turn_everyone_into(BODY_SKEDAR) end)
 pd.menu_add("Everyone -> Dr Caroll", function() turn_everyone_into(BODY_DRCAROLL) end)
 pd.menu_add("Everyone -> Mr Blonde", function() turn_everyone_into(BODY_MRBLONDE) end)
+-- Controllable entity (solo/missions only): fly a cube around, START/ESC or
+-- "Stop Possessing" to return to your body.
+pd.menu_add("Become A Cube",        function() pd.possess_spawn() end)
+pd.menu_add("Stop Possessing",      function() pd.unpossess() end)
 -- scenario picker
 pd.menu_add("Scenario: Last Stand", scenario_last_stand)
 pd.menu_add("Scenario: Escort",     scenario_escort)

@@ -511,6 +511,12 @@ void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8
 // Returns the updated display list pointer.
 Gfx *netKillFeedRender(Gfx *gdl);
 
+// Vanity easter egg: render the boxed lower-left "Graslu" banner (pickup-message
+// style) when the hidden /graslu command has toggled it on and a level is
+// running. Called on the HUD layer from playerRenderHud (just after
+// hudmsgsRender) — not as a top-level overlay, so don't also call it from pdmain.
+Gfx *netGrasluRender(Gfx *gdl);
+
 // Spectate mode. When non-NULL, the local player's first-person camera is
 // overridden to ride along with the target chr (player or sim). Cleared by
 // /spec off or when the target disappears. Drive it from the /spec console

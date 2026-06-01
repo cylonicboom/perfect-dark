@@ -61,22 +61,30 @@ local function my_ai(ctx)
   ai.set_target_chr(ctx, CHR_TARGET)
   ai.try_face_entity(ctx, ATTACKFLAG_AIMATTARGET, 0, 0)
 
-  -- 2) Decide what to do based on MY health (real per-enemy behaviour). When
-  --    badly hurt, dive sideways instead of standing still to shoot.
+  -- 2) Read the world to decide. Distance to the player (query API) gates
+  --    whether we shoot, and our OWN health decides whether we hold or evade.
   local hurt = me.maxhealth > 0 and (me.health / me.maxhealth) < 0.35
   local los = ai.if_los_to_target(ctx, 0)
+  local px, py, pz = pd.player_pos(0)
+  local dist = px and pd.distance(me.x, me.y, me.z, px, py, pz) or nil
+  local inrange = dist and dist < 2500
 
-  if los ~= 0 and not hurt then
+  local act
+  if hurt then
+    ai.try_sidestep(ctx, 0)             -- low health: evade
+    act = "EVADING"
+  elseif los ~= 0 and inrange then
     local flags = ATTACKFLAG_AIMATTARGET | ATTACKFLAG_AIMONLY  -- 0x0220
     ai.try_attack_stand(ctx, flags, 0, 0)
-  elseif hurt then
-    ai.try_sidestep(ctx, 0)             -- evade while low
+    act = "SHOOTING"
+  else
+    act = "SEEKING"                     -- no LOS, or player out of range
   end
 
-  -- 3) Per-enemy HUD label above-ish, plus a periodic per-chr log.
-  pd.draw_text(8, 200, string.format("LUA AI: chr %d  hp %d/%d  %s",
+  -- 3) Per-enemy HUD label, plus a periodic per-chr log.
+  pd.draw_text(8, 200, string.format("LUA AI: chr %d  hp %d/%d  dist %s  %s",
       me.chrnum, math.floor(me.health), math.floor(me.maxhealth),
-      hurt and "EVADING" or (los ~= 0 and "SHOOTING" or "SEEKING")),
+      dist and tostring(math.floor(dist)) or "?", act),
       hurt and 0xff4040ff or 0x40ff40ff)
   if mem.ticks % 120 == 0 then
     pd.log(string.format("chr %d: tick %d hp=%.0f alert=%d",

@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "constants.h"
 #include "types.h"
@@ -244,6 +245,110 @@ static int l_pd_each_chr(lua_State *L)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------- *
+ * World / entity query API (read-only). Backed by bridge accessors in chrai.c
+ * so this file stays free of engine structs.
+ * ------------------------------------------------------------------------- */
+
+/* Push a Lua table describing a chr snapshot. Shared by pd.chr_info and
+ * ctx:self() so both have the same shape. Leaves the table on the stack. */
+void luaApiPushChrInfo(lua_State *L, const struct luaaiselfinfo *info)
+{
+	lua_newtable(L);
+	lua_pushinteger(L, info->chrnum);    lua_setfield(L, -2, "chrnum");
+	lua_pushnumber(L, info->x);          lua_setfield(L, -2, "x");
+	lua_pushnumber(L, info->y);          lua_setfield(L, -2, "y");
+	lua_pushnumber(L, info->z);          lua_setfield(L, -2, "z");
+	lua_pushinteger(L, info->room);      lua_setfield(L, -2, "room");
+	lua_pushnumber(L, info->health);     lua_setfield(L, -2, "health");
+	lua_pushnumber(L, info->maxhealth);  lua_setfield(L, -2, "maxhealth");
+	lua_pushnumber(L, info->shield);     lua_setfield(L, -2, "shield");
+	lua_pushinteger(L, info->alertness); lua_setfield(L, -2, "alertness");
+	if (info->targetchrnum >= 0) {
+		lua_pushinteger(L, info->targetchrnum);
+		lua_setfield(L, -2, "target_chrnum");
+	}
+	if (info->targetplayernum >= 0) {
+		lua_pushinteger(L, info->targetplayernum);
+		lua_setfield(L, -2, "target_playernum");
+	}
+}
+
+/* pd.chr_info(chrnum) -> table | nil */
+static int l_pd_chr_info(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	struct luaaiselfinfo info;
+	if (!chraiLuaGetChrInfo(chrnum, &info)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	luaApiPushChrInfo(L, &info);
+	return 1;
+}
+
+/* pd.chr_pos(chrnum) -> x, y, z | nil */
+static int l_pd_chr_pos(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	struct luaaiselfinfo info;
+	if (!chraiLuaGetChrInfo(chrnum, &info)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushnumber(L, info.x);
+	lua_pushnumber(L, info.y);
+	lua_pushnumber(L, info.z);
+	return 3;
+}
+
+/* pd.chr_health(chrnum) -> health, maxhealth | nil */
+static int l_pd_chr_health(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	struct luaaiselfinfo info;
+	if (!chraiLuaGetChrInfo(chrnum, &info)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushnumber(L, info.health);
+	lua_pushnumber(L, info.maxhealth);
+	return 2;
+}
+
+/* pd.player_pos([n]) -> x, y, z | nil  (n defaults to 0) */
+static int l_pd_player_pos(lua_State *L)
+{
+	s32 n = (s32)luaL_optinteger(L, 1, 0);
+	struct luaaiplayerinfo info;
+	if (!chraiLuaGetPlayerInfo(n, &info)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushnumber(L, info.x);
+	lua_pushnumber(L, info.y);
+	lua_pushnumber(L, info.z);
+	return 3;
+}
+
+/* pd.player_count() -> n */
+static int l_pd_player_count(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaGetPlayerCount());
+	return 1;
+}
+
+/* pd.distance(x1,y1,z1, x2,y2,z2) -> number. Pure helper; convenient for
+ * deciding on ranges from chr_pos/player_pos results. */
+static int l_pd_distance(lua_State *L)
+{
+	double dx = luaL_checknumber(L, 1) - luaL_checknumber(L, 4);
+	double dy = luaL_checknumber(L, 2) - luaL_checknumber(L, 5);
+	double dz = luaL_checknumber(L, 3) - luaL_checknumber(L, 6);
+	lua_pushnumber(L, (lua_Number)sqrt(dx * dx + dy * dy + dz * dz));
+	return 1;
+}
+
 /* Called by luaai.c's luaai_build_pd with the pd table on top of the stack. */
 void luaApiRegister(lua_State *L)
 {
@@ -252,10 +357,17 @@ void luaApiRegister(lua_State *L)
 	lua_setfield(L, LUA_REGISTRYINDEX, KEY_EVENTS);
 
 	/* pd.* functions (pd table is at -1) */
-	lua_pushcfunction(L, l_pd_on);        lua_setfield(L, -2, "on");
-	lua_pushcfunction(L, l_pd_draw_box);  lua_setfield(L, -2, "draw_box");
-	lua_pushcfunction(L, l_pd_draw_text); lua_setfield(L, -2, "draw_text");
-	lua_pushcfunction(L, l_pd_each_chr);  lua_setfield(L, -2, "each_chr");
+	lua_pushcfunction(L, l_pd_on);          lua_setfield(L, -2, "on");
+	lua_pushcfunction(L, l_pd_draw_box);    lua_setfield(L, -2, "draw_box");
+	lua_pushcfunction(L, l_pd_draw_text);   lua_setfield(L, -2, "draw_text");
+	lua_pushcfunction(L, l_pd_each_chr);    lua_setfield(L, -2, "each_chr");
+	/* world / entity queries */
+	lua_pushcfunction(L, l_pd_chr_info);    lua_setfield(L, -2, "chr_info");
+	lua_pushcfunction(L, l_pd_chr_pos);     lua_setfield(L, -2, "chr_pos");
+	lua_pushcfunction(L, l_pd_chr_health);  lua_setfield(L, -2, "chr_health");
+	lua_pushcfunction(L, l_pd_player_pos);  lua_setfield(L, -2, "player_pos");
+	lua_pushcfunction(L, l_pd_player_count);lua_setfield(L, -2, "player_count");
+	lua_pushcfunction(L, l_pd_distance);    lua_setfield(L, -2, "distance");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events

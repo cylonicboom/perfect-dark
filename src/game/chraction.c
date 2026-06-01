@@ -8135,6 +8135,88 @@ s32 chraiLuaChrAlert(s32 chrnum)
 	chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
 	return 1;
 }
+
+// Swap a live actor's body model at runtime ("turn everyone into X") -- the most
+// invasive toolkit primitive. Rebuilds the chr's model from a new bodynum and
+// re-establishes the chr<->model links by reusing the engine's own spawn wiring
+// (chr0f020b14) + teardown (free vertices/model, detach held weapons). Captures
+// and re-gives held weapons to the new skeleton. Solo/missions only (refused in
+// Combat Sim: bodynum is only synced at stage start, so a runtime swap wouldn't
+// replicate); player props refused; server-side. Returns 1 on success, else 0.
+s32 chraiLuaChrSetBody(s32 chrnum, s32 bodynum, s32 headnum)
+{
+	struct chrdata *chr;
+	struct model *oldmodel;
+	struct model *newmodel;
+	f32 faceangle;
+	s32 h;
+	s32 heldweapon[2];
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	if (g_Vars.normmplayerisrunning) {
+		return 0; // Combat Sim: not supported (no runtime bodynum sync)
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL || chr->prop == NULL || chr->model == NULL) {
+		return 0;
+	}
+	if (chr->prop->type == PROPTYPE_PLAYER) {
+		return 0; // never swap the player's own body model
+	}
+	if (chrIsDead(chr) || chr->actiontype == ACT_DIE) {
+		return 0; // mid-death model state is fragile
+	}
+
+	for (h = 0; h < 2; h++) {
+		heldweapon[h] = (chr->weapons_held[h] && chr->weapons_held[h]->obj
+				&& chr->weapons_held[h]->obj->type == OBJTYPE_WEAPON
+				&& chr->weapons_held[h]->weapon)
+			? (s32)chr->weapons_held[h]->weapon->weaponnum : -1;
+	}
+
+	if (headnum < 0) {
+		headnum = bodyChooseHead(bodynum);
+	}
+
+	newmodel = bodyAllocateModel(bodynum, headnum, 0);
+	if (newmodel == NULL) {
+		return 0;
+	}
+
+	oldmodel = chr->model;
+	faceangle = chrGetRotY(chr);
+
+	for (h = 0; h < 3; h++) {
+		if (chr->weapons_held[h]) {
+			if (chr->weapons_held[h]->obj) {
+				chr->weapons_held[h]->obj->hidden |= OBJHFLAG_DELETING;
+			}
+			chr->weapons_held[h] = NULL;
+		}
+	}
+
+	chr0f020b14(chr->prop, newmodel, &chr->prop->pos, chr->prop->rooms, faceangle, chr->ailist);
+
+	modelFreeVertices(VTXSTORETYPE_CHRVTX, oldmodel);
+	modelmgrFreeModel(oldmodel);
+
+	chr->bodynum = bodynum;
+	chr->headnum = headnum;
+
+	for (h = 0; h < 2; h++) {
+		if (heldweapon[h] >= 0) {
+			s32 modelnum = playermgrGetModelOfWeapon(heldweapon[h]);
+			if (modelnum >= 0) {
+				u32 flags = (h == 1) ? OBJFLAG_WEAPON_LEFTHANDED : 0;
+				chrGiveWeapon(chr, modelnum, heldweapon[h], flags);
+			}
+		}
+	}
+
+	return 1;
+}
 #endif
 
 bool chrDropItem(struct chrdata *chr, u32 modelnum, u32 weaponnum)

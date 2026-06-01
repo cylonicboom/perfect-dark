@@ -450,6 +450,18 @@ static int l_pd_chr_alert(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_set_body(chrnum, bodynum, [headnum]) -> bool. Runtime model swap.
+ * Solo/missions only (no-op in Combat Sim); player props refused. headnum
+ * omitted/<0 picks a head valid for the body. */
+static int l_pd_chr_set_body(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 bodynum = (s32)luaL_checkinteger(L, 2);
+	s32 headnum = (s32)luaL_optinteger(L, 3, -1);
+	lua_pushboolean(L, chraiLuaChrSetBody(chrnum, bodynum, headnum) != 0);
+	return 1;
+}
+
 /* ------------------------------------------------------------------------- *
  * Director menu registry (pd.menu_add / pd.menu_clear + C accessors)
  * ------------------------------------------------------------------------- */
@@ -559,6 +571,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_anim);    lua_setfield(L, -2, "chr_anim");
 	lua_pushcfunction(L, l_pd_chr_set_shield); lua_setfield(L, -2, "chr_set_shield");
 	lua_pushcfunction(L, l_pd_chr_alert);   lua_setfield(L, -2, "chr_alert");
+	lua_pushcfunction(L, l_pd_chr_set_body); lua_setfield(L, -2, "chr_set_body");
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");

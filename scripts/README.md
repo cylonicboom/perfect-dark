@@ -5,12 +5,15 @@ Drop-in Lua for the port's action-block scripting layer. The engine looks for
 executable / in your game data folder) on startup, on each stage load, and on
 `/lua reload`.
 
-- `init.lua` — entry point; loads `showcase.lua`.
+- `init.lua` — entry point; loads `showcase.lua`, the example, and `director.lua`.
 - `showcase.lua` — demo: weapon-fire / enemy-alert / kill events, a live AI
   "X-ray" overlay, and an (optional) fully Lua-authored enemy.
 - `examples/lua_authored_enemy.lua` — a fully-commented enemy whose combat
   behaviour is written from scratch in Lua via `ctx:run`; the "if this works,
   almost anything will" proof.
+- `director.lua` — the **Mission Director** toolkit: registers a "Lua Director"
+  pause-menu panel of live actions + scenarios via `pd.menu_add`. Built to be
+  hacked on — it includes a "how to add your own effect" guide at the top.
 
 ## Authoring AI in Lua
 

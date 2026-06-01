@@ -36,6 +36,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "mpsetups.h"
+#include "game/luaai.h"
 #endif
 
 #ifndef PLATFORM_N64 // All Solos in Multi Mod
@@ -54,6 +55,7 @@ extern MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem 
 extern MenuItemHandlerResult menuhandlerJoinStart(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item, union handlerdata *data);
+struct menudialogdef g_LuaDirectorMenuDialog;
 #endif
 
 #ifndef PLATFORM_N64 // All Solos in Multi Mod
@@ -2307,7 +2309,14 @@ struct menudialogdef g_SoloMissionBriefingMenuDialog = {
 	g_MissionBriefingMenuItems,
 	NULL,
 	MENUDIALOGFLAG_DISABLEITEMSCROLL,
+#ifndef PLATFORM_N64
+	// Append the Lua Director as the last tab of the solo mission pause chain
+	// (Status -> Inventory -> Options -> Briefing -> Lua Director). This dialog
+	// is only reached via the pause chain, so the Director never leaks elsewhere.
+	&g_LuaDirectorMenuDialog,
+#else
 	NULL,
+#endif
 };
 
 struct menudialogdef g_2PMissionBriefingHMenuDialog = {
@@ -2316,7 +2325,11 @@ struct menudialogdef g_2PMissionBriefingHMenuDialog = {
 	g_MissionBriefingMenuItems,
 	NULL,
 	MENUDIALOGFLAG_DISABLEITEMSCROLL,
+#ifndef PLATFORM_N64
+	&g_LuaDirectorMenuDialog, // Lua Director as the last tab of the 2P pause chain
+#else
 	NULL,
+#endif
 };
 
 struct menudialogdef g_2PMissionBriefingVMenuDialog = {
@@ -2325,7 +2338,11 @@ struct menudialogdef g_2PMissionBriefingVMenuDialog = {
 	g_2PMissionBreifingVMenuItems,
 	NULL,
 	MENUDIALOGFLAG_DISABLEITEMSCROLL,
+#ifndef PLATFORM_N64
+	&g_LuaDirectorMenuDialog, // Lua Director as the last tab of the 2P pause chain
+#else
 	NULL,
+#endif
 };
 
 char *func0f105664(struct menuitem *item)
@@ -5051,6 +5068,97 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 
 	return false;
 }
+
+#ifndef PLATFORM_N64
+// ------------------------------------------------------------------------- //
+// Lua Director menu. Entries are registered from Lua via pd.menu_add(label, fn);
+// this dialog renders whatever the script registered and dispatches selection
+// back to the Lua function by index. It is attached as the last swipe-tab
+// sibling of each in-game pause chain (solo + 2P in this file; Combat Sim in
+// mplayer/ingame.c) -- the pause menus are tabbed (Status/Inventory/Options/
+// Briefing), so a sibling tab is the right shape, not an item on one page.
+//
+// IMPORTANT: the items array must hold a valid MENUITEMTYPE_END terminator
+// BEFORE the dialog opens -- menuOpenDialog walks/counts the items (and runs
+// dialogInitItems) at line ~1491, which is BEFORE it dispatches MENUOP_OPEN
+// (~1532). A zero-initialised array has type==0 (not END==0x1a), so walking it
+// reads off the end into garbage and crashes in menuitemDropdownInit. We
+// therefore (a) static-init the array terminated, and (b) rebuild it eagerly
+// from the registry whenever it changes (luaDirectorRebuild, called by
+// pd.menu_add/menu_clear), NOT on MENUOP_OPEN.
+// ------------------------------------------------------------------------- //
+
+// Sized to: LUA_MENU_MAX entries + Back + END terminator. Statically terminated
+// so it is safe to open before any rebuild.
+static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + 2] = {
+	{ MENUITEMTYPE_END },
+};
+
+MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		luaMenuInvoke((s32)item->param);
+	}
+	return 0;
+}
+
+// Rebuild the items array from the Lua registry. Called from luaai_api.c
+// (pd.menu_add / pd.menu_clear) so the array is always valid + current before
+// any dialog open. Exposed (non-static) via game/luaai.h.
+void luaDirectorRebuild(void)
+{
+	s32 n = luaMenuCount();
+	s32 i = 0;
+	s32 w = 0;
+
+	if (n > LUA_MENU_MAX) {
+		n = LUA_MENU_MAX;
+	}
+
+	for (i = 0; i < n; i++) {
+		g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
+		g_LuaDirectorMenuItems[w].param = i; // index into the Lua registry
+		// BIGFONT gives the normal menu row height; without it rows render at the
+		// minimal text height and squash together.
+		g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
+		g_LuaDirectorMenuItems[w].param2 = (uintptr_t)luaMenuLabel(i);
+		g_LuaDirectorMenuItems[w].param3 = 0;
+		g_LuaDirectorMenuItems[w].handler = menuhandlerLuaDirectorItem;
+		w++;
+	}
+
+	// Back
+	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
+	g_LuaDirectorMenuItems[w].param = 0;
+	g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT;
+	g_LuaDirectorMenuItems[w].param2 = L_OPTIONS_213; // "Back"
+	g_LuaDirectorMenuItems[w].param3 = 0;
+	g_LuaDirectorMenuItems[w].handler = NULL;
+	w++;
+
+	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_END;
+}
+
+MenuDialogHandlerResult menudialogLuaDirector(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	// The array is kept current eagerly via luaDirectorRebuild() on registry
+	// change (it MUST be valid before this dialog's items are walked, which
+	// happens before MENUOP_OPEN fires). This is just a defensive refresh.
+	if (operation == MENUOP_OPEN) {
+		luaDirectorRebuild();
+	}
+	return false;
+}
+
+struct menudialogdef g_LuaDirectorMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Lua Director",
+	g_LuaDirectorMenuItems,
+	menudialogLuaDirector,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+#endif
 
 char *mainMenuTextLabel(struct menuitem *item)
 {

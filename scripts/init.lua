@@ -18,3 +18,7 @@ load("scripts/showcase.lua")
 -- Open the ~ console, read an ailist id off the X-ray overlay, set TARGET_AILIST
 -- at the top of this file, then `/lua reload`.
 load("scripts/examples/lua_authored_enemy.lua")
+
+-- The mission-director toolkit: registers a "Lua Director" pause-menu panel of
+-- live actions + scenarios. Hack on scripts/director.lua to add your own.
+load("scripts/director.lua")

@@ -45,6 +45,16 @@
 #define GFX_SIZE_MULTIPLIER 1
 #endif
 
+#ifndef PLATFORM_N64
+// Multiply the per-frame master-DL and vtx pools by this on the port. They are
+// bump-allocated with no bounds check and sized for the portal-culled visible
+// set, so disabling portal culling (No Room Culling cheat / MPOPTION_NOCULL /
+// /octree bigroom) to render the whole level overruns them and corrupts adjacent
+// memory ("triangles out of order"). The extra headroom keeps normal-sized
+// levels in bounds; extreme levels can still raise -mgfx / -mvtx.
+#define PD_BIG_POOL_SCALE 8
+#endif
+
 u8 *g_GfxBuffers[NUM_GFXTASKS + 1];
 u32 var800aa58c;
 u8 *g_VtxBuffers[NUM_GFXTASKS + 1];
@@ -133,6 +143,7 @@ void gfxReset(void)
 #endif
 	}
 
+#ifdef PLATFORM_N64
 	// %d Players : Allocating %d bytes for master dl's\n
 	g_GfxBuffers[0] = mempAlloc(g_GfxSizesByPlayerCount[PLAYERCOUNT() - 1] * NUM_GFXTASKS, MEMPOOL_STAGE);
 	g_GfxBuffers[1] = g_GfxBuffers[0] + g_GfxSizesByPlayerCount[PLAYERCOUNT() - 1];
@@ -142,6 +153,20 @@ void gfxReset(void)
 	g_VtxBuffers[0] = mempAlloc(g_VtxSizesByPlayerCount[PLAYERCOUNT() - 1] * NUM_GFXTASKS, MEMPOOL_STAGE);
 	g_VtxBuffers[1] = g_VtxBuffers[0] + g_VtxSizesByPlayerCount[PLAYERCOUNT() - 1];
 	g_VtxBuffers[2] = g_VtxBuffers[1] + g_VtxSizesByPlayerCount[PLAYERCOUNT() - 1];
+#else
+	// Port: scale the pools (see PD_BIG_POOL_SCALE) so whole-level rendering with
+	// portal culling off doesn't overrun them. Use locals so the persistent size
+	// arrays aren't mutated (gfxReset runs every stage load).
+	u32 gfxsize = g_GfxSizesByPlayerCount[PLAYERCOUNT() - 1] * PD_BIG_POOL_SCALE;
+	u32 vtxsize = g_VtxSizesByPlayerCount[PLAYERCOUNT() - 1] * PD_BIG_POOL_SCALE;
+	g_GfxBuffers[0] = mempAlloc(gfxsize * NUM_GFXTASKS, MEMPOOL_STAGE);
+	g_GfxBuffers[1] = g_GfxBuffers[0] + gfxsize;
+	g_GfxBuffers[2] = g_GfxBuffers[1] + gfxsize;
+
+	g_VtxBuffers[0] = mempAlloc(vtxsize * NUM_GFXTASKS, MEMPOOL_STAGE);
+	g_VtxBuffers[1] = g_VtxBuffers[0] + vtxsize;
+	g_VtxBuffers[2] = g_VtxBuffers[1] + vtxsize;
+#endif
 
 	g_GfxActiveBufferIndex = 0;
 	g_GfxRequestedDisplayList = false;
@@ -228,4 +253,10 @@ s32 gfxGetFreeGfx(Gfx *gdl)
 u32 gfxGetFreeVtx(void)
 {
 	return g_VtxBuffers[g_GfxActiveBufferIndex + 1] - g_GfxMemPos;
+}
+
+// Total size (bytes) of one vtx-pool buffer. used = this - gfxGetFreeVtx().
+u32 gfxGetVtxPoolSize(void)
+{
+	return g_VtxBuffers[g_GfxActiveBufferIndex + 1] - g_VtxBuffers[g_GfxActiveBufferIndex];
 }

@@ -49,7 +49,44 @@ Other touches in the same file:
 - `bool g_BgNoCull` and `bool g_BgNoDrawSlotLimit` are port-only globals. Both are recomputed each frame inside `bgTickPortals` from **MP option OR cheat-active state** (`cheatIsActive(CHEAT_NOCULL)` ORed with `g_Vars.lvmpoptions & MPOPTION_NOCULL`, same pattern for the draw-limit pair).
 - `bgSetRoomOnscreen` raises its room-index cap from 59 to 254 when `g_BgNoDrawSlotLimit` is set, so the expanded slot table can actually be filled.
 - The local `roomorder[]` / `roomnums[]` arrays inside `bgRenderScene` are widened to `[255]` on port builds to match the bigger slot table.
+- The two `roomnumsbyprop[MAX_ONSCREEN_PROPS]` arrays (`bgRenderScene`, `bgRenderSceneInXray`) are widened along with the on-screen-prop buffer (see below).
 - `#include "game/cheats.h"` is added (port-only) so `bgTickPortals` can call `cheatIsActive`.
+
+## On-screen prop buffer (`prop.c` / `varsreset.c` / `constants.h`)
+
+Disabling portal culling flags **every** prop in the level as on-screen, which overran the
+fixed 200-entry on-screen-prop buffers and crashed in `propsSort` (`0xc0000005` — `count`
+ran past `depths[201]` / `g_Vars.onscreenprops[200]`, corrupting the stack). Fix:
+
+- `MAX_ONSCREEN_PROPS` (`constants.h`): `200` on N64, `1024` on the port.
+- `g_Vars.onscreenprops` allocation (`varsreset.c`), `depths[]` (`propsSort`), and the
+  `roomnumsbyprop[]` arrays (`bg.c`) all sized from it.
+- `propsSort` gains a port-only bound (`if (count >= MAX_ONSCREEN_PROPS - 1) break;`) so it
+  can never overflow regardless of prop count — excess props beyond the cap are simply
+  dropped that frame (list order, not distance). N64 keeps `200` and no bound → byte-identical.
+
+## Whole-level render: pools + draw order (`gfxmemory.c` / `bg.c`)
+
+Rendering *every* room (No Room Culling / `MPOPTION_NOCULL` / `/octree bigroom`) exposes two
+more things the engine normally relies on portal culling for:
+
+- **Pool overflow → corruption.** The per-frame master-DL (`g_GfxBuffers`) and vtx
+  (`g_VtxBuffers`) pools are bump-allocated **with no bounds check** and sized for the
+  portal-culled visible set. A whole-level render overruns them and stomps adjacent memory,
+  which shows up as garbled / out-of-order triangles. `gfxReset` multiplies both pools by
+  `PD_BIG_POOL_SCALE` (8) on the port (via locals, so the persistent size arrays aren't
+  mutated across stage loads). N64 path is the original, byte-identical. Extreme levels can
+  still overflow → raise `-mgfx` / `-mvtx`. (It does **not** add bounds checks, so it's
+  headroom, not a hard guarantee.)
+- **No inter-room draw order.** The No-Cull path in `bgTickPortals` used to mark every room
+  `bgSetRoomOnscreen(room, 0, ...)`, so `bgRenderScene` couldn't sort them and translucent
+  surfaces across rooms drew in arbitrary order. It now distance-buckets each room (Manhattan
+  distance from the camera → `draworder` 0..255) so front-to-back / back-to-front sorting
+  works. Divisor is a heuristic; only relative order matters.
+
+> Still **not** fixed (inherent to disabling portal culling): no occlusion culling, so
+> geometry behind walls renders and z-fights. The octree only culls off-frustum geometry,
+> not occluded-in-frustum. For walled levels prefer `/octree markall` (portals stay on).
 
 ---
 

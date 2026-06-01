@@ -26,3 +26,6 @@ load("scripts/director.lua")
 -- Live octree-culling stats overlay (testing the outdoor-room octree). Shows
 -- top-right only while an octree room is rendering. Comment out to hide.
 load("scripts/octree_overlay.lua")
+
+-- Render-time (/fps) + memory (/mem) overlays, bottom-left. Off until toggled.
+load("scripts/perf_overlay.lua")

@@ -9723,6 +9723,17 @@ bool aiConfigureEnvironment(void)
 			g_Rooms[room_id].flags |= ROOMFLAG_OUTDOORS;
 		}
 		break;
+#ifndef PLATFORM_N64
+	case AIENVCMD_ROOM_SETOCTREE:
+		// Port-only: flag the room for octree frustum-culling. The octree itself
+		// is built lazily on the room's next render (bgCullBeginPass), so it's
+		// fine for this to run at stage setup before the room's geometry loads.
+		g_Rooms[room_id].extra_flags &= ~ROOMFLAG_EX_OCTREE;
+		if (value) {
+			g_Rooms[room_id].extra_flags |= ROOMFLAG_EX_OCTREE;
+		}
+		break;
+#endif
 	case AIENVCMD_07:
 		g_Rooms[room_id].unk4e_04 = value;
 		break;

@@ -63,9 +63,11 @@ octree culling must not touch gameplay/lighting state.
 #endif
 ```
 
-Currently the flag is set by a **temporary manual test hook** in `bgLoadRoom`
-that marks Pelagic II's ("dam") outdoor rooms. See "Wiring to setup data" below
-to replace it.
+No room sets the flag by default (there is no setup-data wiring yet), so the octree
+is activated at runtime via `/octree mark` / `markall` / `bigroom` (below).
+`bgLoadRoom` still rebuilds the octree for any room that already carries the flag
+(e.g. one re-flagged on reload after `/octree mark`, or set per-level by
+`aiSetRoomOctree` — see "Per-level flagging" below).
 
 ---
 
@@ -149,7 +151,9 @@ net session). Drives the port-only globals in `bg.c`:
 | `/octree stats` | print last-frame `g_BgOctreeStats`: octree passes, nodes tested/culled, batches drawn/culled |
 | `/octree mark` | flag the room the player is standing in + build its octree now (`bgOctreeMarkCurrentRoom`). Targeted test without reaching the permanently-flagged rooms. |
 | `/octree markall` | toggle `g_BgOctreeMarkAll` — treat **every** loaded room as octree-enabled, building each octree lazily on first render (`bgCullBeginPass`). Lets you test culling in *any* level and walk around (newly-streamed rooms are picked up automatically), e.g. `markall` then `forcecull` blanks the whole world as you move. |
-| `/octree unmark` | clear all runtime marks: `g_BgOctreeMarkAll`, every room's `ROOMFLAG_EX_OCTREE`, and all built octrees (`bgOctreeUnmarkAll`) — back to the unculled path. Permanently-flagged rooms re-acquire the flag on their next load. |
+| `/octree bigroom` | toggle `g_BgOctreeBigRoom` — treat the **whole level as one open space**: disables portal room-culling (ORs into `g_BgNoCull` + `g_BgNoDrawSlotLimit` in `bgTickPortals`, so every room renders) *and* octree-culls every room, making the octree the sole visibility mechanism. Best on open levels — there's no occlusion culling, so an indoor level renders everything in the frustum (heavy). Disabling portal culling flags every prop on-screen, so the on-screen-prop buffer was raised to `MAX_ONSCREEN_PROPS` + bounded in `propsSort` to stop an overflow crash — see `PORT_NO_CULLING.md`. |
+| `/octree portal` | toggle `g_BgOctreePortalCull` (**default on**). When on, octree nodes are frustum-tested against each room's **portal-clipped draw-slot box** (`bgGetRoomDrawSlot(roomnum)->box` — the screen rectangle the room is actually visible through, already used to scissor it) instead of the full viewport. So a room glimpsed through a doorway only submits the batches visible *through that doorway*, not the whole frustum. Bigroom rooms are unaffected (portals off → their draw-slot box is the whole screen). |
+| `/octree unmark` | clear all runtime marks: `g_BgOctreeMarkAll`, `g_BgOctreeBigRoom`, every room's `ROOMFLAG_EX_OCTREE`, and all built octrees (`bgOctreeUnmarkAll`) — back to the unculled path. |
 
 The `mark`/`markall`/`unmark` commands and the lazy build in `bgCullBeginPass`
 are test conveniences, but the lazy-build-on-first-render is also the mechanism
@@ -207,17 +211,27 @@ A compile-time `PD_OCTREE_DEBUG` (default `0`) in `bg.c` logs per-room build sta
 
 ---
 
-## Wiring to setup data (follow-up — currently a manual test hook)
+## Per-level flagging: `aiSetRoomOctree` (setup data)
 
-The MVP flags rooms via a temporary block in `bgLoadRoom`
-(`g_Vars.stagenum == STAGE_PELAGIC` + a hardcoded outdoor-room list). To make it
-data-driven, set `ROOMFLAG_EX_OCTREE` wherever `AIENVCMD_ROOM_SETOUTDOORS` sets
-`ROOMFLAG_OUTDOORS` (`chraicommands.c`). Note the ordering: the octree builds at
-room **load**, but `configure_environment` (which runs SETOUTDOORS) executes at
-stage init — so rooms loaded before setup runs won't have an octree yet. Build
-lazily on first render of a flagged-but-unbuilt room (or rebuild on flag change)
-when wiring this up. Keep the flag distinct from `ROOMFLAG_OUTDOORS` so lighting
-behaviour stays independent.
+A level flags its own octree rooms declaratively with the action-block command
+**`aiSetRoomOctree(roomnum)`** in its setup file / ailist:
+
+```c
+aiSetRoomOctree(0x0060),
+```
+
+It's sugar (`commands.h`) over `configure_environment(room, AIENVCMD_ROOM_SETOCTREE, TRUE)`
+— AI command `0x01d6` with the new subcommand byte `AIENVCMD_ROOM_SETOCTREE` (`0x10`,
+appended after `STOPUFOHUM 0x0f`). Handled port-only in `aiConfigureEnvironment`
+(`chraicommands.c`), it just sets `ROOMFLAG_EX_OCTREE` on the room. The octree is
+**built lazily** on the room's next render (`bgCullBeginPass`), so the "setup runs at
+stage init, octree builds at room load" ordering resolves itself — no rebuild hook
+needed, and it's fine for the command to run before the room's geometry streams in.
+
+A *dedicated* subcommand (rather than piggybacking on `AIENVCMD_ROOM_SETOUTDOORS`) keeps
+it explicit — not every outdoor room wants an octree, and some indoor open rooms might.
+N64 is byte-identical: the `0x10` value and the switch case are unused/absent there.
+Runtime `/octree mark` / `markall` / `bigroom` remain for ad-hoc testing.
 
 ---
 

@@ -16,5 +16,6 @@ void *gfxAllocate(u32 size);
 void gfxSwapBuffers(void);
 s32 gfxGetFreeGfx(Gfx *gdl);
 u32 gfxGetFreeVtx(void);
+u32 gfxGetVtxPoolSize(void);
 
 #endif

@@ -204,6 +204,8 @@ struct bgoctree {
 bool g_BgOctreeEnabled = true;       // master toggle (/octree on|off)
 bool g_BgOctreeForceCullAll = false; // debug: cull everything (/octree forcecull)
 bool g_BgOctreeMarkAll = false;      // debug: treat every loaded room as octree-enabled (/octree markall)
+bool g_BgOctreeBigRoom = false;      // /octree bigroom: portal culling off + octree-cull every room (whole level as one space)
+bool g_BgOctreePortalCull = true;    // /octree portal: cull octree nodes against each room's portal-clipped draw-slot box (vs the full viewport)
 struct bgoctreestats g_BgOctreeStats;
 
 // Set by bgCullBeginPass for the duration of one room's render pass; read by the
@@ -971,7 +973,7 @@ Gfx *bgRenderSceneInXray(Gfx *gdl)
 	RoomNum *room;
 	s16 i;
 	s32 j;
-	RoomNum roomnumsbyprop[200];
+	RoomNum roomnumsbyprop[MAX_ONSCREEN_PROPS];
 	struct prop *prop;
 	struct prop **ptr;
 	s32 k;
@@ -1067,7 +1069,7 @@ Gfx *bgRenderScene(Gfx *gdl)
 	s32 firstroomnum = -1;
 	s32 i;
 	s32 roomnum;
-	RoomNum roomnumsbyprop[200];
+	RoomNum roomnumsbyprop[MAX_ONSCREEN_PROPS];
 	struct prop **ptr;
 	struct drawslot *thing;
 	RoomNum *roomnumptr;
@@ -3148,22 +3150,9 @@ void bgLoadRoom(s32 roomnum)
 		bgFindRoomVtxBatches(roomnum);
 
 #ifndef PLATFORM_N64
-		// TEMPORARY manual test: flag Pelagic II ("dam") outdoor rooms for
-		// octree culling until the flag is wired to setup data. Then build the
-		// octree for any octree-flagged room from the vtx batches just created.
-		if (g_Vars.stagenum == STAGE_PELAGIC) {
-			static const u8 damoutdoor[] = {
-				0x60, 0x61, 0x64, 0x67, 0x68, 0x69, 0x6a, 0x6b,
-				0x6d, 0x6e, 0x6f, 0x70, 0x71, 0x72,
-			};
-			s32 k;
-			for (k = 0; k < (s32)(sizeof(damoutdoor) / sizeof(damoutdoor[0])); k++) {
-				if (damoutdoor[k] == roomnum) {
-					g_Rooms[roomnum].extra_flags |= ROOMFLAG_EX_OCTREE;
-					break;
-				}
-			}
-		}
+		// Build the octree now for any room already flagged ROOMFLAG_EX_OCTREE
+		// (e.g. re-flagged on reload after /octree mark). /octree markall and
+		// /octree bigroom build lazily in bgCullBeginPass instead.
 		if (g_Rooms[roomnum].extra_flags & ROOMFLAG_EX_OCTREE) {
 			bgBuildRoomOctree(roomnum);
 		}
@@ -3709,6 +3698,7 @@ void bgOctreeUnmarkAll(void)
 	s32 i;
 
 	g_BgOctreeMarkAll = false;
+	g_BgOctreeBigRoom = false;
 
 	for (i = 1; i < g_Vars.roomcount; i++) {
 		g_Rooms[i].extra_flags &= ~ROOMFLAG_EX_OCTREE;
@@ -3798,7 +3788,16 @@ static void bgOctreeMarkVisible(s32 roomnum, u8 *visible)
 		return; // everything culled
 	}
 
-	bgOctreeMarkNode(tree, 0, visible, &g_BgSpecialDrawSlot->box);
+	// Cull against the room's portal-clipped screen box (the rectangle this room
+	// is actually visible through, already used to scissor it) so a room glimpsed
+	// through a doorway only submits what shows through it. Falls back to the full
+	// viewport when disabled; bigroom rooms get the full viewport anyway (portal
+	// culling is off, so their draw-slot box is the whole screen).
+	if (g_BgOctreePortalCull) {
+		bgOctreeMarkNode(tree, 0, visible, &bgGetRoomDrawSlot(roomnum)->box);
+	} else {
+		bgOctreeMarkNode(tree, 0, visible, &g_BgSpecialDrawSlot->box);
+	}
 }
 
 /**
@@ -3817,7 +3816,7 @@ static void bgCullBeginPass(s32 roomnum)
 	g_BgCullRoom = -1;
 
 	if (!g_BgOctreeEnabled) return;
-	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll) return;
+	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll && !g_BgOctreeBigRoom) return;
 	if (n <= 0) return;
 	if (room->octree == NULL) {
 		// Lazy build for /octree markall (and any room flagged after load). A
@@ -6634,9 +6633,9 @@ void bgTickPortals(void)
 		g_BgSpecialDrawSlot->box.ymax = box.ymax;
 #ifndef PLATFORM_N64
 		g_BgNoCull = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOCULL))
-		          || cheatIsActive(CHEAT_NOCULL);
+		          || cheatIsActive(CHEAT_NOCULL) || g_BgOctreeBigRoom;
 		g_BgNoDrawSlotLimit = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOOMLIMIT))
-		                   || cheatIsActive(CHEAT_NODRAWLIMIT);
+		                   || cheatIsActive(CHEAT_NODRAWLIMIT) || g_BgOctreeBigRoom;
 		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
 
 		// /wireframe vomit|trip: while wireframe is on, scroll the sky colour
@@ -6681,7 +6680,21 @@ void bgTickPortals(void)
 #ifndef PLATFORM_N64
 			if (g_BgNoCull) {
 				for (room = 1; room < g_Vars.roomcount; room++) {
-					bgSetRoomOnscreen(room, 0, &box);
+					// No portal traversal to assign draw order here, so distance-
+					// bucket each room (0..255) from the camera. Otherwise every
+					// room shares draworder 0 and bgRenderScene can't sort them
+					// front-to-back / back-to-front, so translucent surfaces across
+					// rooms render out of order. Manhattan distance (sqrt-free);
+					// only relative order matters, the divisor is a heuristic.
+					f32 dx = g_Rooms[room].centre.x - player->cam_pos.x;
+					f32 dy = g_Rooms[room].centre.y - player->cam_pos.y;
+					f32 dz = g_Rooms[room].centre.z - player->cam_pos.z;
+					f32 dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy) + (dz < 0 ? -dz : dz);
+					s32 order = (s32)(dist * (1.0f / 256.0f));
+					if (order > 255) {
+						order = 255;
+					}
+					bgSetRoomOnscreen(room, order, &box);
 				}
 			} else
 #endif

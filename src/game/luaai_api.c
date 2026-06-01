@@ -583,6 +583,36 @@ static int l_pd_octree_stats(lua_State *L)
 }
 #endif
 
+#ifndef PLATFORM_N64
+s32 g_LuaShowFps = 0; /* toggled by /fps; read by scripts/perf_overlay.lua via pd.perf() */
+s32 g_LuaShowMem = 0; /* toggled by /mem */
+
+/* pd.perf() -> table { fps, frame_ms, vtx_used, vtx_total, show_fps, show_mem }.
+ * Render rate (video.c's 1s-averaged FPS) + the per-frame vtx scratch pool that
+ * the No Room Culling / /octree bigroom whole-level render stresses (process RSS
+ * isn't useful here: the pools are pre-allocated, so RSS doesn't move with load).
+ * show_fps / show_mem are the /fps and /mem toggle states. */
+static int l_pd_perf(lua_State *L)
+{
+	extern f32 videoGetAverageFPS(void);
+	extern u32 gfxGetFreeVtx(void);
+	extern u32 gfxGetVtxPoolSize(void);
+	f32 fps = videoGetAverageFPS();
+	u32 total = gfxGetVtxPoolSize();
+	u32 freev = gfxGetFreeVtx();
+	u32 used = (freev <= total) ? (total - freev) : total;
+
+	lua_createtable(L, 0, 6);
+	lua_pushnumber(L, (lua_Number)fps);                              lua_setfield(L, -2, "fps");
+	lua_pushnumber(L, fps > 0.0f ? 1000.0 / (lua_Number)fps : 0.0);  lua_setfield(L, -2, "frame_ms");
+	lua_pushinteger(L, (lua_Integer)used);                          lua_setfield(L, -2, "vtx_used");
+	lua_pushinteger(L, (lua_Integer)total);                         lua_setfield(L, -2, "vtx_total");
+	lua_pushboolean(L, g_LuaShowFps);                               lua_setfield(L, -2, "show_fps");
+	lua_pushboolean(L, g_LuaShowMem);                               lua_setfield(L, -2, "show_mem");
+	return 1;
+}
+#endif
+
 void luaApiRegister(lua_State *L)
 {
 	/* create the events registry table (replaces any previous one) */
@@ -596,6 +626,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_each_chr);    lua_setfield(L, -2, "each_chr");
 #ifndef PLATFORM_N64
 	lua_pushcfunction(L, l_pd_octree_stats);lua_setfield(L, -2, "octree_stats");
+	lua_pushcfunction(L, l_pd_perf);        lua_setfield(L, -2, "perf");
 #endif
 	/* world / entity queries */
 	lua_pushcfunction(L, l_pd_chr_info);    lua_setfield(L, -2, "chr_info");

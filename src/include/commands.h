@@ -4268,6 +4268,15 @@
 	value,
 
 /**
+ * Port-only: flag a room for octree frustum-culling (ROOMFLAG_EX_OCTREE) straight
+ * from a setup/ailist -- the declarative, per-level equivalent of /octree mark.
+ * The octree is built lazily on the room's next render. Sugar over
+ * configure_environment + AIENVCMD_ROOM_SETOCTREE; like SETOUTDOORS, no-op on N64.
+ *   aiSetRoomOctree(0x0060),
+ */
+#define aiSetRoomOctree(room) configure_environment(room, AIENVCMD_ROOM_SETOCTREE, TRUE)
+
+/**
  * Redundant command. See if_distance_to_target_lt.
  */
 #define if_distance_to_target2_lt(distance, label) \

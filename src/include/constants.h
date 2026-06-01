@@ -31,6 +31,15 @@
 #define MAX_PLAYERS            8
 #define MAX_PROPSPERROOMCHUNK  7
 #define MAX_ROOMPROPLISTCHUNKS 256
+// Capacity of g_Vars.onscreenprops (and the parallel depths[] / roomnumsbyprop[]
+// buffers). 200 on N64; raised on the port so disabling portal culling (No Room
+// Culling cheat / MPOPTION_NOCULL / /octree bigroom) can flag many more props
+// on-screen without overflowing those buffers in propsSort.
+#ifdef PLATFORM_N64
+#define MAX_ONSCREEN_PROPS 200
+#else
+#define MAX_ONSCREEN_PROPS 1024
+#endif
 #define MAX_SQUADRONS          16
 #define MAX_TEAMS              8
 #define MAX_PLAYERNAME         15
@@ -252,6 +261,7 @@
 #define AIENVCMD_STOPNOSEDIVE         0x0d
 #define AIENVCMD_PLAYUFOHUM           0x0e
 #define AIENVCMD_STOPUFOHUM           0x0f
+#define AIENVCMD_ROOM_SETOCTREE       0x10 // port-only: flag room for octree frustum-culling (ROOMFLAG_EX_OCTREE); append-only, no N64 setup uses 0x10
 
 #define AIMCONTROL_HOLD   0
 #define AIMCONTROL_TOGGLE 1

@@ -3697,6 +3697,17 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "STATUS: playlist=%s (%d entries, vote=%ds/%dcand)",
 				g_NetPlaylistPath, (s32)g_NetPlaylist.count,
 				(s32)g_NetPlaylist.vote_seconds, (s32)g_NetPlaylist.vote_candidates);
+	} else if (strcmp(cmd, "fps") == 0) {
+		// Toggle the render-time Lua overlay (scripts/perf_overlay.lua reads
+		// g_LuaShowFps via pd.perf()).
+		extern s32 g_LuaShowFps;
+		g_LuaShowFps = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_LuaShowFps;
+		sysLogPrintf(LOG_CHAT, "OVERLAY: render-time %s", g_LuaShowFps ? "ON" : "OFF");
+	} else if (strcmp(cmd, "mem") == 0) {
+		// Toggle the memory Lua overlay (per-frame vtx pool usage).
+		extern s32 g_LuaShowMem;
+		g_LuaShowMem = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_LuaShowMem;
+		sysLogPrintf(LOG_CHAT, "OVERLAY: memory (vtx pool) %s", g_LuaShowMem ? "ON" : "OFF");
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.
@@ -3863,6 +3874,24 @@ s32 netConsoleCommand(const char *line)
 			g_BgOctreeMarkAll = !g_BgOctreeMarkAll;
 			sysLogPrintf(LOG_CHAT, "OCTREE: mark-all %s (every loaded room octree-culled, lazy-built)",
 					g_BgOctreeMarkAll ? "ON" : "OFF");
+		} else if (strcmp(arg, "bigroom") == 0) {
+			// Treat the whole level as one open space: disable portal room-culling
+			// (+ raise the draw-slot cap) and octree-cull every room. Best on open
+			// levels -- there's no occlusion culling, so indoor levels render a lot.
+			g_BgOctreeBigRoom = !g_BgOctreeBigRoom;
+			if (g_BgOctreeBigRoom) {
+				g_BgOctreeEnabled = true; // make sure the octree is actually doing the culling
+			}
+			sysLogPrintf(LOG_CHAT, "OCTREE: big-room %s (portal culling off, whole level octree-culled)",
+					g_BgOctreeBigRoom ? "ON" : "OFF");
+		} else if (strcmp(arg, "portal") == 0 || strcmp(arg, "portalcull") == 0) {
+			// Cull octree geometry to each room's portal-clipped screen box rather
+			// than the full viewport, so a room seen through a doorway only submits
+			// what's visible through it.
+			g_BgOctreePortalCull = !g_BgOctreePortalCull;
+			sysLogPrintf(LOG_CHAT, "OCTREE: portal-box culling %s (%s)",
+					g_BgOctreePortalCull ? "ON" : "OFF",
+					g_BgOctreePortalCull ? "to each room's doorway footprint" : "to full viewport");
 		} else if (strcmp(arg, "unmark") == 0) {
 			bgOctreeUnmarkAll();
 			sysLogPrintf(LOG_CHAT, "OCTREE: cleared all runtime marks (octree culling off everywhere)");
@@ -3891,6 +3920,10 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /wireframe save|load             persist sky/wire colour + thickness to pd.ini");
 		sysLogPrintf(LOG_CHAT, "  /octree [on|off|forcecull|stats] outdoor-room octree culling");
 		sysLogPrintf(LOG_CHAT, "  /octree mark|markall|unmark      flag current room / every room (test anywhere)");
+		sysLogPrintf(LOG_CHAT, "  /octree bigroom                  portal culling off + octree-cull whole level");
+		sysLogPrintf(LOG_CHAT, "  /octree portal                   cull to room's doorway footprint vs viewport (default on)");
+		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
+		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
 		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");

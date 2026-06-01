@@ -70,11 +70,20 @@ void propsSort(void)
 	f32 depth;
 	s32 i;
 	s32 j;
-	f32 depths[201];
+	f32 depths[MAX_ONSCREEN_PROPS + 1];
 
 	// Populate onscreenprops with the list of props
 	while (prop != g_Vars.pausedprops) {
 		if ((prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) == (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) {
+#ifndef PLATFORM_N64
+			// With portal culling disabled (No Room Culling / MPOPTION_NOCULL /
+			// /octree bigroom) far more props can be flagged on-screen than the
+			// buffers hold. Stop one short of the cap so the NULL terminator
+			// written below (onscreenprops[count]) stays in bounds.
+			if (count >= MAX_ONSCREEN_PROPS - 1) {
+				break;
+			}
+#endif
 			depths[count] = prop->z;
 			g_Vars.onscreenprops[count] = prop;
 			count++;

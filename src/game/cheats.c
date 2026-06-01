@@ -111,6 +111,7 @@ struct cheat g_Cheats[] = {
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Room Culling (CHEAT_NOCULL)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Draw Slot Limit (CHEAT_NODRAWLIMIT)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // GoldenEye Style (CHEAT_GOLDENEYE)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Wireframe (CHEAT_WIREFRAME)
 #endif
 };
 
@@ -121,6 +122,7 @@ static const char *const s_cheat_literal_names[] = {
 	[CHEAT_NOCULL]      = "No Room Culling",
 	[CHEAT_NODRAWLIMIT] = "No Draw Slot Limit",
 	[CHEAT_GOLDENEYE]   = "GoldenEye Style",
+	[CHEAT_WIREFRAME]   = "Wireframe",
 };
 
 /**
@@ -1218,6 +1220,17 @@ struct menuitem g_CheatsGameplayMenuItems[] = {
 		// option behaviour outside of multiplayer.
 		MENUITEMTYPE_CHECKBOX,
 		CHEAT_GOLDENEYE,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		// Wireframe: draws depth-tested 3D geometry (world, props, characters,
+		// first-person weapon) as polygon outlines via the fast3d GL backend.
+		// HUD/menus/2D stay solid. Local visual cheat only; no wire/save impact.
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_WIREFRAME,
 		0,
 		(uintptr_t)&cheatGetNameIfUnlocked,
 		0,

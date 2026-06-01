@@ -479,6 +479,7 @@
 #define CHEAT_NOCULL                 43
 #define CHEAT_NODRAWLIMIT            44
 #define CHEAT_GOLDENEYE              45
+#define CHEAT_WIREFRAME              46
 
 #define CHEATFLAG_TIMED           0
 #define CHEATFLAG_ALWAYSON        1

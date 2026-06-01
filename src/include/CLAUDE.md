@@ -16,7 +16,7 @@ Shared types, constants, BSS layout, and global data declarations for the origin
 
 These are new — not original N64 constants. Do not remove or renumber them:
 
-- `CHEAT_NOCULL 43`, `CHEAT_NODRAWLIMIT 44`, `CHEAT_GOLDENEYE 45` — appended after all original cheat indices
+- `CHEAT_NOCULL 43`, `CHEAT_NODRAWLIMIT 44`, `CHEAT_GOLDENEYE 45`, `CHEAT_WIREFRAME 46` — appended after all original cheat indices
 - `CHEATFLAG_ALWAYSUNLOCKED 16` — new flag bit, absent from the original
 - `MPOPTION_NOCULL 0x10000000`, `MPOPTION_NOOMLIMIT 0x20000000`, `MPOPTION_HOSTSPECTATOR 0x40000000`, `MPOPTION_GOLDENEYE 0x80000000` — new MP option bits in the upper word (the byte is now fully allocated)
 

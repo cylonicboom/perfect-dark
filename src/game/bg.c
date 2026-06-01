@@ -149,6 +149,14 @@ s32 g_BgNumAttemptedDrawSlots = 0;
 // need extra parameters.
 bool g_BgNoCull = false;
 bool g_BgNoDrawSlotLimit = false;
+// Defined in the fast3d renderer (port/fast3d/gfx_pc.cpp) as a C++ `bool`
+// (1 byte). Set each frame in bgTickPortals from CHEAT_WIREFRAME so the GL
+// backend draws depth-tested 3D geometry as polygon outlines (HUD/2D stays
+// solid). NOTE: game code has `#define bool s32` (types.h), so we must NOT
+// declare this as `bool` — that would be a 4-byte view of a 1-byte symbol.
+// Declared as a 1-byte type and assigned a normalized 0/1 (cheatIsActive
+// returns the raw bitmask, e.g. 0x4000, whose low byte is 0).
+extern unsigned char gfx_wireframe_mode;
 #endif
 s32 g_BgMostAttemptedDrawSlots = 0;
 s32 g_BgNumRoomLoadCandidates = 0;
@@ -5904,6 +5912,7 @@ void bgTickPortals(void)
 		          || cheatIsActive(CHEAT_NOCULL);
 		g_BgNoDrawSlotLimit = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOOMLIMIT))
 		                   || cheatIsActive(CHEAT_NODRAWLIMIT);
+		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
 #endif
 
 		bgCmdExecute(g_BgCommands);

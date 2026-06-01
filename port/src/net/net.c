@@ -3193,6 +3193,29 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 	netAdminReply(cl, "admin: unknown command `%s` (try: help)", cmd);
 }
 
+// Parse a 6-digit hex colour "RRGGBB" (optional leading '#') into out[3].
+// Returns true only on an exact 6-hex-digit string.
+static bool netParseHexColour(const char *s, u8 out[3])
+{
+	if (s[0] == '#') {
+		s++;
+	}
+	for (s32 i = 0; i < 6; i++) {
+		const char c = s[i];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+			return false;
+		}
+	}
+	if (s[6] != '\0') {
+		return false;
+	}
+	const u32 rgb = (u32)strtoul(s, NULL, 16);
+	out[0] = (rgb >> 16) & 0xff;
+	out[1] = (rgb >> 8) & 0xff;
+	out[2] = rgb & 0xff;
+	return true;
+}
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -3620,27 +3643,100 @@ s32 netConsoleCommand(const char *line)
 				g_NetPlaylistPath, (s32)g_NetPlaylist.count,
 				(s32)g_NetPlaylist.vote_seconds, (s32)g_NetPlaylist.vote_candidates);
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
-		// /wireframe [on|off]  toggle the Wireframe cheat (CHEAT_WIREFRAME) live,
-		// no stage reload required. Flips the cheat's active + enabled bits;
-		// bgTickPortals pushes the state into the renderer each in-game frame.
-		// No arg toggles. Works outside a net session.
+		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
+		//                            live, no stage reload.
+		// /wireframe bg RRGGBB       sky backdrop colour (default black)
+		// /wireframe wire RRGGBB|off flat wire colour, or off = natural/textured
+		// /wireframe thick N         wire thickness in pixels (1..16)
+		// Bare RRGGBB is also accepted as a bg shortcut. Setting bg/wire/thick
+		// turns wireframe on. Works outside a net session.
 		extern u32 g_CheatsActiveBank1;
 		extern u32 g_CheatsEnabledBank1;
+		extern u8 g_WireframeBgColour[3];
+		extern int gfx_wireframe_wire_color_enabled;
+		extern f32 gfx_wireframe_wire_color[3];
+		extern f32 gfx_wireframe_line_width;
 		const u32 bit = 1u << (CHEAT_WIREFRAME - 32);
-		bool on;
-		if (!*arg) {
-			on = !(g_CheatsActiveBank1 & bit);
-		} else {
-			on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
+
+		// Split arg into <sub> (first token) and <val> (the remainder).
+		char sub[16];
+		const char *val = arg;
+		s32 si = 0;
+		while (*val == ' ') {
+			val++;
 		}
-		if (on) {
+		while (val[si] && val[si] != ' ' && si < (s32)sizeof(sub) - 1) {
+			sub[si] = val[si];
+			si++;
+		}
+		sub[si] = '\0';
+		val += si;
+		while (*val == ' ') {
+			val++;
+		}
+
+		u8 rgb[3];
+
+		if (strcmp(sub, "bg") == 0) {
+			if (netParseHexColour(val, rgb)) {
+				g_WireframeBgColour[0] = rgb[0];
+				g_WireframeBgColour[1] = rgb[1];
+				g_WireframeBgColour[2] = rgb[2];
+				g_CheatsActiveBank1 |= bit;
+				g_CheatsEnabledBank1 |= bit;
+				sysLogPrintf(LOG_CHAT, "wireframe bg=%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
+			} else {
+				sysLogPrintf(LOG_CHAT, "usage: /wireframe bg RRGGBB");
+			}
+		} else if (strcmp(sub, "wire") == 0) {
+			if (strcmp(val, "off") == 0 || strcmp(val, "natural") == 0) {
+				gfx_wireframe_wire_color_enabled = 0;
+				sysLogPrintf(LOG_CHAT, "wireframe wire=natural");
+			} else if (netParseHexColour(val, rgb)) {
+				gfx_wireframe_wire_color[0] = rgb[0] / 255.0f;
+				gfx_wireframe_wire_color[1] = rgb[1] / 255.0f;
+				gfx_wireframe_wire_color[2] = rgb[2] / 255.0f;
+				gfx_wireframe_wire_color_enabled = 1;
+				g_CheatsActiveBank1 |= bit;
+				g_CheatsEnabledBank1 |= bit;
+				sysLogPrintf(LOG_CHAT, "wireframe wire=%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
+			} else {
+				sysLogPrintf(LOG_CHAT, "usage: /wireframe wire RRGGBB|off");
+			}
+		} else if (strcmp(sub, "thick") == 0) {
+			if (*val) {
+				const f32 w = (f32)atof(val);
+				gfx_wireframe_line_width = (w < 1.0f) ? 1.0f : (w > 16.0f ? 16.0f : w);
+				g_CheatsActiveBank1 |= bit;
+				g_CheatsEnabledBank1 |= bit;
+				sysLogPrintf(LOG_CHAT, "wireframe thick=%.1f", gfx_wireframe_line_width);
+			} else {
+				sysLogPrintf(LOG_CHAT, "wireframe thick=%.1f (usage: /wireframe thick N)", gfx_wireframe_line_width);
+			}
+		} else if (netParseHexColour(sub, rgb)) {
+			// Bare RRGGBB shortcut == /wireframe bg RRGGBB.
+			g_WireframeBgColour[0] = rgb[0];
+			g_WireframeBgColour[1] = rgb[1];
+			g_WireframeBgColour[2] = rgb[2];
 			g_CheatsActiveBank1 |= bit;
 			g_CheatsEnabledBank1 |= bit;
+			sysLogPrintf(LOG_CHAT, "wireframe bg=%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
 		} else {
-			g_CheatsActiveBank1 &= ~bit;
-			g_CheatsEnabledBank1 &= ~bit;
+			bool on;
+			if (!sub[0]) {
+				on = !(g_CheatsActiveBank1 & bit);
+			} else {
+				on = !(strcmp(sub, "0") == 0 || strcmp(sub, "off") == 0);
+			}
+			if (on) {
+				g_CheatsActiveBank1 |= bit;
+				g_CheatsEnabledBank1 |= bit;
+			} else {
+				g_CheatsActiveBank1 &= ~bit;
+				g_CheatsEnabledBank1 &= ~bit;
+			}
+			sysLogPrintf(LOG_CHAT, "wireframe %s", on ? "ON" : "OFF");
 		}
-		sysLogPrintf(LOG_CHAT, "wireframe %s", on ? "ON" : "OFF");
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -3649,7 +3745,9 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
 		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
 		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
-		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]  toggle wireframe render (CHEAT_WIREFRAME)");
+		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]              toggle wireframe (CHEAT_WIREFRAME)");
+		sysLogPrintf(LOG_CHAT, "  /wireframe bg|wire RRGGBB        sky / wire colour (wire off = natural)");
+		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
 		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");

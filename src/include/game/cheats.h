@@ -35,6 +35,11 @@ MenuItemHandlerResult cheatMenuHandleTurnOffAllCheats(s32 operation, struct menu
 // active match, or the gameplay cheat `CHEAT_GOLDENEYE` is enabled. The
 // cheat path works in any mode (single-player, training, etc.).
 bool goldeneyeStyleActive(void);
+
+// Wireframe cheat (CHEAT_WIREFRAME) backdrop colour, RGB. Set via the
+// `/wireframe RRGGBB` console command; defaults to black. Read by sky.c to
+// recolour the sky / clouds / water backdrop while the cheat is active.
+extern u8 g_WireframeBgColour[3];
 #endif
 
 #endif

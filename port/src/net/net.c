@@ -3619,6 +3619,28 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "STATUS: playlist=%s (%d entries, vote=%ds/%dcand)",
 				g_NetPlaylistPath, (s32)g_NetPlaylist.count,
 				(s32)g_NetPlaylist.vote_seconds, (s32)g_NetPlaylist.vote_candidates);
+	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
+		// /wireframe [on|off]  toggle the Wireframe cheat (CHEAT_WIREFRAME) live,
+		// no stage reload required. Flips the cheat's active + enabled bits;
+		// bgTickPortals pushes the state into the renderer each in-game frame.
+		// No arg toggles. Works outside a net session.
+		extern u32 g_CheatsActiveBank1;
+		extern u32 g_CheatsEnabledBank1;
+		const u32 bit = 1u << (CHEAT_WIREFRAME - 32);
+		bool on;
+		if (!*arg) {
+			on = !(g_CheatsActiveBank1 & bit);
+		} else {
+			on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
+		}
+		if (on) {
+			g_CheatsActiveBank1 |= bit;
+			g_CheatsEnabledBank1 |= bit;
+		} else {
+			g_CheatsActiveBank1 &= ~bit;
+			g_CheatsEnabledBank1 &= ~bit;
+		}
+		sysLogPrintf(LOG_CHAT, "wireframe %s", on ? "ON" : "OFF");
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -3627,6 +3649,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
 		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
 		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
+		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]  toggle wireframe render (CHEAT_WIREFRAME)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");
 		sysLogPrintf(LOG_CHAT, "  /interp <n>      entity interpolation ticks (default 3)");
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");

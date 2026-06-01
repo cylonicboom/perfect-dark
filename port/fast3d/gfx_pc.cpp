@@ -216,6 +216,7 @@ struct XYWidthHeight gfx_current_native_viewport;
 float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
+bool gfx_wireframe_mode = false;
 
 static bool game_renders_to_framebuffer;
 static int game_framebuffer;

@@ -65,6 +65,12 @@ static GLenum gl_mirror_clamp = GL_MIRROR_CLAMP_TO_EDGE;
 static bool gl_es = false;
 static bool gl_core_profile = false;
 
+// Tracks whether the most recently set depth mode has depth testing enabled.
+// Used to restrict wireframe (CHEAT_WIREFRAME) to 3D geometry: depth-tested
+// draws (world, props, viewmodel) become outlines while 2D HUD/menus (no
+// depth test) stay solid.
+static bool s_wireframe_depth_test = false;
+
 static int gfx_opengl_get_max_texture_size() {
     GLint max_texture_size;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
@@ -741,6 +747,7 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
 }
 
 static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
+    s_wireframe_depth_test = depth_test;
     if (depth_test) {
         glEnable(GL_DEPTH_TEST);
         glDepthMask(depth_update ? GL_TRUE : GL_FALSE);
@@ -813,7 +820,19 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     // printf("flushing %d tris\n", buf_vbo_num_tris);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
+
+    // Wireframe cheat: draw depth-tested 3D geometry as polygon outlines. Skipped
+    // for 2D HUD/menus (no depth test) and on GL ES (glPolygonMode is desktop-GL only).
+    const bool wireframe = gfx_wireframe_mode && s_wireframe_depth_test && !gl_es;
+    if (wireframe) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    }
+
     glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+
+    if (wireframe) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    }
 }
 
 typedef void (APIENTRY *DEBUGPROC)(GLenum source,

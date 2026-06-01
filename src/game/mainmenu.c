@@ -56,7 +56,6 @@ extern MenuItemHandlerResult menuhandlerJoinStart(s32 operation, struct menuitem
 extern MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item, union handlerdata *data);
 struct menudialogdef g_LuaDirectorMenuDialog;
-MenuItemHandlerResult menuhandlerLuaDirector(s32 operation, struct menuitem *item, union handlerdata *data);
 #endif
 
 #ifndef PLATFORM_N64 // All Solos in Multi Mod
@@ -2310,7 +2309,14 @@ struct menudialogdef g_SoloMissionBriefingMenuDialog = {
 	g_MissionBriefingMenuItems,
 	NULL,
 	MENUDIALOGFLAG_DISABLEITEMSCROLL,
+#ifndef PLATFORM_N64
+	// Append the Lua Director as the last tab of the solo mission pause chain
+	// (Status -> Inventory -> Options -> Briefing -> Lua Director). This dialog
+	// is only reached via the pause chain, so the Director never leaks elsewhere.
+	&g_LuaDirectorMenuDialog,
+#else
 	NULL,
+#endif
 };
 
 struct menudialogdef g_2PMissionBriefingHMenuDialog = {
@@ -2319,7 +2325,11 @@ struct menudialogdef g_2PMissionBriefingHMenuDialog = {
 	g_MissionBriefingMenuItems,
 	NULL,
 	MENUDIALOGFLAG_DISABLEITEMSCROLL,
+#ifndef PLATFORM_N64
+	&g_LuaDirectorMenuDialog, // Lua Director as the last tab of the 2P pause chain
+#else
 	NULL,
+#endif
 };
 
 struct menudialogdef g_2PMissionBriefingVMenuDialog = {
@@ -2328,7 +2338,11 @@ struct menudialogdef g_2PMissionBriefingVMenuDialog = {
 	g_2PMissionBreifingVMenuItems,
 	NULL,
 	MENUDIALOGFLAG_DISABLEITEMSCROLL,
+#ifndef PLATFORM_N64
+	&g_LuaDirectorMenuDialog, // Lua Director as the last tab of the 2P pause chain
+#else
 	NULL,
+#endif
 };
 
 char *func0f105664(struct menuitem *item)
@@ -4676,16 +4690,6 @@ struct menuitem g_2PMissionPauseVMenuItems[] = {
 		0,
 		(void *)&g_2PMissionAbortVMenuDialog,
 	},
-#ifndef PLATFORM_N64
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Lua Director",
-		0,
-		menuhandlerLuaDirector, // hidden unless a script registered entries
-	},
-#endif
 	{ MENUITEMTYPE_END },
 };
 
@@ -4706,16 +4710,6 @@ struct menuitem g_MissionPauseMenuItems[] = {
 		0,
 		(void *)&g_MissionAbortMenuDialog,
 	},
-#ifndef PLATFORM_N64
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Lua Director",
-		0,
-		menuhandlerLuaDirector, // hidden unless a script registered entries
-	},
-#endif
 	{ MENUITEMTYPE_END },
 };
 
@@ -5077,9 +5071,12 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 
 #ifndef PLATFORM_N64
 // ------------------------------------------------------------------------- //
-// Lua Director pause-menu submenu. Entries are registered from Lua via
-// pd.menu_add(label, fn); this dialog renders whatever the script registered and
-// dispatches selection back to the Lua function by index.
+// Lua Director menu. Entries are registered from Lua via pd.menu_add(label, fn);
+// this dialog renders whatever the script registered and dispatches selection
+// back to the Lua function by index. It is attached as the last swipe-tab
+// sibling of each in-game pause chain (solo + 2P in this file; Combat Sim in
+// mplayer/ingame.c) -- the pause menus are tabbed (Status/Inventory/Options/
+// Briefing), so a sibling tab is the right shape, not an item on one page.
 //
 // IMPORTANT: the items array must hold a valid MENUITEMTYPE_END terminator
 // BEFORE the dialog opens -- menuOpenDialog walks/counts the items (and runs
@@ -5121,7 +5118,9 @@ void luaDirectorRebuild(void)
 	for (i = 0; i < n; i++) {
 		g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
 		g_LuaDirectorMenuItems[w].param = i; // index into the Lua registry
-		g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_LITERAL_TEXT;
+		// BIGFONT gives the normal menu row height; without it rows render at the
+		// minimal text height and squash together.
+		g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
 		g_LuaDirectorMenuItems[w].param2 = (uintptr_t)luaMenuLabel(i);
 		g_LuaDirectorMenuItems[w].param3 = 0;
 		g_LuaDirectorMenuItems[w].handler = menuhandlerLuaDirectorItem;
@@ -5131,7 +5130,7 @@ void luaDirectorRebuild(void)
 	// Back
 	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
 	g_LuaDirectorMenuItems[w].param = 0;
-	g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_SELECTABLE_CLOSESDIALOG;
+	g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT;
 	g_LuaDirectorMenuItems[w].param2 = L_OPTIONS_213; // "Back"
 	g_LuaDirectorMenuItems[w].param3 = 0;
 	g_LuaDirectorMenuItems[w].handler = NULL;
@@ -5159,21 +5158,6 @@ struct menudialogdef g_LuaDirectorMenuDialog = {
 	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
 	NULL,
 };
-
-// Pause-menu entry item for the Lua Director. Hidden unless a script registered
-// at least one entry; opens the Director dialog on select. Used a plain
-// SELECTABLE (not OPENSDIALOG) because OPENSDIALOG repurposes the handler slot as
-// the dialog pointer, leaving no room for the CHECKHIDDEN gate.
-MenuItemHandlerResult menuhandlerLuaDirector(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation == MENUOP_CHECKHIDDEN) {
-		return luaMenuCount() == 0; // hide when no script registered entries
-	}
-	if (operation == MENUOP_SET) {
-		menuPushDialog(&g_LuaDirectorMenuDialog);
-	}
-	return 0;
-}
 #endif
 
 char *mainMenuTextLabel(struct menuitem *item)

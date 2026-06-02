@@ -19,6 +19,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "video.h"
+#include "game/cheats.h"
 #include "game/bondview.h"
 #endif
 
@@ -1006,9 +1007,24 @@ Gfx *menugfxDrawTri2(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, u32 colour1, u32 
 	colours[0].word = PD_BE32(colour1);
 	colours[1].word = PD_BE32(colour2);
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: menugfx draws 2D menu/HUD shapes (dialog + message-box borders,
+	// separators, etc.) as real 3D triangles, which the renderer's left-right world
+	// flip would mirror off their 2D text/fill. Tag this geometry G_NOMIRROR_EXT so
+	// the renderer leaves it un-flipped. menugfxDrawTri2 is the choke point for all
+	// of it. See docs/PORT_MIRROR.md.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		gSPSetExtraGeometryModeEXT(gdl++, G_NOMIRROR_EXT);
+	}
+#endif
 	gSPColor(gdl++, osVirtualToPhysical(colours), 2);
 	gSPVertex(gdl++, osVirtualToPhysical(vertices), 4, 0);
 	gSPTri2(gdl++, 0, 1, 2, 2, 3, 0);
+#ifndef PLATFORM_N64
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		gSPClearExtraGeometryModeEXT(gdl++, G_NOMIRROR_EXT);
+	}
+#endif
 
 	return gdl;
 }

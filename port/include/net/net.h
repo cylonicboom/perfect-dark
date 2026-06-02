@@ -517,6 +517,9 @@ Gfx *netKillFeedRender(Gfx *gdl);
 // hudmsgsRender) — not as a top-level overlay, so don't also call it from pdmain.
 Gfx *netGrasluRender(Gfx *gdl);
 
+// Companion red "Redvox57" vanity banner; same HUD slot/renderer as Graslu.
+Gfx *netRedvox57Render(Gfx *gdl);
+
 // Spectate mode. When non-NULL, the local player's first-person camera is
 // overridden to ride along with the target chr (player or sim). Cleared by
 // /spec off or when the target disappears. Drive it from the /spec console

@@ -157,6 +157,10 @@ bool g_BgNoDrawSlotLimit = false;
 // Declared as a 1-byte type and assigned a normalized 0/1 (cheatIsActive
 // returns the raw bitmask, e.g. 0x4000, whose low byte is 0).
 extern unsigned char gfx_wireframe_mode;
+// (1 byte). Set each frame in bgTickPortals from CHEAT_MIRROR so the GL backend
+// flips the whole 3D scene left-right (horizontal reflection). Same 1-byte vs
+// game-side `bool`==s32 gotcha as gfx_wireframe_mode above.
+extern unsigned char gfx_mirror_mode;
 // Renderer flat-wire colour + line width (port/fast3d). Written by /wireframe and
 // by the vomit animation in bgTickPortals.
 extern int gfx_wireframe_wire_color_enabled;
@@ -6731,6 +6735,7 @@ void bgTickPortals(void)
 		g_BgNoDrawSlotLimit = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOOMLIMIT))
 		                   || cheatIsActive(CHEAT_NODRAWLIMIT) || g_BgOctreeBigRoom;
 		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
+		gfx_mirror_mode = cheatIsActive(CHEAT_MIRROR) ? 1 : 0;
 
 		// /wireframe vomit|trip: while wireframe is on, scroll the sky colour
 		// through the hue wheel one way and the wire colour the other, and

@@ -5225,6 +5225,7 @@ Gfx *playerRenderHud(Gfx *gdl)
 		// Port-only: vanity easter-egg banner on the HUD layer, just above the
 		// pickup messages it mimics (no-op unless toggled via /graslu).
 		gdl = netGrasluRender(gdl);
+		gdl = netRedvox57Render(gdl);
 #endif
 
 		gdl = playerDrawStoredFade(gdl);

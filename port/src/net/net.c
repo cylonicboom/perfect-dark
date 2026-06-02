@@ -3277,6 +3277,11 @@ static void netWireframeCfgApply(void)
 // console command; purely local (nothing about it goes on the wire).
 static s32 g_GrasluEgg = 0;
 
+// Companion vanity egg: when set, netRedvox57Render draws a red "Redvox57" banner
+// in the same lower-left HUD slot. Toggled by the hidden /redvox57 command; never
+// enabled alongside Graslu. Purely local (nothing goes on the wire).
+static s32 g_Redvox57Egg = 0;
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -3719,6 +3724,11 @@ s32 netConsoleCommand(const char *line)
 		// (netGrasluRender). Local-only; deliberately omitted from /help.
 		g_GrasluEgg = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_GrasluEgg;
 		sysLogPrintf(LOG_CHAT, "Graslu: %s", g_GrasluEgg ? "ON" : "OFF");
+	} else if (strcmp(cmd, "redvox57") == 0) {
+		// Hidden vanity easter egg — toggle the lower-left red "Redvox57" HUD banner
+		// (netRedvox57Render). Local-only; deliberately omitted from /help.
+		g_Redvox57Egg = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_Redvox57Egg;
+		sysLogPrintf(LOG_CHAT, "Redvox57: %s", g_Redvox57Egg ? "ON" : "OFF");
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.
@@ -3856,6 +3866,28 @@ s32 netConsoleCommand(const char *line)
 			}
 			sysLogPrintf(LOG_CHAT, "wireframe %s", on ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "mirror") == 0) {
+		// /mirror [on|off]   toggle the Mirror cheat (CHEAT_MIRROR) live, no stage
+		// reload. Flips the whole rendered 3D scene left-right (works everywhere,
+		// including the Carrington Institute hub); 2D HUD/text stay readable. The
+		// on/off bit flows to gfx_mirror_mode via bgTickPortals next frame.
+		extern u32 g_CheatsActiveBank1;
+		extern u32 g_CheatsEnabledBank1;
+		const u32 bit = 1u << (CHEAT_MIRROR - 32);
+		bool on;
+		if (!arg[0]) {
+			on = !(g_CheatsActiveBank1 & bit);
+		} else {
+			on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
+		}
+		if (on) {
+			g_CheatsActiveBank1 |= bit;
+			g_CheatsEnabledBank1 |= bit;
+		} else {
+			g_CheatsActiveBank1 &= ~bit;
+			g_CheatsEnabledBank1 &= ~bit;
+		}
+		sysLogPrintf(LOG_CHAT, "mirror %s", on ? "ON" : "OFF");
 	} else if (strcmp(cmd, "octree") == 0) {
 		// /octree [on|off]    toggle outdoor-room octree frustum culling
 		// /octree forcecull   debug: cull every batch (flagged rooms go black)
@@ -4005,6 +4037,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe vomit|trip            animate bg/wire hue + thickness (trip = 4x slower)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe save|load             persist sky/wire colour + thickness to pd.ini");
+		sysLogPrintf(LOG_CHAT, "  /mirror [on|off]                 flip the world left-right (CHEAT_MIRROR)");
 		sysLogPrintf(LOG_CHAT, "  /octree [on|off|forcecull|stats] outdoor-room octree culling");
 		sysLogPrintf(LOG_CHAT, "  /octree mark|markall|unmark      flag current room / every room (test anywhere)");
 		sysLogPrintf(LOG_CHAT, "  /octree auto                     auto-cull every outdoor room (no manual mark)");
@@ -4262,6 +4295,12 @@ Gfx *netGrasluRender(Gfx *gdl)
 	// sits just above the pickup row's box without overlapping it.
 	s32 x = 27;
 	s32 y = screenh - 2 * lineh - 24;
+	// CHEAT_MIRROR: reflect the banner to the right side like the pickup boxes it
+	// mimics, so it matches the rest of the flipped HUD (account for its width so
+	// the whole box lands mirrored; the align flag below flips to match).
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		x = screenw - x - tw;
+	}
 	const s32 boxr = x + tw + 3; // right edge: 1px wider than the text + pad
 
 	// Driven off g_Vars.lvframe60 (60Hz ticks since stage start, reset in lvReset,
@@ -4275,8 +4314,9 @@ Gfx *netGrasluRender(Gfx *gdl)
 
 	gdl = text0f153628(gdl);
 	// Anchor to the left edge so the banner hugs the HUD edge in widescreen,
-	// the same flag the kill feed and console message strip use.
-	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_LEFT_EXT);
+	// the same flag the kill feed and console message strip use. (CHEAT_MIRROR
+	// flips it to the right edge so the reflected banner hugs that side.)
+	gSPSetExtraGeometryModeEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? G_ASPECT_RIGHT_EXT : G_ASPECT_LEFT_EXT);
 
 	// Box like the pickup messages: green border (pickup textcolour | 0x40) over a
 	// dark translucent fill, then the green text (textcolour | 0xa0) on top via
@@ -4323,6 +4363,108 @@ Gfx *netGrasluRender(Gfx *gdl)
 				0x00ff00a0, screenw, screenh, 0, 0);
 
 		// Map the perimeter position p to a short segment on the matching edge.
+		if (p < bw) {                   // top: left -> right
+			sx1 = bx1 + p;       sy1 = by1;
+			sx2 = sx1 + seg;     sy2 = by1 + 2;
+			if (sx2 > bx2) sx2 = bx2;
+		} else if (p < bw + bh) {       // right: top -> bottom
+			sx1 = bx2 - 1;       sy1 = by1 + (p - bw);
+			sx2 = bx2 + 1;       sy2 = sy1 + seg;
+			if (sy2 > by2) sy2 = by2;
+		} else if (p < 2 * bw + bh) {   // bottom: right -> left
+			sx2 = bx2 - (p - bw - bh); sy1 = by2 - 1;
+			sx1 = sx2 - seg;     sy2 = by2 + 1;
+			if (sx1 < bx1) sx1 = bx1;
+		} else {                        // left: bottom -> top
+			sx1 = bx1;           sy2 = by2 - (p - 2 * bw - bh);
+			sx2 = bx1 + 2;       sy1 = sy2 - seg;
+			if (sy1 < by1) sy1 = by1;
+		}
+		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hi, hi);
+	}
+
+	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
+	gdl = text0f153780(gdl);
+	return gdl;
+}
+
+// Same boxed-pickup banner renderer as netGrasluRender, but in red (the in-game
+// "mission failed" / menu red) reading "Redvox57", in the same HUD slot.
+Gfx *netRedvox57Render(Gfx *gdl)
+{
+	if (!g_Redvox57Egg) {
+		return gdl;
+	}
+
+	if (g_Vars.stagenum == STAGE_TITLE) {
+		return gdl;
+	}
+
+	if (!g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
+		return gdl;
+	}
+
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
+
+	// Measure "Redvox57\n" for the single-line height, "Redvox57" for the width.
+	s32 lineh = 0;
+	s32 tw = 0;
+	s32 discard = 0;
+	textMeasure(&lineh, &discard, "Redvox57\n", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+	textMeasure(&discard, &tw, "Redvox57", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+
+	// Exact same slot as the Graslu banner (the two are never enabled together).
+	s32 x = 27;
+	s32 y = screenh - 2 * lineh - 24;
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		x = screenw - x - tw;
+	}
+	const s32 boxr = x + tw + 3;
+
+	const f32 fadeintime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
+	const s32 lvf = g_Vars.lvframe60;
+
+	gdl = text0f153628(gdl);
+	gSPSetExtraGeometryModeEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? G_ASPECT_RIGHT_EXT : G_ASPECT_LEFT_EXT);
+
+	// Red border (0xff0000 | 0x40) over a dark fill, red text (| 0xa0) on top.
+	if ((f32)lvf < fadeintime) {
+		f32 dur = fadeintime > 30.0f ? 30.0f : fadeintime;
+		f32 spc0 = (f32)lvf / dur;
+		if (spc0 > 1.0f) {
+			spc0 = 1.0f;
+		}
+		if (spc0 < 0.0f) {
+			spc0 = 0.0f;
+		}
+
+		textSetDiagonalBlend(x, y, (f32)lvf * PALUPF(7.0f), DIAGMODE_FADEIN);
+		gdl = hudmsgRenderBox(gdl, x - 3, y - 3, boxr, y + lineh + 2, 1.0f, 0xff000040, spc0);
+		if (spc0 > 0.0f) {
+			gdl = textRenderProjected(gdl, &x, &y, "Redvox57",
+					g_CharsHandelGothicSm, g_FontHandelGothicSm,
+					0xff0000a0, screenw, screenh, 0, 0);
+		}
+		textResetBlends();
+	} else {
+		const s32 bx1 = x - 3;
+		const s32 by1 = y - 3;
+		const s32 bx2 = boxr;
+		const s32 by2 = y + lineh + 2;
+		const s32 bw = bx2 - bx1;
+		const s32 bh = by2 - by1;
+		const s32 perim = 2 * (bw + bh);
+		const s32 seg = 10;
+		const u32 hi = 0xff8080ff;                   // bright red highlight
+		const s32 p = perim > 0 ? (lvf * 2) % perim : 0;
+		s32 sx1, sy1, sx2, sy2;
+
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, 0xff000040, 1.0f);
+		gdl = textRenderProjected(gdl, &x, &y, "Redvox57",
+				g_CharsHandelGothicSm, g_FontHandelGothicSm,
+				0xff0000a0, screenw, screenh, 0, 0);
+
 		if (p < bw) {                   // top: left -> right
 			sx1 = bx1 + p;       sy1 = by1;
 			sx2 = sx1 + seg;     sy2 = by1 + 2;

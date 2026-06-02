@@ -7,6 +7,7 @@
 #include "game/savebuffer.h"
 #include "game/hudmsg.h"
 #include "game/menugfx.h"
+#include "game/cheats.h"
 #include "game/playermgr.h"
 #include "game/game_1531a0.h"
 #include "game/lv.h"
@@ -1457,12 +1458,25 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		}
 
 #ifndef PLATFORM_N64
+		// CHEAT_MIRROR: reflect HUD message boxes (pickup notifications, the
+		// /graslu banner, etc.) to the opposite side so they sit on the mirrored
+		// side of the screen like the rest of the flipped HUD. Reflect the box's
+		// left anchor about the view centre, accounting for its width so the whole
+		// box (2D text/fill + the 3D border) lands mirrored as a unit. Centred
+		// messages (e.g. subtitles) reflect to themselves — a no-op.
+		const bool hudmsgmirror = cheatIsActive(CHEAT_MIRROR);
+		if (hudmsgmirror) {
+			x = viGetWidth() - x - msg->width;
+		}
+#endif
+
+#ifndef PLATFORM_N64
 		const bool doaspectfix = (playercount < 2) || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL);
 		if (doaspectfix && msg->state >= HUDMSGSTATE_FADINGIN) {
 			if (msg->alignh == HUDMSGALIGN_SCREENLEFT || msg->alignh == HUDMSGALIGN_LEFT) {
-				gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
+				gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, hudmsgmirror ? g_HudAlignModeR : g_HudAlignModeL);
 			} else if (msg->alignh == HUDMSGALIGN_RIGHT) {
-				gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+				gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, hudmsgmirror ? g_HudAlignModeL : g_HudAlignModeR);
 			} else {
 				gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, G_ASPECT_CENTER_EXT);
 			}

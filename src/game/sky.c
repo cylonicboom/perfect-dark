@@ -2736,6 +2736,15 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 
 					sp134[0] = g_SunScreenXPositions[i];
 					sp134[1] = g_SunScreenYPositions[i];
+#ifndef PLATFORM_N64
+					// CHEAT_MIRROR: the sun's main glare is a 2D texrect (same
+					// func0f0b2150 as the room light glares), so reflect its screen X
+					// about the view centre to keep it on the mirrored sun — same fix
+					// as the sun lens flare and the room glares.
+					if (cheatIsActive(CHEAT_MIRROR)) {
+						sp134[0] = (viGetViewLeft() + viGetViewWidth() * 0.5f) * 2.0f - sp134[0];
+					}
+#endif
 					sp12c[0] = radius * 0.50f * xscale;
 					sp12c[1] = radius * 0.50f;
 
@@ -3077,7 +3086,18 @@ Gfx *skyRenderArtifacts(Gfx *gdl)
 			f32 intensityfrac = skyGetArtifactGroupIntensityFrac(artifacts);
 
 			if (intensityfrac > 0.0f) {
-				gdl = skyRenderFlare(gdl, g_SunScreenXPositions[i], g_SunScreenYPositions[i], intensityfrac, sun->orb_size, g_SunFlareTimers240[i], g_SunAlphaFracs[i]);
+				f32 flarex = g_SunScreenXPositions[i];
+#ifndef PLATFORM_N64
+				// CHEAT_MIRROR: the sun lens flare is a 2D screen-space effect
+				// (like the room light glares), so reflect its source X about the
+				// view centre to keep it tracking the mirrored world. skyRenderFlare
+				// builds the whole flare chain relative to this X, so mirroring the
+				// input mirrors the entire chain.
+				if (cheatIsActive(CHEAT_MIRROR)) {
+					flarex = (viGetViewLeft() + viGetViewWidth() * 0.5f) * 2.0f - flarex;
+				}
+#endif
+				gdl = skyRenderFlare(gdl, flarex, g_SunScreenYPositions[i], intensityfrac, sun->orb_size, g_SunFlareTimers240[i], g_SunAlphaFracs[i]);
 			}
 		}
 

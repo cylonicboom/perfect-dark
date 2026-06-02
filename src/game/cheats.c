@@ -118,6 +118,7 @@ struct cheat g_Cheats[] = {
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Draw Slot Limit (CHEAT_NODRAWLIMIT)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // GoldenEye Style (CHEAT_GOLDENEYE)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Wireframe (CHEAT_WIREFRAME)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Mirror (CHEAT_MIRROR)
 #endif
 };
 
@@ -129,6 +130,7 @@ static const char *const s_cheat_literal_names[] = {
 	[CHEAT_NODRAWLIMIT] = "No Draw Slot Limit",
 	[CHEAT_GOLDENEYE]   = "GoldenEye Style",
 	[CHEAT_WIREFRAME]   = "Wireframe",
+	[CHEAT_MIRROR]      = "Mirror",
 };
 
 /**
@@ -1237,6 +1239,19 @@ struct menuitem g_CheatsGameplayMenuItems[] = {
 		// HUD/menus/2D stay solid. Local visual cheat only; no wire/save impact.
 		MENUITEMTYPE_CHECKBOX,
 		CHEAT_WIREFRAME,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		// Mirror: flips the entire rendered 3D world left-right (a horizontal
+		// reflection) via the fast3d GL backend — works everywhere, including the
+		// Carrington Institute hub. 2D HUD/text stay un-mirrored and readable.
+		// Local visual cheat only; gameplay/hit detection run on un-mirrored
+		// coordinates, so no wire/save impact.
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_MIRROR,
 		0,
 		(uintptr_t)&cheatGetNameIfUnlocked,
 		0,

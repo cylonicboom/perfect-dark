@@ -11,6 +11,7 @@
 #include "game/bg.h"
 #include "game/stagetable.h"
 #include "game/room.h"
+#include "game/cheats.h"
 #include "bss.h"
 #include "lib/vi.h"
 #include "lib/mtx.h"
@@ -682,6 +683,18 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
 					mtx4RotateVecInPlace(camGetWorldToScreenMtxf(), &lightscreenpos);
 
 					cam0f0b4d04(&lightscreenpos, spdc);
+
+#ifndef PLATFORM_N64
+					// CHEAT_MIRROR: light glares are 2D texrects, so they bypass
+					// the renderer's left-right world flip and would otherwise stay
+					// at the un-mirrored screen position (detached from their now-
+					// mirrored light source). Reflect the glare's screen X about the
+					// view centre, which is the same window axis the world geometry
+					// flips about (cam0f0b4d04 builds X around c_screenleft+c_halfwidth).
+					if (cheatIsActive(CHEAT_MIRROR)) {
+						spdc[0] = 2.0f * (g_Vars.currentplayer->c_screenleft + g_Vars.currentplayer->c_halfwidth) - spdc[0];
+					}
+#endif
 
 					brightness *= 27500.0f / (-lightscreenpos.z < 1.0f ? 1.0f : -lightscreenpos.z);
 

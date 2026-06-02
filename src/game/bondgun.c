@@ -5624,6 +5624,19 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	crosspos[1] = player->crosspos[1] + (randfactor * scaledspread * camGetScreenHeight())
 		/ viGetHeight();
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the world is rendered flipped, so the player actually aims at
+	// what's under the on-screen crosshair on the MIRRORED screen — i.e. the
+	// reflection of the crosshair's un-mirrored world point. Reflect this local
+	// crosshair X (the displayed reticle is left untouched) about the view centre
+	// so the shot goes where the player sees the crosshair, not its un-mirrored
+	// world target. (The first-person gun is also mirror-imaged, so its barrel
+	// then visually lines up with this shot direction.)
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		crosspos[0] = 2.0f * camGetScreenLeft() + camGetScreenWidth() - crosspos[0];
+	}
+#endif
+
 	gunpos2d->x = 0;
 	gunpos2d->y = 0;
 	gunpos2d->z = 0;
@@ -7302,7 +7315,22 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 
 			mtx4TransformVecInPlace((Mtxf *)((uintptr_t)allocation + mtxindex * sizeof(Mtxf)), &beamfar);
 		} else {
-			cam0f0b4c3c(g_Vars.currentplayer->crosspos, &beamfar, 1);
+#ifndef PLATFORM_N64
+			// CHEAT_MIRROR: the idle laser sight points toward the on-screen
+			// crosshair, but the world is rendered flipped — reflect the crosshair X
+			// about the view centre so the laser beam/dot land where the player sees
+			// the crosshair (matching the shot direction), not its un-mirrored world
+			// target. Displayed reticle untouched.
+			if (cheatIsActive(CHEAT_MIRROR)) {
+				f32 lasercross[2];
+				lasercross[0] = 2.0f * camGetScreenLeft() + camGetScreenWidth() - g_Vars.currentplayer->crosspos[0];
+				lasercross[1] = g_Vars.currentplayer->crosspos[1];
+				cam0f0b4c3c(lasercross, &beamfar, 1);
+			} else
+#endif
+			{
+				cam0f0b4c3c(g_Vars.currentplayer->crosspos, &beamfar, 1);
+			}
 
 			beamfar.x *= 500.0f;
 			beamfar.y *= 500.0f;
@@ -8172,10 +8200,35 @@ void bgun0f0a5550(s32 handnum)
 	hand->lastrotangx = sp1a4.f[0];
 	hand->lastrotangy = sp1a4.f[1];
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: this yaw (sp1a4.y) is the gun's horizontal aim lean — how far
+	// it rotates left/right to follow the aim. The gun is rendered mirror-imaged,
+	// so the lean tracks the wrong way on the flipped screen. Negate the yaw (only
+	// for the visual pose matrix below; lastrotangy keeps its raw value) so the gun
+	// leans toward the crosshair — aim/look left now leans it left, matching the
+	// shot direction (which is reflected in bgunCalculatePlayerShotSpread).
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		sp1a4.y = -sp1a4.y;
+	}
+#endif
+
 	mtx4LoadRotation(&sp1a4, &sp124);
 	mtx4MultMtx4(&sp124, &sp164, &sp284);
 	mtx4MultMtx4InPlace(&sp284, &sp234);
 	mtx4Copy(&sp234, &sp2c4);
+
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the gun also SLIDES laterally with the aim (fspare1 = the
+	// guntransside translation from crosspos2, added to sp274.f[0] above). That
+	// slide is rendered mirror-imaged, so flip just the aim-slide component here —
+	// after the yaw has already consumed sp274.x, leaving the (already-correct)
+	// pivot undisturbed; the base hand position stays put. Now the gun both pivots
+	// AND slides toward the aim.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		sp274.f[0] -= 2.0f * fspare1;
+	}
+#endif
+
 	mtx4SetTranslation(&sp274, &sp2c4);
 
 	mtx4Copy(&sp2c4, &hand->cammtx);
@@ -12965,6 +13018,17 @@ Gfx *bgunDrawHudGauge(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, struct abmag *ab
 	s32 numunits = capacity;
 	s32 i;
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR reflects the ammo HUD about the view centre, which can hand us
+	// x1 > x2 (the bar's left/right swap under reflection). The fill-rect path
+	// below needs x1 < x2, so normalise. No-op for the un-mirrored callers.
+	if (x1 > x2) {
+		s32 tmp = x1;
+		x1 = x2;
+		x2 = tmp;
+	}
+#endif
+
 	bgun0f0a9da8(abmag, remaining, numunits, gaugeheight);
 
 	if (numunits > 20) {
@@ -13191,6 +13255,55 @@ Gfx *bgunDrawHudGauge(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, struct abmag *ab
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+// CHEAT_MIRROR ammo-HUD helpers. When the Mirror cheat flips the world + the
+// first-person weapon left-right, the ammo gauges/counters are mirrored to the
+// opposite side so the "bullet counter" stays under the (now left-hand) weapon.
+// X coords are reflected about the view centre in the HUD's (view-pixel /
+// g_ScaleX) coordinate space; left/right edge alignment and text halign are
+// swapped to match. All three are no-ops when the cheat is off.
+static s32 bgunHudMirrorX(s32 x)
+{
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		return (2 * viGetViewLeft() + viGetViewWidth()) / g_ScaleX - x;
+	}
+	return x;
+}
+
+static bool bgunHudMirrorHalign(bool halign)
+{
+	return cheatIsActive(CHEAT_MIRROR) ? !halign : halign;
+}
+
+static u32 bgunHudMirrorAlign(u32 mode)
+{
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		return mode == g_HudAlignModeR ? g_HudAlignModeL : g_HudAlignModeR;
+	}
+	return mode;
+}
+
+// Mirror a fill-rect's x-pair: reflection swaps left/right edges, and the
+// fill-rect path needs x1<x2, so these return the correct ordered edges in both
+// states. Pass the original (a<b) span to both.
+static s32 bgunHudMirrorXL(s32 a, s32 b)
+{
+	return cheatIsActive(CHEAT_MIRROR) ? bgunHudMirrorX(b) : a;
+}
+
+static s32 bgunHudMirrorXR(s32 a, s32 b)
+{
+	return cheatIsActive(CHEAT_MIRROR) ? bgunHudMirrorX(a) : b;
+}
+#else
+// N64: identity, so bgunDrawHud reduces to the original expressions byte-for-byte.
+#define bgunHudMirrorX(x) (x)
+#define bgunHudMirrorHalign(halign) (halign)
+#define bgunHudMirrorAlign(mode) (mode)
+#define bgunHudMirrorXL(a, b) (a)
+#define bgunHudMirrorXR(a, b) (b)
+#endif
+
 Gfx *bgunDrawHud(Gfx *gdl)
 {
 	struct player *player = g_Vars.currentplayer;
@@ -13249,7 +13362,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 #ifndef PLATFORM_N64
 	if (playercount < 2 || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL)) {
-		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, bgunHudMirrorAlign(g_HudAlignModeR));
 	}
 #endif
 
@@ -13330,7 +13443,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	{
 		gdl = textSetPrimColour(gdl, fncolour);
 
-		gDPFillRectangleScaled(gdl++, xpos - 13, bottom - 11, xpos - 2, bottom);
+		gDPFillRectangleScaled(gdl++, bgunHudMirrorXL(xpos - 13, xpos - 2), bottom - 11, bgunHudMirrorXR(xpos - 13, xpos - 2), bottom);
 
 		gdl = text0f153838(gdl);
 	}
@@ -13388,11 +13501,19 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 			gdl = textSetPrimColour(gdl, 0);
 
-			gDPFillRectangleScaled(gdl++, x - 1, y - 1, xpos - 11, bottom);
+			gDPFillRectangleScaled(gdl++, bgunHudMirrorXL(x - 1, xpos - 11), y - 1, bgunHudMirrorXR(x - 1, xpos - 11), bottom);
 
 			gdl = text0f153838(gdl);
 			textSetWaveBlend(g_20SecIntervalFrac * 50.0f, 0, 50);
 			textSetWaveColours(0xffffffff, 0xffffffff);
+#ifndef PLATFORM_N64
+			// CHEAT_MIRROR: the weapon-name label is mirrored to the left with the
+			// ammo (the name renders rightward from x, so anchor it to its mirrored
+			// span; matches the reflected fill box above).
+			if (cheatIsActive(CHEAT_MIRROR)) {
+				x = bgunHudMirrorX(x) - textwidth;
+			}
+#endif
 			gdl = textRenderProjected(gdl, &x, &y, str, g_CharsHandelGothicXs, g_FontHandelGothicXs, colour, textwidth, 1000, 0, 0);
 			textResetBlends();
 		}
@@ -13463,13 +13584,19 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 				gdl = textSetPrimColour(gdl, 0);
 
-				gDPFillRectangleScaled(gdl++, x - 1, y - 1, xpos - 11, bottom + 3);
+				gDPFillRectangleScaled(gdl++, bgunHudMirrorXL(x - 1, xpos - 11), y - 1, bgunHudMirrorXR(x - 1, xpos - 11), bottom + 3);
 
 				gdl = text0f153838(gdl);
 
 				textSetWaveBlend(g_20SecIntervalFrac * 50.0f, 0, 50);
 				textSetWaveColours(0xffffffff, 0xffffffff);
 
+#ifndef PLATFORM_N64
+				// CHEAT_MIRROR: mirror the function-name label to the left too.
+				if (cheatIsActive(CHEAT_MIRROR)) {
+					x = bgunHudMirrorX(x) - textwidth;
+				}
+#endif
 				gdl = textRenderProjected(gdl, &x, &y, str,
 						g_CharsHandelGothicXs, g_FontHandelGothicXs, colour, textwidth,
 						1000, 0, 0);
@@ -13519,16 +13646,16 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 #ifndef PLATFORM_N64
 		if (playercount < 2 || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL)) {
-			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
+			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, bgunHudMirrorAlign(g_HudAlignModeL));
 		}
 #endif
 
 		if (lefthand->clipsizes[ammoindex] > 0 && (weapon->ammos[ammoindex]->flags & AMMOFLAG_EQUIPPEDISRESERVE) == 0) {
 			gdl = bgunDrawHudGauge(gdl,
-					xpos, bottom - reserveheight - clipheight - 3, xpos + barwidth, bottom - reserveheight - 3,
+					bgunHudMirrorX(xpos), bottom - reserveheight - clipheight - 3, bgunHudMirrorX(xpos + barwidth), bottom - reserveheight - 3,
 					&lefthand->abmag, lefthand->loadedammo[ammoindex], lefthand->clipsizes[ammoindex],
 					0x00300080, 0x00ff0040, false);
-			gdl = bgunDrawHudInteger(gdl, lefthand->loadedammo[ammoindex], xpos + barwidth + 2, true,
+			gdl = bgunDrawHudInteger(gdl, lefthand->loadedammo[ammoindex], bgunHudMirrorX(xpos + barwidth + 2), bgunHudMirrorHalign(true),
 					bottom - reserveheight - 8, 0, 0x00ff00a0);
 		}
 	}
@@ -13559,7 +13686,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 #ifndef PLATFORM_N64
 		if (playercount < 2 || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL)) {
-			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, bgunHudMirrorAlign(g_HudAlignModeR));
 		}
 #endif
 
@@ -13569,10 +13696,10 @@ Gfx *bgunDrawHud(Gfx *gdl)
 		if (hand->clipsizes[ammoindex] > 0
 				&& weapon->ammos[ammoindex] != NULL
 				&& (weapon->ammos[ammoindex]->flags & AMMOFLAG_EQUIPPEDISRESERVE) == 0) {
-			gdl = bgunDrawHudGauge(gdl, xpos, bottom - reserveheight - clipheight - 3, xpos + barwidth,
+			gdl = bgunDrawHudGauge(gdl, bgunHudMirrorX(xpos), bottom - reserveheight - clipheight - 3, bgunHudMirrorX(xpos + barwidth),
 					bottom - reserveheight - 3, &hand->abmag, hand->loadedammo[ammoindex], hand->clipsizes[ammoindex],
 					0x00300080, 0x00ff0040, false);
-			gdl = bgunDrawHudInteger(gdl, hand->loadedammo[ammoindex], xpos - 2, false,
+			gdl = bgunDrawHudInteger(gdl, hand->loadedammo[ammoindex], bgunHudMirrorX(xpos - 2), bgunHudMirrorHalign(false),
 					bottom - reserveheight - 8, 0, 0x00ff00a0);
 		}
 
@@ -13591,10 +13718,10 @@ Gfx *bgunDrawHud(Gfx *gdl)
 				}
 			}
 
-			gdl = bgunDrawHudGauge(gdl, xpos, bottom - reserveheight, xpos + barwidth,
+			gdl = bgunDrawHudGauge(gdl, bgunHudMirrorX(xpos), bottom - reserveheight, bgunHudMirrorX(xpos + barwidth),
 					bottom, &ctrl->abmag, ammototal, g_AmmoTypes[ammotype].capacity,
 					0x00403080, 0x00ffc040, true);
-			gdl = bgunDrawHudInteger(gdl, ammototal, xpos - 2, false, bottom - reserveheight + 1, 0, 0x00ffc0a0);
+			gdl = bgunDrawHudInteger(gdl, ammototal, bgunHudMirrorX(xpos - 2), bgunHudMirrorHalign(false), bottom - reserveheight + 1, 0, 0x00ffc0a0);
 		}
 
 		// Combat boost timer
@@ -13612,7 +13739,7 @@ Gfx *bgunDrawHud(Gfx *gdl)
 				sprintf(text, "%02d:%02d\n", secs60 / TICKS(60), (secs60 - (secs60 / TICKS(60)) * TICKS(60)) * 100 / TICKS(60));
 			}
 
-			gdl = bgunDrawHudString(gdl, text, xpos + barwidth - 2, false, bottom - reserveheight + 1, 0, 0x00ffc0a0);
+			gdl = bgunDrawHudString(gdl, text, bgunHudMirrorX(xpos + barwidth - 2), bgunHudMirrorHalign(false), bottom - reserveheight + 1, 0, 0x00ffc0a0);
 		}
 	}
 

@@ -214,6 +214,11 @@
 #define G_ASPECT_MODE_EXT        (G_ASPECT_CENTER_EXT | G_ASPECT_WIDE_EXT)
 #define G_NO_CLIPPING_EXT        0x00000100
 #define G_MODULATE_EXT           0x00000200 // this should really go into OTHERMODE_H, but for some reason I can't get it to work
+// Port-only: geometry tagged with this bit is exempt from the CHEAT_MIRROR
+// left-right flip (gfx_mirror_mode) in the fast3d renderer. Used to keep 2D UI
+// drawn as 3D geometry — menu/HUD borders via menugfxDrawTri2 — un-mirrored while
+// the world (and the left-hand viewmodel) stay flipped. See docs/PORT_MIRROR.md.
+#define G_NOMIRROR_EXT           0x00000400
 
 /* Extra texture filtering mode */
 

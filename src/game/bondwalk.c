@@ -905,6 +905,16 @@ void bwalk0f0c4d98(void)
 
 void bwalkUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 {
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: invert strafe (sidestep) so left/right matches the flipped
+	// view — companion to the yaw inversion in bwalkUpdateTheta. The strafe
+	// direction arrives as a signed targetspeed (digital step keys pass -1/+1,
+	// analog passes analogstrafe*scale), so one negate covers both. Local player
+	// only; harmless when targetspeed is 0 (no strafe input).
+	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+		targetspeed = -targetspeed;
+	}
+#endif
 	if (g_Vars.normmplayerisrunning) {
 		targetspeed = (g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.unk1c + 25.0f) / 100 * targetspeed;
 	}
@@ -1552,6 +1562,17 @@ void bwalkUpdateTheta(void)
 #endif
 	rotateamount = g_Vars.currentplayer->speedtheta * mult
 		* g_Vars.lvupdate60freal * 0.0174505133f * 3.5f;
+
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the world renders left-right flipped, so invert ONLY the
+	// camera yaw here — this is the sole place speedtheta turns vv_theta, so
+	// turning matches the mirrored view. Strafe, manual aim and the crosshair
+	// swivel read the original (un-negated) input/speedtheta and stay natural.
+	// Local player only (remote players are force-positioned from the wire).
+	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+		rotateamount = -rotateamount;
+	}
+#endif
 
 	bwalkCalculateNewPositionWithPush(&delta, rotateamount, true, 0, CDTYPE_ALL);
 }

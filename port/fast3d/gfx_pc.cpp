@@ -219,6 +219,7 @@ float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 bool gfx_wireframe_mode = false;
+bool gfx_mirror_mode = false;
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
 float gfx_wireframe_line_width = 1.0f;
@@ -1228,6 +1229,16 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
 
         x = gfx_adjust_x_for_aspect_ratio(x, w);
 
+        // CHEAT_MIRROR: flip clip-space X to reflect the scene left-right. Done
+        // after the aspect fixup so the aspect ratio is preserved. Winding is
+        // compensated in gfx_sp_tri1 (this reverses triangle winding, which would
+        // otherwise make back-face culling render the world inside-out).
+        // G_NOMIRROR_EXT exempts 2D UI drawn as 3D geometry (menu/HUD borders via
+        // menugfxDrawTri2) so they stay put while the world flips.
+        if (gfx_mirror_mode && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT)) {
+            x = -x;
+        }
+
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
 
@@ -1381,6 +1392,17 @@ static inline int gfx_lod_tile_offset(const int i) {
     return (rdp.tex_lod ? rdp.tex_detail : i);
 }
 
+// CHEAT_MIRROR: the geometry is reflected about NDC x=0 (see gfx_sp_vertex),
+// which glViewport maps to the viewport's horizontal centre in window pixels.
+// Reflect a scissor box about that same window-pixel axis so per-room portal
+// draw-slot scissors clip the left-right-flipped geometry on the correct side.
+// Full-viewport scissors (HUD, the player's own room) are symmetric about that
+// axis, so this is a no-op for them. rdp.viewport is live at both call sites.
+static inline float gfx_mirror_scissor_x(float scissor_x, float scissor_w) {
+    const float vp_centre = rdp.viewport.x + rdp.viewport.width * 0.5f;
+    return 2.0f * vp_centre - (scissor_x + scissor_w);
+}
+
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     struct LoadedVertex* v1 = &rsp.loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
@@ -1421,6 +1443,14 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         //     cross = -cross;
         // }
 
+        // CHEAT_MIRROR negates clip-space X in gfx_sp_vertex, which reverses
+        // triangle winding. Negate the cross back so back-face culling keeps the
+        // same faces it would un-mirrored (otherwise the world renders inside-out).
+        // Skipped for G_NOMIRROR_EXT geometry (it wasn't X-negated either).
+        if (gfx_mirror_mode && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT)) {
+            cross = -cross;
+        }
+
         switch (rsp.geometry_mode & G_CULL_BOTH) {
             case G_CULL_FRONT:
                 if (cross <= 0) {
@@ -1460,7 +1490,12 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
         if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0) {
             gfx_flush();
-            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
+            // Mirror only 3D-geometry scissors, not 2D rects: gfx_draw_rectangle
+            // writes un-mirrored vertices directly and temporarily forces a
+            // full-screen viewport, so reflecting its scissor would misplace the
+            // HUD (notably in split-screen). is_rect distinguishes the two.
+            const float scx = (gfx_mirror_mode && !is_rect) ? gfx_mirror_scissor_x(rdp.scissor.x, rdp.scissor.width) : rdp.scissor.x;
+            gfx_rapi->set_scissor(scx, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
             rendering_state.scissor = rdp.scissor;
         }
         rdp.viewport_or_scissor_changed = false;
@@ -2643,9 +2678,13 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
         sx = rsp.aspect_scale / gfx_current_dimensions.aspect_ratio;
         ox = rsp.aspect_ofs;
     }
+    // CHEAT_MIRROR: reflect cached geometry left-right by negating the X scale
+    // folded into uMVP (the cached-replay equivalent of the immediate path's
+    // clip-space X negate). Winding is compensated below via cache_set_cull.
+    const float mx = gfx_mirror_mode ? -1.0f : 1.0f;
     float mvp[16]; // column-major
     for (int k = 0; k < 4; k++) {
-        mvp[k * 4 + 0] = sx * (M[k][0] + ox * M[k][3]);
+        mvp[k * 4 + 0] = mx * sx * (M[k][0] + ox * M[k][3]);
         mvp[k * 4 + 1] = sy * M[k][1];
         mvp[k * 4 + 2] = M[k][2];
         mvp[k * 4 + 3] = M[k][3];
@@ -2662,7 +2701,8 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     // time, which would clip the room to where it used to be on screen (rooms
     // vanish when you turn). They're constant across a leaf's segments, so set once.
     gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
-    gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
+    const float dlc_scx = gfx_mirror_mode ? gfx_mirror_scissor_x(rdp.scissor.x, rdp.scissor.width) : rdp.scissor.x;
+    gfx_rapi->set_scissor(dlc_scx, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
 
     // Shader-side GPU palette: bind the live palette texture + enable the lookup so
     // shade is resolved on the GPU (dynamic lighting at cache speed). Per-segment
@@ -2726,7 +2766,11 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             } else if (g_DlCacheCullMode == 3) {
                 cm = 2;
             }
-            gfx_rapi->cache_set_cull(cm, g_DlCacheFrontCcw);
+            // CHEAT_MIRROR reflects the cached geometry (negated X in uMVP above),
+            // reversing winding — flip the front-face sense so GPU back-face
+            // culling keeps the same faces it would un-mirrored.
+            const bool front_ccw = gfx_mirror_mode ? !g_DlCacheFrontCcw : g_DlCacheFrontCcw;
+            gfx_rapi->cache_set_cull(cm, front_ccw);
             // Distance fog (G_FOG) must be recomputed per-frame from gl_Position;
             // constant fog is baked in aFog.a (use_vertex_fog = 1).
             gfx_rapi->set_fog_params(seg.fog_compute ? 0 : 1, seg.fog_mul, seg.fog_off);

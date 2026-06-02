@@ -37,6 +37,7 @@ extern float gfx_current_native_aspect; // The aspect ratio of the above mode
 extern bool gfx_framebuffers_enabled;
 extern bool gfx_detail_textures_enabled;
 extern bool gfx_wireframe_mode;
+extern bool gfx_mirror_mode;                 // flip the 3D scene left-right (CHEAT_MIRROR)
 extern int gfx_wireframe_wire_color_enabled; // 0 = natural/textured wires
 extern float gfx_wireframe_wire_color[3];    // flat wire colour, 0..1 RGB
 extern float gfx_wireframe_line_width;        // wire thickness in pixels

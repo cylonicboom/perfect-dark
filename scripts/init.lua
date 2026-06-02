@@ -29,3 +29,7 @@ load("scripts/octree_overlay.lua")
 
 -- Render-time (/fps) + memory (/mem) overlays, bottom-left. Off until toggled.
 load("scripts/perf_overlay.lua")
+
+-- Live display-list cache stats overlay (testing the GPU-resident cache). Shows
+-- top-right only while /dlcache is on. Comment out to hide.
+load("scripts/dlcache_overlay.lua")

@@ -581,6 +581,31 @@ static int l_pd_octree_stats(lua_State *L)
 	lua_pushinteger(L, g_BgOctreeStats.roomsculled);   lua_setfield(L, -2, "passes");
 	return 1;
 }
+
+/* pd.dlcache_stats() -> table { enabled, cached, bad, batches, tris, fog,
+ * lighting, cullboth, empty }. Live counters from the display-list cache (see
+ * docs/PORT_DLCACHE.md): cached/bad leaf counts, batches/tris replayed last
+ * frame, and the reason flags for leaves that fell back to legacy. Unlike
+ * `/dlcache stats` (a one-shot console print) this updates every frame. */
+static int l_pd_dlcache_stats(lua_State *L)
+{
+	extern void gfx_dlcache_get_stats(u32 *entries, u32 *bad, u32 *segments, u32 *tris, u32 *reasons);
+	u32 cached = 0, bad = 0, batches = 0, tris = 0, reasons = 0;
+	gfx_dlcache_get_stats(&cached, &bad, &batches, &tris, &reasons);
+
+	lua_createtable(L, 0, 9);
+	lua_pushboolean(L, g_DlCacheEnabled); lua_setfield(L, -2, "enabled");
+	lua_pushinteger(L, cached);           lua_setfield(L, -2, "cached");
+	lua_pushinteger(L, bad);              lua_setfield(L, -2, "bad");
+	lua_pushinteger(L, batches);          lua_setfield(L, -2, "batches");
+	lua_pushinteger(L, tris);             lua_setfield(L, -2, "tris");
+	lua_pushboolean(L, reasons & 0x01);   lua_setfield(L, -2, "fog");      /* GFX_DLC_ABORT_FOG */
+	lua_pushboolean(L, reasons & 0x02);   lua_setfield(L, -2, "lighting"); /* GFX_DLC_ABORT_LIGHTING */
+	lua_pushboolean(L, reasons & 0x04);   lua_setfield(L, -2, "cullboth"); /* GFX_DLC_ABORT_CULLBOTH */
+	lua_pushboolean(L, reasons & 0x08);   lua_setfield(L, -2, "empty");    /* GFX_DLC_ABORT_EMPTY */
+	lua_pushboolean(L, reasons & 0x10);   lua_setfield(L, -2, "texgen");   /* GFX_DLC_ABORT_TEXGEN */
+	return 1;
+}
 #endif
 
 #ifndef PLATFORM_N64
@@ -626,6 +651,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_each_chr);    lua_setfield(L, -2, "each_chr");
 #ifndef PLATFORM_N64
 	lua_pushcfunction(L, l_pd_octree_stats);lua_setfield(L, -2, "octree_stats");
+	lua_pushcfunction(L, l_pd_dlcache_stats);lua_setfield(L, -2, "dlcache_stats");
 	lua_pushcfunction(L, l_pd_perf);        lua_setfield(L, -2, "perf");
 #endif
 	/* world / entity queries */

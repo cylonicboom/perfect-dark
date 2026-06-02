@@ -79,6 +79,8 @@ struct LoadedVertex {
     struct RGBA color;
     uint8_t fog;
     uint8_t clip_rej;
+    float ox, oy, oz; // object-space position, for the display-list cache recorder
+    float colour_index; // palette index (v->colour>>2), for the shader-side GPU palette
 };
 
 static struct {
@@ -252,11 +254,157 @@ static constexpr float clampf(const float x, const float min, const float max) {
     return (x < min) ? min : (x > max) ? max : x;
 }
 
+// ======================== Display-list cache ========================
+// Port-only: cache static room leaf geometry in persistent GPU buffers and
+// replay it with a GPU-side uMVP instead of CPU-transforming every vertex each
+// frame. Keyed by the leaf gdl pointer. See docs/PORT_DLCACHE.md.
+
+struct DlCacheSegment {
+    struct ShaderProgram* prg;
+    uint32_t tex_id[2];
+    bool tex_used[2];
+    bool tex_linear[2];
+    uint8_t tex_cms[2], tex_cmt[2];
+    bool tex_lod;
+    bool depth_test, depth_update, depth_compare, depth_source_prim;
+    uint16_t zmode;
+    struct XYWidthHeight viewport, scissor;
+    bool alpha_blend, modulate;
+    int cull; // 0 none, 1 cull-back, 2 cull-front
+    bool fog_compute; // G_FOG set -> shader recomputes distance fog; else baked aFog.a
+    float fog_mul, fog_off;
+    int shade_route; // shader-side palette: 3 bits/input (rgb type + alpha shade)
+    uint32_t state_group; // segments sharing this id share all GL state (for replay dedup/merge)
+    int32_t batch_index;  // octree vtxbatch index within the leaf (k-th G_VTX); -1 = none
+    size_t base_float; // float offset of this segment's first vertex
+    size_t num_tris;
+};
+
+struct DlCacheEntry {
+    bool bad;   // failed restrictions -> always render legacy
+    bool ready; // uploaded and replayable
+    uint32_t buffer_id;
+    std::vector<DlCacheSegment> segments;
+    // Shader-side GPU palette (live dynamic vertex lighting). palette_ok means the
+    // leaf had a single G_COL we can resolve live; the per-vertex colour index is in
+    // the cached buffer and the palette texture is re-uploaded when colours change.
+    bool palette_ok;
+    uint32_t palette_tex;
+    uintptr_t palette_w1; // raw G_COL w1, re-resolved against the live BG_COL segment
+    int palette_count;
+};
+
+static std::unordered_map<const void*, DlCacheEntry> g_DlCache;
+static bool g_DlCacheRecording;
+static bool g_DlCacheAbort;
+static DlCacheEntry* g_DlCacheCur;
+static std::vector<float> g_DlCacheStaging;
+static size_t g_DlCacheSegStartFloat;
+static size_t g_DlCacheSegTris;
+static int g_DlCacheSegCull;
+static bool g_DlCacheSegFogCompute;    // open segment's fog mode (G_FOG distance vs baked)
+static int16_t g_DlCacheSegFogMul;
+static int16_t g_DlCacheSegFogOff;
+static int g_DlCacheSegShadeRoute;     // open segment's shade routing (from the combiner)
+// Transient palette capture for the entry being recorded (one G_COL per leaf).
+static bool g_DlCacheGColSeen;
+static bool g_DlCacheGColMulti;
+static uintptr_t g_DlCacheGColW1;
+static int g_DlCacheGColCount;
+static uint32_t g_DlCacheStateGroup;   // current state-group id (bumped on state/cull change)
+static int32_t g_DlCacheBatchIndex;    // current octree vtxbatch index (G_VTX count in the leaf)
+static int32_t g_DlCacheSegBatch;      // batch index of the open segment
+static bool g_DlCacheFrontCcw = true;   // GL front-face winding for cached cull
+// 0 auto (per-segment), 1 off, 2 force-back, 3 force-front. Defaults to AUTO now
+// that the "turn around -> rooms missing" bug is fixed (it was a baked SCISSOR, not
+// culling). AUTO uses each segment's recorded G_CULL_* mode with the `/dlcache ff`
+// winding (default CCW, which testing found correct). If geometry still drops with
+// a clean test, `/dlcache cull off` is an instant live escape (draws both faces;
+// opaque is z-buffer-identical).
+static int g_DlCacheCullMode = 0;
+static uint32_t g_DlCacheFrameSegments; // segments replayed last frame
+static uint32_t g_DlCacheFrameTris;     // tris replayed last frame
+static uint32_t g_DlCacheAbortReasons;  // OR of GFX_DLC_ABORT_* across bad leaves (diagnostic)
+
+static const float g_DlCacheIdentity[16] = {
+    1.f, 0.f, 0.f, 0.f,
+    0.f, 1.f, 0.f, 0.f,
+    0.f, 0.f, 1.f, 0.f,
+    0.f, 0.f, 0.f, 1.f,
+};
+
+// Close the open segment, snapshotting the GL state the just-recorded tris used.
+static void dlcacheCloseSegment(void) {
+    if (g_DlCacheCur == NULL || g_DlCacheSegTris == 0) {
+        return;
+    }
+    DlCacheSegment seg;
+    seg.prg = rendering_state.shader_program;
+    for (int i = 0; i < 2; i++) {
+        TextureCacheNode* n = rendering_state.textures[i];
+        seg.tex_used[i] = (n != NULL);
+        seg.tex_id[i] = n ? n->second.texture_id : 0;
+        seg.tex_linear[i] = n ? n->second.linear_filter : false;
+        seg.tex_cms[i] = n ? n->second.cms : 0;
+        seg.tex_cmt[i] = n ? n->second.cmt : 0;
+    }
+    seg.tex_lod = rdp.tex_lod;
+    const uint8_t dm = rendering_state.depth_mode; // packed in gfx_sp_tri1
+    seg.depth_test = (dm & 1) != 0;
+    seg.depth_update = (dm & 2) != 0;
+    seg.depth_compare = (dm & 4) != 0;
+    seg.depth_source_prim = (dm & 8) != 0;
+    seg.zmode = (uint16_t)((dm & 0x30) << 6);
+    seg.viewport = rendering_state.viewport;
+    seg.scissor = rendering_state.scissor;
+    seg.alpha_blend = rendering_state.alpha_blend;
+    seg.modulate = rendering_state.modulate;
+    seg.cull = g_DlCacheSegCull;
+    seg.fog_compute = g_DlCacheSegFogCompute;
+    seg.fog_mul = (float)g_DlCacheSegFogMul;
+    seg.fog_off = (float)g_DlCacheSegFogOff;
+    seg.shade_route = g_DlCacheSegShadeRoute;
+    seg.state_group = g_DlCacheStateGroup;
+    seg.batch_index = g_DlCacheSegBatch;
+    seg.base_float = g_DlCacheSegStartFloat;
+    seg.num_tris = g_DlCacheSegTris;
+    g_DlCacheCur->segments.push_back(seg);
+    g_DlCacheSegStartFloat = g_DlCacheStaging.size();
+    g_DlCacheSegTris = 0;
+}
+
+// Drop every cached entry + its GPU buffer (and abort any in-progress record).
+// Called on any texture-cache change so stored texture ids can never dangle.
+static void dlcacheInvalidateAll(void) {
+    if (g_DlCacheRecording) {
+        g_DlCacheRecording = false;
+        g_DlCacheCur = NULL;
+        g_DlCacheAbort = true;
+    }
+    for (auto& kv : g_DlCache) {
+        if (kv.second.buffer_id != 0) {
+            gfx_rapi->cache_delete_buffer(kv.second.buffer_id);
+        }
+        if (kv.second.palette_tex != 0) {
+            gfx_rapi->cache_delete_palette(kv.second.palette_tex);
+        }
+    }
+    g_DlCache.clear();
+    g_DlCacheAbortReasons = 0;
+}
+
 static void gfx_flush(void) {
     if (buf_vbo_len > 0) {
         gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
         buf_vbo_len = 0;
         buf_vbo_num_tris = 0;
+    }
+    // A flush is a render-state boundary: close the open cache segment and start
+    // a new state group so the next run is recorded (and replayed) with its own
+    // GL state.
+    if (g_DlCacheRecording && g_DlCacheSegTris > 0) {
+        dlcacheCloseSegment();
+        g_DlCacheStateGroup++;
     }
 }
 
@@ -512,6 +660,7 @@ static struct ColorCombiner* gfx_lookup_or_create_color_combiner(const ColorComb
 
 void gfx_texture_cache_clear() {
     gfx_flush();
+    dlcacheInvalidateAll(); // cached segments hold texture ids that are about to be freed
     for (const auto& entry : gfx_texture_cache.map) {
         gfx_texture_cache.free_texture_ids.push_back(entry.second.texture_id);
     }
@@ -535,6 +684,7 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
 
     if (gfx_texture_cache.map.size() >= TEXTURE_CACHE_MAX_SIZE) {
         // Remove the texture that was least recently used
+        dlcacheInvalidateAll(); // the evicted texture id may be referenced by a cached segment
         it = gfx_texture_cache.lru.front().it;
         gfx_texture_cache.free_texture_ids.push_back(it->second.texture_id);
         gfx_texture_cache.map.erase(it);
@@ -562,6 +712,7 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
 
 void gfx_texture_cache_delete(const uint8_t* orig_addr) {
     gfx_flush();
+    dlcacheInvalidateAll();
 
     for (int i = 0; i < 2; ++i) {
         if (rendering_state.textures[i] && rendering_state.textures[i]->first.texture_addr == orig_addr) {
@@ -591,6 +742,7 @@ void gfx_texture_cache_delete(const uint8_t* orig_addr) {
 
 void gfx_texture_cache_delete_range(const uint8_t* start, const uint8_t* end) {
     gfx_flush();
+    dlcacheInvalidateAll();
 
     for (int i = 0; i < 2; ++i) {
         if (rendering_state.textures[i]
@@ -1059,6 +1211,12 @@ static void gfx_adjust_width_height_for_scale(uint32_t& width, uint32_t& height)
 static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* vertices) {
     SUPPORT_CHECK(n_vertices <= MAX_VERTICES);
 
+    // One vtxbatch per G_VTX command (matches bg.c bgPopulateVtxBatchType), so the
+    // octree's per-batch visibility lines up with this index at replay.
+    if (g_DlCacheRecording) {
+        g_DlCacheBatchIndex++;
+    }
+
     for (size_t i = 0; i < n_vertices; i++, dest_index++) {
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
@@ -1178,6 +1336,13 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->z = z;
         d->w = w;
 
+        // Object-space position for the display-list cache (GPU-side uMVP).
+        d->ox = v->v[0];
+        d->oy = v->v[1];
+        d->oz = v->v[2];
+        // Palette index for the shader-side GPU palette (live dynamic lighting).
+        d->colour_index = (float)(v->colour >> 2);
+
         if (rsp.geometry_mode & G_FOG) {
             if (fabsf(w) < 0.001f) {
                 // To avoid division by zero
@@ -1222,14 +1387,23 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
 
+    // While recording the display-list cache we must capture the WHOLE leaf
+    // (the GPU clips + culls per-frame on replay), so skip the camera-dependent
+    // clip-reject and backface-cull early-outs that would otherwise bake the
+    // record-frame camera into the cache. Costs one frame of record-frame
+    // overdraw; the geometry is still drawn correctly via the z-buffer.
+    const bool dlcache_capturing = g_DlCacheRecording && !g_DlCacheAbort;
+
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
-            return;
+            if (!dlcache_capturing) {
+                return;
+            }
         }
     }
 
-    if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
+    if ((rsp.geometry_mode & G_CULL_BOTH) != 0 && !dlcache_capturing) {
         float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
         float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
         float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
@@ -1348,6 +1522,29 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
     ColorCombiner* comb = gfx_lookup_or_create_color_combiner(key);
 
+    // Display-list cache restrictions: bail out (this leaf stays legacy) only on
+    // genuinely un-bakeable state. G_LIGHTING and G_TEXTURE_GEN are both view-space
+    // (camera-dependent colour / texgen UVs computed from the view direction), so
+    // baking them freezes to the record-frame camera. Fog is supported: distance
+    // fog (G_FOG) is recomputed in the shader, constant fog bakes into aFog.a;
+    // 2-cycle / multitexture / grayscale bake fine too.
+    if (g_DlCacheRecording && !g_DlCacheAbort) {
+        int reason = 0;
+        if (rsp.geometry_mode & G_LIGHTING) {
+            reason |= GFX_DLC_ABORT_LIGHTING;
+        }
+        if (rsp.geometry_mode & G_TEXTURE_GEN) {
+            reason |= GFX_DLC_ABORT_TEXGEN;
+        }
+        if ((rsp.geometry_mode & G_CULL_BOTH) == G_CULL_BOTH) {
+            reason |= GFX_DLC_ABORT_CULLBOTH;
+        }
+        if (reason) {
+            g_DlCacheAbort = true;
+            g_DlCacheAbortReasons |= reason;
+        }
+    }
+
     uint32_t tm = 0;
     uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
 
@@ -1440,6 +1637,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     gfx_rapi->shader_get_info(prg, &num_inputs, used_textures);
 
     struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
+
+    const size_t rec_tri_start = buf_vbo_len; // for the display-list cache tee
 
     for (int i = 0; i < 3; i++) {
         float z = v_arr[i]->z, w = v_arr[i]->w;
@@ -1589,6 +1788,78 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 }
             }
         }
+    }
+
+    // Display-list cache tee: record this (surviving, un-culled) triangle in
+    // object space. Same attribute layout as buf_vbo, but the 4 position floats
+    // are replaced by object-space (ox,oy,oz,1); the shader applies uMVP.
+    if (g_DlCacheRecording && !g_DlCacheAbort) {
+        int cull = 0;
+        switch (rsp.geometry_mode & G_CULL_BOTH) {
+        case G_CULL_FRONT: cull = 2; break;
+        case G_CULL_BACK:  cull = 1; break;
+        default:           cull = 0; break;
+        }
+        // Fog mode/params are also CPU-side state not captured by gfx_flush
+        // boundaries (G_FOG geometry mode + the G_MW_FOG mul/offset).
+        const bool fogc = (rsp.geometry_mode & G_FOG) != 0;
+
+        // Close the open segment when its octree batch, cull mode, or fog state
+        // changes (none captured by gfx_flush boundaries). A cull/fog change is a
+        // GL state change (new state group); a batch change keeps the same state.
+        if (g_DlCacheSegTris > 0) {
+            const bool stateChanged = cull != g_DlCacheSegCull ||
+                                      fogc != g_DlCacheSegFogCompute ||
+                                      rsp.fog_mul != g_DlCacheSegFogMul ||
+                                      rsp.fog_offset != g_DlCacheSegFogOff;
+            if (stateChanged) {
+                dlcacheCloseSegment();
+                g_DlCacheStateGroup++;
+            } else if (g_DlCacheBatchIndex != g_DlCacheSegBatch) {
+                dlcacheCloseSegment();
+            }
+        }
+        g_DlCacheSegCull = cull;
+        g_DlCacheSegFogCompute = fogc;
+        g_DlCacheSegFogMul = rsp.fog_mul;
+        g_DlCacheSegFogOff = rsp.fog_offset;
+        g_DlCacheSegBatch = g_DlCacheBatchIndex;
+
+        // Shader-side palette: which input slots are shade (from the combiner), so
+        // replay can route the live palette colour into them. Constant within a
+        // segment (a combiner change is a shader change = flush = new segment):
+        // bits per input slot j at j*3 -> rgb type (0/1/2) + alpha-shade bit.
+        {
+            int route = 0;
+            for (int j = 0; j < num_inputs && j < 7; j++) {
+                int r = 0;
+                if (comb->shader_input_mapping[0][j] == G_CCMUX_SHADE) {
+                    r |= 1;
+                } else if (comb->shader_input_mapping[0][j] == G_CCMUX_SHADE_ALPHA) {
+                    r |= 2;
+                }
+                if (use_alpha && comb->shader_input_mapping[1][j] == G_CCMUX_SHADE) {
+                    r |= 4;
+                }
+                route |= (r & 7) << (j * 3);
+            }
+            g_DlCacheSegShadeRoute = route;
+        }
+
+        const size_t per_vtx = (buf_vbo_len - rec_tri_start) / 3;
+        for (int i = 0; i < 3; i++) {
+            const float* src = &buf_vbo[rec_tri_start + i * per_vtx];
+            g_DlCacheStaging.push_back(v_arr[i]->ox);
+            g_DlCacheStaging.push_back(v_arr[i]->oy);
+            g_DlCacheStaging.push_back(v_arr[i]->oz);
+            g_DlCacheStaging.push_back(1.0f);
+            for (size_t f = 4; f < per_vtx; f++) {
+                g_DlCacheStaging.push_back(src[f]);
+            }
+            // Trailing palette colour index (cached stride = buf num_floats + 1).
+            g_DlCacheStaging.push_back(v_arr[i]->colour_index);
+        }
+        g_DlCacheSegTris++;
     }
 
     if (++buf_vbo_num_tris == MAX_BUFFERED) {
@@ -2278,6 +2549,273 @@ static inline void *seg_addr(uintptr_t w1) {
 
 uintptr_t clearMtx;
 
+static void dlcacheBeginRecord(const void* key) {
+    gfx_flush(); // close the pending immediate batch before recording starts
+    DlCacheEntry& e = g_DlCache[key];
+    e.bad = false;
+    e.ready = false;
+    e.buffer_id = 0;
+    e.segments.clear();
+    e.palette_ok = false;
+    e.palette_tex = 0;
+    e.palette_w1 = 0;
+    e.palette_count = 0;
+    g_DlCacheCur = &e;
+    g_DlCacheRecording = true;
+    g_DlCacheAbort = false;
+    g_DlCacheStaging.clear();
+    g_DlCacheSegStartFloat = 0;
+    g_DlCacheSegTris = 0;
+    g_DlCacheSegCull = 0;
+    g_DlCacheStateGroup = 0;
+    g_DlCacheBatchIndex = -1; // first G_VTX -> batch 0
+    g_DlCacheSegBatch = -1;
+    g_DlCacheSegFogCompute = false;
+    g_DlCacheSegFogMul = 0;
+    g_DlCacheSegFogOff = 0;
+    g_DlCacheSegShadeRoute = 0;
+    g_DlCacheGColSeen = false;
+    g_DlCacheGColMulti = false;
+    g_DlCacheGColW1 = 0;
+    g_DlCacheGColCount = 0;
+}
+
+static void dlcacheEndRecord(void) {
+    if (!g_DlCacheRecording) {
+        return;
+    }
+    gfx_flush(); // draw + close the final segment
+    g_DlCacheRecording = false;
+    DlCacheEntry* e = g_DlCacheCur;
+    g_DlCacheCur = NULL;
+    if (e == NULL) {
+        return;
+    }
+    if (g_DlCacheAbort || e->segments.empty() || g_DlCacheStaging.empty()) {
+        e->bad = true;
+        e->segments.clear();
+        e->segments.shrink_to_fit();
+        if (!g_DlCacheAbort) {
+            g_DlCacheAbortReasons |= GFX_DLC_ABORT_EMPTY;
+        }
+        return;
+    }
+    e->buffer_id = gfx_rapi->cache_create_buffer(g_DlCacheStaging.data(), g_DlCacheStaging.size());
+    if (e->buffer_id == 0) {
+        e->bad = true;
+        e->segments.clear();
+        return;
+    }
+    e->ready = true;
+
+    // Shader-side GPU palette: if the leaf had exactly one resolvable G_COL, build a
+    // palette texture from the live colours. Dynamic lighting then updates at cache
+    // speed (the dirty bit re-uploads this texture instead of re-recording the VBO).
+    if (g_DlCacheGColSeen && !g_DlCacheGColMulti && g_DlCacheGColCount > 0) {
+        void* pal = seg_addr(g_DlCacheGColW1);
+        if (pal != NULL) {
+            e->palette_tex = gfx_rapi->cache_create_palette();
+            if (e->palette_tex != 0) {
+                gfx_rapi->cache_upload_palette(e->palette_tex, pal, g_DlCacheGColCount);
+                e->palette_w1 = g_DlCacheGColW1;
+                e->palette_count = g_DlCacheGColCount;
+                e->palette_ok = true;
+            }
+        }
+    }
+}
+
+// vis: per-batch visibility (vis[seg.batch_index]) for octree culling this frame,
+// or NULL to draw every batch (octree inactive for this room).
+static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
+    gfx_flush();
+
+    // uMVP = (aspect-X scale/offset, invert-Y) folded into the live room
+    // MP_matrix. GL desktop keeps z as-is (clip z_is_from_0_to_1 == false).
+    float (*M)[4] = rsp.MP_matrix;
+    const struct GfxClipParameters clip = gfx_rapi->get_clip_parameters();
+    const float sy = clip.invert_y ? -1.0f : 1.0f;
+    float sx, ox;
+    if (fbActive) {
+        sx = 1.0f;
+        ox = 0.0f;
+    } else {
+        sx = rsp.aspect_scale / gfx_current_dimensions.aspect_ratio;
+        ox = rsp.aspect_ofs;
+    }
+    float mvp[16]; // column-major
+    for (int k = 0; k < 4; k++) {
+        mvp[k * 4 + 0] = sx * (M[k][0] + ox * M[k][3]);
+        mvp[k * 4 + 1] = sy * M[k][1];
+        mvp[k * 4 + 2] = M[k][2];
+        mvp[k * 4 + 3] = M[k][3];
+    }
+    gfx_rapi->set_mvp(mvp);
+
+    // We drive GL directly during replay; disable the pre-replay shader's attribs.
+    gfx_rapi->unload_shader(rendering_state.shader_program);
+    gfx_rapi->cache_replay_begin(e->buffer_id);
+
+    // Viewport + scissor are VIEW-dependent (the scissor is the room's portal-
+    // clipped draw-slot box, which moves/shrinks as the camera turns), so use the
+    // LIVE values set for this room this frame -- NOT the ones baked at record
+    // time, which would clip the room to where it used to be on screen (rooms
+    // vanish when you turn). They're constant across a leaf's segments, so set once.
+    gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
+    gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
+
+    // Shader-side GPU palette: bind the live palette texture + enable the lookup so
+    // shade is resolved on the GPU (dynamic lighting at cache speed). Per-segment
+    // shade routing is set in the state-group block below.
+    if (e->palette_ok) {
+        gfx_rapi->cache_bind_palette(e->palette_tex, e->palette_count);
+        gfx_rapi->set_palette_enable(1);
+    }
+
+    // Walk segments, applying GL state once per state group and merging
+    // contiguous visible batches into one draw. Segments are buffer-contiguous by
+    // construction, so a merged draw just sums num_tris; a culled batch (or a
+    // state-group change) flushes the pending draw.
+    struct ShaderProgram* curprg = NULL;
+    uint32_t applied_group = (uint32_t)-1;
+    struct ShaderProgram* pend_prg = NULL;
+    size_t pend_base = 0;
+    size_t pend_tris = 0;
+    uint32_t drawn_batches = 0;
+
+    for (const DlCacheSegment& seg : e->segments) {
+        const bool visible = (vis == NULL) || (seg.batch_index < 0) || vis[seg.batch_index];
+        if (!visible) {
+            if (pend_tris > 0) {
+                gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
+                g_DlCacheFrameTris += (uint32_t)pend_tris;
+                pend_tris = 0;
+            }
+            continue;
+        }
+        if (seg.state_group != applied_group) {
+            if (pend_tris > 0) {
+                gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
+                g_DlCacheFrameTris += (uint32_t)pend_tris;
+                pend_tris = 0;
+            }
+            gfx_rapi->set_depth_mode(seg.depth_test, seg.depth_update, seg.depth_compare,
+                                     seg.depth_source_prim, seg.zmode);
+            // viewport/scissor are set once above from live state (view-dependent).
+            gfx_rapi->set_use_alpha(seg.alpha_blend, seg.modulate);
+            for (int i = 0; i < 2; i++) {
+                if (seg.tex_used[i]) {
+                    gfx_rapi->select_texture(i, seg.tex_id[i], seg.tex_linear[i]);
+                    gfx_rapi->set_sampler_parameters(i, seg.tex_linear[i], seg.tex_cms[i], seg.tex_cmt[i], seg.tex_lod);
+                }
+            }
+            if (seg.prg != curprg) {
+                if (curprg != NULL) {
+                    gfx_rapi->unload_shader(curprg);
+                }
+                gfx_rapi->load_shader(seg.prg);
+                curprg = seg.prg;
+            }
+            // Cull mode: auto = the recorded per-segment mode; the others are
+            // diagnostics (off / force a single face) for /dlcache cull.
+            int cm = seg.cull;
+            if (g_DlCacheCullMode == 1) {
+                cm = 0;
+            } else if (g_DlCacheCullMode == 2) {
+                cm = 1;
+            } else if (g_DlCacheCullMode == 3) {
+                cm = 2;
+            }
+            gfx_rapi->cache_set_cull(cm, g_DlCacheFrontCcw);
+            // Distance fog (G_FOG) must be recomputed per-frame from gl_Position;
+            // constant fog is baked in aFog.a (use_vertex_fog = 1).
+            gfx_rapi->set_fog_params(seg.fog_compute ? 0 : 1, seg.fog_mul, seg.fog_off);
+            // Shader-side palette: route the live shade colour into this combiner's
+            // shade input slots (after load_shader so it targets this program).
+            if (e->palette_ok) {
+                gfx_rapi->set_shade_routing(seg.shade_route);
+            }
+            applied_group = seg.state_group;
+        }
+        if (pend_tris == 0) {
+            pend_prg = seg.prg;
+            pend_base = seg.base_float;
+        }
+        pend_tris += seg.num_tris;
+        drawn_batches++;
+    }
+    if (pend_tris > 0) {
+        gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
+        g_DlCacheFrameTris += (uint32_t)pend_tris;
+    }
+    if (curprg != NULL) {
+        gfx_rapi->unload_shader(curprg);
+    }
+    g_DlCacheFrameSegments += drawn_batches;
+
+    if (e->palette_ok) {
+        gfx_rapi->set_palette_enable(0); // back to baked combiner inputs for the immediate path
+    }
+    gfx_rapi->set_mvp(g_DlCacheIdentity);
+    gfx_rapi->set_fog_params(1, 0.f, 0.f); // back to baked per-vertex fog for the immediate path
+    gfx_rapi->cache_replay_end();
+
+    // Force the immediate path to re-establish shader (attrib pointers back into
+    // opengl_vbo) + textures on its next draw. depth/viewport/scissor are forced
+    // too; alpha/modulate mirror the last segment (GL is in that state).
+    rendering_state.shader_program = NULL;
+    rendering_state.textures[0] = NULL;
+    rendering_state.textures[1] = NULL;
+    rdp.textures_changed[0] = true;
+    rdp.textures_changed[1] = true;
+    rendering_state.depth_mode = 0xff;
+    rendering_state.viewport = {};
+    rendering_state.scissor = {};
+    rdp.viewport_or_scissor_changed = true;
+    if (!e->segments.empty()) {
+        rendering_state.alpha_blend = e->segments.back().alpha_blend;
+        rendering_state.modulate = e->segments.back().modulate;
+    }
+}
+
+extern "C" void gfx_dlcache_clear(void) {
+    dlcacheInvalidateAll();
+}
+
+extern "C" void gfx_dlcache_set_frontface(int ccw) {
+    // Read live at replay time, so no re-record needed.
+    g_DlCacheFrontCcw = (ccw != 0);
+}
+
+extern "C" int gfx_dlcache_get_frontface(void) {
+    return g_DlCacheFrontCcw ? 1 : 0;
+}
+
+extern "C" void gfx_dlcache_set_cullmode(int mode) {
+    g_DlCacheCullMode = mode; // read live at replay; no re-record
+}
+
+extern "C" int gfx_dlcache_get_cullmode(void) {
+    return g_DlCacheCullMode;
+}
+
+extern "C" void gfx_dlcache_get_stats(uint32_t* entries, uint32_t* bad, uint32_t* segments, uint32_t* tris,
+                                      uint32_t* reasons) {
+    uint32_t ne = 0, nb = 0;
+    for (const auto& kv : g_DlCache) {
+        if (kv.second.bad) {
+            nb++;
+        } else if (kv.second.ready) {
+            ne++;
+        }
+    }
+    if (entries) *entries = ne;
+    if (bad) *bad = nb;
+    if (segments) *segments = g_DlCacheFrameSegments;
+    if (tris) *tris = g_DlCacheFrameTris;
+    if (reasons) *reasons = g_DlCacheAbortReasons;
+}
+
 static void gfx_run_dl(Gfx* cmd) {
     // puts("dl");
     int dummy = 0;
@@ -2337,6 +2875,47 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_EXTRAGEOMETRYMODE_EXT:
                 gfx_sp_extra_geometry_mode(~C0(0, 24), cmd->words.w1);
                 break;
+            case G_DLCACHE_BEGIN_EXT: {
+                // Cache key = the leaf gdl pointer in the gSPDisplayList that
+                // immediately follows this command. w1 carries the per-frame
+                // octree batch-visibility array (&g_BgCullVisible[startidx]) or 0.
+                // w0 low bit = the room's vertex colours changed this frame
+                // (dynamic lighting) -> drop + re-record so the bake isn't stale.
+                const Gfx* dlcmd = cmd + 1;
+                const void* key = (const void*)seg_addr(dlcmd->words.w1);
+                const uint8_t* vis = (const uint8_t*)cmd->words.w1;
+                const bool dirty = (cmd->words.w0 & 1u) != 0;
+                auto it = g_DlCache.find(key);
+                if (dirty && it != g_DlCache.end() && it->second.ready) {
+                    if (it->second.palette_ok) {
+                        // Dynamic lighting: refresh the live palette texture and keep
+                        // the cached geometry (cache-speed; no VBO rebuild).
+                        void* pal = seg_addr(it->second.palette_w1);
+                        if (pal != NULL) {
+                            gfx_rapi->cache_upload_palette(it->second.palette_tex, pal, it->second.palette_count);
+                        }
+                    } else {
+                        // No palette path for this leaf: fall back to re-record.
+                        if (it->second.buffer_id != 0) {
+                            gfx_rapi->cache_delete_buffer(it->second.buffer_id);
+                        }
+                        g_DlCache.erase(it);
+                        it = g_DlCache.end();
+                    }
+                }
+                if (it != g_DlCache.end() && it->second.ready) {
+                    dlcacheReplay(&it->second, vis);
+                    ++cmd; // skip the following gSPDisplayList (already replayed)
+                } else if (it != g_DlCache.end() && it->second.bad) {
+                    // known-uncacheable: let the following gSPDisplayList run legacy
+                } else {
+                    dlcacheBeginRecord(key);
+                }
+                break;
+            }
+            case G_DLCACHE_END_EXT:
+                dlcacheEndRecord();
+                break;
             case (uint8_t)G_TRI1:
                 gfx_sp_tri1(C1(16, 8) / 10, C1(8, 8) / 10, C1(0, 8) / 10, false);
                 break;
@@ -2350,6 +2929,18 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_sp_set_other_mode(C0(8, 8) + 32, C0(0, 8), (uint64_t)cmd->words.w1 << 32);
                 break;
             case G_COL:
+                // Capture the leaf's colour palette for the shader-side GPU palette.
+                // We expect exactly one G_COL per cached leaf; a second disables the
+                // palette path for it (falls back to re-record-on-dirty).
+                if (g_DlCacheRecording) {
+                    if (g_DlCacheGColSeen) {
+                        g_DlCacheGColMulti = true;
+                    } else {
+                        g_DlCacheGColSeen = true;
+                        g_DlCacheGColW1 = cmd->words.w1;
+                        g_DlCacheGColCount = C0(0, 16) / 4;
+                    }
+                }
                 gfx_sp_set_vertex_colors(C0(0, 16) / 4, (NormalColor *)seg_addr(cmd->words.w1));
                 break;
 
@@ -2667,6 +3258,9 @@ uint32_t num_dls = 0;
 extern "C" void gfx_run(Gfx* commands) {
     ++num_dls;
     gfx_sp_reset();
+
+    g_DlCacheFrameSegments = 0;
+    g_DlCacheFrameTris = 0;
 
     // puts("New frame");
 

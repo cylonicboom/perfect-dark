@@ -208,6 +208,11 @@ bool g_BgOctreeBigRoom = false;      // /octree bigroom: portal culling off + oc
 bool g_BgOctreePortalCull = true;    // /octree portal: cull octree nodes against each room's portal-clipped draw-slot box (vs the full viewport)
 struct bgoctreestats g_BgOctreeStats;
 
+// Display-list cache master toggle (/dlcache on|off). When on, non-octree,
+// non-dyntex room leaves are bracketed for GPU-resident caching in the renderer.
+// See docs/PORT_DLCACHE.md.
+bool g_DlCacheEnabled = false;
+
 // Set by bgCullBeginPass for the duration of one room's render pass; read by the
 // LEAF case of bgRenderRoomPass via bgEmitLeafCulled. NULL = cull inactive (the
 // room emits its full display list unchanged).
@@ -3841,6 +3846,69 @@ static void bgCullEndPass(void)
 }
 
 /**
+ * First vtxbatch index for a leaf gdl: the k-th G_VTX in the leaf maps to
+ * vtxbatches[startidx + k]. Returns -1 if there's no batch info. Used by the
+ * display-list cache to hand the renderer the leaf's per-batch visibility slice
+ * (&g_BgCullVisible[startidx]) so cached replay can octree-cull per batch.
+ */
+/**
+ * Detect whether a room's (per-frame, dynamically lit) vertex colours changed
+ * since last frame, so the display-list cache can re-record its leaves and reflect
+ * dynamic lighting (shot-out lights, muzzle flash, sparks). roomHighlight() rebuilds
+ * g_Rooms[roomnum].colours each frame; we FNV-hash the result once per room per
+ * frame (cached in dlcolourhashframe) and compare. See docs/PORT_DLCACHE.md.
+ */
+static u32 bgHashColours(Col *colours, s32 numcolours)
+{
+	u32 h = 2166136261u;
+	const u8 *p = (const u8 *)colours;
+	s32 bytes = numcolours * (s32)sizeof(Col);
+	s32 i;
+
+	for (i = 0; i < bytes; i++) {
+		h = (h ^ p[i]) * 16777619u;
+	}
+
+	return h;
+}
+
+static bool bgDlCacheRoomColoursDirty(s32 roomnum)
+{
+	struct room *room = &g_Rooms[roomnum];
+
+	// Compute once per room per frame; later leaves of the same room reuse it.
+	if (room->dlcolourhashframe != (s32)g_BgFrameCount) {
+		u32 h = (room->colours != NULL)
+			? bgHashColours(room->colours, room->gfxdata->numcolours)
+			: 0;
+		room->dlcolourdirty = (h != room->dlcolourhash);
+		room->dlcolourhash = h;
+		room->dlcolourhashframe = (s32)g_BgFrameCount;
+	}
+
+	return room->dlcolourdirty;
+}
+
+static s32 bgFindLeafBatchStart(s32 roomnum, Gfx *gdl)
+{
+	struct vtxbatch *batches = g_Rooms[roomnum].vtxbatches;
+	s32 numbatches = g_Rooms[roomnum].numvtxbatches;
+	s32 i;
+
+	if (batches == NULL) {
+		return -1;
+	}
+
+	for (i = 0; i < numbatches; i++) {
+		if (batches[i].gdl == gdl) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/**
  * Emit one room leaf, dropping the geometry of culled batches. State commands
  * (texture/combine/tile/othermode/...) are always copied so survivors keep
  * correct render state; only G_VTX/G_TRI* of culled batches are skipped. The
@@ -3987,7 +4055,28 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		gSPSegment(gdl++, SPSEGMENT_BG_COL, OS_PHYSICAL_TO_K0(v0));
 
 #ifndef PLATFORM_N64
-		if (g_BgCullVisible != NULL && g_BgCullRoom == roomnum) {
+		if (g_DlCacheEnabled && (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
+			// Bracket the leaf for GPU-resident display-list caching. The renderer
+			// keys the cache by block->gdl, peeked from the gSPDisplayList between
+			// the two markers. Dyntex rooms are excluded (their textures change).
+			// When this room is octree-culled this frame, hand the renderer the
+			// leaf's per-batch visibility slice so cached replay skips culled
+			// batches (caching + culling compose).
+			u8 *vis = NULL;
+			bool coldirty;
+			if (g_BgCullVisible != NULL && g_BgCullRoom == roomnum) {
+				s32 startidx = bgFindLeafBatchStart(roomnum, block->gdl);
+				if (startidx >= 0) {
+					vis = &g_BgCullVisible[startidx];
+				}
+			}
+			// Re-record this leaf if the room's vertex colours changed this frame
+			// (dynamic lighting), so cached geometry isn't stuck on frozen lighting.
+			coldirty = bgDlCacheRoomColoursDirty(roomnum);
+			gSPDlCacheBeginEXT(gdl++, vis, coldirty);
+			gSPDisplayList(gdl++, OS_PHYSICAL_TO_K0(block->gdl));
+			gSPDlCacheEndEXT(gdl++);
+		} else if (g_BgCullVisible != NULL && g_BgCullRoom == roomnum) {
 			gdl = bgEmitLeafCulled(gdl, roomnum, block);
 		} else
 #endif

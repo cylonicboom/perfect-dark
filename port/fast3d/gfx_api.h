@@ -59,4 +59,19 @@ void gfx_set_framebuffer(int fb, float noise_scale) ;
 void gfx_reset_framebuffer(void);
 void gfx_copy_framebuffer(int fb_dst, int fb_src, int left, int top, int use_back);
 
+// Display-list cache (port-only; see docs/PORT_DLCACHE.md). Driven by /dlcache.
+// Abort-reason bits returned in gfx_dlcache_get_stats(reasons) — why leaves fell
+// back to legacy (the un-bakeable / unsupported state encountered while recording).
+#define GFX_DLC_ABORT_FOG      0x01
+#define GFX_DLC_ABORT_LIGHTING 0x02
+#define GFX_DLC_ABORT_CULLBOTH 0x04
+#define GFX_DLC_ABORT_EMPTY    0x08
+#define GFX_DLC_ABORT_TEXGEN   0x10
+void gfx_dlcache_clear(void);
+void gfx_dlcache_set_frontface(int ccw);
+int gfx_dlcache_get_frontface(void);
+void gfx_dlcache_set_cullmode(int mode); // 0 auto, 1 off, 2 force-back, 3 force-front
+int gfx_dlcache_get_cullmode(void);
+void gfx_dlcache_get_stats(uint32_t *entries, uint32_t *bad, uint32_t *segments, uint32_t *tris, uint32_t *reasons);
+
 #endif

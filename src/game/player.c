@@ -4904,12 +4904,26 @@ Gfx *playerRenderHud(Gfx *gdl)
 	if (g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY) {
 		bgunTickGameplay2();
 		gdl = boltbeamsRender(gdl);
-		bgunRender(&gdl);
-		gdl = lasersightRenderDot(gdl);
 
+#ifndef PLATFORM_N64
+		// Port: draw light glares BEFORE the viewmodel so the opaque gun/hands
+		// overdraw (occlude) glares behind them. Glare sprites are depth-less and
+		// their visibility test (artifactTestLos) only considers world geometry, so
+		// otherwise a light behind the gun still emits a glare that paints over the
+		// weapon. The N64 build keeps the original after-gun order below (byte-match).
 		if (g_Vars.currentplayer->visionmode != VISIONMODE_XRAY) {
 			gdl = bgRenderArtifacts(gdl);
 		}
+#endif
+
+		bgunRender(&gdl);
+		gdl = lasersightRenderDot(gdl);
+
+#ifdef PLATFORM_N64
+		if (g_Vars.currentplayer->visionmode != VISIONMODE_XRAY) {
+			gdl = bgRenderArtifacts(gdl);
+		}
+#endif
 
 		if (g_NbombsActive) {
 			gdl = nbombRenderOverlay(gdl);

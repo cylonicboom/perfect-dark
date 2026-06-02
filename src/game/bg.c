@@ -206,6 +206,7 @@ bool g_BgOctreeForceCullAll = false; // debug: cull everything (/octree forcecul
 bool g_BgOctreeMarkAll = false;      // debug: treat every loaded room as octree-enabled (/octree markall)
 bool g_BgOctreeBigRoom = false;      // /octree bigroom: portal culling off + octree-cull every room (whole level as one space)
 bool g_BgOctreePortalCull = true;    // /octree portal: cull octree nodes against each room's portal-clipped draw-slot box (vs the full viewport)
+bool g_BgOctreeAutoOutdoor = false;  // /octree auto: octree-cull every ROOMFLAG_OUTDOORS room automatically (level-data driven, no manual /octree mark)
 struct bgoctreestats g_BgOctreeStats;
 
 // Display-list cache master toggle (/dlcache on|off). When on, non-octree,
@@ -3821,7 +3822,11 @@ static void bgCullBeginPass(s32 roomnum)
 	g_BgCullRoom = -1;
 
 	if (!g_BgOctreeEnabled) return;
-	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll && !g_BgOctreeBigRoom) return;
+	// /octree auto: outdoor rooms (ROOMFLAG_OUTDOORS, set from level data) are
+	// treated as octree-enabled without a manual /octree mark - lazy-built below
+	// like markall, no permanent extra_flags mutation so toggling is instant.
+	bool autoout = g_BgOctreeAutoOutdoor && (room->flags & ROOMFLAG_OUTDOORS);
+	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll && !g_BgOctreeBigRoom && !autoout) return;
 	if (n <= 0) return;
 	if (room->octree == NULL) {
 		// Lazy build for /octree markall (and any room flagged after load). A

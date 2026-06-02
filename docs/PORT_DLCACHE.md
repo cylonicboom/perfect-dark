@@ -7,10 +7,13 @@ transform + per-triangle state derivation. Off by default; toggled with
 `/dlcache`. GL desktop only; the N64 build and `/dlcache off` are byte-identical
 to an unmodified build.
 
-> **Status: Phase 1 + Phase 2 done.** Phase 1 caches a restricted class of static
-> room geometry; Phase 2 makes the cache octree-aware (per-vtxbatch culling at
-> replay). Broader state coverage (fog/lighting/multi-texture, Phase 3) is still
-> deferred — see "Roadmap".
+> **Status: Phase 1 + Phase 2 done, plus GPU fog and dynamic vertex lighting.**
+> Phase 1 caches a restricted class of static room geometry; Phase 2 makes the cache
+> octree-aware (per-vtxbatch culling at replay). 2-cycle, multitexture, grayscale,
+> distance fog, and dynamic vertex lighting (shader-side palette) are all cached.
+> The remaining un-cached cases — `G_TEXTURE_GEN` (reflective/env-mapped surfaces),
+> `G_LIGHTING` (normal-based view-space lighting), and whole-room dyntex exclusion —
+> are view-dependent and deferred to Phase 3; see "Roadmap".
 
 ---
 
@@ -348,11 +351,22 @@ the shader level.
   vertex + N×1 palette texture + in-shader shade lookup/routing; dynamic lighting at
   cache speed (dirty → re-upload palette, not re-record). Desktop GL; ES uses the
   re-record fallback. See "Dynamic vertex lighting" above.
-- **Phase 3 — remaining coverage.** `G_LIGHTING` rooms (view-space, currently abort);
-  per-room palette texture sharing (currently per-leaf); dynamic prim/env/fog
-  **colour** (still baked); texture pinning so gun switches / dyntex don't clear the
-  whole cache; auto-cache rooms flagged for octree; later, dynamic models (per-object
-  `uMVP`).
+- **Phase 3 — remaining coverage.** The leaves that still fall back to the legacy
+  path, in rough order of payoff for static rooms:
+  - **`G_TEXTURE_GEN`** (`GFX_DLC_ABORT_TEXGEN`) — reflective / environment-mapped
+    surfaces. UVs are currently generated per-vertex from the view direction; baking
+    freezes them to the record-frame camera. Needs per-vertex normals captured into
+    the cache buffer + a texgen matrix uniform so the VS regenerates UVs at replay.
+  - **`G_LIGHTING`** (`GFX_DLC_ABORT_LIGHTING`) — normal-based view-space lighting
+    (rarer on static room geometry than on props). Same prerequisite: normals in the
+    cache + a normal/light uniform set computed in the shader.
+  - **Dyntex rooms** (`ROOMFLAG_HASDYNTEX`, excluded whole-room at the `bg.c`
+    bracket) — scrolling/animated textures. Needs the cache to tolerate per-frame
+    texture-id changes for the animated tiles only (texture pinning, below).
+  - Supporting work: per-room palette texture sharing (currently per-leaf); dynamic
+    prim/env/fog **colour** (still baked); texture pinning so gun switches / dyntex
+    don't clear the whole cache; auto-cache rooms flagged for octree; later, dynamic
+    models (per-object `uMVP`).
 
 ---
 

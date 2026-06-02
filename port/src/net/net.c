@@ -3903,6 +3903,15 @@ s32 netConsoleCommand(const char *line)
 			sysLogPrintf(LOG_CHAT, "OCTREE: portal-box culling %s (%s)",
 					g_BgOctreePortalCull ? "ON" : "OFF",
 					g_BgOctreePortalCull ? "to each room's doorway footprint" : "to full viewport");
+		} else if (strcmp(arg, "auto") == 0 || strcmp(arg, "outdoor") == 0) {
+			// Auto octree-cull every outdoor room (ROOMFLAG_OUTDOORS, from level
+			// data) with no manual /octree mark. Lazy-built per room on first sight.
+			g_BgOctreeAutoOutdoor = !g_BgOctreeAutoOutdoor;
+			if (g_BgOctreeAutoOutdoor) {
+				g_BgOctreeEnabled = true; // make sure the master switch is on
+			}
+			sysLogPrintf(LOG_CHAT, "OCTREE: auto-outdoor %s (every ROOMFLAG_OUTDOORS room octree-culled)",
+					g_BgOctreeAutoOutdoor ? "ON" : "OFF");
 		} else if (strcmp(arg, "unmark") == 0) {
 			bgOctreeUnmarkAll();
 			sysLogPrintf(LOG_CHAT, "OCTREE: cleared all runtime marks (octree culling off everywhere)");
@@ -3998,6 +4007,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /wireframe save|load             persist sky/wire colour + thickness to pd.ini");
 		sysLogPrintf(LOG_CHAT, "  /octree [on|off|forcecull|stats] outdoor-room octree culling");
 		sysLogPrintf(LOG_CHAT, "  /octree mark|markall|unmark      flag current room / every room (test anywhere)");
+		sysLogPrintf(LOG_CHAT, "  /octree auto                     auto-cull every outdoor room (no manual mark)");
 		sysLogPrintf(LOG_CHAT, "  /octree bigroom                  portal culling off + octree-cull whole level");
 		sysLogPrintf(LOG_CHAT, "  /octree portal                   cull to room's doorway footprint vs viewport (default on)");
 		sysLogPrintf(LOG_CHAT, "  /dlcache [on|off|stats|clear|ff]  cache static room geometry on the GPU");

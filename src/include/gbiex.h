@@ -197,6 +197,12 @@
 #define G_RDPFLUSH_EXT               0x43
 #define G_CLEAR_DEPTH_EXT            0x44
 #define G_SETSUBPIXELOFFSET_EXT      0x45
+// Port-only display-list cache bracket (see docs/PORT_DLCACHE.md). BEGIN..the
+// following gSPDisplayList..END marks a static room leaf for GPU-resident
+// caching; the renderer keys the cache by the leaf gdl pointer it peeks from
+// the gSPDisplayList that immediately follows BEGIN.
+#define G_DLCACHE_BEGIN_EXT          0x46
+#define G_DLCACHE_END_EXT            0x47
 
 /* G_EXTRAGEOMETRYMODE flags */
 
@@ -299,6 +305,26 @@
                                                                                        \
     _g->words.w0 = _SHIFTL(G_SETSUBPIXELOFFSET_EXT, 24, 8) | _SHIFTL((s16)(x), 0, 16); \
     _g->words.w1 = _SHIFTL((s16)(y), 0, 16);                                           \
+}
+
+// vis = per-batch octree visibility array for this leaf (&g_BgCullVisible[startidx]),
+// or NULL when the room isn't octree-culled this frame.
+// dirty = nonzero if the room's vertex colours changed this frame (dynamic
+// lighting) so the renderer should re-record this leaf (w0 low bit).
+#define gSPDlCacheBeginEXT(pkt, vis, dirty)                                    \
+{                                                                              \
+    Gfx *_g = (Gfx*)(pkt);                                                     \
+                                                                              \
+    _g->words.w0 = _SHIFTL(G_DLCACHE_BEGIN_EXT, 24, 8) | ((dirty) ? 1u : 0u); \
+    _g->words.w1 = (uintptr_t)(vis);                                          \
+}
+
+#define gSPDlCacheEndEXT(pkt)                           \
+{                                                       \
+    Gfx *_g = (Gfx*)(pkt);                              \
+                                                        \
+    _g->words.w0 = _SHIFTL(G_DLCACHE_END_EXT, 24, 8);   \
+    _g->words.w1 = 0;                                   \
 }
 
 #define gSPSetExtraGeometryModeEXT(pkt, word) gSPExtraGeometryModeEXT((pkt), 0, word)

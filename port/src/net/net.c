@@ -3916,6 +3916,73 @@ s32 netConsoleCommand(const char *line)
 			g_BgOctreeEnabled = on;
 			sysLogPrintf(LOG_CHAT, "OCTREE: culling %s", on ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "dlcache") == 0) {
+		// /dlcache [on|off]   GPU-resident caching of static room display lists
+		// /dlcache stats      print cache counters
+		// /dlcache clear      drop all cached buffers (re-record next frame)
+		// /dlcache ff         flip cached-geometry backface winding (calibration)
+		// Drives g_DlCacheEnabled (bg.c) + the renderer cache; see PORT_DLCACHE.md.
+		extern void gfx_dlcache_clear(void);
+		extern void gfx_dlcache_set_frontface(int ccw);
+		extern int gfx_dlcache_get_frontface(void);
+		extern void gfx_dlcache_set_cullmode(int mode);
+		extern int gfx_dlcache_get_cullmode(void);
+		extern void gfx_dlcache_get_stats(u32 *entries, u32 *bad, u32 *segments, u32 *tris, u32 *reasons);
+		if (strcmp(arg, "stats") == 0) {
+			u32 entries = 0, bad = 0, segments = 0, tris = 0, reasons = 0;
+			gfx_dlcache_get_stats(&entries, &bad, &segments, &tris, &reasons);
+			sysLogPrintf(LOG_CHAT, "DLCACHE: %s  cached=%u bad=%u  front=%s",
+					g_DlCacheEnabled ? "ON" : "OFF", entries, bad,
+					gfx_dlcache_get_frontface() ? "CCW" : "CW");
+			sysLogPrintf(LOG_CHAT, "DLCACHE: replayed last frame: batches=%u tris=%u", segments, tris);
+			if (reasons) {
+				// GFX_DLC_ABORT_* bits (gfx_api.h): why leaves fell back to legacy.
+				sysLogPrintf(LOG_CHAT, "DLCACHE: bad reasons:%s%s%s%s%s",
+						(reasons & 0x01) ? " fog" : "",
+						(reasons & 0x02) ? " lighting" : "",
+						(reasons & 0x04) ? " cullboth" : "",
+						(reasons & 0x08) ? " empty" : "",
+						(reasons & 0x10) ? " texgen" : "");
+			}
+		} else if (strcmp(arg, "clear") == 0) {
+			gfx_dlcache_clear();
+			sysLogPrintf(LOG_CHAT, "DLCACHE: cleared all cached buffers");
+		} else if (strcmp(arg, "ff") == 0 || strcmp(arg, "frontface") == 0) {
+			int ccw = !gfx_dlcache_get_frontface();
+			gfx_dlcache_set_frontface(ccw);
+			sysLogPrintf(LOG_CHAT, "DLCACHE: cached front-face = %s (if culling looks wrong, flip this)",
+					ccw ? "CCW" : "CW");
+		} else if (strcmp(arg, "cull") == 0 || strncmp(arg, "cull ", 5) == 0) {
+			// /dlcache cull [auto|off|back|front] — diagnose missing geometry.
+			const char *m = (arg[4] == ' ') ? arg + 5 : "";
+			int mode;
+			if (strcmp(m, "off") == 0) {
+				mode = 1;
+			} else if (strcmp(m, "back") == 0) {
+				mode = 2;
+			} else if (strcmp(m, "front") == 0) {
+				mode = 3;
+			} else {
+				mode = 0; // auto (per-segment recorded mode)
+			}
+			gfx_dlcache_set_cullmode(mode);
+			sysLogPrintf(LOG_CHAT, "DLCACHE: cached cull = %s",
+					mode == 1 ? "OFF (draw both faces)" :
+					mode == 2 ? "force BACK" :
+					mode == 3 ? "force FRONT" : "auto (per-segment)");
+		} else {
+			bool on;
+			if (!arg[0]) {
+				on = !g_DlCacheEnabled;
+			} else {
+				on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
+			}
+			g_DlCacheEnabled = on;
+			if (!on) {
+				gfx_dlcache_clear();
+			}
+			sysLogPrintf(LOG_CHAT, "DLCACHE: %s", on ? "ON" : "OFF");
+		}
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -3933,6 +4000,8 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /octree mark|markall|unmark      flag current room / every room (test anywhere)");
 		sysLogPrintf(LOG_CHAT, "  /octree bigroom                  portal culling off + octree-cull whole level");
 		sysLogPrintf(LOG_CHAT, "  /octree portal                   cull to room's doorway footprint vs viewport (default on)");
+		sysLogPrintf(LOG_CHAT, "  /dlcache [on|off|stats|clear|ff]  cache static room geometry on the GPU");
+		sysLogPrintf(LOG_CHAT, "  /dlcache cull [auto|off|back|front] cached backface-cull mode (debug missing rooms)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

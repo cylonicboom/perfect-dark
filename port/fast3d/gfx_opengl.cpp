@@ -34,7 +34,17 @@ struct ShaderProgram {
     GLint noise_scale_location;
     GLint three_point_filter_locations[2];
     GLint wireframe_color_location;
+    GLint mvp_location;
+    GLint use_vertex_fog_location;
+    GLint fog_mul_location;
+    GLint fog_off_location;
+    GLint shade_idx_location;       // aShadeIdx vertex attribute (cached palette lookup)
+    GLint palette_enable_location;  // uPaletteEnable
+    GLint palette_w_location;       // uPaletteW (palette texture width)
+    GLint shade_route_location;     // uShadeRoute (3 bits/input)
 };
+
+#define GFX_PALETTE_TEX_UNIT 2 // uTex0=0, uTex1=1, palette=2
 
 struct Framebuffer {
     uint32_t width, height;
@@ -75,6 +85,35 @@ static bool s_wireframe_depth_test = false;
 // Currently-bound shader program, tracked so draw_triangles can set the
 // per-draw wireframe wire-colour uniform on it.
 static struct ShaderProgram *gfx_current_shader_program = NULL;
+
+// Model-view-projection matrix uploaded to every shader's uMVP uniform
+// (column-major). Defaults to identity so the normal immediate-mode path —
+// which feeds pre-transformed clip-space positions into aVtxPos — is
+// unaffected (identity * clip == clip). The display-list cache sets this to a
+// folded room matrix while replaying object-space geometry, then restores it.
+static float gfx_current_mvp[16] = {
+    1.f, 0.f, 0.f, 0.f,
+    0.f, 1.f, 0.f, 0.f,
+    0.f, 0.f, 1.f, 0.f,
+    0.f, 0.f, 0.f, 1.f,
+};
+
+// Fog source for the uFogMul/uFogOff/uUseVertexFog shader uniforms. Default = use
+// the per-vertex baked factor (the immediate-mode path). The display-list cache
+// flips uUseVertexFog to 0 + supplies fog_mul/off for cached distance fog, then
+// restores these defaults. Uploaded by gfx_opengl_set_uniforms on every shader
+// load (GL uniforms default to 0, which would otherwise disable immediate fog).
+static int gfx_current_use_vertex_fog = 1;
+static float gfx_current_fog_mul = 0.f;
+static float gfx_current_fog_off = 0.f;
+
+// Display-list cache shader-side palette state (per-draw uniforms, mvp/fog pattern).
+// Default: disabled, so the immediate path resolves shade from the baked combiner
+// inputs exactly as before. Cached replay flips uPaletteEnable on + supplies the
+// palette width and per-combiner shade routing.
+static int gfx_current_palette_enable = 0;
+static float gfx_current_palette_w = 1.f;
+static int gfx_current_shade_routing = 0;
 
 static int gfx_opengl_get_max_texture_size() {
     GLint max_texture_size;
@@ -117,6 +156,73 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram* prg) {
     if (prg->three_point_filter_locations[1] >= 0) {
         glUniform1i(prg->three_point_filter_locations[1], current_textures_linear_filter[1]);
     }
+    if (prg->mvp_location >= 0) {
+        glUniformMatrix4fv(prg->mvp_location, 1, GL_FALSE, gfx_current_mvp);
+    }
+    if (prg->use_vertex_fog_location >= 0) {
+        glUniform1i(prg->use_vertex_fog_location, gfx_current_use_vertex_fog);
+    }
+    if (prg->fog_mul_location >= 0) {
+        glUniform1f(prg->fog_mul_location, gfx_current_fog_mul);
+    }
+    if (prg->fog_off_location >= 0) {
+        glUniform1f(prg->fog_off_location, gfx_current_fog_off);
+    }
+    if (prg->palette_enable_location >= 0) {
+        glUniform1i(prg->palette_enable_location, gfx_current_palette_enable);
+    }
+    if (prg->palette_w_location >= 0) {
+        glUniform1f(prg->palette_w_location, gfx_current_palette_w);
+    }
+    if (prg->shade_route_location >= 0) {
+        glUniform1i(prg->shade_route_location, gfx_current_shade_routing);
+    }
+}
+
+static void gfx_opengl_set_mvp(const float m[16]) {
+    for (int i = 0; i < 16; i++) {
+        gfx_current_mvp[i] = m[i];
+    }
+    // Apply immediately to the bound program so a set_mvp between draws (without
+    // a reload) takes effect; future load_shader/set_uniforms calls pick it up
+    // from gfx_current_mvp.
+    if (gfx_current_shader_program != NULL && gfx_current_shader_program->mvp_location >= 0) {
+        glUniformMatrix4fv(gfx_current_shader_program->mvp_location, 1, GL_FALSE, gfx_current_mvp);
+    }
+}
+
+static void gfx_opengl_set_fog_params(int use_vertex_fog, float fog_mul, float fog_off) {
+    gfx_current_use_vertex_fog = use_vertex_fog;
+    gfx_current_fog_mul = fog_mul;
+    gfx_current_fog_off = fog_off;
+    struct ShaderProgram* p = gfx_current_shader_program;
+    if (p != NULL) {
+        if (p->use_vertex_fog_location >= 0) {
+            glUniform1i(p->use_vertex_fog_location, use_vertex_fog);
+        }
+        if (p->fog_mul_location >= 0) {
+            glUniform1f(p->fog_mul_location, fog_mul);
+        }
+        if (p->fog_off_location >= 0) {
+            glUniform1f(p->fog_off_location, fog_off);
+        }
+    }
+}
+
+static void gfx_opengl_set_palette_enable(int enable) {
+    gfx_current_palette_enable = enable;
+    struct ShaderProgram* p = gfx_current_shader_program;
+    if (p != NULL && p->palette_enable_location >= 0) {
+        glUniform1i(p->palette_enable_location, enable);
+    }
+}
+
+static void gfx_opengl_set_shade_routing(int packed) {
+    gfx_current_shade_routing = packed;
+    struct ShaderProgram* p = gfx_current_shader_program;
+    if (p != NULL && p->shade_route_location >= 0) {
+        glUniform1i(p->shade_route_location, packed);
+    }
 }
 
 static void gfx_opengl_unload_shader(struct ShaderProgram* old_prg) {
@@ -125,6 +231,11 @@ static void gfx_opengl_unload_shader(struct ShaderProgram* old_prg) {
             if (old_prg->attrib_locations[i] >= 0) {
                 glDisableVertexAttribArray(old_prg->attrib_locations[i]);
             }
+        }
+        // aShadeIdx is enabled only by cache_draw; disabling here (a no-op if it was
+        // never enabled) keeps it from lingering into immediate-mode draws.
+        if (old_prg->shade_idx_location >= 0) {
+            glDisableVertexAttribArray(old_prg->shade_idx_location);
         }
     }
 }
@@ -251,7 +362,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     struct CCFeatures cc_features = { 0 };
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
 
-    char vs_buf[2048];
+    char vs_buf[8192]; // was 2048; the GPU-palette per-input shade routing needs more
     char fs_buf[8192];
     size_t vs_len = 0;
     size_t fs_len = 0;
@@ -274,6 +385,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     append_line(vs_buf, &vs_len, "INPUT vec4 aVtxPos;");
+    append_line(vs_buf, &vs_len, "uniform mat4 uMVP;");
 
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
@@ -292,6 +404,12 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     if (cc_features.opt_fog) {
         append_line(vs_buf, &vs_len, "INPUT vec4 aFog;");
         append_line(vs_buf, &vs_len, "OUTPUT vec4 vFog;");
+        // Display-list cache fog: uUseVertexFog selects the per-vertex baked fog
+        // factor (aFog.a, the immediate path) vs a shader-computed distance fog
+        // (cached G_FOG geometry, where the baked factor would be camera-stale).
+        append_line(vs_buf, &vs_len, "uniform int uUseVertexFog;");
+        append_line(vs_buf, &vs_len, "uniform float uFogMul;");
+        append_line(vs_buf, &vs_len, "uniform float uFogOff;");
         num_floats += 4;
     }
 
@@ -307,6 +425,22 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         num_floats += cc_features.opt_alpha ? 4 : 3;
     }
 
+    // Display-list cache: live shade colour from a palette texture (PORT_DLCACHE.md).
+    // Default-off via uPaletteEnable, so the immediate path is unchanged. Desktop GL
+    // only -- ES may have zero vertex-shader texture units, so declaring a VS sampler
+    // there could fail to link even with the cache off; ES keeps the re-record path
+    // (cache_create_palette returns 0). aShadeIdx is supplied only by cache_draw.
+    // Needs GLSL >= 130: the shade routing uses integer bitwise ops + texelFetch,
+    // neither of which exists in GLSL 120. Older desktops / ES fall back to re-record.
+    const bool palette_supported = cc_features.num_inputs > 0 && !gl_es && gl_glsl_version >= 130;
+    if (palette_supported) {
+        append_line(vs_buf, &vs_len, "INPUT float aShadeIdx;");
+        append_line(vs_buf, &vs_len, "uniform sampler2D uPalette;");
+        append_line(vs_buf, &vs_len, "uniform int uPaletteEnable;");
+        append_line(vs_buf, &vs_len, "uniform float uPaletteW;");
+        append_line(vs_buf, &vs_len, "uniform int uShadeRoute;");
+    }
+
     append_line(vs_buf, &vs_len, "void main() {");
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
@@ -319,17 +453,69 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             }
         }
     }
-    if (cc_features.opt_fog) {
-        append_line(vs_buf, &vs_len, "    vFog = aFog;");
-    }
     if (cc_features.opt_grayscale) {
         append_line(vs_buf, &vs_len, "    vGrayscaleColor = aGrayscaleColor;");
     }
-    for (int i = 0; i < cc_features.num_inputs; i++) {
-        vs_len += sprintf(vs_buf + vs_len, "    vInput%d = aInput%d;\n", i + 1, i + 1);
+    if (palette_supported) {
+        // uPaletteEnable==0 (immediate): pass baked combiner inputs straight through
+        // (byte-identical). Cached: fetch the live shade colour once and substitute
+        // it into shade input slots per uShadeRoute (bits0-1 rgb type, bit2 alpha).
+        append_line(vs_buf, &vs_len, "    vec4 shadeCol = vec4(0.0);");
+        append_line(vs_buf, &vs_len, "    if (uPaletteEnable != 0) {");
+        if (gl_glsl_version >= 130) {
+            append_line(vs_buf, &vs_len, "        shadeCol = texelFetch(uPalette, ivec2(int(aShadeIdx + 0.5), 0), 0);");
+        } else {
+            append_line(vs_buf, &vs_len, "        shadeCol = texture2DLod(uPalette, vec2((aShadeIdx + 0.5) / uPaletteW, 0.5), 0.0);");
+        }
+        append_line(vs_buf, &vs_len, "    }");
+        for (int i = 0; i < cc_features.num_inputs; i++) {
+            const int sh = i * 3;
+            vs_len += sprintf(vs_buf + vs_len, "    if (uPaletteEnable != 0 && ((uShadeRoute >> %d) & 7) != 0) {\n", sh);
+            vs_len += sprintf(vs_buf + vs_len, "        int r = (uShadeRoute >> %d) & 3;\n", sh);
+            vs_len += sprintf(vs_buf + vs_len,
+                "        vec3 rgb = (r == 1) ? shadeCol.rgb : (r == 2) ? vec3(shadeCol.a) : aInput%d.rgb;\n", i + 1);
+            if (cc_features.opt_alpha) {
+                vs_len += sprintf(vs_buf + vs_len,
+                    "        float al = (((uShadeRoute >> %d) & 4) != 0) ? shadeCol.a : aInput%d.a;\n", sh, i + 1);
+                vs_len += sprintf(vs_buf + vs_len, "        vInput%d = vec4(rgb, al);\n", i + 1);
+            } else {
+                vs_len += sprintf(vs_buf + vs_len, "        vInput%d = rgb;\n", i + 1);
+            }
+            vs_len += sprintf(vs_buf + vs_len, "    } else {\n");
+            vs_len += sprintf(vs_buf + vs_len, "        vInput%d = aInput%d;\n", i + 1, i + 1);
+            vs_len += sprintf(vs_buf + vs_len, "    }\n");
+        }
+    } else {
+        // No palette (ES, or no combiner inputs): original passthrough, byte-identical.
+        for (int i = 0; i < cc_features.num_inputs; i++) {
+            vs_len += sprintf(vs_buf + vs_len, "    vInput%d = aInput%d;\n", i + 1, i + 1);
+        }
     }
 
-    append_line(vs_buf, &vs_len, "    gl_Position = aVtxPos;");
+    append_line(vs_buf, &vs_len, "    gl_Position = uMVP * aVtxPos;");
+
+    if (cc_features.opt_fog) {
+        // Fog colour is always the baked per-vertex value; the factor is either
+        // baked (aFog.a, immediate path) or recomputed from the un-hacked clip
+        // z/w (cached distance fog) — must run before the depth-clamp z hack.
+        append_line(vs_buf, &vs_len, "    vFog.rgb = aFog.rgb;");
+        append_line(vs_buf, &vs_len, "    if (uUseVertexFog != 0) {");
+        append_line(vs_buf, &vs_len, "        vFog.a = aFog.a;");
+        append_line(vs_buf, &vs_len, "    } else {");
+        // Mirror gfx_sp_vertex's fog exactly, incl. the near/behind-eye guards:
+        // clamp |w|<0.001 and force max fog for w<0 (winv<0). Without this, the
+        // close geometry of the room you're standing in (tiny/negative w) gets
+        // garbage fog and is painted with the fog/sky colour. For w>0.001 this is
+        // identical to z/w, so far geometry is unchanged.
+        append_line(vs_buf, &vs_len, "        float fw = gl_Position.w;");
+        append_line(vs_buf, &vs_len, "        if (abs(fw) < 0.001) fw = 0.001;");
+        append_line(vs_buf, &vs_len, "        float winv = 1.0 / fw;");
+        append_line(vs_buf, &vs_len, "        if (winv < 0.0) winv = 32767.0;");
+        append_line(vs_buf, &vs_len, "        float fz = gl_Position.z * winv * uFogMul + uFogOff;");
+        append_line(vs_buf, &vs_len, "        vFog.a = clamp(fz, 0.0, 255.0) / 255.0;");
+        append_line(vs_buf, &vs_len, "    }");
+    }
+
     if (!GLAD_GL_ARB_depth_clamp) {
         // HACK: workaround for no GL_DEPTH_CLAMP
         append_line(vs_buf, &vs_len, "    gl_Position.z *= 0.3f;");
@@ -670,6 +856,43 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     prg->three_point_filter_locations[0] = glGetUniformLocation(shader_program, "three_point_filter0");
     prg->three_point_filter_locations[1] = glGetUniformLocation(shader_program, "three_point_filter1");
     prg->wireframe_color_location = glGetUniformLocation(shader_program, "wireframe_color");
+    prg->mvp_location = glGetUniformLocation(shader_program, "uMVP");
+    if (prg->mvp_location >= 0) {
+        // Program is already bound (glUseProgram above); seed with the current
+        // matrix (identity unless mid-replay).
+        glUniformMatrix4fv(prg->mvp_location, 1, GL_FALSE, gfx_current_mvp);
+    }
+    prg->use_vertex_fog_location = glGetUniformLocation(shader_program, "uUseVertexFog");
+    prg->fog_mul_location = glGetUniformLocation(shader_program, "uFogMul");
+    prg->fog_off_location = glGetUniformLocation(shader_program, "uFogOff");
+    if (prg->use_vertex_fog_location >= 0) {
+        glUniform1i(prg->use_vertex_fog_location, gfx_current_use_vertex_fog);
+    }
+    if (prg->fog_mul_location >= 0) {
+        glUniform1f(prg->fog_mul_location, gfx_current_fog_mul);
+    }
+    if (prg->fog_off_location >= 0) {
+        glUniform1f(prg->fog_off_location, gfx_current_fog_off);
+    }
+    prg->shade_idx_location = glGetAttribLocation(shader_program, "aShadeIdx");
+    prg->palette_enable_location = glGetUniformLocation(shader_program, "uPaletteEnable");
+    prg->palette_w_location = glGetUniformLocation(shader_program, "uPaletteW");
+    prg->shade_route_location = glGetUniformLocation(shader_program, "uShadeRoute");
+    {
+        GLint pal = glGetUniformLocation(shader_program, "uPalette");
+        if (pal >= 0) {
+            glUniform1i(pal, GFX_PALETTE_TEX_UNIT); // sampler -> palette texture unit
+        }
+    }
+    if (prg->palette_enable_location >= 0) {
+        glUniform1i(prg->palette_enable_location, gfx_current_palette_enable);
+    }
+    if (prg->palette_w_location >= 0) {
+        glUniform1f(prg->palette_w_location, gfx_current_palette_w);
+    }
+    if (prg->shade_route_location >= 0) {
+        glUniform1i(prg->shade_route_location, gfx_current_shade_routing);
+    }
 
     gfx_opengl_load_shader(prg);
 
@@ -858,6 +1081,120 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         glLineWidth(1.0f);
     }
+}
+
+// --- Display-list cache (port-only; see docs/PORT_DLCACHE.md) ---
+// Persistent VBOs of object-space room geometry, replayed each frame with a
+// GPU-side uMVP instead of CPU-transforming every vertex. All cached draws use
+// the same single VAO as the immediate path; the only state that leaks is the
+// GL_ARRAY_BUFFER binding and the attrib pointers, which cache_replay_end and a
+// forced shader reload (in gfx_pc) restore for immediate-mode drawing.
+
+static uint32_t gfx_opengl_cache_create_buffer(const float* data, size_t num_floats) {
+    GLuint buf = 0;
+    glGenBuffers(1, &buf);
+    if (buf == 0) {
+        return 0;
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, buf);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * num_floats, data, GL_STATIC_DRAW);
+    // Restore the immediate-mode buffer binding (draw_triangles assumes it).
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    return buf;
+}
+
+static void gfx_opengl_cache_delete_buffer(uint32_t id) {
+    if (id != 0) {
+        GLuint b = id;
+        glDeleteBuffers(1, &b);
+    }
+}
+
+static void gfx_opengl_cache_replay_begin(uint32_t id) {
+    glBindBuffer(GL_ARRAY_BUFFER, id);
+}
+
+static uint32_t gfx_opengl_cache_create_palette(void) {
+    if (gl_es || gl_glsl_version < 130) {
+        // No VS palette path here (see shader codegen / palette_supported); 0 keeps
+        // palette_ok false so gfx_pc falls back to re-record-on-dirty for lighting.
+        return 0;
+    }
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    return t;
+}
+
+static void gfx_opengl_cache_delete_palette(uint32_t id) {
+    if (id != 0) {
+        GLuint t = id;
+        glDeleteTextures(1, &t);
+    }
+}
+
+static void gfx_opengl_cache_upload_palette(uint32_t id, const void* rgba, int count) {
+    if (id == 0 || count <= 0) {
+        return;
+    }
+    glActiveTexture(GL_TEXTURE0 + GFX_PALETTE_TEX_UNIT);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, count, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+static void gfx_opengl_cache_bind_palette(uint32_t id, int count) {
+    glActiveTexture(GL_TEXTURE0 + GFX_PALETTE_TEX_UNIT);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glActiveTexture(GL_TEXTURE0);
+    gfx_current_palette_w = (float)(count > 0 ? count : 1);
+    struct ShaderProgram* p = gfx_current_shader_program;
+    if (p != NULL && p->palette_w_location >= 0) {
+        glUniform1f(p->palette_w_location, gfx_current_palette_w);
+    }
+}
+
+static void gfx_opengl_cache_draw(struct ShaderProgram* prg, size_t base_float, size_t num_tris) {
+    // Same attribute packing as buf_vbo (aVtxPos first, then tex/inputs), but the
+    // position is object-space and the run starts at base_float in the bound cached
+    // buffer. Cached vertices carry one extra float (the palette colour index) after
+    // the normal layout, so the stride is num_floats + 1. The vertex shader applies
+    // uMVP and (when enabled) the live palette lookup.
+    const size_t stride = (prg->num_floats + 1) * sizeof(float);
+    size_t pos = base_float;
+    for (int i = 0; i < prg->num_attribs; i++) {
+        if (prg->attrib_locations[i] >= 0) {
+            glEnableVertexAttribArray(prg->attrib_locations[i]);
+            glVertexAttribPointer(prg->attrib_locations[i], prg->attrib_sizes[i], GL_FLOAT, GL_FALSE,
+                                  stride, (void*)(pos * sizeof(float)));
+        }
+        pos += prg->attrib_sizes[i];
+    }
+    if (prg->shade_idx_location >= 0) {
+        glEnableVertexAttribArray(prg->shade_idx_location);
+        glVertexAttribPointer(prg->shade_idx_location, 1, GL_FLOAT, GL_FALSE, stride,
+                              (void*)((base_float + prg->num_floats) * sizeof(float)));
+    }
+    glDrawArrays(GL_TRIANGLES, 0, 3 * num_tris);
+}
+
+static void gfx_opengl_cache_set_cull(int mode, bool front_ccw) {
+    if (mode == 0) {
+        glDisable(GL_CULL_FACE);
+        return;
+    }
+    glEnable(GL_CULL_FACE);
+    glFrontFace(front_ccw ? GL_CCW : GL_CW);
+    glCullFace(mode == 2 ? GL_FRONT : GL_BACK);
+}
+
+static void gfx_opengl_cache_replay_end(void) {
+    // The immediate path culls on the CPU and expects opengl_vbo bound.
+    glDisable(GL_CULL_FACE);
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
 }
 
 typedef void (APIENTRY *DEBUGPROC)(GLenum source,
@@ -1077,6 +1414,22 @@ static void gfx_opengl_init(void) {
     }
     glDepthFunc(GL_LEQUAL);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    if (!gl_es) {
+        // Desktop shaders declare the uPalette vertex sampler even for immediate-mode
+        // draws (the display-list cache palette), so keep a complete 1x1 texture bound
+        // to the palette unit at all times — some drivers reject draws otherwise.
+        // cache_bind_palette swaps in the real palette during replay.
+        GLuint dummy = 0;
+        glGenTextures(1, &dummy);
+        glActiveTexture(GL_TEXTURE0 + GFX_PALETTE_TEX_UNIT);
+        glBindTexture(GL_TEXTURE_2D, dummy);
+        static const uint8_t white[4] = { 255, 255, 255, 255 };
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glActiveTexture(GL_TEXTURE0);
+    }
 
     framebuffers.resize(1); // for the default screen buffer
 }
@@ -1361,5 +1714,19 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_get_texture_filter,
     gfx_opengl_set_mipmap_filter,
     gfx_opengl_set_anisotropy_level,
-    gfx_opengl_get_max_anisotropy_level
+    gfx_opengl_get_max_anisotropy_level,
+    gfx_opengl_set_mvp,
+    gfx_opengl_cache_create_buffer,
+    gfx_opengl_cache_delete_buffer,
+    gfx_opengl_cache_replay_begin,
+    gfx_opengl_cache_draw,
+    gfx_opengl_cache_set_cull,
+    gfx_opengl_cache_replay_end,
+    gfx_opengl_set_fog_params,
+    gfx_opengl_cache_create_palette,
+    gfx_opengl_cache_delete_palette,
+    gfx_opengl_cache_upload_palette,
+    gfx_opengl_cache_bind_palette,
+    gfx_opengl_set_palette_enable,
+    gfx_opengl_set_shade_routing
 };

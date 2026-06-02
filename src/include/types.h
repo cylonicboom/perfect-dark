@@ -3710,6 +3710,11 @@ struct room {
 #ifndef PLATFORM_N64
 	/*0x8c*/ u16 extra_flags;
 	struct bgoctree *octree; // port-only: NULL unless ROOMFLAG_EX_OCTREE is set and the room is loaded
+	// Display-list cache: per-frame hash of this room's (dynamic) vertex colours,
+	// to detect lighting changes and re-record affected leaves. See PORT_DLCACHE.md.
+	u32 dlcolourhash;
+	s32 dlcolourhashframe;
+	bool dlcolourdirty;
 #endif
 };
 

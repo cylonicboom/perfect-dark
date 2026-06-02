@@ -123,6 +123,8 @@ extern bool g_BgOctreeBigRoom;       // /octree bigroom: portal culling off + oc
 extern bool g_BgOctreePortalCull;    // /octree portal: cull against each room's portal-clipped draw-slot box
 extern struct bgoctreestats g_BgOctreeStats;
 
+extern bool g_DlCacheEnabled;        // display-list cache master toggle (/dlcache on|off)
+
 void bgBuildRoomOctree(s32 roomnum);
 void bgFreeRoomOctree(s32 roomnum);
 s32 bgOctreeMarkCurrentRoom(void); // /octree mark — returns marked room or -1

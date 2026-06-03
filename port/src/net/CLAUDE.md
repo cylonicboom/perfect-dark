@@ -323,6 +323,10 @@ Net symptom: no shield-hit flash on the client and damage spilling into health e
 
 **Fix:** the chr-state block now carries the **authoritative** `cshield` (u8, 0..8, 1/32-unit precision) + `chr->damage` (raw f32 — an armoured chr's damage is negative, so not quantised). The client **overwrites** both every snapshot (`g_NetMode == NETMODE_CLIENT`); the `SVC_CHR_DAMAGE` replay is left running purely for effects (blood, shield flash, knockback, sound), no longer load-bearing for HP. **Death visuals are unaffected** — they're animnum-driven (the client force-sets `ACT_STAND` in the chr-state apply, so `chrIsDead`, which keys on `ACT_DIE/ACT_DEAD`, never trips client-side anyway), so no client-side `chrDie` is needed. Protocol bumped 38 → 39.
 
+### Sim Position Speed Cap Removed (`netmsg.c`)
+
+The receive-time chr-state apply (`netmsgSvcPropMoveRead`) used to gate its 50% smoothing blend behind `dist_sq < 80*80` (80 units / server update, "above what AI movement can produce") and **hard-snap** above it — the same guard reused for the yrot, aim-shoulder and angleoffset blends. That assumption is false for high-speed (Dark) sims, which legitimately move >80 units/update, so the cap mis-fired and snapped them every update. **All four blends are now unconditional.** The blend always converges (each packet halves the remaining error), so a genuine respawn/teleport just slides over a few packets instead of getting stuck — and `prop->pos` is still committed every packet so it can't freeze (the original stuck-at-death-location concern). This is the `/chrinterp off` fallback path only; with `/chrinterp on` (default) `netChrInterpolate` already drove position from the raw, **un-capped** snapshot ring, so it never had a speed cap. No wire/protocol change.
+
 ### Diagnostic Log (`net.c`)
 
 Set `Net.Debug.LogPath` in `pd.ini` (or via console) to a writable file path. When non-empty, `netStartServer`/`netStartClient` opens the file (truncating it) and `netDisconnect` closes it. Every line is one event in the format:

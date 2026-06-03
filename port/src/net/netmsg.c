@@ -1899,8 +1899,9 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// Two paths once validated:
 			//   - Different anim: full modelSetAnimation, which resets frame
 			//     counters to animframe and applies the server's speed. Pass a
-			//     small merge time (0.0625) so the changeover blends out the
-			//     previous anim's pose over the next tick instead of popping.
+			//     merge time 16 — matching the host's chr transitions
+			//     (player.c:6186) — so the changeover cross-fades like the base
+			//     game instead of popping.
 			//   - Same anim: just poke anim->speed so modelTickAnim picks up
 			//     the new playback rate. Re-calling modelSetAnimation here would
 			//     reset framea/frameb to animframe and visibly snap the cycle
@@ -1918,7 +1919,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				// sim's weapon appears in the wrong hand.
 				chr->model->anim->flip = 0;
 				if (chr->model->anim->animnum != animnum) {
-					modelSetAnimation(chr->model, animnum, 0, (f32)animframe, animspeed, 0.0625f);
+					modelSetAnimation(chr->model, animnum, 0, (f32)animframe, animspeed, 16.0f);
 				} else {
 					chr->model->anim->speed = animspeed;
 				}

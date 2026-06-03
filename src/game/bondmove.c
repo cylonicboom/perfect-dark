@@ -335,7 +335,10 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 			pl->prop && pl->prop->chr && pl->prop->chr->model && pl->prop->chr->model->anim) {
 		struct anim *anim = pl->prop->chr->model->anim;
 		if (anim->animnum != inmove->animnum) {
-			modelSetAnimation(pl->prop->chr->model, inmove->animnum, anim->flip, (f32)inmove->animframe, 1.0f, 0.0625f);
+			// Merge time 16 matches the host's chr transitions (player.c:6186) so a
+			// server-driven anim switch cross-fades like the base game instead of
+			// popping (was 0.0625, effectively instant) — same fix as sim anim sync.
+			modelSetAnimation(pl->prop->chr->model, inmove->animnum, anim->flip, (f32)inmove->animframe, 1.0f, 16.0f);
 		}
 	}
 }

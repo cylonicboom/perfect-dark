@@ -14058,16 +14058,22 @@ void chraTick(struct chrdata *chr)
 				}
 			}
 #ifndef PLATFORM_N64
-			// Skip the per-action tick for sim bots on a network client. The
-			// server's actiontype isn't synced (would crash because the
-			// chr->act_* union data isn't synced either — see
-			// netmsgSvcPropMoveRead chr-state block), and running chrTickStand
-			// here every frame would clobber the synced anim/yrot from
-			// SVC_PROP_MOVE bit-4 with stand-pose defaults. The model anim
-			// frame still advances during render via modelTickAnim, so
-			// skipping the action tick is purely a positive: no overwrite of
+			// Skip the per-action tick for net-replicated chrs on a client:
+			// Combat Sim sim bots (chr->aibot) AND campaign co-op NPCs (any
+			// synced chr while coopplayernum is set — co-op NPCs are NOT aibots,
+			// so the aibot test alone misses them). The server's actiontype isn't
+			// synced (would crash because the chr->act_* union data isn't synced
+			// either — see netmsgSvcPropMoveRead chr-state block), and running
+			// chrTickStand here every frame would clobber the synced anim/yrot
+			// from SVC_PROP_MOVE bit-4 with stand-pose defaults. That fight is
+			// what made dying co-op NPCs flicker between the death anim (re-applied
+			// by netChrInterpolate) and an idle pose (re-chosen by
+			// chrChooseStandAnimation when the non-looping death anim finished).
+			// The model anim frame still advances during render via modelTickAnim,
+			// so skipping the action tick is purely a positive: no overwrite of
 			// synced state, no crash from missing union data.
-			else if (g_NetMode == NETMODE_CLIENT && chr->aibot) {
+			else if (g_NetMode == NETMODE_CLIENT && (chr->aibot
+					|| (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid))) {
 				// intentionally empty — anim/orientation come from net sync
 			}
 #endif

@@ -1503,8 +1503,9 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 	// without the block, sims end up stuck in their spawn anim (often a T-pose
 	// because the bot AI normally drives the first modelSetAnimation), facing
 	// their spawn direction, with empty hands and rigid posture. actiontype is
-	// included in the wire format for compatibility but is discarded on read
-	// (see read side for the union-data crash rationale).
+	// included in the wire format but is NOT applied to chr->actiontype on read
+	// (see read side for the union-data crash rationale); the read side only uses
+	// it to replicate the host's dead-body collision state for co-op NPCs.
 	const bool wantChrState = (prop->type == PROPTYPE_CHR) && prop->chr;
 	if (wantChrState) {
 		flags |= (1 << 4);
@@ -1809,10 +1810,11 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 
 	// CHR-STATE BLOCK: present when bit 4 is set, used for PROPTYPE_CHR props
 	// (sims/NPCs). Contains orientation, animation, aim, and weapons. We READ
-	// actiontype from the wire but intentionally DISCARD it — see the comment
-	// below on why actiontype can't be safely applied on the client.
+	// actiontype from the wire but do NOT apply it to chr->actiontype — see the
+	// comment below on why that can't be done safely on the client. It is used
+	// only to drive the co-op dead-body collision parity (ACT_DEAD -> perim off).
 	if (flags & (1 << 4)) {
-		// ACTIONTYPE: discarded, not applied. Reason: most action states
+		// ACTIONTYPE: not applied to chr->actiontype. Reason: most action states
 		// (ACT_GOPOS, ACT_ATTACK, ACT_PATROL, ACT_THROWGRENADE, etc.) store
 		// per-state data in the chr->act_* union. The matching chrTick* functions
 		// blindly dereference this union without null-checking, assuming the AI
@@ -1826,7 +1828,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// animation is still correct because animnum below drives the skeletal
 		// anim, so attack/run anims play correctly, just without the matching
 		// ai-tick logic. Better than T-pose and safe from crashes.
-		(void)netbufReadS8(src); // received actiontype, intentionally discarded
+		// actiontype is NOT applied to chr->actiontype (that crashes — see above),
+		// but we DO use it to replicate the host's dead-body collision state: a
+		// corpse on the host has its movement cylinder disabled purely because
+		// actiontype == ACT_DEAD (prop.c collision gate). The client forces
+		// ACT_STAND, so without this a co-op NPC corpse keeps blocking the player.
+		const s8 wireactiontype = netbufReadS8(src);
 		const f32 yrot = netbufReadF32(src);
 		const s16 animnum = netbufReadS16(src);
 		const s16 animframe = netbufReadS16(src);
@@ -1852,6 +1859,20 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		if (prop && prop->chr) {
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
+
+			// DEAD-BODY COLLISION PARITY (co-op NPCs). On the host a corpse stops
+			// blocking movement because its actiontype is ACT_DEAD (the prop.c
+			// collision gate tests it directly). We force ACT_STAND on the client,
+			// so emulate the same result by disabling the chr's movement cylinder
+			// via CHRHFLAG_PERIMDISABLED — the OTHER condition in that same gate —
+			// whenever the host says the chr is dead, and re-enabling it otherwise.
+			// PERIMDISABLED is a pure collision flag (no AI/render side-effects) and
+			// nothing else toggles it on a client co-op NPC (chraiExecute is gated
+			// off), so this set/clear is the sole authority. Co-op only: Combat Sim
+			// sims respawn fast and their collision path is left as-is.
+			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid) {
+				chrSetPerimEnabled(chr, wireactiontype != ACT_DEAD);
+			}
 
 			// Buffer the whole wire pose (position + body yaw + waist twist + aim),
 			// stamped with the local receive tick, for per-frame pose

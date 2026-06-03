@@ -2393,17 +2393,34 @@ s32 chrTick(struct prop *prop)
 
 	// Position-driven sims must NOT run local gravity. The wire syncs prop->pos
 	// (radar/collision/targeting read it) but the chr's RENDERED vertical comes
-	// from chr->manground (chr0f01f378: arg2->y += manground), which is integrated
-	// from the LOCAL ground-find and never corrected by the position sync. For a
-	// sim the client momentarily thinks is airborne (e.g. just after running off a
-	// ledge), fallspeed/manground run away downward and the model sinks under the
-	// floor — invisible, even though the radar blip stays at the correct spot.
-	// Re-assert CHRCFLAG_FORCETOGROUND every tick so chr0f01f378 snaps manground to
-	// the freshly-found ground at the synced X/Z (chr.c:881) instead of free-
-	// falling. PD has no jump, so sims are only ever briefly airborne falling off a
-	// ledge; pinning them to the ground beneath (a step-down) beats vanishing.
-	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid) {
-		chr->chrflags |= CHRCFLAG_FORCETOGROUND;
+	// from chr->manground (chr0f01f378: arg2->y += manground), integrated from a
+	// LOCAL ground-find that the position sync never corrects. chr0f01f378 finds
+	// ground at the anim-driven model pos (arg2); once that drifts even slightly,
+	// the ground-find there drifts with it, manground free-falls and the model
+	// sinks under the floor — invisible, though the radar blip (prop->pos) stays
+	// correct. (CHRCFLAG_FORCETOGROUND can't fix this: it's consumed INSIDE
+	// chr0f01f378 after that bad ground-find, so it just re-snaps to the wrong
+	// ground.) Instead re-pin the vertical here, before the anim tick, to the
+	// ground found at the SYNCED prop->pos — exactly what chrSetPos does on a net
+	// snap (chraction.c:16022). Each tick re-anchors manground to the real floor
+	// under the authoritative position, so the local integration can't run away.
+	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid
+			&& chr->model && chr->model->definition) {
+		const f32 simground = cdFindGroundInfoAtCyl(&chr->prop->pos, chr->radius,
+				chr->prop->rooms, &chr->floorcol, &chr->floortype, NULL,
+				&chr->floorroom, NULL, NULL);
+		chr->ground = simground;
+		chr->manground = simground;
+		chr->sumground = simground * (PAL ? 8.4175090789795f : 9.999998f);
+		chr->fallspeed.x = 0.0f;
+		chr->fallspeed.y = 0.0f;
+		chr->fallspeed.z = 0.0f;
+
+		struct modelnode *rootnode = chr->model->definition->rootnode;
+		if (rootnode && (rootnode->type & 0xff) == MODELNODETYPE_CHRINFO) {
+			union modelrwdata *rwdata = modelGetNodeRwData(chr->model, rootnode);
+			rwdata->chrinfo.ground = simground;
+		}
 	}
 #endif
 	bool needsupdate;

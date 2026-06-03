@@ -1482,10 +1482,21 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		// ACTIONTYPE: intentionally NOT USED on the client. See netmsgSvcPropMoveRead
 		// for rationale (it would crash due to uninitialized action-state union data).
 		netbufWriteS8(dst, chr->actiontype);
-		// BODY ROTATION: yrot for view direction. The server derives this from AI
-		// decisions; clients apply it directly in modelSetChrRotY so the chr's body
-		// faces the right direction.
-		netbufWriteF32(dst, chrGetRotY(chr));
+		// BODY ROTATION: send the model's RENDERED body yaw, NOT chrGetRotY
+		// (aibot->roty). botApplyMovement renders the body at
+		// angle2 = lookangle - angleoffset via modelSetChrRotY(chr->model, angle2)
+		// and then chrHandleJointPositioned twists the waist by angleoffset
+		// (+aimsideback) ON TOP, so the upper body ends up pointing at the target.
+		// chrGetRotY returns aibot->roty — the separate MOVEMENT facing — which
+		// differs from the rendered yaw by up to ~angleoffset whenever the body is
+		// turned away from the aim (a stationary bot twisting to track you, or a
+		// strafing bot). Sending roty made the client base its whole body on the
+		// wrong yaw, then add angleoffset on top, rotating the entire sim away from
+		// the target — the "stationary sim faces ~90 deg off while firing" bug. The
+		// client applies this rendered yaw via modelSetChrRotY and adds the synced
+		// angleoffset at the waist, reproducing the server's exact pose. Fall back to
+		// chrGetRotY only if the chr somehow has no model.
+		netbufWriteF32(dst, chr->model ? modelGetChrRotY(chr->model) : chrGetRotY(chr));
 		// ANIMATION: animnum, current frame index, and playback speed. anim->speed
 		// is set on the server by playerChooseThirdPersonAnimation (called via
 		// botApplyMovement) and scales the cycle to match the chr's actual

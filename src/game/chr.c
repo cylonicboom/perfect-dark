@@ -2400,18 +2400,33 @@ s32 chrTick(struct prop *prop)
 	// sinks under the floor — invisible, though the radar blip (prop->pos) stays
 	// correct. (CHRCFLAG_FORCETOGROUND can't fix this: it's consumed INSIDE
 	// chr0f01f378 after that bad ground-find, so it just re-snaps to the wrong
-	// ground.) Instead re-pin the vertical here, before the anim tick, to the
-	// ground found at the SYNCED prop->pos — exactly what chrSetPos does on a net
-	// snap (chraction.c:16022). Each tick re-anchors manground to the real floor
-	// under the authoritative position, so the local integration can't run away.
+	// ground.)
+	//
+	// Drive manground from the INTERPOLATED wire Y instead. The host already
+	// applied gravity, so prop->pos.y carries the real fall trajectory; pinning
+	// manground to it each tick reproduces that smooth descent (a bot running off
+	// a ledge floats down with the host's arc) rather than snapping to the floor,
+	// and still can't run away downward — it's re-anchored to the authoritative,
+	// interpolated value every tick (no local integration). The chr's render root
+	// sits ~at manground (anim root translation is ~0 for locomotion, which is why
+	// the earlier ground-pin rendered bots correctly on the floor), so prop->pos.y
+	// is the right value. cdFindGroundInfoAtCyl is kept only as a FLOOR CLAMP so an
+	// interpolation/extrapolation undershoot on landing can never dip below the
+	// real floor (a bad/low ground-find can't pull the bot down — the clamp only
+	// ever raises). ground == manground so chr0f01f378 treats the chr as grounded
+	// and adds no local fall on top.
 	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid
 			&& chr->model && chr->model->definition) {
-		const f32 simground = cdFindGroundInfoAtCyl(&chr->prop->pos, chr->radius,
+		const f32 floor = cdFindGroundInfoAtCyl(&chr->prop->pos, chr->radius,
 				chr->prop->rooms, &chr->floorcol, &chr->floortype, NULL,
 				&chr->floorroom, NULL, NULL);
-		chr->ground = simground;
-		chr->manground = simground;
-		chr->sumground = simground * (PAL ? 8.4175090789795f : 9.999998f);
+		f32 simy = chr->prop->pos.y;
+		if (simy < floor) {
+			simy = floor;
+		}
+		chr->ground = simy;
+		chr->manground = simy;
+		chr->sumground = simy * (PAL ? 8.4175090789795f : 9.999998f);
 		chr->fallspeed.x = 0.0f;
 		chr->fallspeed.y = 0.0f;
 		chr->fallspeed.z = 0.0f;
@@ -2419,7 +2434,7 @@ s32 chrTick(struct prop *prop)
 		struct modelnode *rootnode = chr->model->definition->rootnode;
 		if (rootnode && (rootnode->type & 0xff) == MODELNODETYPE_CHRINFO) {
 			union modelrwdata *rwdata = modelGetNodeRwData(chr->model, rootnode);
-			rwdata->chrinfo.ground = simground;
+			rwdata->chrinfo.ground = simy;
 		}
 	}
 #endif

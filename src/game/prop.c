@@ -819,6 +819,12 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 					// damage twice.
 					if (g_NetMode != NETMODE_SERVER || !g_Vars.currentplayer->isremote) {
 						chrHit(&shotdata, &shotdata.hits[i]);
+					} else if (g_Vars.currentplayer->client && root->syncid) {
+						// Remote shooter: damage is applied from the client's
+						// CLC_HIT, but record that the server's authoritative
+						// lag-comp'd trace also detected this hit so the CLC_HIT
+						// claim can be validated server-side (g_NetHitValidate).
+						netServerRecordDetectedHit(g_Vars.currentplayer->client, (u16)root->syncid);
 					}
 #else
 					chrHit(&shotdata, &shotdata.hits[i]);

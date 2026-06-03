@@ -107,6 +107,11 @@ u32 g_NetStaleSnapshotTicks   = 30;       // ~500ms at 60Hz
 // instead of freezing. 0 = no extrapolation (converge to the newest snapshot).
 // Small by design: a missed direction-change overshoots, so keep it short.
 u32 g_NetExtrapMaxTicks       = 3;
+// Server-side CLC_HIT validation mode (0 off / 1 log-only / 2 enforce). Default
+// off so behaviour is unchanged; flip to 1 to measure agreement between the
+// server's authoritative lag-comp'd trace and clients' claimed hits before
+// enabling enforcement. See netServerHitWasDetected / netServerRecordDetectedHit.
+s32 g_NetHitValidate          = 0;
 
 char g_NetLastJoinAddr[NET_MAX_ADDR + 1] = "127.0.0.1:27100";
 
@@ -1514,6 +1519,21 @@ void netEndFrame(void)
 			if (!ph->target || !ph->target->chr) {
 				continue;
 			}
+			// Server-side hit validation: confirm the server's own authoritative,
+			// lag-comp'd shotCalculateHits trace actually detected this shooter
+			// hitting this target. The client's CLC_HIT is otherwise trusted; this
+			// rejects (or logs) claims the server never saw. Off by default; log
+			// mode applies the hit anyway so agreement can be measured first.
+			if (g_NetHitValidate && ph->playernum >= 0 && ph->target->syncid) {
+				struct netclient *shooter = netClientForPlayerNum(ph->playernum);
+				if (shooter && !netServerHitWasDetected(shooter, (u16)ph->target->syncid)) {
+					netDiagLogf("hit_reject", "shooter=%u target_sid=%u dmg=%.1f mode=%d",
+							shooter->id, (unsigned)ph->target->syncid, ph->damage, g_NetHitValidate);
+					if (g_NetHitValidate >= 2) {
+						continue; // enforce: drop the unvalidated claim
+					}
+				}
+			}
 			if (ph->playernum >= 0) {
 				setCurrentPlayerNum(ph->playernum);
 			}
@@ -2195,6 +2215,34 @@ void netLagCompSave(struct netclient *cl)
 	cl->lagcomp_head = (cl->lagcomp_head + 1) % NET_LAGCOMP_SIZE;
 	cl->lagcomp[cl->lagcomp_head].tick = g_NetTick;
 	cl->lagcomp[cl->lagcomp_head].pos  = cl->player->prop->pos;
+}
+
+void netServerRecordDetectedHit(struct netclient *cl, u16 syncid)
+{
+	if (!cl || !syncid) {
+		return;
+	}
+	cl->srvhits_head = (cl->srvhits_head + 1) % NET_SRVHIT_COUNT;
+	cl->srvhits[cl->srvhits_head].syncid = syncid;
+	cl->srvhits[cl->srvhits_head].tick = g_NetTick;
+}
+
+s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid)
+{
+	if (!shooter || !syncid) {
+		return 0;
+	}
+	// Accept a small backward window: the server's shot replay (which records the
+	// detected hit) and the client's CLC_HIT can land a few ticks apart depending
+	// on update rate and jitter. 12 ticks is generous to avoid false rejections.
+	for (s32 i = 0; i < NET_SRVHIT_COUNT; ++i) {
+		if (shooter->srvhits[i].syncid == syncid
+				&& shooter->srvhits[i].tick != 0
+				&& (g_NetTick - shooter->srvhits[i].tick) <= 12u) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)
@@ -3437,6 +3485,19 @@ s32 netConsoleCommand(const char *line)
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: remote extrapolation = %u ticks (usage: /extrap <ticks>, 0=off)", g_NetExtrapMaxTicks);
 		}
+	} else if (strcmp(cmd, "hitvalidate") == 0) {
+		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims
+		// against the server's own lag-comp'd hit detection. 0=off (trust client),
+		// 1=log-only (apply but log mismatches to /diag), 2=enforce (drop claims
+		// the server never detected). Start at 1 and watch the diag log for
+		// 'hit_reject' lines before enabling 2.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetHitValidate = (n < 0) ? 0 : (n > 2 ? 2 : n);
+		}
+		sysLogPrintf(LOG_CHAT, "NET: hit validation = %d (%s)%s", g_NetHitValidate,
+				g_NetHitValidate == 0 ? "off" : g_NetHitValidate == 1 ? "log-only" : "enforce",
+				*arg ? "" : " (usage: /hitvalidate 0|1|2)");
 	} else if (strcmp(cmd, "svcrate") == 0) {
 		// /svcrate <N> — server-side update interval. 1 = send every tick
 		// (max bandwidth, smoothest). Larger = bandwidth saving but
@@ -4738,6 +4799,7 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.OutRate", &g_NetServerOutRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
+	configRegisterInt("Net.Server.HitValidate", &g_NetHitValidate, 0, 2);
 
 	configRegisterString("Net.Debug.LogPath", g_NetDiagPath, sizeof(g_NetDiagPath) - 1);
 	configRegisterUInt("Net.Debug.LogRate", &g_NetDiagDumpRate, 0, 600);

@@ -31,6 +31,11 @@
 // the oldest available snapshot instead.
 #define NET_LAGCOMP_SIZE      120
 
+// Depth of the per-client recent server-detected-hit ring (see netclient.srvhits
+// and g_NetHitValidate). A few ticks of history covers the small timing skew
+// between when the server replays a remote's shot and when its CLC_HIT lands.
+#define NET_SRVHIT_COUNT      12
+
 // Server-side keep-alive cadence (ticks) for KoH-state and lobby-state
 // broadcasts. ~1 second at 60 Hz. The KoH and lobby broadcasts use the same
 // interval but are phase-offset by half (NET_HEARTBEAT_INTERVAL / 2) so they
@@ -75,6 +80,22 @@ extern u32 g_NetStaleSnapshotTicks;
 // velocity for up to this many ticks instead of freezing. 0 = converge to newest
 // (no extrapolation). Tunable via /extrap. See bondwalk.c.
 extern u32 g_NetExtrapMaxTicks;
+
+// Server-side CLC_HIT validation against the server's own lag-comp'd hit
+// detection. 0 = off (trust the client, current behaviour); 1 = log-only
+// (validate and log would-be rejections via netDiagLogf but still apply the hit
+// — use this to measure agreement before enforcing); 2 = enforce (drop a claimed
+// hit the server's authoritative trace never detected). Config
+// Net.Server.HitValidate / console /hitvalidate. Default 0.
+extern s32 g_NetHitValidate;
+
+// Server-side: record that this client's shot was detected hitting prop `syncid`
+// by the authoritative lag-comp'd shotCalculateHits pass (called from prop.c).
+void netServerRecordDetectedHit(struct netclient *cl, u16 syncid);
+
+// Server-side: did the server recently detect `shooter` hitting `syncid`? Used to
+// validate a CLC_HIT claim. Returns 1 if found within the recent tick window.
+s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid);
 
 // Kill feed: rolling list of recent eliminations shown top-left. New entries
 // land at index 0 and older ones shift down. Tuned so a 4-way deathmatch keeps
@@ -291,6 +312,14 @@ struct netclient {
 	// compensation. Written each tick; indexed by lagcomp_head (newest).
 	struct lagcomp_snapshot lagcomp[NET_LAGCOMP_SIZE];
 	u32 lagcomp_head;
+
+	// Server-side only: recent chr/player prop syncids this client's shots were
+	// detected hitting by the server's own lag-comp'd shotCalculateHits pass.
+	// Used to validate the client's CLC_HIT claims (see g_NetHitValidate): the
+	// client shouldn't be able to claim a hit the server's authoritative,
+	// lag-compensated trace never registered. Ring of {syncid, tick}.
+	struct { u16 syncid; u32 tick; } srvhits[NET_SRVHIT_COUNT];
+	u32 srvhits_head;
 
 	struct netbuf out; // outbound messages are written here, except broadcasts
 	struct netbuf in; // incoming packets are fed here

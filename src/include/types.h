@@ -1378,6 +1378,12 @@ struct chrdata {
 		s16 animnum;         // leg/body animation at this instant (0 = none)
 		s16 framea;          // anim frame index at this instant
 		f32 speed;           // anim playback speed at this instant
+		RoomNum rooms[8];    // wire room membership at this instant; re-registered
+		                     // TIME-ALIGNED with the interpolated (past) pos in
+		                     // netChrInterpolate, so prop->rooms and the rendered pos
+		                     // share one time domain — otherwise they disagree at room
+		                     // boundaries (ledge/doorway) and the visibility/cull gate
+		                     // misfires (sim freeze/vanish on a quick off-ledge-and-back)
 	} netsnap[8];
 	u32 netsnaphead;         // index of the newest netsnap[] entry
 #endif

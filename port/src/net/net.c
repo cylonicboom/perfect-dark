@@ -35,6 +35,7 @@
 #include "spectator.h"
 #include "game/chraction.h"
 #include "game/chr.h"
+#include "game/prop.h"
 #include "game/propobj.h"
 #include "lib/main.h"
 #include "lib/vi.h"
@@ -2335,6 +2336,25 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
 	chr->netsnap[h].animnum        = pose->animnum;
 	chr->netsnap[h].framea         = pose->framea;
 	chr->netsnap[h].speed          = pose->speed;
+	for (s32 ri = 0; ri < 8; ++ri) {
+		chr->netsnap[h].rooms[ri] = pose->rooms[ri];
+	}
+}
+
+// Same -1-terminated room compare as netmsg.c's propRoomsEqual (that one is static
+// to netmsg.c). Used to skip the deregister/register churn when the time-aligned
+// rooms haven't changed since last frame.
+static s32 netChrRoomsEqual(const RoomNum *ra, const RoomNum *rb)
+{
+	for (s32 i = 0; i < 8; ++i) {
+		if (ra[i] != rb[i]) {
+			return 0;
+		}
+		if (ra[i] == -1) {
+			break;
+		}
+	}
+	return 1;
 }
 
 void netChrInterpolate(struct chrdata *chr)
@@ -2440,6 +2460,30 @@ void netChrInterpolate(struct chrdata *chr)
 
 	// Apply the reconstructed pose (overrides the receive-time per-packet apply).
 	chr->prop->pos = out.pos;
+
+	// TIME-ALIGNED ROOMS: re-register prop->rooms from the SAME past instant the body
+	// is rendered at — the older bracket snapshot (matching the discrete animnum
+	// chosen above), or the source snapshot in the single/extrapolation case. The
+	// receive-time path (netmsgSvcPropMoveRead) deliberately skips registering rooms
+	// for interpolated chrs precisely so this owns it: applying the CURRENT wire rooms
+	// to a pos rendered ~interp-delay ticks in the past makes prop->rooms and prop->pos
+	// disagree at room boundaries (ledge/doorway), misfiring func0f08e8ac's visibility
+	// gate and room culling. The chosen snapshot always has tick != 0 (the function
+	// early-returns when head is empty, and iolder/inewer only index recorded slots).
+	{
+		const s32 roomidx = (iolder >= 0) ? iolder : (inewer >= 0 ? inewer : (s32)head);
+		RoomNum *wantrooms = chr->netsnap[roomidx].rooms;
+		if (!netChrRoomsEqual(wantrooms, chr->prop->rooms)) {
+			if (chr->prop->active) {
+				propDeregisterRooms(chr->prop);
+			}
+			roomsCopy(wantrooms, chr->prop->rooms);
+			if (chr->prop->active) {
+				propRegisterRooms(chr->prop);
+			}
+		}
+	}
+
 	if (chr->model) {
 		modelSetRootPosition(chr->model, &out.pos);
 		modelSetChrRotY(chr->model, out.yrot);

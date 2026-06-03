@@ -1674,7 +1674,19 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		oldpos = prop->pos;
 		prop->pos = pos;
 
-		if (!propRoomsEqual(rooms, prop->rooms)) {
+		// Room registration. For interpolated chrs (sims) the rooms are applied
+		// TIME-ALIGNED with the interpolated (past) position inside netChrInterpolate
+		// (from the snapshot ring), NOT here: applying the CURRENT wire rooms to a
+		// prop->pos that netChrInterpolate renders ~interp-delay ticks in the past
+		// puts rooms and pos in different time domains. At a room boundary (ledge,
+		// doorway) the two disagree, and func0f08e8ac's visibility gate + room culling
+		// (both read prop->rooms with prop->pos) misfire — the sim freezes or vanishes,
+		// worst when it darts off a ledge and quickly back. Everything else
+		// (projectiles, objects, and chrs when /chrinterp is off) registers
+		// immediately here; netChrInterpolate early-returns in those cases.
+		const bool interp_owns_rooms = g_NetChrInterp && g_NetMode == NETMODE_CLIENT
+				&& prop->chr && prop->type == PROPTYPE_CHR;
+		if (!interp_owns_rooms && !propRoomsEqual(rooms, prop->rooms)) {
 			if (prop->active) {
 				propDeregisterRooms(prop);
 			}
@@ -1809,6 +1821,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				pose.animnum = animnum;
 				pose.framea = animframe;
 				pose.speed = animspeed;
+				// Record the wire rooms verbatim so netChrInterpolate can re-register
+				// prop->rooms time-aligned with the interpolated pos (see the
+				// room-registration note above).
+				for (s32 ri = 0; ri < 8; ++ri) {
+					pose.rooms[ri] = rooms[ri];
+				}
 				netChrRecordSnapshot(chr, &pose);
 			}
 

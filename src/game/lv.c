@@ -1246,7 +1246,24 @@ Gfx *lvRender(Gfx *gdl)
 						dst->viewheight = src->viewheight;
 						dst->fovy = src->fovy;
 						dst->aspect = src->aspect;
+						// Substitute the target into currentplayer/num/stats so this
+						// viewport renders the target's first-person frame, but KEEP
+						// this iteration's render order in currentplayerindex.
+						// setCurrentPlayerNum recomputes currentplayerindex to the
+						// TARGET's order; if the redirected iteration was order 0 (the
+						// host's own pawn normally is), that moves index 0 off this
+						// frame entirely. Every "first time this frame" block keyed on
+						// currentplayerindex==0 — propsTickPlayer's NOTYETTICKED re-arm
+						// (prop.c), bgTickRooms ONSCREEN, player init — then never
+						// fires, so NO prop/sim ever ticks and the whole world freezes
+						// (the lvupdate clock still runs). This is the render-redirect
+						// twin of the panel-path reorder in spectator.c. Restoring the
+						// iteration's index keeps the substitution transparent to the
+						// once-per-frame bookkeeping (each render order is still visited
+						// exactly once); only the rendered viewpoint changes.
+						const s32 savedplayerindex = g_Vars.currentplayerindex;
 						setCurrentPlayerNum(tnum);
+						g_Vars.currentplayerindex = savedplayerindex;
 					}
 				}
 #endif
@@ -2331,23 +2348,6 @@ void lvTick(void)
 			}
 		}
 	}
-
-#ifndef PLATFORM_N64
-	// PROBE (host /spec freeze investigation): in netplay, log the pause inputs
-	// ~1Hz so a /spec repro tells us exactly which condition zeroed the world
-	// tick (lvupdate240). lvupdate240 here is PRE-pin and already reflects the
-	// pause branch above (0 = frozen). No behaviour change; remove once diagnosed.
-	//   mppaused=1 & mpsetup_paused=0 & plcount=1 -> local menu dialog (mpIsPaused case 1)
-	//   mpsetup_paused!=0                         -> synced match state (mpIsPaused case 2)
-	//   lvpaused=1                                -> in-game pause menu (lvSetPaused)
-	if (g_NetMode && (g_NetTick % 60u) == 0u) {
-		netDiagLogf("pausechk",
-			"lvpaused=%d mppaused=%d mpsetup_paused=%d plcount=%d mprunning=%d lvupd240=%d spectating=%d",
-			(s32)lvIsPaused(), (s32)mpIsPaused(), (s32)g_MpSetup.paused,
-			(s32)PLAYERCOUNT(), (s32)g_Vars.mplayerisrunning,
-			(s32)g_Vars.lvupdate240, (s32)(g_NetSpectateChr != NULL));
-	}
-#endif
 
 	// Determinism harness: when active, pin lvupdate240 to a fixed 1/60 step
 	// before the rest of the derivation runs, so the lvupdate60/60f/freal values

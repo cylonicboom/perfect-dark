@@ -37,6 +37,11 @@ struct dethash {
 
 extern s32 g_DetMode;
 
+// Fixed 60 Hz gameplay tick toggle (config Game.FixedTick / console /fixedtick).
+// When non-zero, mainTick runs the gameplay sim in whole 1/60 steps decoupled
+// from the render frame rate (see det.c). Default 0 (original variable-dt path).
+extern s32 g_FixedTickEnabled;
+
 // Compute the four sub-hashes (+ combined) over the current live sim state.
 // Walks entities in a deterministic order (by index / list order, never by
 // address) and folds only sim-authoritative value fields — never pointers,

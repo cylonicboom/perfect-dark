@@ -1056,6 +1056,29 @@ void mainTick(void)
 			}
 #endif
 
+			// Fixed-timestep gameplay (opt-in, Game.FixedTick / /fixedtick): run
+			// the sim a whole number of fixed 1/60 steps this frame (diffframe60,
+			// which frametimeCalculate already accumulates from wall-clock) and
+			// render once after the loop; detPinTimestep pins each lvTick to a
+			// single 1/60 step. This decouples gameplay (a deterministic 60Hz)
+			// from the frame rate — >60fps frames run 0 sim steps (render-only),
+			// <60fps frames run several catch-up steps. Default off => mainnsteps
+			// stays 1 and this is byte-identical to the original variable-dt path.
+			// The loop body is kept at its original indentation so the diff is a
+			// pure wrap; the matching close brace is just before lvRender.
+			s32 mainnsteps = 1;
+			// During det record/replay keep it at exactly one step per render
+			// frame so the run is reproducible (the fps-driven diffframe60 would
+			// differ between record and replay and cause false divergence). The
+			// det pin still fixes each step to 1/60.
+			if (g_FixedTickEnabled && g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY) {
+				mainnsteps = g_Vars.diffframe60;
+				if (mainnsteps > 6) {
+					mainnsteps = 6; // anti-spiral: cap catch-up at very low fps
+				}
+			}
+			for (s32 mainstep = 0; mainstep < mainnsteps; mainstep++) {
+
 			lvTick();
 			playermgrShuffle();
 
@@ -1101,6 +1124,8 @@ void mainTick(void)
 				// outside record/replay.
 				detEndTick();
 			}
+
+			} // end fixed-timestep sim loop (mainnsteps; default 1)
 
 			gdl = lvRender(gdl);
 			func000034e0(&gdl);

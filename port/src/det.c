@@ -21,10 +21,26 @@
 #include "bss.h"   // g_Vars, g_NumChrs
 #include "data.h"
 #include "system.h"
+#include "platform.h"
+#include "config.h"
 #include "lib/joy.h"
 #include "det.h"
 
 s32 g_DetMode = DET_OFF;
+
+// Fixed 60 Hz gameplay tick (port-only, opt-in via Game.FixedTick / /fixedtick).
+// When set, mainTick runs the gameplay sim a whole number of fixed 1/60 steps
+// per render frame (catch-up at low fps, render-only frames at high fps) instead
+// of one variable-dt step, and detPinTimestep forces each lvTick to exactly one
+// 1/60 step. This decouples gameplay speed from frame rate, so the frame rate
+// can be unlocked (Video.FramerateLimit) without the sim speeding up. Default 0
+// => the original variable-dt path is byte-identical.
+s32 g_FixedTickEnabled = 0;
+
+PD_CONSTRUCTOR static void detConfigInit(void)
+{
+	configRegisterInt("Game.FixedTick", &g_FixedTickEnabled, 0, 1);
+}
 
 // Gameplay RNG streams (extern'd here to avoid pulling the rng headers).
 extern u64 g_RngSeed;   // src/lib/rng_c.c
@@ -225,7 +241,7 @@ void detComputeHash(struct dethash *out)
 
 void detPinTimestep(void)
 {
-	if (g_DetMode == DET_OFF) {
+	if (g_DetMode == DET_OFF && !g_FixedTickEnabled) {
 		return;
 	}
 	// Respect pause: when the engine chose a zero step (paused / cutscene gate),
@@ -513,6 +529,18 @@ s32 detConsoleCommand(const char *cmd, const char *arg)
 		} else {
 			sysLogPrintf(LOG_CHAT, "DET: replay stopped");
 		}
+		return 1;
+	}
+
+	if (strcmp(cmd, "fixedtick") == 0) {
+		if (strcmp(arg, "on") == 0) {
+			g_FixedTickEnabled = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_FixedTickEnabled = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "DET: fixed 60Hz gameplay tick = %s%s",
+				g_FixedTickEnabled ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /fixedtick on|off)" : "");
 		return 1;
 	}
 

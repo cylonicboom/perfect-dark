@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 42 // 42: SVC_STAGE_START carries a co-op mode byte + difficulty (campaign co-op: clients load the solo stage via the co-op path instead of mpStartMatch)
+#define NET_PROTOCOL_VER 43 // 43: CLC_STAGE_COMPLETE — co-op client tells the host its local sim finished the mission so the host ends the stage for all
+// 42: SVC_STAGE_START carries a co-op mode byte + difficulty (campaign co-op: clients load the solo stage via the co-op path instead of mpStartMatch)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -555,6 +556,7 @@ void netAdminConfigure(void);
 
 void netServerStageStart(void);
 void netServerStageEnd(void);
+void netClientStageComplete(void);
 void netServerKick(struct netclient *cl, const u32 reason);
 
 struct netclient *netClientForPlayerNum(s32 playernum);

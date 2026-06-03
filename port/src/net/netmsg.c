@@ -1161,6 +1161,22 @@ u32 netmsgSvcStageEndRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl)
+{
+	// A co-op client's local simulation reached the exit (or hit a scripted
+	// mission-complete). The host is authoritative for stage flow: end the stage
+	// for everyone. mainEndStage() plays the host's own debrief AND calls
+	// netServerStageEnd(), which broadcasts SVC_STAGE_END to all clients (the one
+	// that sent this included — its own mainEndStage is already guarded by
+	// g_MainIsEndscreen, so the echo is a no-op). Gated to an in-progress co-op
+	// game so a stray/late packet can't end a lobby or a Combat Sim match.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0 && !g_MainIsEndscreen) {
+		mainEndStage();
+	}
+
+	return src->error;
+}
+
 u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 {
 	if (movecl->state < CLSTATE_GAME || !movecl->player || !movecl->player->prop) {

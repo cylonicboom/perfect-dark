@@ -89,6 +89,16 @@ Two ENet channels:
 | 0x03 | CLC_CHAT | Chat message |
 | 0x04 | CLC_MOVE | Player input + position this tick |
 | 0x05 | CLC_SETTINGS | Player settings changed (head, body, FOV, etc.) |
+| 0x0b | CLC_STAGE_COMPLETE | Co-op: client's local sim reached the exit / scripted mission-complete; host ends the stage for all (added on `port-net-predict`) |
+
+> **Co-op stage-completion handshake.** Mission-complete is detected per-machine on
+> the local player (`func0000e990` → `mainEndStage`). The host ending broadcasts
+> `SVC_STAGE_END` (everyone plays the debrief). When a *client* finishes, its local
+> `mainEndStage` can't reach the host, so `func0000e990` also sends
+> `CLC_STAGE_COMPLETE`; the host's `netmsgClcStageCompleteRead` calls `mainEndStage`
+> (→ `netServerStageEnd` → `SVC_STAGE_END` to all). Gated to an in-progress co-op
+> game (`coopplayernum >= 0 && !g_MainIsEndscreen`) so it can't end a lobby or a
+> Combat Sim match; the echo back to the finisher is a `g_MainIsEndscreen` no-op.
 
 ### Player Move Struct (`netplayermove`)
 

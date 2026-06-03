@@ -953,6 +953,21 @@ void netServerStageEnd(void)
 	netDiagLogf("stage_end", "");
 }
 
+// Co-op: the local (client) simulation reached the exit / a scripted
+// mission-complete fired. Tell the host so it ends the stage for ALL players
+// (mainEndStage on the host broadcasts SVC_STAGE_END). Reliable control channel.
+// No-op on the server — the host reaches stage end through mainEndStage directly.
+void netClientStageComplete(void)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netbufWriteU8(&g_NetMsgRel, CLC_STAGE_COMPLETE);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
 void netServerKick(struct netclient *cl, const u32 reason)
 {
 	if (g_NetMode != NETMODE_SERVER) {
@@ -1227,6 +1242,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_ADMIN: rc = netmsgClcAdminRead(&cl->in, cl); break;
 			case CLC_ADMIN_SETUP: rc = netmsgClcAdminSetupRead(&cl->in, cl); break;
 			case CLC_PROP_HIT: rc = netmsgClcPropHitRead(&cl->in, cl); break;
+			case CLC_STAGE_COMPLETE: rc = netmsgClcStageCompleteRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

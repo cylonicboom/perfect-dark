@@ -2524,9 +2524,12 @@ void netChrInterpolate(struct chrdata *chr)
 		if (chr->model->anim->animnum != out.animnum
 				&& (animstable || chr->model->anim->animnum == 0)) {
 			// animnum change (confirmed by hysteresis): seed the new anim near the
-			// server's frame at this instant and blend the changeover so it doesn't
-			// pop.
-			modelSetAnimation(chr->model, out.animnum, 0, (f32)out.framea, out.speed, 0.0625f);
+			// server's frame at this instant and cross-fade the changeover. Merge time
+			// 16 matches the host's chr transitions, including bot locomotion
+			// (playerChooseThirdPersonAnimation, player.c:6186), so sim anim switches
+			// fade in/out like the base game instead of popping (0.0625 was ~256x too
+			// short — effectively instant).
+			modelSetAnimation(chr->model, out.animnum, 0, (f32)out.framea, out.speed, 16.0f);
 		} else {
 			// Same anim, OR a not-yet-confirmed switch we're holding through a
 			// stand<->walk toggle: just track the playback speed and let the frame

@@ -97,6 +97,13 @@ void netServerRecordDetectedHit(struct netclient *cl, u16 syncid);
 // validate a CLC_HIT claim. Returns 1 if found within the recent tick window.
 s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid);
 
+// Hidden test feature (toggle /hitmarker): brief centred hitmarker on a confirmed
+// local hit. g_NetHitmarkerExpireTick is set when the local player's shot
+// registers a chr/player hit (see chraction.c). Off by default.
+extern s32 g_NetHitmarkerEnabled;
+extern u32 g_NetHitmarkerExpireTick;
+#define NET_HITMARKER_TICKS 12u // hitmarker visible window (~200ms at 60Hz)
+
 // Kill feed: rolling list of recent eliminations shown top-left. New entries
 // land at index 0 and older ones shift down. Tuned so a 4-way deathmatch keeps
 // most of the action visible without flooding.
@@ -569,6 +576,10 @@ Gfx *netGrasluRender(Gfx *gdl);
 
 // Companion red "Redvox57" vanity banner; same HUD slot/renderer as Graslu.
 Gfx *netRedvox57Render(Gfx *gdl);
+
+// Hidden test hitmarker: centred marker shown briefly after a confirmed local
+// hit (toggle /hitmarker). No-op unless enabled and within the flash window.
+Gfx *netHitmarkerRender(Gfx *gdl);
 
 // Spectate mode. When non-NULL, the local player's first-person camera is
 // overridden to ride along with the target chr (player or sim). Cleared by

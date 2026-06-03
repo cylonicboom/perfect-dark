@@ -4185,6 +4185,10 @@ void func0f0341dc(struct chrdata *chr, f32 damage, struct coord *vector, struct 
 			netbufStartWrite(&g_NetMsgRel);
 			netmsgClcHitWrite(&g_NetMsgRel, chr, damage, vector, gset, (s16)hitpart, (s16)side, arg10);
 			netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+			// Hidden test feature: immediate local hit confirmation (centred
+			// marker), so the shooter gets feedback now instead of after the
+			// server's SVC_CHR_DAMAGE round-trip. No-op unless /hitmarker is on.
+			g_NetHitmarkerExpireTick = g_NetTick + NET_HITMARKER_TICKS;
 		}
 		return;
 	}

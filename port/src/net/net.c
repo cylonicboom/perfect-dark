@@ -112,6 +112,11 @@ u32 g_NetExtrapMaxTicks       = 3;
 // server's authoritative lag-comp'd trace and clients' claimed hits before
 // enabling enforcement. See netServerHitWasDetected / netServerRecordDetectedHit.
 s32 g_NetHitValidate          = 0;
+// Hidden test feature: centred hitmarker flash on a confirmed local hit. Off by
+// default; toggled via /hitmarker. g_NetHitmarkerExpireTick is set to g_NetTick +
+// NET_HITMARKER_TICKS when the local player's shot registers a chr/player hit.
+s32 g_NetHitmarkerEnabled     = 0;
+u32 g_NetHitmarkerExpireTick  = 0;
 
 char g_NetLastJoinAddr[NET_MAX_ADDR + 1] = "127.0.0.1:27100";
 
@@ -3498,6 +3503,17 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "NET: hit validation = %d (%s)%s", g_NetHitValidate,
 				g_NetHitValidate == 0 ? "off" : g_NetHitValidate == 1 ? "log-only" : "enforce",
 				*arg ? "" : " (usage: /hitvalidate 0|1|2)");
+	} else if (strcmp(cmd, "hitmarker") == 0) {
+		// Hidden test feature: centred hitmarker flash on a confirmed local hit,
+		// giving immediate feedback at high ping instead of waiting for the
+		// server's damage round-trip. Off by default.
+		if (strcmp(arg, "on") == 0) {
+			g_NetHitmarkerEnabled = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetHitmarkerEnabled = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: hitmarker = %s%s", g_NetHitmarkerEnabled ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /hitmarker on|off)" : "");
 	} else if (strcmp(cmd, "svcrate") == 0) {
 		// /svcrate <N> — server-side update interval. 1 = send every tick
 		// (max bandwidth, smoothest). Larger = bandwidth saving but
@@ -4357,6 +4373,42 @@ Gfx *netKillFeedRender(Gfx *gdl)
 
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
 	gdl = text0f153780(gdl);
+	return gdl;
+}
+
+// Hidden test feature (toggle /hitmarker): a brief centred marker shown the
+// instant the local player's shot registers a chr/player hit, so we can evaluate
+// immediate hit feedback at high ping without waiting for the server's
+// SVC_CHR_DAMAGE round-trip and without touching the crosshair render. Reuses the
+// kill-feed text path (no new gfx primitives). Local-only; not networked.
+Gfx *netHitmarkerRender(Gfx *gdl)
+{
+	if (!g_NetMode || !g_NetHitmarkerEnabled || g_NetTick >= g_NetHitmarkerExpireTick) {
+		return gdl;
+	}
+	if (!g_CharsHandelGothicXs || !g_FontHandelGothicXs) {
+		return gdl;
+	}
+
+	gdl = text0f153628(gdl);
+
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
+
+	// Fade alpha out over the remaining lifetime.
+	const u32 remain = g_NetHitmarkerExpireTick - g_NetTick;
+	u32 a = (remain * 255u) / NET_HITMARKER_TICKS;
+	if (a > 255u) { a = 255u; }
+	const u32 col = 0xffffff00u | a;
+
+	// Centre an "X" mark on the reticle (screen centre). textRender mutates x.
+	char mark[] = "X";
+	s32 x = screenw / 2 - 3;
+	s32 y = screenh / 2 - 4;
+	gdl = textRender(gdl, &x, &y, mark,
+			g_CharsHandelGothicXs, g_FontHandelGothicXs,
+			col, 0x00000080u, screenw, screenh, 0, 0);
+
 	return gdl;
 }
 

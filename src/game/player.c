@@ -5226,6 +5226,10 @@ Gfx *playerRenderHud(Gfx *gdl)
 		// pickup messages it mimics (no-op unless toggled via /graslu).
 		gdl = netGrasluRender(gdl);
 		gdl = netRedvox57Render(gdl);
+		// Hidden test feature: centred hitmarker flash on a confirmed local hit
+		// (no-op unless toggled via /hitmarker). Lets us evaluate immediate hit
+		// feedback at high ping without touching the crosshair render.
+		gdl = netHitmarkerRender(gdl);
 #endif
 
 		gdl = playerDrawStoredFade(gdl);

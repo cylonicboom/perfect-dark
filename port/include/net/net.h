@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 39 // 39: SVC_PROP_MOVE chr-state block appends authoritative sim shield (u8, 0..8) + health (f32 chr->damage) so clients stop reconstructing sim HP by damage replay (fixes shield-pickup / RNG-headshot / respawn desync)
+#define NET_PROTOCOL_VER 41 // 41: SVC_PROP_RECONCILE (0x38) — periodic active weapon/obj syncid set; client removes ghost props the host already freed (backstop for missed SVC_PROP_FREE, e.g. screen-gated embedded-mine frees)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 

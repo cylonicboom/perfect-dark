@@ -343,6 +343,27 @@ Fix (`chrTick`, right after `netChrInterpolate`, client-driven aibot sims only):
 
   *Rejected earlier attempts:* (a) `CHRCFLAG_FORCETOGROUND` — consumed inside `chr0f01f378` *after* the bad floor-find, re-snaps to the wrong ground. (b) pin `manground` to the local floor every tick — stopped the sink but **snapped airborne bots to the floor** (no fall). (c) pin `manground` to the interpolated wire `prop->pos.y` — followed the fall arc but **floated bots**, because `prop->pos.y` rides a fixed offset (`anim_local`, the root ride-height) above the floor. The clamp keeps the engine's correct vertical and only guards the failure mode. No wire/protocol change; `#ifndef PLATFORM_N64` + `g_NetMode == NETMODE_CLIENT` gated, so N64 / server / single-player are unaffected.
 
+### Prop Reconciliation Backstop (`SVC_PROP_RECONCILE`, proto 41)
+
+Event-based prop removal (`SVC_PROP_FREE`) is the primary path, but it can be
+missed — the embedded-mine-on-a-chr free is **screen-gated** on the host
+(`chr0f022214` on-screen vs `func0f0706f8` off-screen processing of a chr's
+child props), so a mine stuck to an on-screen sim wasn't reliably freed/broadcast,
+leaving a **ghost** on clients. The reconciliation backstop heals that class
+regardless of cause: the server broadcasts, twice a second (`net.c` `netEndFrame`,
+`g_NetTick % (NET_HEARTBEAT_INTERVAL/2) == 10`, reliable channel), the syncids of
+every networked **weapon/obj** prop it currently holds (`netmsgSvcPropReconcileWrite`
+— terminator-delimited u16 list). The client (`netmsgSvcPropReconcileRead`) builds
+a bitmap and `objFreePermanently`s any weapon/obj synced prop it holds that the
+host's set doesn't list — a ghost the host already freed. The reliable ordered
+channel means that when the client processes the message it has applied every
+prior spawn/free, so an absent prop is genuinely a ghost (no in-flight skew); a
+truncated message sets `src->error` and the removal pass is skipped. Existence-only
+(weapon/obj scoped) — it heals ghosts, not identity-mismap (that relies on the
+deterministic positional syncid pool kept consistent by symmetric spawn/free).
+See `docs/PORT_COOP_PREP.md` for the design rationale and the checksum optimization
+for scale.
+
 ### Diagnostic Log (`net.c`)
 
 Set `Net.Debug.LogPath` in `pd.ini` (or via console) to a writable file path. When non-empty, `netStartServer`/`netStartClient` opens the file (truncating it) and `netDisconnect` closes it. Every line is one event in the format:

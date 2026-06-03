@@ -4201,6 +4201,16 @@ bool propExplode(struct prop *prop, s32 exptype)
 	struct defaultobj *obj = prop->obj;
 	s32 playernum = (obj->hidden & 0xf0000000) >> 28;
 	bool result;
+#ifndef PLATFORM_N64
+	// SVC_EXPLOSION wire position. Defaults to the prop's own pos, but for a prop
+	// embedded in a chr (prop->parent) we broadcast the CHR's world position so the
+	// client renders the blast ON the chr instead of at the wall/floor where the
+	// mine originally stuck. The host already DAMAGES at the chr (the prop->parent
+	// branch below explodes there); only this broadcast position was wrong.
+	struct coord net_exppos = prop->pos;
+	RoomNum net_exprooms[ARRAYCOUNT(prop->rooms)];
+	bool net_useparentpos = false;
+#endif
 
 	if (prop->parent) {
 		struct prop *parent = prop->parent;
@@ -4210,8 +4220,28 @@ bool propExplode(struct prop *prop, s32 exptype)
 		while (parent->parent) {
 			parent = parent->parent;
 		}
+#ifndef PLATFORM_N64
+		net_exppos = parent->pos;
+		for (s32 ri = 0; ri < ARRAYCOUNT(prop->rooms); ri++) {
+			net_exprooms[ri] = parent->rooms[ri];
+		}
+		net_useparentpos = true;
+#endif
 
-		if (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK) {
+		if ((prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)
+#ifndef PLATFORM_N64
+				// In netplay always take the parent->pos branch below for a chr-
+				// attached prop. The on-screen branch transforms pos by
+				// camGetProjectionMtxF, which yields a bad position in the host's tick
+				// context; explosionCreateComplex then fails, propExplode returns
+				// false, and the caller never sets OBJHFLAG_DELETING — so a mine stuck
+				// to a chr that's ON-SCREEN when detonated never gets freed or
+				// broadcast (it only frees once the chr is off everyone's screen and
+				// this branch is skipped). parent->pos is the correct, screen-
+				// independent explosion location for a stuck prop anyway.
+				&& g_NetMode == NETMODE_NONE
+#endif
+				) {
 			Mtxf *mtx = modelGetRootMtx(obj->model);
 
 			pos.x = mtx->m[3][0];
@@ -4251,11 +4281,14 @@ bool propExplode(struct prop *prop, s32 exptype)
 #ifndef PLATFORM_N64
 	// Broadcast the explosion to clients when this is a server-owned networked
 	// prop. propExplode is called server-side only (weapon tick runs on server);
-	// clients see the effect via SVC_EXPLOSION. Use prop->pos for the wire
-	// position — close enough for timer-detonated projectiles that are near
-	// their logical position when they detonate.
+	// clients see the effect via SVC_EXPLOSION. For a chr-embedded prop send the
+	// chr's position (net_exppos) so the blast renders on the chr, not the stick
+	// spot; otherwise the prop's own pos — close enough for timer-detonated
+	// projectiles that are near their logical position when they detonate.
 	if (g_NetMode == NETMODE_SERVER && prop->syncid) {
-		netmsgSvcExplosionWrite(&g_NetMsgRel, exptype, &prop->pos, prop->rooms);
+		netmsgSvcExplosionWrite(&g_NetMsgRel, exptype,
+				net_useparentpos ? &net_exppos : &prop->pos,
+				net_useparentpos ? net_exprooms : prop->rooms);
 	}
 #endif
 
@@ -14759,6 +14792,20 @@ bool objDrop(struct prop *prop, bool lazy)
 				propSetDangerous(prop);
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// A held item just dropped into the world (sim disarm, death drop, etc.):
+		// it's now detached, active and positioned. Held items are never spawned
+		// to clients as world props (the chr-state weapon sync drives the held
+		// visual), so without this the dropped pickup is invisible and ungrabbable
+		// on clients. Broadcast the spawn so it appears on the ground; pickup stays
+		// server-authoritative (SVC_PROP_PICKUP). Weapon/obj only — matches the
+		// SVC_PROP_FREE / reconcile scope (the reconcile backstop covers a miss).
+		if (g_NetMode == NETMODE_SERVER && prop->syncid && prop->obj
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+			netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
+		}
+#endif
 
 		return true;
 	}

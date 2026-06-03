@@ -4228,7 +4228,20 @@ bool propExplode(struct prop *prop, s32 exptype)
 		net_useparentpos = true;
 #endif
 
-		if (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK) {
+		if ((prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)
+#ifndef PLATFORM_N64
+				// In netplay always take the parent->pos branch below for a chr-
+				// attached prop. The on-screen branch transforms pos by
+				// camGetProjectionMtxF, which yields a bad position in the host's tick
+				// context; explosionCreateComplex then fails, propExplode returns
+				// false, and the caller never sets OBJHFLAG_DELETING — so a mine stuck
+				// to a chr that's ON-SCREEN when detonated never gets freed or
+				// broadcast (it only frees once the chr is off everyone's screen and
+				// this branch is skipped). parent->pos is the correct, screen-
+				// independent explosion location for a stuck prop anyway.
+				&& g_NetMode == NETMODE_NONE
+#endif
+				) {
 			Mtxf *mtx = modelGetRootMtx(obj->model);
 
 			pos.x = mtx->m[3][0];

@@ -583,7 +583,9 @@ void playerStartNewLife(void)
 				pos = mp->prop->pos;
 				roomsCopy(mp->prop->rooms, rooms);
 				angle = BADDEG2RAD(mp->vv_theta);
-				chrAdjustPosForSpawn(30, &pos, rooms, angle, true, true, false);
+				// onlysurrounding=true: always offset to an adjacent spot rather
+				// than testing (and accepting) the teammate's exact position.
+				chrAdjustPosForSpawn(30, &pos, rooms, angle, true, true, true);
 				break;
 			}
 		}

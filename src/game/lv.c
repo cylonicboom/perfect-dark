@@ -466,7 +466,12 @@ void lvReset(s32 stagenum)
 					struct coord spawnpos = lead->prop->pos;
 					RoomNum spawnrooms[8];
 					roomsCopy(lead->prop->rooms, spawnrooms);
-					chrAdjustPosForSpawn(30, &spawnpos, spawnrooms, 0.0f, true, true, false);
+					// onlysurrounding=true: ALWAYS place at an adjacent offset (80u on
+					// Defection), never test the lead's exact spot first — at stage
+					// load the lead's collision cylinder isn't active, so the
+					// exact-spot test reads clear and the partner would land right on
+					// top of them. This is the engine's own co-op P2 distance.
+					chrAdjustPosForSpawn(30, &spawnpos, spawnrooms, 0.0f, true, true, true);
 					chrSetPos(g_Vars.currentplayer->prop->chr, &spawnpos, spawnrooms, lead->vv_theta, true);
 				}
 			}

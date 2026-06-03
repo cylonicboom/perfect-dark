@@ -1688,9 +1688,21 @@ void netEndFrame(void)
 			// drive them. The client renders + force-ACT_STANDs them and skips their
 			// AI (host-authoritative; gated in chraiExecute). Combat Sim uses the
 			// g_MpBotChrPtrs loop above; the two paths are mutually exclusive.
+			// BYTE-BUDGETED ROUND-ROBIN: a campaign level has more chrs than fit in one
+			// unreliable packet (g_NetMsg, NET_BUFSIZE), so broadcasting all of them every
+			// tick overflowed it. Resume from a rotating slot index each tick and stop once
+			// the buffer nears full, so every NPC updates over a few ticks (interpolation
+			// hides the gap) and the packet never overflows. Player moves were already
+			// written above, so the threshold accounts for them.
 			if (g_Vars.coopplayernum >= 0 && g_ChrSlots) {
 				const s32 numslots = chrsGetNumSlots();
-				for (s32 i = 0; i < numslots; i++) {
+				static s32 coopnpcstart = 0;
+				if (coopnpcstart >= numslots) {
+					coopnpcstart = 0;
+				}
+				s32 scanned = 0;
+				s32 i = coopnpcstart;
+				while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
 					struct chrdata *chr = &g_ChrSlots[i];
 					if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
 							&& chr->prop->type == PROPTYPE_CHR) {
@@ -1698,7 +1710,10 @@ void netEndFrame(void)
 						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
 						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
 					}
+					i = (i + 1) % numslots;
+					scanned++;
 				}
+				coopnpcstart = i; // resume here next tick
 			}
 			// King of the Hill: keep clients' hill state in sync. Broadcast
 			// every NET_HEARTBEAT_INTERVAL ticks (~1 second) as a keep-alive;

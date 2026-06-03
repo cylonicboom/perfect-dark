@@ -2615,15 +2615,16 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	// Remove the client's copy of a prop the host destroyed (detonated mine /
-	// projectile, shot-out object). Mirror the host reaper's non-regen free path
-	// (propExecuteTickOperation TICKOP_FREE, prop.c): deregister rooms, delist,
-	// disable, then propFree. Guard prop->active against a double-free if this
-	// slot was already removed.
-	if (prop && prop->active) {
-		propDeregisterRooms(prop);
-		propDelist(prop);
-		propDisable(prop);
-		propFree(prop);
+	// projectile, shot-out object). Use the engine's FULL teardown
+	// (objFreePermanently == objFree with canregen=false) — the same path the host
+	// runs — rather than a bare propFree. A partial free would leak/corrupt:
+	// objFree also objDetach()es the prop from its parent chr (a stuck mine is the
+	// chr's child — a bare free leaves a dangling child link), frees the
+	// embedment/projectile, unregisters the proximity-mine proxy, frees the model,
+	// deregisters rooms, delists and disables. Symmetric removal also keeps the
+	// positional syncid pool consistent. Guard prop->active against a double-free.
+	if (prop && prop->obj && prop->active) {
+		objFreePermanently(prop->obj, true);
 	}
 
 	return src->error;

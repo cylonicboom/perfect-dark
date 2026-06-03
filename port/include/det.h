@@ -48,8 +48,17 @@ void detComputeHash(struct dethash *out);
 // a fixed 1/60 so record and replay advance identically regardless of wall clock.
 void detPinTimestep(void);
 
+// Record/replay per-frame hooks. Called from the sim loop in main.c around the
+// per-player tick: detFrameBegin() just before the loop (capture inputs in
+// record mode / inject recorded inputs in replay mode), detEndTick() just after
+// it (write the {inputs, state-hash} record, or recompute the hash and compare
+// against the recording). Both are no-ops unless g_DetMode is RECORD/REPLAY.
+void detFrameBegin(void);
+void detEndTick(void);
+
 // Console command hook, chained from netConsoleCommand. Returns 1 if the command
-// word was consumed, 0 otherwise. Handles: dethash, detpin, detinfo.
+// word was consumed, 0 otherwise. Handles: dethash, detpin, detinfo, detrec,
+// detplay.
 s32 detConsoleCommand(const char *cmd, const char *arg);
 
 #endif

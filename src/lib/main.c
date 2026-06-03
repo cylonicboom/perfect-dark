@@ -3,6 +3,7 @@
 #include "lib/sched.h"
 #include "lib/vars.h"
 #include "constants.h"
+#include "det.h"
 #include "game/camdraw.h"
 #include "game/cheats.h"
 #include "game/debug.h"
@@ -1065,6 +1066,11 @@ void mainTick(void)
 				// when the host isn't spectating.
 				spectatorReadInput();
 #endif
+				// Determinism harness: capture (record) or inject (replay) this
+				// frame's controller input once, before the per-player loop — the
+				// joy ring is global; setCurrentPlayerNum only re-points which
+				// slice each player reads. No-op outside record/replay.
+				detFrameBegin();
 				for (i = 0; i < PLAYERCOUNT(); i++) {
 					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 
@@ -1089,6 +1095,11 @@ void mainTick(void)
 					lvTickPlayer();
 #endif
 				}
+
+				// Determinism harness: hash post-tick state and write the record
+				// (record) or compare against the recording (replay). No-op
+				// outside record/replay.
+				detEndTick();
 			}
 
 			gdl = lvRender(gdl);

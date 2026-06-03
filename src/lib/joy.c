@@ -733,6 +733,32 @@ s32 joyGetNumSamples(void)
 	return (g_JoyDataPtr->curlast - g_JoyDataPtr->curstart + NUM_SAMPLES) % NUM_SAMPLES;
 }
 
+// Determinism-harness raw ring accessors (port/src/det.c). The sample ring is
+// otherwise file-private; these let the harness snapshot/restore exact per-frame
+// controller input for record/replay. ringidx is a raw slot, wrapped into
+// [0, NUM_SAMPLES); pad is [0, NUM_PADS). OSContPad is copied whole (opaque) so
+// no field knowledge leaks out.
+s32 joyGetRingSize(void) { return NUM_SAMPLES; }
+s32 joyGetPadCount(void) { return NUM_PADS; }
+s32 joyGetCurStart(void) { return g_JoyDataPtr->curstart; }
+s32 joyGetCurLast(void) { return g_JoyDataPtr->curlast; }
+
+void joySetCurWindow(s32 curstart, s32 curlast)
+{
+	g_JoyDataPtr->curstart = curstart;
+	g_JoyDataPtr->curlast = curlast;
+}
+
+void joyGetRawSample(s32 ringidx, s32 pad, OSContPad *out)
+{
+	*out = g_JoyDataPtr->samples[((ringidx % NUM_SAMPLES) + NUM_SAMPLES) % NUM_SAMPLES].pads[pad];
+}
+
+void joySetRawSample(s32 ringidx, s32 pad, const OSContPad *in)
+{
+	g_JoyDataPtr->samples[((ringidx % NUM_SAMPLES) + NUM_SAMPLES) % NUM_SAMPLES].pads[pad] = *in;
+}
+
 s32 joyGetRStickXOnSample(s32 samplenum, s8 contpadnum) {
 	if (g_JoyDataPtr->unk200 < 0 && (g_JoyConnectedControllers >> contpadnum & 1) == 0) {
 		g_JoyBadReadsRStickX[contpadnum]++;

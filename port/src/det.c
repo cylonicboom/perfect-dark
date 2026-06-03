@@ -1,9 +1,9 @@
 /**
  * Determinism harness — see port/include/det.h.
  *
- * Phase 1+2: the canonical decomposable state hash (the hard part) and the
- * fixed-step pin. Record/replay (input capture/inject + per-tick compare) land
- * in a follow-up commit once the joy input seam is exposed.
+ * Contains: the canonical decomposable state hash (the hard part), the
+ * fixed-step pin, and input record/replay (capture/inject via the joy raw-ring
+ * seam + per-tick hash compare).
  *
  * Field-selection rule for the hash: fold a field iff it is read-modified by the
  * per-tick sim AND is not a pointer, render scratch, audio handle, syncid, or
@@ -21,6 +21,7 @@
 #include "bss.h"   // g_Vars, g_NumChrs
 #include "data.h"
 #include "system.h"
+#include "lib/joy.h"
 #include "det.h"
 
 s32 g_DetMode = DET_OFF;
@@ -241,6 +242,206 @@ void detPinTimestep(void)
 	g_Vars.lvupdate240rem = 0;
 }
 
+/* ---- record / replay ---- */
+
+// Bump DET_FIELDSET_VER whenever the set of fields folded into the hash changes,
+// so a replay against a recording made with a different field set is rejected
+// (its hashes would otherwise spuriously "diverge").
+#define DET_MAGIC        0x31544544u // "DET1"
+#define DET_VERSION      1u
+#define DET_FIELDSET_VER 1u
+
+#define DET_MAX_RING 20
+#define DET_MAX_PADS 4
+
+struct detfileheader {
+	u32 magic;
+	u32 version;
+	u32 ringsize;
+	u32 padcount;
+	u32 oscontpadsize;
+	u32 fieldsetver;
+};
+
+// One frame's reproducible input slice: the whole ring + its geometry. Snapshot
+// the entire ring (not just the cur window) so replay is bulletproof against the
+// intra-frame cur-window mapping — record and replay are the same build, so this
+// is exact.
+struct detframeinputs {
+	s32 lvframenum;
+	s32 curstart;
+	s32 curlast;
+	s32 ringsize;
+	s32 padcount;
+	OSContPad pads[DET_MAX_RING * DET_MAX_PADS];
+};
+
+static FILE *g_DetFile = NULL;
+static struct detframeinputs g_DetIn;
+static struct dethash g_DetExpected;
+static s32 g_DetReplayDone = 0;
+static s32 g_DetFrameCount = 0;
+static s32 g_DetMismatchCount = 0;
+static s32 g_DetFirstDivergeFrame = -1;
+static const char *g_DetFirstDivergeSub = "";
+
+static void detClose(void)
+{
+	if (g_DetFile) {
+		fclose(g_DetFile);
+		g_DetFile = NULL;
+	}
+}
+
+static void detResetReplayState(void)
+{
+	g_DetReplayDone = 0;
+	g_DetFrameCount = 0;
+	g_DetMismatchCount = 0;
+	g_DetFirstDivergeFrame = -1;
+	g_DetFirstDivergeSub = "";
+}
+
+static void detCaptureInputs(struct detframeinputs *in)
+{
+	in->lvframenum = g_Vars.lvframenum;
+	in->curstart = joyGetCurStart();
+	in->curlast = joyGetCurLast();
+	in->ringsize = joyGetRingSize();
+	in->padcount = joyGetPadCount();
+	if (in->ringsize > DET_MAX_RING) in->ringsize = DET_MAX_RING;
+	if (in->padcount > DET_MAX_PADS) in->padcount = DET_MAX_PADS;
+	s32 r, p;
+	for (r = 0; r < in->ringsize; r++) {
+		for (p = 0; p < in->padcount; p++) {
+			joyGetRawSample(r, p, &in->pads[r * in->padcount + p]);
+		}
+	}
+}
+
+static void detInjectInputs(const struct detframeinputs *in)
+{
+	s32 r, p;
+	for (r = 0; r < in->ringsize; r++) {
+		for (p = 0; p < in->padcount; p++) {
+			joySetRawSample(r, p, &in->pads[r * in->padcount + p]);
+		}
+	}
+	joySetCurWindow(in->curstart, in->curlast);
+}
+
+static s32 detWriteHeader(void)
+{
+	struct detfileheader hdr;
+	hdr.magic = DET_MAGIC;
+	hdr.version = DET_VERSION;
+	hdr.ringsize = (u32)joyGetRingSize();
+	hdr.padcount = (u32)joyGetPadCount();
+	hdr.oscontpadsize = (u32)sizeof(OSContPad);
+	hdr.fieldsetver = DET_FIELDSET_VER;
+	return fwrite(&hdr, sizeof(hdr), 1, g_DetFile) == 1;
+}
+
+static s32 detCheckHeader(void)
+{
+	struct detfileheader hdr;
+	if (fread(&hdr, sizeof(hdr), 1, g_DetFile) != 1) {
+		return 0;
+	}
+	if (hdr.magic != DET_MAGIC || hdr.version != DET_VERSION
+			|| hdr.oscontpadsize != (u32)sizeof(OSContPad)
+			|| hdr.fieldsetver != DET_FIELDSET_VER) {
+		sysLogPrintf(LOG_CHAT, "DET: recording incompatible (magic/version/fieldset mismatch)");
+		return 0;
+	}
+	return 1;
+}
+
+static void detWriteFrame(const struct detframeinputs *in, const struct dethash *h)
+{
+	const s32 n = in->ringsize * in->padcount;
+	fwrite(&in->lvframenum, sizeof(s32), 1, g_DetFile);
+	fwrite(&in->curstart, sizeof(s32), 1, g_DetFile);
+	fwrite(&in->curlast, sizeof(s32), 1, g_DetFile);
+	fwrite(&in->ringsize, sizeof(s32), 1, g_DetFile);
+	fwrite(&in->padcount, sizeof(s32), 1, g_DetFile);
+	fwrite(in->pads, sizeof(OSContPad), n, g_DetFile);
+	fwrite(h, sizeof(struct dethash), 1, g_DetFile);
+	fflush(g_DetFile);
+}
+
+// Returns 1 on a full frame read, 0 on EOF / short read.
+static s32 detReadFrame(struct detframeinputs *in, struct dethash *expected)
+{
+	if (fread(&in->lvframenum, sizeof(s32), 1, g_DetFile) != 1) return 0;
+	if (fread(&in->curstart, sizeof(s32), 1, g_DetFile) != 1) return 0;
+	if (fread(&in->curlast, sizeof(s32), 1, g_DetFile) != 1) return 0;
+	if (fread(&in->ringsize, sizeof(s32), 1, g_DetFile) != 1) return 0;
+	if (fread(&in->padcount, sizeof(s32), 1, g_DetFile) != 1) return 0;
+	if (in->ringsize < 0 || in->ringsize > DET_MAX_RING
+			|| in->padcount < 0 || in->padcount > DET_MAX_PADS) {
+		return 0;
+	}
+	const s32 n = in->ringsize * in->padcount;
+	if ((s32)fread(in->pads, sizeof(OSContPad), n, g_DetFile) != n) return 0;
+	if (fread(expected, sizeof(struct dethash), 1, g_DetFile) != 1) return 0;
+	return 1;
+}
+
+static void detCompare(const struct dethash *got, const struct dethash *exp, s32 frame)
+{
+	if (got->all == exp->all) {
+		return;
+	}
+	g_DetMismatchCount++;
+	if (g_DetFirstDivergeFrame >= 0) {
+		return; // already reported the first divergence; state has forked
+	}
+	const char *sub =
+			got->rng != exp->rng ? "RNG" :
+			got->players != exp->players ? "PLAYERS" :
+			got->props != exp->props ? "PROPS" :
+			got->chrs != exp->chrs ? "CHRS" : "ALL";
+	g_DetFirstDivergeFrame = frame;
+	g_DetFirstDivergeSub = sub;
+	sysLogPrintf(LOG_CHAT, "DET: DIVERGE frame=%d sub=%s exp=%016llx got=%016llx",
+			frame, sub, (unsigned long long)exp->all, (unsigned long long)got->all);
+}
+
+void detFrameBegin(void)
+{
+	if (g_DetMode == DET_RECORD) {
+		detCaptureInputs(&g_DetIn);
+	} else if (g_DetMode == DET_REPLAY && !g_DetReplayDone) {
+		if (!detReadFrame(&g_DetIn, &g_DetExpected)) {
+			g_DetReplayDone = 1;
+			sysLogPrintf(LOG_CHAT, "DET: replay end, %d frames, %d mismatch%s%s",
+					g_DetFrameCount, g_DetMismatchCount,
+					g_DetMismatchCount == 1 ? "" : "es",
+					g_DetMismatchCount == 0 ? " (DETERMINISTIC)" : "");
+			detClose();
+			g_DetMode = DET_OFF;
+			return;
+		}
+		detInjectInputs(&g_DetIn);
+	}
+}
+
+void detEndTick(void)
+{
+	if (g_DetMode == DET_RECORD) {
+		struct dethash h;
+		detComputeHash(&h);
+		detWriteFrame(&g_DetIn, &h);
+		g_DetFrameCount++;
+	} else if (g_DetMode == DET_REPLAY && !g_DetReplayDone) {
+		struct dethash h;
+		detComputeHash(&h);
+		detCompare(&h, &g_DetExpected, g_DetIn.lvframenum);
+		g_DetFrameCount++;
+	}
+}
+
 /* ---- console ---- */
 
 s32 detConsoleCommand(const char *cmd, const char *arg)
@@ -273,14 +474,60 @@ s32 detConsoleCommand(const char *cmd, const char *arg)
 		return 1;
 	}
 
+	if (strcmp(cmd, "detrec") == 0) {
+		detClose();
+		if (g_DetMode == DET_RECORD || g_DetMode == DET_REPLAY) {
+			g_DetMode = DET_OFF;
+		}
+		if (*arg) {
+			g_DetFile = fopen(arg, "wb");
+			if (!g_DetFile || !detWriteHeader()) {
+				detClose();
+				sysLogPrintf(LOG_CHAT, "DET: could not open '%s' for record", arg);
+				return 1;
+			}
+			detResetReplayState();
+			g_DetMode = DET_RECORD;
+			sysLogPrintf(LOG_CHAT, "DET: recording to '%s' (fixed step pinned)", arg);
+		} else {
+			sysLogPrintf(LOG_CHAT, "DET: recording stopped");
+		}
+		return 1;
+	}
+
+	if (strcmp(cmd, "detplay") == 0) {
+		detClose();
+		if (g_DetMode == DET_RECORD || g_DetMode == DET_REPLAY) {
+			g_DetMode = DET_OFF;
+		}
+		if (*arg) {
+			g_DetFile = fopen(arg, "rb");
+			if (!g_DetFile || !detCheckHeader()) {
+				detClose();
+				sysLogPrintf(LOG_CHAT, "DET: could not open/validate '%s' for replay", arg);
+				return 1;
+			}
+			detResetReplayState();
+			g_DetMode = DET_REPLAY;
+			sysLogPrintf(LOG_CHAT, "DET: replaying '%s' (fixed step pinned)", arg);
+		} else {
+			sysLogPrintf(LOG_CHAT, "DET: replay stopped");
+		}
+		return 1;
+	}
+
 	if (strcmp(cmd, "detinfo") == 0) {
 		struct dethash h;
 		detComputeHash(&h);
 		const char *modestr = g_DetMode == DET_OFF ? "OFF" :
 				g_DetMode == DET_PIN ? "PIN" :
 				g_DetMode == DET_RECORD ? "RECORD" : "REPLAY";
-		sysLogPrintf(LOG_CHAT, "DET: mode=%s lvframenum=%d all=%016llx",
-				modestr, g_Vars.lvframenum, (unsigned long long)h.all);
+		sysLogPrintf(LOG_CHAT, "DET: mode=%s frames=%d lvframenum=%d all=%016llx",
+				modestr, g_DetFrameCount, g_Vars.lvframenum, (unsigned long long)h.all);
+		if (g_DetMismatchCount > 0) {
+			sysLogPrintf(LOG_CHAT, "DET: %d mismatches; first diverge frame=%d sub=%s",
+					g_DetMismatchCount, g_DetFirstDivergeFrame, g_DetFirstDivergeSub);
+		}
 		return 1;
 	}
 

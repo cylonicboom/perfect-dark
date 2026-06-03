@@ -26,6 +26,14 @@ void joyReadData(void);
 void joysHandleRetrace(void);
 void joy00014810(bool value);
 s32 joyGetNumSamples(void);
+// Determinism-harness raw ring accessors (see port/src/det.c).
+s32 joyGetRingSize(void);
+s32 joyGetPadCount(void);
+s32 joyGetCurStart(void);
+s32 joyGetCurLast(void);
+void joySetCurWindow(s32 curstart, s32 curlast);
+void joyGetRawSample(s32 ringidx, s32 pad, OSContPad *out);
+void joySetRawSample(s32 ringidx, s32 pad, const OSContPad *in);
 s32 joyGetRStickXOnSample(s32 samplenum, s8 contpadnum);
 s32 joyGetRStickYOnSample(s32 samplenum, s8 contpadnum);
 s32 joyGetStickXOnSample(s32 samplenum, s8 contpadnum);

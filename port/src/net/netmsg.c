@@ -1860,29 +1860,34 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
-			// DEAD-BODY INTANGIBILITY (co-op NPCs) — mirror single-player's
-			// ACT_DIE -> ACT_DEAD sequence so the death animation plays AND the
-			// corpse ends up intangible:
-			//   * While the host is DYING (ACT_DIE) the chr stays ACT_STAND here, so
-			//     netChrInterpolate free-runs the synced death animnum/frame and the
-			//     body falls/lays down normally (still solid, exactly as in SP where
-			//     the prop.c collision gate only frees a chr at ACT_DEAD, not ACT_DIE).
-			//   * Once the host's corpse is AT REST (ACT_DEAD) we set ACT_DEAD, which
-			//     (a) the prop.c movement-collision gate tests directly to make the
-			//     body intangible and (b) the chr.c tick/render path (chr.c:2685)
-			//     treats as a static corpse. By this point netChrInterpolate has
-			//     already driven the anim to the death pose's final (laid-flat) frame,
-			//     so freezing it there looks correct.
-			// Setting ACT_DEAD early (at HP==0, mid-fall) froze the death anim on a
-			// vertical frame and the model sank into the floor — hence keying on the
-			// host's ACT_DEAD, not HP. Safe because the per-action tick dispatch is
-			// gated off for synced co-op NPCs (chraction.c) so chrTickDead never runs;
-			// the only ACT_DEAD readers left are the passive collision/render checks
-			// we WANT to trip. KO'd bodies (ACT_DRUGGEDKO) deliberately stay solid,
-			// matching SP. Co-op only: Combat Sim sims respawn fast, left as-is.
-			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid
-					&& wireactiontype == ACT_DEAD) {
-				chr->actiontype = ACT_DEAD;
+			// DEAD-BODY INTANGIBILITY (co-op NPCs) — mirror the host's actiontype
+			// through the whole death so the body goes walk-through the instant it
+			// starts dying (as it does on the host) AND the death animation plays:
+			//   * Host DYING (ACT_DIE): set ACT_DIE here too. chrUpdateGeometry
+			//     (chr.c:5136, run every frame by the collision system regardless of
+			//     AI) emits a BLOCK_SHOOT-only cylinder with NO GEOFLAG_WALL for an
+			//     ACT_DIE chr, so the player can walk through it immediately — exactly
+			//     the host behaviour. The chr.c tick/render path falls to its generic
+			//     branch (not the static-corpse one), which still advances the synced
+			//     death anim, so the body falls and lays down. We zero act_die.timeextra
+			//     first because chr0f01f378 (the model-pos callback, chr.c:659) is the
+			//     one passive reader of the act_die union on the client; the per-action
+			//     tick (chrTickDie) that would normally populate it is gated off
+			//     (chraction.c), so without this it would read stale union bytes.
+			//   * Host AT REST (ACT_DEAD): set ACT_DEAD — chrUpdateGeometry emits no
+			//     cylinder at all and chr.c:2685 renders it as a static corpse, with
+			//     the anim already on its final laid-flat frame.
+			// Setting ACT_DEAD early froze the death anim on a vertical frame (the
+			// static-corpse branch doesn't advance it) and the model sank — ACT_DIE
+			// during the fall is what avoids that. KO'd bodies (ACT_DRUGGEDKO) stay
+			// solid, matching SP. Co-op only: Combat Sim sims respawn fast, left as-is.
+			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid) {
+				if (wireactiontype == ACT_DEAD) {
+					chr->actiontype = ACT_DEAD;
+				} else if (wireactiontype == ACT_DIE) {
+					chr->act_die.timeextra = 0.0f;
+					chr->actiontype = ACT_DIE;
+				}
 			}
 
 			// Buffer the whole wire pose (position + body yaw + waist twist + aim),

@@ -1860,28 +1860,29 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
-			// DEAD-BODY INTANGIBILITY (co-op NPCs) — do exactly what single-player
-			// does: a dead chr is ACT_DEAD, which (a) the prop.c movement-collision
-			// gate tests directly to make the corpse intangible, and (b) the chr.c
-			// tick/render path branches on (chr.c:2685) to treat as a static corpse
-			// instead of a standing chr. We normally force ACT_STAND, but for a synced
-			// co-op NPC the per-action tick dispatch is gated off (chraction.c), so
-			// setting ACT_DEAD here is crash-safe — chrTickDead never runs — and the
-			// only readers left are the passive collision/render checks we WANT to
-			// trip. The earlier CHRHFLAG_PERIMDISABLED-only proxy left bodies "sticky"
-			// (movement stop/starting on contact): the chr stayed in the ACT_STAND
-			// render branch and its perimeter kept being re-evaluated, so the single
-			// flag didn't hold. Dead is keyed on the authoritative synced HP reaching
-			// maxdamage (the host's own death threshold, chraction.c:3575) — HP is
-			// overwritten every snapshot, so this is robust even if the
-			// ACT_DIE->ACT_DEAD transition never reaches us; actiontype is a secondary
-			// OR. Co-op only: Combat Sim sims respawn fast, collision left as-is.
-			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid) {
-				const bool wiredead = (chr->maxdamage > 0.0f && wirehealth >= chr->maxdamage)
-						|| wireactiontype == ACT_DIE || wireactiontype == ACT_DEAD;
-				if (wiredead) {
-					chr->actiontype = ACT_DEAD;
-				}
+			// DEAD-BODY INTANGIBILITY (co-op NPCs) — mirror single-player's
+			// ACT_DIE -> ACT_DEAD sequence so the death animation plays AND the
+			// corpse ends up intangible:
+			//   * While the host is DYING (ACT_DIE) the chr stays ACT_STAND here, so
+			//     netChrInterpolate free-runs the synced death animnum/frame and the
+			//     body falls/lays down normally (still solid, exactly as in SP where
+			//     the prop.c collision gate only frees a chr at ACT_DEAD, not ACT_DIE).
+			//   * Once the host's corpse is AT REST (ACT_DEAD) we set ACT_DEAD, which
+			//     (a) the prop.c movement-collision gate tests directly to make the
+			//     body intangible and (b) the chr.c tick/render path (chr.c:2685)
+			//     treats as a static corpse. By this point netChrInterpolate has
+			//     already driven the anim to the death pose's final (laid-flat) frame,
+			//     so freezing it there looks correct.
+			// Setting ACT_DEAD early (at HP==0, mid-fall) froze the death anim on a
+			// vertical frame and the model sank into the floor — hence keying on the
+			// host's ACT_DEAD, not HP. Safe because the per-action tick dispatch is
+			// gated off for synced co-op NPCs (chraction.c) so chrTickDead never runs;
+			// the only ACT_DEAD readers left are the passive collision/render checks
+			// we WANT to trip. KO'd bodies (ACT_DRUGGEDKO) deliberately stay solid,
+			// matching SP. Co-op only: Combat Sim sims respawn fast, left as-is.
+			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid
+					&& wireactiontype == ACT_DEAD) {
+				chr->actiontype = ACT_DEAD;
 			}
 
 			// Buffer the whole wire pose (position + body yaw + waist twist + aim),

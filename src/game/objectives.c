@@ -14,6 +14,7 @@
 #include "game/training.h"
 #include "game/lang.h"
 #include "game/propobj.h"
+#include "net/net.h"
 #include "bss.h"
 #include "lib/dma.h"
 #include "lib/memp.h"
@@ -339,6 +340,26 @@ s32 objectiveCheck(s32 index)
 		objstatus = OBJECTIVE_COMPLETE;
 	}
 
+#ifndef PLATFORM_N64
+	// Campaign co-op: the host is authoritative for objective state. Overlay the
+	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) on top of the
+	// client's own local evaluation as a UNION — a wire COMPLETE/FAILED forces that
+	// result so the client reflects objectives the host's world finished (incl. the
+	// other player's actions the host runs), while never hiding one the client
+	// itself locally completed. Keeps the objective HUD and mission debrief
+	// consistent across machines. Host-side this is skipped (it computes the
+	// authoritative status it broadcasts). All-zero default = INCOMPLETE = no-op.
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+			&& index >= 0 && index < MAX_OBJECTIVES) {
+		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE) {
+			objstatus = OBJECTIVE_COMPLETE;
+		} else if (g_NetCoopObjStatuses[index] == OBJECTIVE_FAILED
+				&& objstatus != OBJECTIVE_COMPLETE) {
+			objstatus = OBJECTIVE_FAILED;
+		}
+	}
+#endif
+
 	return objstatus;
 }
 
@@ -386,6 +407,9 @@ void objectivesCheckAll(void)
 	s32 availableindex = 0;
 	s32 i;
 	char buffer[50] = "";
+#ifndef PLATFORM_N64
+	bool netobjchanged = false;
+#endif
 
 	if (!g_ObjectiveChecksDisabled) {
 		for (i = 0; i <= g_ObjectiveLastIndex; i++) {
@@ -393,6 +417,9 @@ void objectivesCheckAll(void)
 
 			if (g_ObjectiveStatuses[i] != status) {
 				g_ObjectiveStatuses[i] = status;
+#ifndef PLATFORM_N64
+				netobjchanged = true;
+#endif
 
 				if (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty())) {
 #if VERSION >= VERSION_JPN_FINAL
@@ -436,6 +463,16 @@ void objectivesCheckAll(void)
 				availableindex++;
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// Co-op host: when any objective status changed, push the authoritative
+		// array to clients so their objective HUD + mission debrief match (reliable,
+		// so on-change is sufficient — no late joins in co-op). Host-only; the
+		// NETMODE_SERVER guard is inside netServerBroadcastObjectives.
+		if (netobjchanged && g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0) {
+			netServerBroadcastObjectives();
+		}
+#endif
 	}
 }
 

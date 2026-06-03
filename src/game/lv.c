@@ -450,6 +450,27 @@ void lvReset(s32 stagenum)
 			playerSpawn();
 
 #ifndef PLATFORM_N64
+			// Campaign co-op: drop the partner a few units from the lead player at
+			// stage start (instead of a separate spawn pad), like the SP co-op buddy.
+			// chrAdjustPosForSpawn finds a clear adjacent spot (Defection-aware: 80u
+			// to clear P1's intro animation); chrSetPos then re-grounds and updates
+			// the player's vv_* fields. Net co-op host only — the remote client
+			// hard-snaps to this via the UCMD_FL_FORCE* flags set just below. Only
+			// the non-lead player(s) move; player 0 keeps its pad. Runs at i>=1 when
+			// player 0 is already positioned, so its pos is valid here.
+			if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+					&& g_Vars.currentplayernum != g_Vars.bondplayernum) {
+				struct player *lead = g_Vars.players[g_Vars.bondplayernum];
+				if (lead && lead->prop && lead->prop->chr
+						&& g_Vars.currentplayer->prop && g_Vars.currentplayer->prop->chr) {
+					struct coord spawnpos = lead->prop->pos;
+					RoomNum spawnrooms[8];
+					roomsCopy(lead->prop->rooms, spawnrooms);
+					chrAdjustPosForSpawn(30, &spawnpos, spawnrooms, 0.0f, true, true, false);
+					chrSetPos(g_Vars.currentplayer->prop->chr, &spawnpos, spawnrooms, lead->vv_theta, true);
+				}
+			}
+
 			// The initial MP spawn was RNG-desynced between server and client.
 			// The pad pick is deterministic per local slot (synced RNG -> same
 			// pad per slot on every machine), but each client swaps its local

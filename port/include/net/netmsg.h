@@ -38,6 +38,8 @@
 #define SVC_VOTE_OPEN    0x4a // open a vote-for-next-map ballot at end-of-round
 #define SVC_VOTE_RESULTS 0x4b // close the vote: winning index + per-candidate tally
 #define SVC_ADMIN        0x4c // admin command response (one text line to the admin)
+#define SVC_OBJECTIVE    0x4d // co-op: host-authoritative per-objective status array (mirrors g_ObjectiveStatuses)
+#define SVC_CHR_SPAWN    0x4e // co-op: a chr spawned at runtime on the host (reinforcement/clone); client creates a matching shell driven by chr-state
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -50,6 +52,7 @@
 #define CLC_ADMIN    0x08 // admin command line (text), server-executed if authorized
 #define CLC_ADMIN_SETUP 0x09 // admin pushes a full g_MpSetup + bot config; server starts the match
 #define CLC_PROP_HIT 0x0a // client-reported destructible-prop/glass hit; server validates + applies
+#define CLC_STAGE_COMPLETE 0x0b // co-op client reached the exit / scripted mission-complete; host ends the stage for all
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -85,6 +88,26 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl);
 // and broadcasts SVC_PROP_DAMAGE. Wire: { propptr, damage:f32, pos:coord, weaponnum:s8 }.
 u32 netmsgClcPropHitWrite(struct netbuf *dst, struct prop *prop, f32 damage, struct coord *pos, s32 weaponnum);
 u32 netmsgClcPropHitRead(struct netbuf *src, struct netclient *srccl);
+
+// CLC_STAGE_COMPLETE (co-op): a client whose local sim reached the exit / hit a
+// scripted mission-complete tells the host. Host is authoritative for stage flow:
+// on read it runs mainEndStage(), which broadcasts SVC_STAGE_END to all. Empty body.
+u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_OBJECTIVE (co-op): host-authoritative objective status mirror. Wire:
+// { count:u8, status[count]:u8 } — count = g_ObjectiveLastIndex+1, each status is
+// OBJECTIVE_INCOMPLETE/COMPLETE/FAILED. The client overlays these on its local
+// objective evaluation (union) so debrief + objective HUD agree across machines.
+u32 netmsgSvcObjectiveWrite(struct netbuf *dst);
+u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_CHR_SPAWN (co-op): replicate a host runtime chr spawn (chrSpawnAtCoord) so
+// the client creates a matching chr with the host's counter-based syncid. Wire:
+// { syncid:u32, bodynum:s16, headnum:s16, spawnflags:u32, angle:f32, pos:coord,
+// rooms[8] }. AI is gated off on co-op clients, so the client spawns with a NULL
+// ailist; position/anim/weapons/HP all arrive via the chr-state broadcast.
+u32 netmsgSvcChrSpawnWrite(struct netbuf *dst, struct prop *prop, f32 angle, u32 spawnflags);
+u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

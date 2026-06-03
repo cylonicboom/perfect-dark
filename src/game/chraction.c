@@ -9480,7 +9480,14 @@ void chrUpdateFireslot(struct chrdata *chr, s32 handnum, bool withsound, bool wi
 				// and no positional shot sound. Sent on the reliable channel
 				// (g_NetMsgRel) so the matching OFF message in chrTickShoot
 				// can't outpace this one and leave the gunfire visual stuck on.
-				if (g_NetMode == NETMODE_SERVER && chr->aibot && chr->prop && chr->prop->syncid) {
+				// Sims (aibot) AND campaign co-op NPCs: both are net-replicated chrs
+				// whose firing the client doesn't compute locally (botTick / NPC AI
+				// is server-gated), so both need the ON message for the shot sound +
+				// flash onset. Co-op NPCs aren't aibots, so the aibot test alone left
+				// their gunfire silent on clients. Matches the OFF gate below (synced
+				// chr) and the co-op gate used elsewhere.
+				if (g_NetMode == NETMODE_SERVER && (chr->aibot || g_Vars.coopplayernum >= 0)
+						&& chr->prop && chr->prop->syncid) {
 					netmsgSvcChrFireWrite(&g_NetMsgRel, chr, (u8)handnum, soundnum);
 				}
 #endif
@@ -13985,6 +13992,34 @@ void chraTick(struct chrdata *chr)
 		chr->sleep = 0;
 
 #ifndef PLATFORM_N64
+		// Campaign co-op (host-authoritative AI): when idle (target == -1) an NPC
+		// perceives only the single player indexed by chr->p1p2. Native splitscreen
+		// co-op alternates it via the chr_toggle_p1p2 ailist command, but not every
+		// NPC/trigger toggles, so remote net players go unnoticed — e.g. a client
+		// entering a scripted region never trips the trigger. Hold each living player
+		// for a short window then advance, so every player is perceived within
+		// ~window ticks (long enough for accumulating sight timers to latch) and can
+		// trip sight/region scripts. Only while idle (target == -1) so an NPC already
+		// engaged with a specific target is untouched. Host + net co-op only
+		// (NETMODE_SERVER excludes splitscreen, which keeps its native toggle); skips
+		// aibots (Combat Sim sims have their own targeting).
+		if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+				&& !chr->aibot && chr->target == -1) {
+			const s32 pcount = PLAYERCOUNT();
+			if (pcount > 1) {
+				const s32 base = (g_Vars.lvframe60 / 20) % pcount;
+				for (s32 n = 0; n < pcount; n++) {
+					const s32 p = (base + n) % pcount;
+					if (g_Vars.players[p] && !g_Vars.players[p]->isdead) {
+						chr->p1p2 = p;
+						break;
+					}
+				}
+			}
+		}
+#endif
+
+#ifndef PLATFORM_N64
 		// Campaign co-op: NPC AI is host-authoritative. On clients, skip the AI
 		// bytecode for synced NPCs — they're position/anim-driven by the host's
 		// chr-state broadcast and forced to ACT_STAND, so running the ailist here
@@ -15878,6 +15913,22 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 					if (spawnflags & SPAWNFLAG_NOBLOOD) {
 						chr->noblood = true;
 					}
+
+#ifndef PLATFORM_N64
+					// Campaign co-op: this is a RUNTIME chr spawn (reinforcement,
+					// scripted guard, clone) that only the host runs — the client's
+					// NPC AI/scripts are gated off, so it never creates this chr and
+					// the guard is invisible there. Broadcast it so the client makes
+					// a matching shell with this server-assigned syncid; the chr-state
+					// broadcast then drives its pose/anim/weapons/HP. Gated to an
+					// in-progress game so setup-time spawns (deterministic positional
+					// syncids, created identically on both sides) aren't re-sent.
+					if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+							&& prop->syncid && g_NetLocalClient
+							&& g_NetLocalClient->state == CLSTATE_GAME) {
+						netServerBroadcastChrSpawn(prop, angle, spawnflags);
+					}
+#endif
 
 					return prop;
 				}

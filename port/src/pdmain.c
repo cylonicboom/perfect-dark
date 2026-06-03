@@ -1051,5 +1051,16 @@ void func0000e990(void)
 {
 	objectivesCheckAll();
 	objectivesDisableChecking();
+
+	// Co-op stage flow is host-authoritative. This is the mission-complete choke
+	// point (reached the exit/lift, or a scripted mission-complete ailist command).
+	// On a CLIENT, also tell the host so it ends the stage for ALL players — the
+	// host's mainEndStage broadcasts SVC_STAGE_END. Without this, only the player
+	// whose local sim finished saw the debrief; the others were left in the level.
+	// The host itself falls straight through to mainEndStage -> netServerStageEnd.
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
+		netClientStageComplete();
+	}
+
 	mainEndStage();
 }

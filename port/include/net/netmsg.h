@@ -11,6 +11,10 @@
 #define SVC_CHAT          0x03 // chat message
 #define SVC_STAGE_START   0x10 // start level
 #define SVC_STAGE_END     0x11 // end level
+
+// SVC_STAGE_START mode byte (campaign co-op vs Combat Sim).
+#define NETSTAGEMODE_COMBAT 0 // Combat Sim (g_MpSetup follows)
+#define NETSTAGEMODE_COOP   1 // campaign co-op (difficulty byte follows; solo load)
 #define SVC_PLAYER_MOVE   0x20 // player movement and inputs
 #define SVC_PLAYER_GUNS   0x21 // player gun state
 #define SVC_PLAYER_STATS  0x22 // player stats (health etc)

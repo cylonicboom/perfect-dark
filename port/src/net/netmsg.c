@@ -812,8 +812,19 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 		return dst->error;
 	}
 
+#ifndef PLATFORM_N64
+	// Campaign co-op: a solo stage loaded with coopplayernum set. Send the co-op
+	// mode byte + difficulty and skip the Combat Sim setup entirely; the client
+	// loads the solo stage via the co-op branch in the read.
+	if (g_Vars.coopplayernum >= 0) {
+		netbufWriteU8(dst, NETSTAGEMODE_COOP);
+		netbufWriteU8(dst, (u8)g_MissionConfig.difficulty);
+		return dst->error;
+	}
+#endif
+
 	// game settings
-	netbufWriteU8(dst, 0); // 0 for combat sim TODO: coop/anti
+	netbufWriteU8(dst, NETSTAGEMODE_COMBAT); // Combat Sim; co-op handled above
 	netbufWriteU8(dst, g_MpSetup.scenario);
 	netbufWriteU8(dst, g_MpSetup.scorelimit);
 	netbufWriteU8(dst, g_MpSetup.timelimit);
@@ -911,7 +922,27 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
-	const u8 mode = netbufReadU8(src); // TODO: coop, anti
+	const u8 mode = netbufReadU8(src);
+
+#ifndef PLATFORM_N64
+	// Campaign co-op: load the solo stage via the co-op path (mainmenu-style),
+	// NOT mpStartMatch. Combat Sim setup is not on the wire in this mode.
+	if (mode == NETSTAGEMODE_COOP) {
+		const u8 difficulty = netbufReadU8(src);
+		if (src->error) {
+			return src->error;
+		}
+		// Enter game state. The combat path does this via the player-roster
+		// manifest (read below); co-op skips that manifest for now, so set our own
+		// state here and let the generic netPlayersAllocate (playermgr.c) seat us.
+		// A full co-op roster manifest (other players' slots) is a Phase-0 follow-up.
+		g_NetLocalClient->state = CLSTATE_GAME;
+		g_MissionConfig.stageindex = 0; // TODO: sync index for briefing/HUD
+		netCoopEnterStage((s32)stagenum, (s32)difficulty);
+		return src->error;
+	}
+#endif
+
 	g_MpSetup.stagenum = stagenum;
 	g_MpSetup.scenario = netbufReadU8(src);
 	g_MpSetup.scorelimit = netbufReadU8(src);

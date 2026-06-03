@@ -2332,6 +2332,23 @@ void lvTick(void)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// PROBE (host /spec freeze investigation): in netplay, log the pause inputs
+	// ~1Hz so a /spec repro tells us exactly which condition zeroed the world
+	// tick (lvupdate240). lvupdate240 here is PRE-pin and already reflects the
+	// pause branch above (0 = frozen). No behaviour change; remove once diagnosed.
+	//   mppaused=1 & mpsetup_paused=0 & plcount=1 -> local menu dialog (mpIsPaused case 1)
+	//   mpsetup_paused!=0                         -> synced match state (mpIsPaused case 2)
+	//   lvpaused=1                                -> in-game pause menu (lvSetPaused)
+	if (g_NetMode && (g_NetTick % 60u) == 0u) {
+		netDiagLogf("pausechk",
+			"lvpaused=%d mppaused=%d mpsetup_paused=%d plcount=%d mprunning=%d lvupd240=%d spectating=%d",
+			(s32)lvIsPaused(), (s32)mpIsPaused(), (s32)g_MpSetup.paused,
+			(s32)PLAYERCOUNT(), (s32)g_Vars.mplayerisrunning,
+			(s32)g_Vars.lvupdate240, (s32)(g_NetSpectateChr != NULL));
+	}
+#endif
+
 	// Determinism harness: when active, pin lvupdate240 to a fixed 1/60 step
 	// before the rest of the derivation runs, so the lvupdate60/60f/freal values
 	// and the lvframe* counters below all advance deterministically. No-op during

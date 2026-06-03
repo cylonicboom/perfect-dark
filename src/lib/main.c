@@ -1072,9 +1072,22 @@ void mainTick(void)
 			// differ between record and replay and cause false divergence). The
 			// det pin still fixes each step to 1/60.
 			if (g_FixedTickEnabled && g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY) {
-				mainnsteps = g_Vars.diffframe60;
+				// Accumulate TRUE elapsed 240ths and emit one fixed 60Hz step per
+				// 4. Must use diffframe240 (real elapsed time), NOT diffframe60 —
+				// diffframe60 goes through the mininc60 wait-loop and reads ~1 per
+				// frame at high fps, so using it ran a full 1/60 step every frame
+				// (e.g. 4x speed at 240fps). The remainder carries so the long-run
+				// rate is exactly 60 steps/sec at any frame rate.
+				static s32 s_fixedAccum240 = 0;
+				s_fixedAccum240 += g_Vars.diffframe240;
+				if (s_fixedAccum240 < 0) {
+					s_fixedAccum240 = 0; // guard a stage-load time jump
+				}
+				mainnsteps = s_fixedAccum240 >> 2;  // / 4
+				s_fixedAccum240 -= mainnsteps << 2; // keep sub-step remainder
 				if (mainnsteps > 6) {
-					mainnsteps = 6; // anti-spiral: cap catch-up at very low fps
+					mainnsteps = 6;      // anti-spiral at very low fps
+					s_fixedAccum240 = 0; // drop backlog rather than chase it
 				}
 			}
 			for (s32 mainstep = 0; mainstep < mainnsteps; mainstep++) {

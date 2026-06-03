@@ -506,7 +506,7 @@ s32 detConsoleCommand(const char *cmd, const char *arg)
 			g_DetMode = DET_RECORD;
 			sysLogPrintf(LOG_CHAT, "DET: recording to '%s' (fixed step pinned)", arg);
 		} else {
-			sysLogPrintf(LOG_CHAT, "DET: recording stopped");
+			sysLogPrintf(LOG_CHAT, "DET: recording stopped (%d frames written)", g_DetFrameCount);
 		}
 		return 1;
 	}

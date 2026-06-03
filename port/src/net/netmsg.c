@@ -1816,31 +1816,23 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// would snap between server positions on each catch-up packet (visible
 			// jitter / teleport). Blend by moving 50% of the way from the last
 			// received pos toward the new one, so the chr glides over a couple of
-			// receives instead of stepping. Skip the blend if the per-receive
-			// delta exceeds 80 units in any axis combined (sqrt(6400)) — that's
-			// above what AI movement can produce in one server update, so it's
-			// almost certainly a respawn / kill-plane drop and blending would
-			// stretch the chr across the map for a frame.
-			struct coord smoothpos = pos;
-			const f32 dx = pos.x - oldpos.x;
-			const f32 dy = pos.y - oldpos.y;
-			const f32 dz = pos.z - oldpos.z;
-			const f32 dist_sq = dx*dx + dy*dy + dz*dz;
-			if (dist_sq < 80.f * 80.f) {
-				const f32 alpha = 0.5f;
-				smoothpos.x = oldpos.x + dx * alpha;
-				smoothpos.y = oldpos.y + dy * alpha;
-				smoothpos.z = oldpos.z + dz * alpha;
-			}
-			// Always commit the position: blended when close, snapped to the wire
-			// pos on a teleport/respawn. Previously prop->pos was written only in
-			// the blend branch, so after a respawn more than 80 units away it stayed
-			// stuck at the death location FOR THE REST OF THE LIFE — every later
-			// packet still measured dist_sq from that stale pos, stayed >80^2, and
-			// kept skipping. The model rendered at the right spot but prop->pos
-			// (which room culling, collision and targeting all read) was frozen,
-			// which can cull the sim to invisibility. smoothpos already holds the
-			// wire pos in the teleport case (it's the default before the blend).
+			// receives instead of stepping.
+			// UNCONDITIONAL 50% blend toward the wire pos. The old "snap if the
+			// per-receive delta exceeds 80 units (sqrt(6400))" speed cap was REMOVED:
+			// it assumed AI can't move >80 units per server update, which is false for
+			// high-speed (Dark) sims, so it mis-fired on legitimate fast movement and
+			// hard-snapped them every update. The blend converges (each packet halves
+			// the remaining error), so a respawn/teleport slides over a few packets
+			// instead of getting stuck. With interp on (default) netChrInterpolate
+			// overrides this from the raw, un-capped snapshot ring anyway.
+			struct coord smoothpos;
+			const f32 alpha = 0.5f;
+			smoothpos.x = oldpos.x + (pos.x - oldpos.x) * alpha;
+			smoothpos.y = oldpos.y + (pos.y - oldpos.y) * alpha;
+			smoothpos.z = oldpos.z + (pos.z - oldpos.z) * alpha;
+			// Commit the position so prop->pos (which room culling, collision and
+			// targeting all read) tracks the wire; it can't get stuck because the
+			// blend always moves toward the wire pos.
 			prop->pos = smoothpos;
 
 			// POSITION TO MODEL: setting prop->pos alone isn't enough. Rendering
@@ -1865,11 +1857,9 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// rather than jerking between server updates (the "stuck facing one
 			// direction" look while a bot tracks/shoots you). yrot is RADIANS
 			// (chrGetRotY / atan2f), so wrap the delta to (-PI, PI] for the
-			// shortest rotation. Reuse the position block's dist_sq guard: on a
-			// teleport/respawn (large move) snap the facing with the position
-			// rather than spinning the chr across the shortest arc.
-			const f32 applyyrot = (dist_sq < 80.f * 80.f)
-				? netSimBlendAngle(chrGetRotY(chr), yrot, 0.5f) : yrot;
+			// shortest rotation. Unconditional, matching the position blend (the
+			// 80-unit speed cap was removed).
+			const f32 applyyrot = netSimBlendAngle(chrGetRotY(chr), yrot, 0.5f);
 			chrSetRotY(chr, applyyrot);
 			if (chr->model) {
 				modelSetChrRotY(chr->model, applyyrot);
@@ -1929,20 +1919,13 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// the visible half of "a bot damages you without looking at you": the
 			// aim is synced but was applied as a hard snap. aim* joints are
 			// limited-range (waist twist / shoulder pitch), so a plain lerp is
-			// safe (no angle wrap). On a teleport/respawn the dist_sq guard snaps
-			// instead, matching the position. Damage is server-side hitscan, so
+			// safe (no angle wrap). Unconditional now (the 80-unit speed cap was
+			// removed), matching the position blend. Damage is server-side hitscan, so
 			// this visual-only lag never affects hit registration.
-			if (dist_sq < 80.f * 80.f) {
-				chr->aimupback      = netSimBlendLinear(chr->aimupback,      aimupback,      0.5f);
-				chr->aimsideback    = netSimBlendLinear(chr->aimsideback,    aimsideback,    0.5f);
-				chr->aimuplshoulder = netSimBlendLinear(chr->aimuplshoulder, aimuplshoulder, 0.5f);
-				chr->aimuprshoulder = netSimBlendLinear(chr->aimuprshoulder, aimuprshoulder, 0.5f);
-			} else {
-				chr->aimupback = aimupback;
-				chr->aimsideback = aimsideback;
-				chr->aimuplshoulder = aimuplshoulder;
-				chr->aimuprshoulder = aimuprshoulder;
-			}
+			chr->aimupback      = netSimBlendLinear(chr->aimupback,      aimupback,      0.5f);
+			chr->aimsideback    = netSimBlendLinear(chr->aimsideback,    aimsideback,    0.5f);
+			chr->aimuplshoulder = netSimBlendLinear(chr->aimuplshoulder, aimuplshoulder, 0.5f);
+			chr->aimuprshoulder = netSimBlendLinear(chr->aimuprshoulder, aimuprshoulder, 0.5f);
 			// Hold the blended/snapped pose: aimend* = aim*, count = 0 so the
 			// per-fulltick chrUpdateAimProperties keeps our value instead of
 			// easing back toward a stale AI target we never receive on the client.
@@ -1960,9 +1943,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				// the same shortest-path wrap as yrot — angleoffset can span up to
 				// +-PI when the aim is opposite the run direction, so a plain lerp
 				// could spin the weapon the long way round for a frame.
-				chr->aibot->angleoffset = (dist_sq < 80.f * 80.f)
-					? netSimBlendAngle(chr->aibot->angleoffset, angleoffset, 0.5f)
-					: angleoffset;
+				chr->aibot->angleoffset = netSimBlendAngle(chr->aibot->angleoffset, angleoffset, 0.5f);
 			}
 
 			// HELD WEAPONS: sync per-hand weapon choices. The server's bot AI

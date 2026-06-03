@@ -1860,26 +1860,28 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
-			// DEAD-BODY COLLISION PARITY (co-op NPCs). On the host a corpse stops
-			// blocking movement because its actiontype is ACT_DEAD (the prop.c
-			// collision gate tests it directly). We force ACT_STAND on the client,
-			// so emulate the same result by disabling the chr's movement cylinder
-			// via CHRHFLAG_PERIMDISABLED — the OTHER condition in that same gate —
-			// whenever the host says the chr is dead, and re-enabling it otherwise.
-			// Dead is keyed on the authoritative synced HP reaching maxdamage (the
-			// exact threshold the host uses to start death, chraction.c:3575) rather
-			// than the wire actiontype: HP is overwritten every snapshot, so the
-			// corpse loses collision the instant it dies regardless of whether the
-			// ACT_DIE->ACT_DEAD transition or a dead-body update actually reaches us
-			// (without this the bodies stayed "sticky"). actiontype is kept as a
-			// belt-and-braces OR. PERIMDISABLED is a pure collision flag (no AI/render
-			// side-effects) and nothing else toggles it on a client co-op NPC
-			// (chraiExecute is gated off), so this set/clear is the sole authority.
-			// Co-op only: Combat Sim sims respawn fast, collision path left as-is.
+			// DEAD-BODY INTANGIBILITY (co-op NPCs) — do exactly what single-player
+			// does: a dead chr is ACT_DEAD, which (a) the prop.c movement-collision
+			// gate tests directly to make the corpse intangible, and (b) the chr.c
+			// tick/render path branches on (chr.c:2685) to treat as a static corpse
+			// instead of a standing chr. We normally force ACT_STAND, but for a synced
+			// co-op NPC the per-action tick dispatch is gated off (chraction.c), so
+			// setting ACT_DEAD here is crash-safe — chrTickDead never runs — and the
+			// only readers left are the passive collision/render checks we WANT to
+			// trip. The earlier CHRHFLAG_PERIMDISABLED-only proxy left bodies "sticky"
+			// (movement stop/starting on contact): the chr stayed in the ACT_STAND
+			// render branch and its perimeter kept being re-evaluated, so the single
+			// flag didn't hold. Dead is keyed on the authoritative synced HP reaching
+			// maxdamage (the host's own death threshold, chraction.c:3575) — HP is
+			// overwritten every snapshot, so this is robust even if the
+			// ACT_DIE->ACT_DEAD transition never reaches us; actiontype is a secondary
+			// OR. Co-op only: Combat Sim sims respawn fast, collision left as-is.
 			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid) {
 				const bool wiredead = (chr->maxdamage > 0.0f && wirehealth >= chr->maxdamage)
 						|| wireactiontype == ACT_DIE || wireactiontype == ACT_DEAD;
-				chrSetPerimEnabled(chr, !wiredead);
+				if (wiredead) {
+					chr->actiontype = ACT_DEAD;
+				}
 			}
 
 			// Buffer the whole wire pose (position + body yaw + waist twist + aim),

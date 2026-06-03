@@ -1764,6 +1764,15 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				pose.aimsideback = aimsideback;
 				pose.aimuplshoulder = aimuplshoulder;
 				pose.aimuprshoulder = aimuprshoulder;
+				// Buffer the anim too, so netChrInterpolate can reconstruct the
+				// leg/body animation for the SAME past instant as the body position
+				// (fixes the frozen-legs-under-a-gliding-body look when a bot
+				// decelerates to fire — the speed and the motion now share a time
+				// domain). Applied time-aligned in netChrInterpolate; the block
+				// below is the receive-time fallback for /chrinterp off.
+				pose.animnum = animnum;
+				pose.framea = animframe;
+				pose.speed = animspeed;
 				netChrRecordSnapshot(chr, &pose);
 			}
 
@@ -1830,10 +1839,18 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				modelSetChrRotY(chr->model, applyyrot);
 			}
 
-			// ANIMATION: snap when animnum diverges from current. Guard against
-			// invalid ids first: out-of-range animnums index past g_Anims and
-			// crash inside animLoadHeader. animHasFrames filters sentinel 0,
-			// negatives, and anything beyond g_NumAnims.
+			// ANIMATION (receive-time FALLBACK). When /chrinterp is on (default),
+			// netChrInterpolate drives the anim time-aligned with the interpolated
+			// body each tick (it buffered animnum/framea/speed above), so this
+			// receive-time apply is skipped to avoid fighting it — applying the
+			// CURRENT anim speed here while the body renders a DELAYED position is
+			// exactly the time-domain mismatch that froze the legs. This block still
+			// runs when /chrinterp is off (the legacy receive-time path).
+			//
+			// Snap when animnum diverges from current. Guard against invalid ids
+			// first: out-of-range animnums index past g_Anims and crash inside
+			// animLoadHeader. animHasFrames filters sentinel 0, negatives, and
+			// anything beyond g_NumAnims.
 			//
 			// Two paths once validated:
 			//   - Different anim: full modelSetAnimation, which resets frame
@@ -1844,7 +1861,8 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			//     the new playback rate. Re-calling modelSetAnimation here would
 			//     reset framea/frameb to animframe and visibly snap the cycle
 			//     backward whenever the server's frame index trailed ours.
-			if (animnum > 0 && animHasFrames(animnum) && chr->model && chr->model->anim) {
+			if (!g_NetChrInterp
+					&& animnum > 0 && animHasFrames(animnum) && chr->model && chr->model->anim) {
 				// Force flip=0 on the client (right-handed). The server
 				// may pick flip=1 for some animations (left-strafe etc.),
 				// but we deliberately don't sync that bit (it broke Skedar

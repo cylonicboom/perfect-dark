@@ -39,6 +39,7 @@
 #include "lib/main.h"
 #include "lib/vi.h"
 #include "lib/model.h"
+#include "lib/anim.h"
 #include "config.h"
 #include "system.h"
 #include "console.h"
@@ -2331,6 +2332,9 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
 	chr->netsnap[h].aimsideback    = pose->aimsideback;
 	chr->netsnap[h].aimuplshoulder = pose->aimuplshoulder;
 	chr->netsnap[h].aimuprshoulder = pose->aimuprshoulder;
+	chr->netsnap[h].animnum        = pose->animnum;
+	chr->netsnap[h].framea         = pose->framea;
+	chr->netsnap[h].speed          = pose->speed;
 }
 
 void netChrInterpolate(struct chrdata *chr)
@@ -2385,6 +2389,13 @@ void netChrInterpolate(struct chrdata *chr)
 		out.aimsideback    = netLerpf(chr->netsnap[iolder].aimsideback, chr->netsnap[inewer].aimsideback, t);
 		out.aimuplshoulder = netLerpf(chr->netsnap[iolder].aimuplshoulder, chr->netsnap[inewer].aimuplshoulder, t);
 		out.aimuprshoulder = netLerpf(chr->netsnap[iolder].aimuprshoulder, chr->netsnap[inewer].aimuprshoulder, t);
+		// Anim: take the OLDER snapshot's discrete animnum/frame (the value in
+		// effect at the instant we're rendering, [iolder, inewer)), and blend the
+		// continuous playback speed. This time-aligns the legs with the body
+		// position above — the whole point of the fix.
+		out.animnum        = chr->netsnap[iolder].animnum;
+		out.framea         = chr->netsnap[iolder].framea;
+		out.speed          = netLerpf(chr->netsnap[iolder].speed, chr->netsnap[inewer].speed, t);
 	} else {
 		// Single-snapshot / extrapolation: facing + aim hold the newest values;
 		// position dead-reckons (bounded) when desired is ahead of all snapshots.
@@ -2396,6 +2407,9 @@ void netChrInterpolate(struct chrdata *chr)
 		out.aimsideback    = chr->netsnap[head].aimsideback;
 		out.aimuplshoulder = chr->netsnap[head].aimuplshoulder;
 		out.aimuprshoulder = chr->netsnap[head].aimuprshoulder;
+		out.animnum        = chr->netsnap[head].animnum;
+		out.framea         = chr->netsnap[head].framea;
+		out.speed          = chr->netsnap[head].speed;
 		if (inewer < 0) {
 			const u32 prevh = (head + NET_SNAPSHOT_COUNT - 1u) % NET_SNAPSHOT_COUNT;
 			if (chr->netsnap[prevh].tick && chr->netsnap[head].tick > chr->netsnap[prevh].tick
@@ -2431,6 +2445,34 @@ void netChrInterpolate(struct chrdata *chr)
 	chr->aimendlshoulder = out.aimuplshoulder;
 	chr->aimendrshoulder = out.aimuprshoulder;
 	chr->aimendcount = 0;
+
+	// ANIMATION (time-aligned with the interpolated body above). The leg/body anim
+	// is reconstructed for the SAME past instant as the position, instead of being
+	// applied at receive time (current) in netmsgSvcPropMoveRead. That removes the
+	// time-domain mismatch that froze the legs mid-stride under a still-gliding body
+	// when a bot decelerated to fire: the server transmits a near-zero anim speed
+	// during deceleration (playerChooseThirdPersonAnimation's soft-turn band), and
+	// the old receive-time apply pinned the legs to that CURRENT ~0 speed while the
+	// body rendered a DELAYED, still-moving position. Now both come from the same
+	// snapshot instant, so they always agree. The client free-runs the frame via its
+	// own chrTick at this speed. The receive-time apply in netmsgSvcPropMoveRead is
+	// the fallback (when /chrinterp is off, or before any snapshot exists — this
+	// whole function early-returns in those cases).
+	if (out.animnum > 0 && animHasFrames(out.animnum) && chr->model && chr->model->anim) {
+		// Lock right-handed: the flip bit is deliberately not synced (it broke
+		// Skedar maps — see netmsgSvcPropMoveWrite's FLIP comment).
+		chr->model->anim->flip = 0;
+		if (chr->model->anim->animnum != out.animnum) {
+			// animnum change: seed the new anim near the server's frame at this
+			// instant and blend the changeover so it doesn't pop.
+			modelSetAnimation(chr->model, out.animnum, 0, (f32)out.framea, out.speed, 0.0625f);
+		} else {
+			// same anim: just track the playback speed and let the frame free-run.
+			// Re-seeding framea here would snap the cycle backward whenever the
+			// server's frame index trailed ours.
+			chr->model->anim->speed = out.speed;
+		}
+	}
 }
 
 static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)

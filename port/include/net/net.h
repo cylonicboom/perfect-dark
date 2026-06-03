@@ -93,6 +93,9 @@ struct netchrpose {
 	f32 aimsideback;
 	f32 aimuplshoulder;
 	f32 aimuprshoulder;
+	s16 animnum;         // server's leg/body animation at this instant (0 = none)
+	s16 framea;          // server's anim frame index at this instant
+	f32 speed;           // server's anim playback speed at this instant
 };
 
 // netChrRecordSnapshot stamps the wire pose with the local receive tick into the

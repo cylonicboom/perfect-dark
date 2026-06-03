@@ -1375,6 +1375,9 @@ struct chrdata {
 		f32 aimsideback;
 		f32 aimuplshoulder;
 		f32 aimuprshoulder;
+		s16 animnum;         // leg/body animation at this instant (0 = none)
+		s16 framea;          // anim frame index at this instant
+		f32 speed;           // anim playback speed at this instant
 	} netsnap[8];
 	u32 netsnaphead;         // index of the newest netsnap[] entry
 #endif

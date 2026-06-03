@@ -34,11 +34,34 @@ spectating a player target, **substitutes the target's slot**:
   disconnected client whose chr lingers until the next stage).
 - Copy our full-screen `view*` (left/top/width/height, fovy, aspect) onto the
   target so it fills the screen (a remote player's own `view*` can be stale on the
-  client), then `setCurrentPlayerNum(target)`.
+  client), then `setCurrentPlayerNum(target)` — but **immediately restore
+  `currentplayerindex`** to this iteration's value (see gotcha below).
 
 Gated to: any net session with a local pawn (playing CLIENT **or** playing HOST —
 a host `/spec`'ing a client needs this path too), and our own viewport iteration.
 The spectator-host (panels) is excluded because it has `player == NULL`.
+
+### Gotcha: `setCurrentPlayerNum` clobbers `currentplayerindex` → world freeze
+
+`setCurrentPlayerNum(target)` doesn't just swap `currentplayer`/`num`/`stats`; it
+also sets `currentplayerindex = playermgrGetOrderOfPlayer(target)`. The host's own
+pawn is normally render **order 0**, and a slew of "first time this frame" blocks
+are keyed on `currentplayerindex == 0` — most importantly `propsTickPlayer`'s
+`PROPFLAG_NOTYETTICKED` re-arm (`prop.c`), which is what lets **any** prop/sim tick
+that frame (also `bgTickRooms` ONSCREEN and player init paths). When the redirect
+fired on the order-0 iteration and pointed at a target whose order ≠ 0, index 0 was
+never visited that frame, the NOTYETTICKED re-arm never ran, and **every prop/sim
+froze** — while the `lvupdate` clock kept running, so it didn't look like a pause
+(diag probe showed `lvupdate240 = 4`, not 0). It only reproduced when spectating a
+**player** (the redirect fires); spectating a **sim** uses the camera path with no
+redirect, so index 0 stayed put and sims kept moving — the tell-tale asymmetry.
+
+Fix: save `currentplayerindex` before `setCurrentPlayerNum(target)` and restore it
+after, so the substitution is transparent to the once-per-frame bookkeeping (each
+render order is still visited exactly once; only the rendered viewpoint changes).
+This is the render-redirect twin of the panel-path `playerorder` reorder documented
+in `port/src/spectator.c` (which solves the identical `currentplayerindex==0` gate
+for spectator panels by landing a panel at order 0).
 
 ## Triggers and controls (`port/src/net/net.c`)
 

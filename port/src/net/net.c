@@ -51,6 +51,12 @@
 
 s32 g_NetMode = NETMODE_NONE;
 
+// Last g_StageFlags value broadcast to co-op clients, so netEndFrame only sends
+// SVC_STAGE_FLAGS on change (plus a periodic heal). Reset at co-op stage entry.
+// Defined here (above netCoopEnterStage's reset) since it's file-static — unlike
+// g_NetCoopObjStatuses, which has an extern in net.h covering its forward use.
+static u32 g_NetLastStageFlags;
+
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
 
@@ -981,10 +987,6 @@ void netClientStageComplete(void)
 // overlaid onto objectiveCheck() (see objectives.c). Zeroed (= OBJECTIVE_INCOMPLETE)
 // at boot and reset at stage start so a previous mission's completions can't leak.
 u32 g_NetCoopObjStatuses[MAX_OBJECTIVES];
-
-// Last g_StageFlags value broadcast to co-op clients, so netEndFrame only sends
-// SVC_STAGE_FLAGS on change (plus a periodic heal). Reset at co-op stage entry.
-static u32 g_NetLastStageFlags;
 
 // Broadcast the host's objective status array to all clients (reliable). Called
 // from objectivesCheckAll when any objective status changes, in a co-op game.

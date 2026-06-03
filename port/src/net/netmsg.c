@@ -1866,12 +1866,20 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// so emulate the same result by disabling the chr's movement cylinder
 			// via CHRHFLAG_PERIMDISABLED — the OTHER condition in that same gate —
 			// whenever the host says the chr is dead, and re-enabling it otherwise.
-			// PERIMDISABLED is a pure collision flag (no AI/render side-effects) and
-			// nothing else toggles it on a client co-op NPC (chraiExecute is gated
-			// off), so this set/clear is the sole authority. Co-op only: Combat Sim
-			// sims respawn fast and their collision path is left as-is.
+			// Dead is keyed on the authoritative synced HP reaching maxdamage (the
+			// exact threshold the host uses to start death, chraction.c:3575) rather
+			// than the wire actiontype: HP is overwritten every snapshot, so the
+			// corpse loses collision the instant it dies regardless of whether the
+			// ACT_DIE->ACT_DEAD transition or a dead-body update actually reaches us
+			// (without this the bodies stayed "sticky"). actiontype is kept as a
+			// belt-and-braces OR. PERIMDISABLED is a pure collision flag (no AI/render
+			// side-effects) and nothing else toggles it on a client co-op NPC
+			// (chraiExecute is gated off), so this set/clear is the sole authority.
+			// Co-op only: Combat Sim sims respawn fast, collision path left as-is.
 			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid) {
-				chrSetPerimEnabled(chr, wireactiontype != ACT_DEAD);
+				const bool wiredead = (chr->maxdamage > 0.0f && wirehealth >= chr->maxdamage)
+						|| wireactiontype == ACT_DIE || wireactiontype == ACT_DEAD;
+				chrSetPerimEnabled(chr, !wiredead);
 			}
 
 			// Buffer the whole wire pose (position + body yaw + waist twist + aim),

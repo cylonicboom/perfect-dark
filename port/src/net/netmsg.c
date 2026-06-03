@@ -1194,6 +1194,59 @@ u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgSvcChrSpawnWrite(struct netbuf *dst, struct prop *prop, f32 angle, u32 spawnflags)
+{
+	struct chrdata *chr = prop->chr;
+
+	netbufWriteU8(dst, SVC_CHR_SPAWN);
+	netbufWriteU32(dst, prop->syncid);
+	netbufWriteS16(dst, (s16)chr->bodynum);
+	netbufWriteS16(dst, (s16)chr->headnum);
+	netbufWriteU32(dst, spawnflags);
+	netbufWriteF32(dst, angle);
+	netbufWriteCoord(dst, &prop->pos);
+	netbufWriteRooms(dst, prop->rooms, ARRAYCOUNT(prop->rooms));
+
+	return dst->error;
+}
+
+u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u32 syncid = netbufReadU32(src);
+	const s16 bodynum = netbufReadS16(src);
+	const s16 headnum = netbufReadS16(src);
+	const u32 spawnflags = netbufReadU32(src);
+	const f32 angle = netbufReadF32(src);
+	struct coord pos;
+	RoomNum rooms[8];
+	netbufReadCoord(src, &pos);
+	netbufReadRooms(src, rooms, ARRAYCOUNT(rooms));
+
+	if (src->error || syncid == 0) {
+		return src->error;
+	}
+
+	// Idempotent: ignore a chr we already hold (reliable channel makes a resend
+	// unlikely, but a duplicate would create a second ghost).
+	if (netSyncIdToProp(syncid)) {
+		return src->error;
+	}
+
+	// Create the runtime chr locally with the host's counter-based syncid so the
+	// chr-state broadcast (looked up by syncid via the linear-scan fallback in
+	// netSyncIdToProp) drives it. AI is gated off for co-op synced NPCs, so a NULL
+	// ailist is fine (a legal chr state); the host owns position/anim/weapons/HP.
+	// Force ALLOWONSCREEN so the spawn can't be rejected for being in view — the
+	// chr-state immediately corrects the exact position anyway.
+	struct prop *prop = chrSpawnAtCoord(bodynum, headnum, &pos, rooms, angle, NULL,
+			spawnflags | SPAWNFLAG_ALLOWONSCREEN);
+	if (prop) {
+		prop->syncid = syncid;
+	}
+
+	return src->error;
+}
+
 u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl)
 {
 	// A co-op client's local simulation reached the exit (or hit a scripted

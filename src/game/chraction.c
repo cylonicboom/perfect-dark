@@ -9480,7 +9480,14 @@ void chrUpdateFireslot(struct chrdata *chr, s32 handnum, bool withsound, bool wi
 				// and no positional shot sound. Sent on the reliable channel
 				// (g_NetMsgRel) so the matching OFF message in chrTickShoot
 				// can't outpace this one and leave the gunfire visual stuck on.
-				if (g_NetMode == NETMODE_SERVER && chr->aibot && chr->prop && chr->prop->syncid) {
+				// Sims (aibot) AND campaign co-op NPCs: both are net-replicated chrs
+				// whose firing the client doesn't compute locally (botTick / NPC AI
+				// is server-gated), so both need the ON message for the shot sound +
+				// flash onset. Co-op NPCs aren't aibots, so the aibot test alone left
+				// their gunfire silent on clients. Matches the OFF gate below (synced
+				// chr) and the co-op gate used elsewhere.
+				if (g_NetMode == NETMODE_SERVER && (chr->aibot || g_Vars.coopplayernum >= 0)
+						&& chr->prop && chr->prop->syncid) {
 					netmsgSvcChrFireWrite(&g_NetMsgRel, chr, (u8)handnum, soundnum);
 				}
 #endif
@@ -15906,6 +15913,22 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 					if (spawnflags & SPAWNFLAG_NOBLOOD) {
 						chr->noblood = true;
 					}
+
+#ifndef PLATFORM_N64
+					// Campaign co-op: this is a RUNTIME chr spawn (reinforcement,
+					// scripted guard, clone) that only the host runs — the client's
+					// NPC AI/scripts are gated off, so it never creates this chr and
+					// the guard is invisible there. Broadcast it so the client makes
+					// a matching shell with this server-assigned syncid; the chr-state
+					// broadcast then drives its pose/anim/weapons/HP. Gated to an
+					// in-progress game so setup-time spawns (deterministic positional
+					// syncids, created identically on both sides) aren't re-sent.
+					if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+							&& prop->syncid && g_NetLocalClient
+							&& g_NetLocalClient->state == CLSTATE_GAME) {
+						netServerBroadcastChrSpawn(prop, angle, spawnflags);
+					}
+#endif
 
 					return prop;
 				}

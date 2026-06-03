@@ -39,6 +39,7 @@
 #define SVC_VOTE_RESULTS 0x4b // close the vote: winning index + per-candidate tally
 #define SVC_ADMIN        0x4c // admin command response (one text line to the admin)
 #define SVC_OBJECTIVE    0x4d // co-op: host-authoritative per-objective status array (mirrors g_ObjectiveStatuses)
+#define SVC_CHR_SPAWN    0x4e // co-op: a chr spawned at runtime on the host (reinforcement/clone); client creates a matching shell driven by chr-state
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -99,6 +100,14 @@ u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl);
 // objective evaluation (union) so debrief + objective HUD agree across machines.
 u32 netmsgSvcObjectiveWrite(struct netbuf *dst);
 u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_CHR_SPAWN (co-op): replicate a host runtime chr spawn (chrSpawnAtCoord) so
+// the client creates a matching chr with the host's counter-based syncid. Wire:
+// { syncid:u32, bodynum:s16, headnum:s16, spawnflags:u32, angle:f32, pos:coord,
+// rooms[8] }. AI is gated off on co-op clients, so the client spawns with a NULL
+// ailist; position/anim/weapons/HP all arrive via the chr-state broadcast.
+u32 netmsgSvcChrSpawnWrite(struct netbuf *dst, struct prop *prop, f32 angle, u32 spawnflags);
+u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

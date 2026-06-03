@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 44 // 44: SVC_OBJECTIVE — host-authoritative co-op objective status mirror
+#define NET_PROTOCOL_VER 45 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
+// 44: SVC_OBJECTIVE — host-authoritative co-op objective status mirror
 // 43: CLC_STAGE_COMPLETE — co-op client tells the host its local sim finished the mission so the host ends the stage for all
 // 42: SVC_STAGE_START carries a co-op mode byte + difficulty (campaign co-op: clients load the solo stage via the co-op path instead of mpStartMatch)
 
@@ -559,6 +560,7 @@ void netServerStageStart(void);
 void netServerStageEnd(void);
 void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
+void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerKick(struct netclient *cl, const u32 reason);
 
 // Co-op host-authoritative objective status, set by SVC_OBJECTIVE on the client

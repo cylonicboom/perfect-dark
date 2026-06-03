@@ -994,6 +994,19 @@ void netServerBroadcastObjectives(void)
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
 }
 
+// Replicate a host runtime chr spawn (reinforcement/clone) to clients so they
+// create a matching chr shell with the host's syncid. Reliable — sent once.
+void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags)
+{
+	if (g_NetMode != NETMODE_SERVER || !prop || !prop->chr || !prop->syncid) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcChrSpawnWrite(&g_NetMsgRel, prop, angle, spawnflags);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+}
+
 void netServerKick(struct netclient *cl, const u32 reason)
 {
 	if (g_NetMode != NETMODE_SERVER) {
@@ -1335,6 +1348,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_VOTE_RESULTS: rc = netmsgSvcVoteResultsRead(&cl->in, cl); break;
 			case SVC_ADMIN: rc = netmsgSvcAdminRead(&cl->in, cl); break;
 			case SVC_OBJECTIVE: rc = netmsgSvcObjectiveRead(&cl->in, cl); break;
+			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

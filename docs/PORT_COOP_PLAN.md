@@ -99,12 +99,21 @@ same way, keeping render.
 - Recommended: land the slice at 2 players (Phases 0-4), then do 4-player as its
   own pass so a regression here can't block a playable slice.
 
-## Suggested first level
+## First level: dataDyne Defection (`SOLOSTAGEINDEX_DEFECTION 0x00`) — CHOSEN
 
-A combat level with simple objectives and minimal scripted set-pieces — e.g.
-**dataDyne Defection** (guards + reach-objective flow) or a comparably light early
-level. Avoid anything with heavy cutscene/script dependencies for the slice. Final
-pick once we scan the candidate's objective/`AICMD_*` complexity.
+Picked on combat/scripting profile (objective *content* is level-asset data, not
+source, so it's assessed at build time): Defection is the simplest combat level —
+dataDyne guards (NPC replication), terminal-download + reach-lift objectives
+(clean criteria-status sync), minimal scripted set-pieces (just the intro
+cutscene). It also shipped co-op-playable on N64, so co-op spawn pads exist in its
+level data.
+
+**Objective sync is concrete:** completion is tracked per *criteria* as
+`criteria->status` (`OBJECTIVE_INCOMPLETE`/`OBJECTIVE_COMPLETE`, objectives.c:447+),
+evaluated host-side. Phase 3's `SVC_OBJECTIVE` just mirrors those statuses to
+clients (on-change + a heartbeat heal), and stage-complete fires when all are
+`OBJECTIVE_COMPLETE`. At Phase 3 build time, enumerate Defection's actual
+objectives/criteria from the loaded setup to size the message.
 
 ## Top risks (carry into every phase)
 1. **`chraTick` gate regressing sims** — verify first (Phase 1 blocker).

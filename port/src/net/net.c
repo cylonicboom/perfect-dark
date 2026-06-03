@@ -29,6 +29,7 @@
 #include "game/luaai.h"
 #include "game/game_0b0fd0.h"
 #include "game/title.h"
+#include "game/lv.h"
 #include "game/menu.h"
 #include "game/pdmode.h"
 #include "game/mplayer/mplayer.h"
@@ -885,6 +886,33 @@ s32 netStartServer(u16 port, s32 maxclients)
 	netDiagLogf("server_start", "port=%u maxclients=%d protocol=%d", port, maxclients, NET_PROTOCOL_VER);
 
 	return 0;
+}
+
+// Campaign co-op (Phase 0): enter a solo stage in 2-player co-op. Mirrors the
+// solo/co-op start in mainmenu.c (titleSetNextStage -> coop player slots ->
+// setNumPlayers -> difficulty -> mainChangeToStage). Called on the HOST from the
+// /coop command and on the CLIENT from netmsgSvcStageStartRead's co-op branch, so
+// both ends reach the same stage with the same co-op player model. The generic
+// stage-load hooks then fire: lv.c's netServerStageStart broadcasts the host's
+// SVC_STAGE_START, and playermgr's netPlayersAllocate seats remote clients.
+// Currently fixed at 2 players (coopplayernum=1); 4-player is Phase 5.
+void netCoopEnterStage(s32 stagenum, s32 difficulty)
+{
+	g_MissionConfig.iscoop = 1;
+	g_MissionConfig.isanti = 0;
+	g_MissionConfig.pdmode = 0;
+	g_MissionConfig.difficulty = difficulty;
+	g_MissionConfig.stagenum = stagenum;
+	g_Vars.numaibuddies = 0;
+
+	titleSetNextStage(stagenum);
+	g_Vars.bondplayernum = 0;
+	g_Vars.coopplayernum = 1;
+	g_Vars.antiplayernum = -1;
+	setNumPlayers(2);
+	lvSetDifficulty(difficulty);
+	titleSetNextMode(TITLEMODE_SKIP);
+	mainChangeToStage(stagenum);
 }
 
 void netServerStageStart(void)
@@ -3814,6 +3842,22 @@ s32 netConsoleCommand(const char *line)
 		}
 		sysLogPrintf(LOG_CHAT, "NET: chr pose interpolation = %s%s", g_NetChrInterp ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /chrinterp on|off)" : "");
+	} else if (strcmp(cmd, "coop") == 0) {
+		// /coop [solostageindex] — HOST only. Start a campaign co-op session on a
+		// solo stage (default Defection, index 0). Clients already in the lobby load
+		// the same stage via SVC_STAGE_START's co-op branch. Phase 0 plumbing only:
+		// 2 players, players sync; NPC AI / objectives are later phases.
+		if (g_NetMode != NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "NET: /coop is host only");
+		} else {
+			s32 idx = (*arg) ? (s32)strtol(arg, NULL, 0) : SOLOSTAGEINDEX_DEFECTION;
+			if (idx < 0 || idx >= NUM_SOLOSTAGES) {
+				idx = SOLOSTAGEINDEX_DEFECTION;
+			}
+			g_MissionConfig.stageindex = idx;
+			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage index %d)", idx);
+			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, DIFF_A);
+		}
 	} else if (strcmp(cmd, "hitvalidate") == 0) {
 		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims
 		// against the server's own lag-comp'd hit detection. 0=off (trust client),

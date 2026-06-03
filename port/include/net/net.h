@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 41 // 41: SVC_PROP_RECONCILE (0x38) — periodic active weapon/obj syncid set; client removes ghost props the host already freed (backstop for missed SVC_PROP_FREE, e.g. screen-gated embedded-mine frees)
+#define NET_PROTOCOL_VER 42 // 42: SVC_STAGE_START carries a co-op mode byte + difficulty (campaign co-op: clients load the solo stage via the co-op path instead of mpStartMatch)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -509,6 +509,10 @@ void netInit(void);
 s32 netDisconnect(void);
 void netStartFrame(void);
 void netEndFrame(void);
+
+// Campaign co-op: enter a solo stage in 2-player co-op (host trigger + client
+// SVC_STAGE_START handler both call this). Phase 0 of co-op session plumbing.
+void netCoopEnterStage(s32 stagenum, s32 difficulty);
 
 s32 netStartServer(u16 port, s32 maxclients);
 s32 netStartClient(const char *addr);

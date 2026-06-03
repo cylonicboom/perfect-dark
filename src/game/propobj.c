@@ -14793,6 +14793,20 @@ bool objDrop(struct prop *prop, bool lazy)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		// A held item just dropped into the world (sim disarm, death drop, etc.):
+		// it's now detached, active and positioned. Held items are never spawned
+		// to clients as world props (the chr-state weapon sync drives the held
+		// visual), so without this the dropped pickup is invisible and ungrabbable
+		// on clients. Broadcast the spawn so it appears on the ground; pickup stays
+		// server-authoritative (SVC_PROP_PICKUP). Weapon/obj only — matches the
+		// SVC_PROP_FREE / reconcile scope (the reconcile backstop covers a miss).
+		if (g_NetMode == NETMODE_SERVER && prop->syncid && prop->obj
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+			netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
+		}
+#endif
+
 		return true;
 	}
 

@@ -87,6 +87,7 @@ extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
 
 void rngSetSeed(u32 seed);
+void rngCosmeticSetSeed(u64 seed); // cosmetic RNG stream (rngcosmetic_c.c)
 
 bool var8005d9b0 = false;
 s32 g_StageNum = STAGE_TITLE;
@@ -383,6 +384,7 @@ void mainLoop(void)
 	}
 
 	rngSetSeed(osGetCount());
+	rngCosmeticSetSeed(osGetCount()); // cosmetic stream: unsynced, may diverge
 
 	// Outer loop - this is infinite because ending is never changed
 	while (!ending) {

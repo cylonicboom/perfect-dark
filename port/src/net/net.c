@@ -101,6 +101,12 @@ u32 g_NetCspCorrFramesMax     = 10;
 f32 g_NetCspCorrThreshSq      = 625.f;    //  25 units squared
 f32 g_NetCspTeleportThreshSq  = 14400.f;  // 120 units squared
 u32 g_NetStaleSnapshotTicks   = 30;       // ~500ms at 60Hz
+// Remote-player dead-reckoning: when the freshest snapshot is older than the
+// interpolation target (late packet / jitter spike), extrapolate the remote's
+// position from its last inter-snapshot velocity for up to this many ticks
+// instead of freezing. 0 = no extrapolation (converge to the newest snapshot).
+// Small by design: a missed direction-change overshoots, so keep it short.
+u32 g_NetExtrapMaxTicks       = 3;
 
 char g_NetLastJoinAddr[NET_MAX_ADDR + 1] = "127.0.0.1:27100";
 
@@ -3417,6 +3423,19 @@ s32 netConsoleCommand(const char *line)
 			sysLogPrintf(LOG_CHAT, "NET: stale-snapshot threshold = %u ticks", g_NetStaleSnapshotTicks);
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: stale-snapshot threshold = %u ticks (usage: /stale <ticks>)", g_NetStaleSnapshotTicks);
+		}
+	} else if (strcmp(cmd, "extrap") == 0) {
+		// /extrap <ticks> — remote-player dead-reckoning window. When the newest
+		// snapshot is older than the interp target (late packet / jitter), the
+		// remote is extrapolated from last velocity for up to this many ticks
+		// instead of freezing. 0 = converge to newest (no extrapolation). Keep
+		// small (default 3) — large values overshoot on direction changes.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetExtrapMaxTicks = (u32)((n < 0) ? 0 : (n > 12 ? 12 : n));
+			sysLogPrintf(LOG_CHAT, "NET: remote extrapolation = %u ticks", g_NetExtrapMaxTicks);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: remote extrapolation = %u ticks (usage: /extrap <ticks>, 0=off)", g_NetExtrapMaxTicks);
 		}
 	} else if (strcmp(cmd, "svcrate") == 0) {
 		// /svcrate <N> — server-side update interval. 1 = send every tick

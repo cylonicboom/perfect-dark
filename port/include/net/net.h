@@ -70,6 +70,12 @@ extern f32 g_NetCspTeleportThreshSq;
 // entries. Default 30 (~500ms) tolerates UpdateFrames=2..3 + jitter.
 extern u32 g_NetStaleSnapshotTicks;
 
+// Remote-player extrapolation window (ticks). When the newest snapshot is older
+// than the interpolation target, bwalkUpdateRemote dead-reckons from last
+// velocity for up to this many ticks instead of freezing. 0 = converge to newest
+// (no extrapolation). Tunable via /extrap. See bondwalk.c.
+extern u32 g_NetExtrapMaxTicks;
+
 // Kill feed: rolling list of recent eliminations shown top-left. New entries
 // land at index 0 and older ones shift down. Tuned so a 4-way deathmatch keeps
 // most of the action visible without flooding.

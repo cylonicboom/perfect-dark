@@ -564,6 +564,32 @@ void playerStartNewLife(void)
 #endif
 	angle = M_BADTAU - scenarioChooseSpawnLocation(30, &pos, rooms, g_Vars.currentplayer->prop); // var7f1ad534
 
+#ifndef PLATFORM_N64
+	// Campaign co-op: respawn beside a living teammate instead of the spawn pad
+	// scenarioChooseSpawnLocation just picked, so the revived player rejoins the
+	// action rather than starting across the level. Reuses the buddy-spawn
+	// primitive chrAdjustPosForSpawn (nudges ~60-80u to a clear adjacent spot;
+	// already Defection-aware). Net co-op host only: the client kept its own pos in
+	// the NETMODE_CLIENT branch above and hard-snaps to the server's choice via the
+	// UCMD_FL_FORCE* flags this function sets at the end. The co-op revive only
+	// fires while a teammate is alive, so one normally exists; if not, the pad pick
+	// above stands.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0) {
+		s32 mate;
+		for (mate = 0; mate < PLAYERCOUNT(); mate++) {
+			struct player *mp = g_Vars.players[mate];
+			if (mate != g_Vars.currentplayernum && mp && !mp->isdead
+					&& mp->prop && mp->prop->chr) {
+				pos = mp->prop->pos;
+				roomsCopy(mp->prop->rooms, rooms);
+				angle = BADDEG2RAD(mp->vv_theta);
+				chrAdjustPosForSpawn(30, &pos, rooms, angle, true, true, false);
+				break;
+			}
+		}
+	}
+#endif
+
 	groundy = cdFindGroundInfoAtCyl(&pos, 30, rooms,
 			&g_Vars.currentplayer->floorcol,
 			&g_Vars.currentplayer->floortype,

@@ -209,13 +209,17 @@ void propFree(struct prop *prop)
 #ifndef PLATFORM_N64
 	// Tell clients to remove their copy of a destroyed networked prop (detonated
 	// mines/projectiles, shot-out objects) so it doesn't linger after the host
-	// frees it — SVC_EXPLOSION is cosmetic and carries no syncid. Limited to
-	// weapon/obj props (mines, grenades, dropped guns, destructibles); chr/player/
-	// door/lift props have their own lifecycle sync. Gated to active play so the
-	// subsystem prop frees at stage stop don't spam the reliable channel (clients
-	// reset on SVC_STAGE_END regardless). Must run before propFree clears syncid.
+	// frees it — SVC_EXPLOSION is cosmetic and carries no syncid. Weapon/obj props
+	// (mines, grenades, dropped guns, destructibles), plus campaign co-op NPC chrs
+	// (reaped corpses): the client's NPC AI is gated off, so the act_dead fade that
+	// reaps a corpse never runs there and it lingers. Combat Sim sims have their own
+	// deterministic lifecycle, so they're excluded by the coop gate. Gated to active
+	// play so the subsystem prop frees at stage stop don't spam the reliable channel
+	// (clients reset on SVC_STAGE_END regardless). Must run before propFree clears
+	// syncid.
 	if (g_NetMode == NETMODE_SERVER && prop->syncid
-			&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+			&& ((prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+				|| (prop->type == PROPTYPE_CHR && g_Vars.coopplayernum >= 0))
 			&& g_NetLocalClient && g_NetLocalClient->state == CLSTATE_GAME) {
 		netmsgSvcPropFreeWrite(&g_NetMsgRel, prop);
 	}

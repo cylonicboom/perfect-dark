@@ -51,6 +51,12 @@
 
 s32 g_NetMode = NETMODE_NONE;
 
+// Last g_StageFlags value broadcast to co-op clients, so netEndFrame only sends
+// SVC_STAGE_FLAGS on change (plus a periodic heal). Reset at co-op stage entry.
+// Defined here (above netCoopEnterStage's reset) since it's file-static — unlike
+// g_NetCoopObjStatuses, which has an extern in net.h covering its forward use.
+static u32 g_NetLastStageFlags;
+
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
 
@@ -905,6 +911,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	// Explicit size: only the incomplete `extern u32[]` from net.h is in scope here
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
+	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
 
 	g_MissionConfig.iscoop = 1;
 	g_MissionConfig.isanti = 0;
@@ -1005,6 +1012,21 @@ void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags)
 	netbufStartWrite(&g_NetMsgRel);
 	netmsgSvcChrSpawnWrite(&g_NetMsgRel, prop, angle, spawnflags);
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+}
+
+// Replicate an NPC voice line (quip/conversation) to clients so they hear it —
+// NPC AI runs server-only. Reliable control channel (a one-shot event).
+void netServerBroadcastChrTalk(struct prop *prop, s32 audioid)
+{
+	// Co-op only: in Combat Sim, sim speech isn't replicated (and would be a
+	// behaviour change). The call sites just hand us the speaking chr's prop.
+	if (g_NetMode != NETMODE_SERVER || g_Vars.coopplayernum < 0 || !prop || !prop->syncid) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcChrTalkWrite(&g_NetMsgRel, prop, audioid);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
 void netServerKick(struct netclient *cl, const u32 reason)
@@ -1349,6 +1371,8 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_ADMIN: rc = netmsgSvcAdminRead(&cl->in, cl); break;
 			case SVC_OBJECTIVE: rc = netmsgSvcObjectiveRead(&cl->in, cl); break;
 			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
+			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
+			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1772,6 +1796,22 @@ void netEndFrame(void)
 				}
 				coopnpcstart = i; // resume here next tick
 			}
+
+			// Co-op stage flags: scripts, objectives and triggered events gate on
+			// g_StageFlags, set host-side by action blocks / scripts the client
+			// doesn't run. Mirror it (reliable) so the client's flag-gated logic
+			// agrees — OBJECTIVETYPE_COMPFLAGS objective completion (the "objective
+			// complete" pop), door/event gates, cutscene progression. On change for
+			// immediacy, plus a heartbeat heal at a free phase offset (KoH 0, score
+			// 15, lobby 30, stats 45) in case a change landed before the client was
+			// in CLSTATE_GAME.
+			if (g_Vars.coopplayernum >= 0
+					&& (g_StageFlags != g_NetLastStageFlags
+						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
+				g_NetLastStageFlags = g_StageFlags;
+				netmsgSvcStageFlagsWrite(&g_NetMsgRel);
+			}
+
 			// King of the Hill: keep clients' hill state in sync. Broadcast
 			// every NET_HEARTBEAT_INTERVAL ticks (~1 second) as a keep-alive;
 			// on-change broadcasts come from kohTick (kingofthehill.inc)

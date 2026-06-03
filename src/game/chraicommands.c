@@ -51,6 +51,7 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#include "net/net.h"
 
 #ifndef PLATFORM_N64
 #include "game/mplayer/mplayer.h"
@@ -4450,6 +4451,12 @@ bool aiSpeak(void)
 		channelnum = psPlayFromProp((s8)cmd[7], audio_id, 0, g_Vars.chrdata->prop, PSTYPE_NONE, PSFLAG_FORHUDMSG);
 	} else {
 		channelnum = psPlayFromProp((s8)cmd[7], audio_id, 0, g_Vars.chrdata->prop, PSTYPE_CHRTALK, PSFLAG_FORHUDMSG);
+#ifndef PLATFORM_N64
+		// Co-op: NPC AI (and thus this scripted line) runs server-only, so the
+		// client hears nothing. Broadcast the voice line so it plays positionally
+		// there too. Co-op + synced-chr gating is inside netServerBroadcastChrTalk.
+		netServerBroadcastChrTalk(g_Vars.chrdata->prop, audio_id);
+#endif
 	}
 
 	if (text && !sndIsFiltered(audio_id)) {
@@ -7027,6 +7034,9 @@ bool aiSayQuip(void)
 						psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 						psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 								-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+						netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 					} else {
 						distance = chrGetDistanceLostToTargetInLastSecond(g_Vars.chrdata);
 
@@ -7034,6 +7044,9 @@ bool aiSayQuip(void)
 							psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 							psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 									-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+							netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 						}
 					}
 
@@ -7090,6 +7103,9 @@ bool aiSayQuip(void)
 							psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 							psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 									-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+							netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 						} else {
 							distance = chrGetDistanceLostToTargetInLastSecond(g_Vars.chrdata);
 
@@ -7097,6 +7113,9 @@ bool aiSayQuip(void)
 								psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 								psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 										-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+								netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 							}
 						}
 

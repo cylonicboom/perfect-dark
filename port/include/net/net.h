@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 43 // 43: CLC_STAGE_COMPLETE — co-op client tells the host its local sim finished the mission so the host ends the stage for all
+#define NET_PROTOCOL_VER 44 // 44: SVC_OBJECTIVE — host-authoritative co-op objective status mirror
+// 43: CLC_STAGE_COMPLETE — co-op client tells the host its local sim finished the mission so the host ends the stage for all
 // 42: SVC_STAGE_START carries a co-op mode byte + difficulty (campaign co-op: clients load the solo stage via the co-op path instead of mpStartMatch)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
@@ -557,7 +558,14 @@ void netAdminConfigure(void);
 void netServerStageStart(void);
 void netServerStageEnd(void);
 void netClientStageComplete(void);
+void netServerBroadcastObjectives(void);
 void netServerKick(struct netclient *cl, const u32 reason);
+
+// Co-op host-authoritative objective status, set by SVC_OBJECTIVE on the client
+// and overlaid onto the client's local objectiveCheck() (union). Sized
+// MAX_OBJECTIVES in net.c; declared incomplete here so net.h needn't pull in
+// constants.h. Indexed by objective index.
+extern u32 g_NetCoopObjStatuses[];
 
 struct netclient *netClientForPlayerNum(s32 playernum);
 

@@ -898,6 +898,12 @@ s32 netStartServer(u16 port, s32 maxclients)
 // Currently fixed at 2 players (coopplayernum=1); 4-player is Phase 5.
 void netCoopEnterStage(s32 stagenum, s32 difficulty)
 {
+	// Clear the host-authoritative objective mirror so a previous mission's
+	// completions can't leak into this one (the client overlays these onto its
+	// local objective evaluation; a stale COMPLETE would falsely mark an objective
+	// done before the host's first SVC_OBJECTIVE for the new stage arrives).
+	memset(g_NetCoopObjStatuses, 0, sizeof(g_NetCoopObjStatuses));
+
 	g_MissionConfig.iscoop = 1;
 	g_MissionConfig.isanti = 0;
 	g_MissionConfig.pdmode = 0;
@@ -966,6 +972,24 @@ void netClientStageComplete(void)
 	netbufStartWrite(&g_NetMsgRel);
 	netbufWriteU8(&g_NetMsgRel, CLC_STAGE_COMPLETE);
 	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
+// Co-op host-authoritative objective status. Set by SVC_OBJECTIVE on clients and
+// overlaid onto objectiveCheck() (see objectives.c). Zeroed (= OBJECTIVE_INCOMPLETE)
+// at boot and reset at stage start so a previous mission's completions can't leak.
+u32 g_NetCoopObjStatuses[MAX_OBJECTIVES];
+
+// Broadcast the host's objective status array to all clients (reliable). Called
+// from objectivesCheckAll when any objective status changes, in a co-op game.
+void netServerBroadcastObjectives(void)
+{
+	if (g_NetMode != NETMODE_SERVER) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcObjectiveWrite(&g_NetMsgRel);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
 }
 
 void netServerKick(struct netclient *cl, const u32 reason)
@@ -1308,6 +1332,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_VOTE_OPEN: rc = netmsgSvcVoteOpenRead(&cl->in, cl); break;
 			case SVC_VOTE_RESULTS: rc = netmsgSvcVoteResultsRead(&cl->in, cl); break;
 			case SVC_ADMIN: rc = netmsgSvcAdminRead(&cl->in, cl); break;
+			case SVC_OBJECTIVE: rc = netmsgSvcObjectiveRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

@@ -1161,6 +1161,39 @@ u32 netmsgSvcStageEndRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgSvcObjectiveWrite(struct netbuf *dst)
+{
+	// Host-authoritative objective status mirror. count = g_ObjectiveLastIndex+1
+	// (number of objectives loaded for this stage; identical on the client, which
+	// loaded the same setup), then one status byte each.
+	s32 count = g_ObjectiveLastIndex + 1;
+	if (count < 0) { count = 0; }
+	if (count > MAX_OBJECTIVES) { count = MAX_OBJECTIVES; }
+
+	netbufWriteU8(dst, SVC_OBJECTIVE);
+	netbufWriteU8(dst, (u8)count);
+	for (s32 i = 0; i < count; ++i) {
+		netbufWriteU8(dst, (u8)g_ObjectiveStatuses[i]);
+	}
+
+	return dst->error;
+}
+
+u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl)
+{
+	s32 count = netbufReadU8(src);
+	if (count > MAX_OBJECTIVES) { count = MAX_OBJECTIVES; }
+
+	for (s32 i = 0; i < count; ++i) {
+		u8 status = netbufReadU8(src);
+		if (!src->error) {
+			g_NetCoopObjStatuses[i] = status;
+		}
+	}
+
+	return src->error;
+}
+
 u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl)
 {
 	// A co-op client's local simulation reached the exit (or hit a scripted

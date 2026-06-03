@@ -38,6 +38,7 @@
 #define SVC_VOTE_OPEN    0x4a // open a vote-for-next-map ballot at end-of-round
 #define SVC_VOTE_RESULTS 0x4b // close the vote: winning index + per-candidate tally
 #define SVC_ADMIN        0x4c // admin command response (one text line to the admin)
+#define SVC_OBJECTIVE    0x4d // co-op: host-authoritative per-objective status array (mirrors g_ObjectiveStatuses)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -91,6 +92,13 @@ u32 netmsgClcPropHitRead(struct netbuf *src, struct netclient *srccl);
 // scripted mission-complete tells the host. Host is authoritative for stage flow:
 // on read it runs mainEndStage(), which broadcasts SVC_STAGE_END to all. Empty body.
 u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_OBJECTIVE (co-op): host-authoritative objective status mirror. Wire:
+// { count:u8, status[count]:u8 } — count = g_ObjectiveLastIndex+1, each status is
+// OBJECTIVE_INCOMPLETE/COMPLETE/FAILED. The client overlays these on its local
+// objective evaluation (union) so debrief + objective HUD agree across machines.
+u32 netmsgSvcObjectiveWrite(struct netbuf *dst);
+u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

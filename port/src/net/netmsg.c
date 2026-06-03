@@ -1720,6 +1720,13 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
+			// Buffer the raw wire position (stamped with the local receive tick)
+			// for per-frame interpolation by netChrInterpolate, so the chr glides
+			// like a remote player at high ping. The receive-time position set
+			// below still runs (fallback / first packet), but the per-frame
+			// interpolation overrides prop->pos each tick on the client.
+			netChrRecordSnapshot(chr, &pos);
+
 			// POSITION SMOOTHING: under packet loss or low update rate, the chr
 			// would snap between server positions on each catch-up packet (visible
 			// jitter / teleport). Blend by moving 50% of the way from the last

@@ -1354,6 +1354,20 @@ struct chrdata {
 	// within TICKS(18) (= ~300ms at 60Hz) is rejected at the top of
 	// chrDamage. Port-only; the N64 build is byte-identical.
 	s32 lastdamagetick60;
+
+	// Client-side position interpolation buffer for a network-replicated chr
+	// (Combat Sim bots now; campaign NPCs once online co-op lands — same model:
+	// server runs the AI, replicates state, client interpolates). Populated from
+	// SVC_PROP_MOVE (netmsg.c) stamped with the local receive tick, consumed
+	// every frame by netChrInterpolate (net.c) so replicated chrs glide like
+	// remote players instead of snapping per packet. Length must equal
+	// NET_SNAPSHOT_COUNT (net.h). Generic on chrdata (not aibot) so it works for
+	// any networked chr.
+	struct {
+		u32 tick;         // local g_NetTick when this snapshot arrived (0 = empty)
+		struct coord pos; // wire world position
+	} netsnap[8];
+	u32 netsnaphead;      // index of the newest netsnap[] entry
 #endif
 };
 

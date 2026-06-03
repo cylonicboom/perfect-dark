@@ -78,8 +78,20 @@ extern u32 g_NetStaleSnapshotTicks;
 // Remote-player extrapolation window (ticks). When the newest snapshot is older
 // than the interpolation target, bwalkUpdateRemote dead-reckons from last
 // velocity for up to this many ticks instead of freezing. 0 = converge to newest
-// (no extrapolation). Tunable via /extrap. See bondwalk.c.
+// (no extrapolation). Tunable via /extrap. See bondwalk.c. Also used by the
+// network-chr (sim/co-op-NPC) interpolation below.
 extern u32 g_NetExtrapMaxTicks;
+
+// Network-replicated chr position interpolation (Combat Sim bots now; campaign
+// NPCs under online co-op — same model: server runs the AI, replicates state,
+// client interpolates). netChrRecordSnapshot stamps the wire pos with the local
+// receive tick into the chr's ring (called from the SVC_PROP_MOVE apply);
+// netChrInterpolate runs every frame on the client and drives prop->pos from the
+// buffered snapshots at the interp delay, with bounded extrapolation when packets
+// are late — the same scheme bwalkUpdateRemote uses for remote players. Both are
+// no-ops when there are no snapshots, so they're safe to call on any chr.
+void netChrRecordSnapshot(struct chrdata *chr, const struct coord *pos);
+void netChrInterpolate(struct chrdata *chr);
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only

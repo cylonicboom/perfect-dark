@@ -2275,6 +2275,107 @@ s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid)
 	return 0;
 }
 
+/* ---- network-chr position interpolation (sims now; co-op NPCs later) ---- */
+
+// Smoothed average gap (in local ticks) between consecutive replicated-chr
+// snapshots. Snapshots are stamped with the local receive tick, so their spacing
+// = client_fps / server_update_hz (e.g. ~4 at 240fps vs a 60Hz server). The
+// interp delay adapts to this so we usually have two snapshots bracketing the
+// render target rather than constantly extrapolating. All sims share the server's
+// update cadence, so a single global estimate suffices.
+static f32 g_NetChrSnapInterval = 1.0f;
+
+void netChrRecordSnapshot(struct chrdata *chr, const struct coord *pos)
+{
+	if (!chr || !pos) {
+		return;
+	}
+	const u32 prev = chr->netsnap[chr->netsnaphead].tick;
+	if (prev && g_NetTick > prev) {
+		const f32 gap = (f32)(g_NetTick - prev);
+		if (gap < 60.f) { // ignore spawn / stall outliers
+			g_NetChrSnapInterval += (gap - g_NetChrSnapInterval) * 0.1f;
+		}
+	}
+	chr->netsnaphead = (chr->netsnaphead + 1) % NET_SNAPSHOT_COUNT;
+	chr->netsnap[chr->netsnaphead].tick = g_NetTick ? g_NetTick : 1u; // 0 == empty
+	chr->netsnap[chr->netsnaphead].pos = *pos;
+}
+
+void netChrInterpolate(struct chrdata *chr)
+{
+	if (g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
+		return;
+	}
+
+	const u32 head = chr->netsnaphead;
+	if (!chr->netsnap[head].tick) {
+		return; // no snapshots yet — leave the receive-time position in place
+	}
+
+	// Render in the past at the interp delay. Snapshots are stamped with the same
+	// local g_NetTick clock we read here (arrival time), so no interp_lag
+	// rebaseline is needed. The delay = one measured snapshot interval (so two
+	// snapshots normally bracket the target) + the jitter margin g_NetInterpTicks
+	// (/interp). Extrapolation below covers a late packet beyond that.
+	u32 interval = (u32)(g_NetChrSnapInterval + 0.5f);
+	if (interval < 1u) { interval = 1u; }
+	const u32 delay = g_NetInterpTicks + interval;
+	const u32 desired = (g_NetTick > delay) ? (g_NetTick - delay) : 0u;
+
+	// Find the two snapshots bracketing `desired` (newest-first walk).
+	s32 inewer = -1, iolder = -1;
+	for (s32 i = 0; i < NET_SNAPSHOT_COUNT; ++i) {
+		const s32 idx = (s32)((head + NET_SNAPSHOT_COUNT - (u32)i) % NET_SNAPSHOT_COUNT);
+		if (!chr->netsnap[idx].tick) {
+			break; // empty slot
+		}
+		if (chr->netsnap[idx].tick >= desired) {
+			inewer = idx;
+		} else {
+			iolder = idx;
+			break;
+		}
+	}
+
+	struct coord target;
+
+	if (inewer >= 0 && iolder >= 0) {
+		// Normal case: interpolate between the bracketing snapshots.
+		const u32 span = chr->netsnap[inewer].tick - chr->netsnap[iolder].tick;
+		const f32 t = (span > 0) ? (f32)(desired - chr->netsnap[iolder].tick) / (f32)span : 1.f;
+		target.x = chr->netsnap[iolder].pos.x + (chr->netsnap[inewer].pos.x - chr->netsnap[iolder].pos.x) * t;
+		target.y = chr->netsnap[iolder].pos.y + (chr->netsnap[inewer].pos.y - chr->netsnap[iolder].pos.y) * t;
+		target.z = chr->netsnap[iolder].pos.z + (chr->netsnap[inewer].pos.z - chr->netsnap[iolder].pos.z) * t;
+	} else if (inewer >= 0) {
+		// desired is older than every snapshot we hold: render the oldest known.
+		target = chr->netsnap[inewer].pos;
+	} else {
+		// desired is ahead of every snapshot (late/sparse data): dead-reckon from
+		// the two newest for up to g_NetExtrapMaxTicks ticks, else hold newest —
+		// mirrors bwalkUpdateRemote so sims behave like remote players.
+		const u32 prevh = (head + NET_SNAPSHOT_COUNT - 1u) % NET_SNAPSHOT_COUNT;
+		if (chr->netsnap[prevh].tick && chr->netsnap[head].tick > chr->netsnap[prevh].tick
+				&& desired > chr->netsnap[head].tick) {
+			u32 ahead = desired - chr->netsnap[head].tick;
+			if (ahead > g_NetExtrapMaxTicks) {
+				ahead = g_NetExtrapMaxTicks;
+			}
+			const f32 vscale = (f32)ahead / (f32)(chr->netsnap[head].tick - chr->netsnap[prevh].tick);
+			target.x = chr->netsnap[head].pos.x + (chr->netsnap[head].pos.x - chr->netsnap[prevh].pos.x) * vscale;
+			target.y = chr->netsnap[head].pos.y + (chr->netsnap[head].pos.y - chr->netsnap[prevh].pos.y) * vscale;
+			target.z = chr->netsnap[head].pos.z + (chr->netsnap[head].pos.z - chr->netsnap[prevh].pos.z) * vscale;
+		} else {
+			target = chr->netsnap[head].pos;
+		}
+	}
+
+	chr->prop->pos = target;
+	if (chr->model) {
+		modelSetRootPosition(chr->model, &target);
+	}
+}
+
 static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)
 {
 	// Retrieve the position snapshot at or just before the requested tick.

@@ -2410,7 +2410,8 @@ s32 chrTick(struct prop *prop)
 	// It only fires on the runaway, and re-seating manground at the floor puts
 	// arg2 (= anim_local + manground) back above the floor so the very next
 	// floor-find is correct again — so in practice the sink can't even start.
-	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid) {
+	if (g_NetMode == NETMODE_CLIENT && (chr->aibot || g_Vars.coopplayernum >= 0)
+			&& chr->prop && chr->prop->syncid) {
 		const f32 floor = cdFindGroundInfoAtCyl(&chr->prop->pos, chr->radius,
 				chr->prop->rooms, &chr->floorcol, &chr->floortype, NULL,
 				&chr->floorroom, NULL, NULL);

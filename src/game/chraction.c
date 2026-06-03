@@ -13984,6 +13984,16 @@ void chraTick(struct chrdata *chr)
 		u8 pass = race == RACE_HUMAN || race == RACE_SKEDAR;
 		chr->sleep = 0;
 
+#ifndef PLATFORM_N64
+		// Campaign co-op: NPC AI is host-authoritative. On clients, skip the AI
+		// bytecode for synced NPCs — they're position/anim-driven by the host's
+		// chr-state broadcast and forced to ACT_STAND, so running the ailist here
+		// would make local combat/navigation decisions that desync (client-side
+		// projectiles, drift). Gated to co-op so Combat Sim sims (whose chraiExecute
+		// runs locally and is harmlessly overwritten by chr-state) are unaffected.
+		if (!(g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+				&& chr->prop && chr->prop->syncid))
+#endif
 		chraiExecute(chr, PROPTYPE_CHR);
 
 		// Consider setting shootingatmelist

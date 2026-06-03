@@ -1072,19 +1072,33 @@ void mainTick(void)
 			// differ between record and replay and cause false divergence). The
 			// det pin still fixes each step to 1/60.
 			if (g_FixedTickEnabled && g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY) {
-				// Accumulate TRUE elapsed 240ths and emit one fixed 60Hz step per
-				// 4. Must use diffframe240 (real elapsed time), NOT diffframe60 —
-				// diffframe60 goes through the mininc60 wait-loop and reads ~1 per
-				// frame at high fps, so using it ran a full 1/60 step every frame
-				// (e.g. 4x speed at 240fps). The remainder carries so the long-run
-				// rate is exactly 60 steps/sec at any frame rate.
+				// Run the sim at g_FixedTickRate ticks/sec in REAL TIME: each tick
+				// advances game-time by 1/rate second (detPinTimestep pins the
+				// per-tick dt to match), so rate*step == 1 sec/sec — the game runs
+				// at normal speed, just in coarser or finer chunks. rate=60 is the
+				// normal 1/60 step (real-time, smooth); rate=20 → 1/20-sec steps;
+				// rate=1 → one tick/sec, each a 1-second MEGA-STEP (intentionally
+				// extreme test mode — physics sees a huge dt). step240 = 240/rate is
+				// the per-tick wall-clock window in 1/240ths; we emit one tick per
+				// step240 of TRUE elapsed time (diffframe240, NOT diffframe60 — the
+				// latter is clamped by the mininc60 wait-loop and would run a step
+				// every frame, e.g. 4x speed at 240fps). The remainder carries so the
+				// long-run rate is exact at any frame rate. rate=60 reduces to the
+				// old `>> 2` (240/60 == 4).
+				s32 rate = g_FixedTickRate;
+				if (rate < 1) {
+					rate = 1;
+				} else if (rate > 240) {
+					rate = 240; // 1/240 is the finest step (lvupdate240 >= 1)
+				}
+				const s32 step240 = 240 / rate;
 				static s32 s_fixedAccum240 = 0;
 				s_fixedAccum240 += g_Vars.diffframe240;
 				if (s_fixedAccum240 < 0) {
 					s_fixedAccum240 = 0; // guard a stage-load time jump
 				}
-				mainnsteps = s_fixedAccum240 >> 2;  // / 4
-				s_fixedAccum240 -= mainnsteps << 2; // keep sub-step remainder
+				mainnsteps = s_fixedAccum240 / step240;
+				s_fixedAccum240 -= mainnsteps * step240; // keep sub-step remainder
 				if (mainnsteps > 6) {
 					mainnsteps = 6;      // anti-spiral at very low fps
 					s_fixedAccum240 = 0; // drop backlog rather than chase it

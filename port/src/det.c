@@ -29,7 +29,7 @@
 
 s32 g_DetMode = DET_OFF;
 
-// Fixed 60 Hz gameplay tick (port-only, opt-in via Game.FixedTick / /fixedtick).
+// Fixed-step gameplay tick (port-only, opt-in via Game.FixedTick / /fixedtick).
 // When set, mainTick runs the gameplay sim a whole number of fixed 1/60 steps
 // per render frame (catch-up at low fps, render-only frames at high fps) instead
 // of one variable-dt step, and detPinTimestep forces each lvTick to exactly one
@@ -38,9 +38,21 @@ s32 g_DetMode = DET_OFF;
 // => the original variable-dt path is byte-identical.
 s32 g_FixedTickEnabled = 0;
 
+// Gameplay tick RATE in ticks/sec (Game.FixedTickRate / `/forcetick <n>`). The
+// sim runs in REAL TIME at this rate: each tick advances game-time by 1/rate of
+// a second (detPinTimestep pins the per-tick dt to 240/rate in 1/240ths), so the
+// game runs at normal speed but in coarser/finer chunks. 60 = the normal 1/60
+// step (default, smooth real-time). 20 = 1/20-sec steps. 1 = one tick per second,
+// each a 1-second MEGA-STEP — an intentionally extreme test mode where the sim
+// sees a huge dt (entities lurch a full second per tick); useful for stressing
+// interpolation / observing coarse server-tick behaviour. Capped at 240 (the
+// finest step, lvupdate240 >= 1).
+s32 g_FixedTickRate = 60;
+
 PD_CONSTRUCTOR static void detConfigInit(void)
 {
 	configRegisterInt("Game.FixedTick", &g_FixedTickEnabled, 0, 1);
+	configRegisterInt("Game.FixedTickRate", &g_FixedTickRate, 1, 1000);
 }
 
 // Gameplay RNG streams (extern'd here to avoid pulling the rng headers).
@@ -250,12 +262,32 @@ void detPinTimestep(void)
 	if (g_Vars.lvupdate240 <= 0) {
 		return;
 	}
-	// Pin to a fixed 1/60 step. This is called BEFORE lv.c derives lvupdate60 /
-	// lvupdate60f / lvupdate60freal and advances the lvframe* counters, so the
-	// existing derivation block produces fully deterministic values from these
-	// two assignments — and the 200+ downstream `* lvupdate60f` sites inherit
-	// the fixed step untouched. (lvupdate240=4 -> lvupdate60=1, lvupdate60f=1.0)
-	g_Vars.lvupdate240 = 4;
+	// Pick the per-tick step (in 1/240ths). This is called BEFORE lv.c derives
+	// lvupdate60 / lvupdate60f / lvupdate60freal and advances the lvframe*
+	// counters, so the existing derivation block produces fully deterministic
+	// values from these two assignments — and the 200+ downstream `* lvupdate60f`
+	// sites inherit the step untouched. (lvupdate240=4 -> lvupdate60=1,
+	// lvupdate60f=1.0.)
+	s32 step = 4; // det record/replay: always a fixed 1/60 step for reproducibility
+	if (g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY && g_FixedTickEnabled) {
+		// /forcetick active (and not pinned for a deterministic record/replay):
+		// pin to the chosen tick rate so each tick advances 1/rate of a second
+		// (real-time-coarse). At rate=1 this is a 240/240 = 1-second MEGA-STEP.
+		// The condition matches the mainTick accumulator (which runs for every
+		// mode except RECORD/REPLAY), keeping the per-tick size and the step count
+		// in sync — otherwise game speed would scale by rate/60.
+		s32 rate = g_FixedTickRate;
+		if (rate < 1) {
+			rate = 1;
+		} else if (rate > 240) {
+			rate = 240;
+		}
+		step = 240 / rate;
+		if (step < 1) {
+			step = 1;
+		}
+	}
+	g_Vars.lvupdate240 = step;
 	g_Vars.lvupdate240rem = 0;
 }
 
@@ -533,18 +565,33 @@ s32 detConsoleCommand(const char *cmd, const char *arg)
 		return 1;
 	}
 
-	// /fixedtick and /forcetick are aliases: toggle the fixed 60Hz gameplay tick.
+	// /fixedtick and /forcetick are aliases: control the fixed-step gameplay tick.
+	// Accepts an integer tick RATE (ticks/sec), real-time-coarse: /forcetick 60 =
+	// normal 1/60 step, /forcetick 20 = 1/20-sec steps, /forcetick 1 = one tick/sec
+	// (a 1-second mega-step per tick). on = enable at the current rate, off / 0 =
+	// disable, bare = toggle.
 	if (strcmp(cmd, "fixedtick") == 0 || strcmp(cmd, "forcetick") == 0) {
-		if (strcmp(arg, "on") == 0) {
+		if (*arg == '\0') {
+			g_FixedTickEnabled = !g_FixedTickEnabled; // bare command toggles
+		} else if (strcmp(arg, "on") == 0) {
 			g_FixedTickEnabled = 1;
 		} else if (strcmp(arg, "off") == 0) {
 			g_FixedTickEnabled = 0;
-		} else if (*arg == '\0') {
-			g_FixedTickEnabled = !g_FixedTickEnabled; // bare command toggles
+		} else {
+			s32 n = atoi(arg);
+			if (n > 0) {
+				if (n > 1000) {
+					n = 1000;
+				}
+				g_FixedTickRate = n;
+				g_FixedTickEnabled = 1;
+			} else {
+				g_FixedTickEnabled = 0; // "0" or non-numeric => disable
+			}
 		}
-		sysLogPrintf(LOG_CHAT, "DET: fixed 60Hz gameplay tick = %s%s",
-				g_FixedTickEnabled ? "ON" : "OFF",
-				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /forcetick [on|off])" : "");
+		sysLogPrintf(LOG_CHAT,
+				"DET: fixed tick = %s @ %d/sec (1/%d-sec step; 60 = normal; usage: /forcetick <n>|on|off)",
+				g_FixedTickEnabled ? "ON" : "OFF", g_FixedTickRate, g_FixedTickRate);
 		return 1;
 	}
 

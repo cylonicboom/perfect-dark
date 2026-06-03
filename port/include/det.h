@@ -42,6 +42,10 @@ extern s32 g_DetMode;
 // from the render frame rate (see det.c). Default 0 (original variable-dt path).
 extern s32 g_FixedTickEnabled;
 
+// Number of fixed 1/60 steps to run per real second when g_FixedTickEnabled is
+// set. 60 = real-time; lower = slow-motion; higher = fast-forward. See det.c.
+extern s32 g_FixedTickRate;
+
 // Compute the four sub-hashes (+ combined) over the current live sim state.
 // Walks entities in a deterministic order (by index / list order, never by
 // address) and folds only sim-authoritative value fields — never pointers,

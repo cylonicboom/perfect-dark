@@ -902,7 +902,9 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	// completions can't leak into this one (the client overlays these onto its
 	// local objective evaluation; a stale COMPLETE would falsely mark an objective
 	// done before the host's first SVC_OBJECTIVE for the new stage arrives).
-	memset(g_NetCoopObjStatuses, 0, sizeof(g_NetCoopObjStatuses));
+	// Explicit size: only the incomplete `extern u32[]` from net.h is in scope here
+	// (the sized definition is later in this file), so sizeof(array) won't compile.
+	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
 
 	g_MissionConfig.iscoop = 1;
 	g_MissionConfig.isanti = 0;

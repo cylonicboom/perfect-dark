@@ -2384,6 +2384,13 @@ s32 chrTick(struct prop *prop)
 	struct modelrenderdata sp210 = {0, 1, 3};
 	struct chrdata *chr = prop->chr;
 	struct model *model = chr->model;
+#ifndef PLATFORM_N64
+	// Network-replicated chrs (Combat Sim sims now; campaign NPCs once online
+	// co-op lands): drive prop->pos from the interpolation buffer before ticking
+	// animation / render. No-op on the server and for any chr with no received
+	// snapshots, so it's safe to call for every chr here.
+	netChrInterpolate(chr);
+#endif
 	bool needsupdate;
 	bool hatvisible = true;
 	s32 lvupdate240 = g_Vars.lvupdate240;

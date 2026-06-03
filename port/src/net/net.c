@@ -12,6 +12,7 @@
 #include "net/netmsg.h"
 #include "net/netmaster.h"
 #include "net/playlist.h"
+#include "det.h"
 #include "mpsetups.h"
 #include "types.h"
 #include "constants.h"
@@ -38,6 +39,7 @@
 #include "lib/main.h"
 #include "lib/vi.h"
 #include "lib/model.h"
+#include "lib/anim.h"
 #include "config.h"
 #include "system.h"
 #include "console.h"
@@ -100,6 +102,22 @@ u32 g_NetCspCorrFramesMax     = 10;
 f32 g_NetCspCorrThreshSq      = 625.f;    //  25 units squared
 f32 g_NetCspTeleportThreshSq  = 14400.f;  // 120 units squared
 u32 g_NetStaleSnapshotTicks   = 30;       // ~500ms at 60Hz
+// Remote-player dead-reckoning: when the freshest snapshot is older than the
+// interpolation target (late packet / jitter spike), extrapolate the remote's
+// position from its last inter-snapshot velocity for up to this many ticks
+// instead of freezing. 0 = no extrapolation (converge to the newest snapshot).
+// Small by design: a missed direction-change overshoots, so keep it short.
+u32 g_NetExtrapMaxTicks       = 3;
+// Server-side CLC_HIT validation mode (0 off / 1 log-only / 2 enforce). Default
+// off so behaviour is unchanged; flip to 1 to measure agreement between the
+// server's authoritative lag-comp'd trace and clients' claimed hits before
+// enabling enforcement. See netServerHitWasDetected / netServerRecordDetectedHit.
+s32 g_NetHitValidate          = 0;
+// Hidden test feature: centred hitmarker flash on a confirmed local hit. Off by
+// default; toggled via /hitmarker. g_NetHitmarkerExpireTick is set to g_NetTick +
+// NET_HITMARKER_TICKS when the local player's shot registers a chr/player hit.
+s32 g_NetHitmarkerEnabled     = 0;
+u32 g_NetHitmarkerExpireTick  = 0;
 
 char g_NetLastJoinAddr[NET_MAX_ADDR + 1] = "127.0.0.1:27100";
 
@@ -232,6 +250,15 @@ static u32 g_NetNextUpdate = 0;
 
 static u32 g_NetReliableFrameLen = 0;
 static u32 g_NetUnreliableFrameLen = 0;
+
+// /netstats — server-side per-message-type tx accounting. Bytes are counted as
+// they are written into the broadcast buffers (so the value is bytes GENERATED;
+// multiply by client count for actual wire bytes). Snapshotted once per ~second.
+enum { NETSTAT_PLAYERMOVE, NETSTAT_PROPMOVE, NETSTAT_PLAYERSTATS, NETSTAT_COUNT };
+static u32 g_NetStatAccum[NETSTAT_COUNT];
+static u32 g_NetStatPerSec[NETSTAT_COUNT];
+static u32 g_NetStatSecBase = 0;
+static inline void netStatAdd(s32 type, u32 bytes) { g_NetStatAccum[type] += bytes; }
 
 // Client-side prediction globals
 struct csp_snapshot g_NetCspHistory[NET_CSP_HISTORY_SIZE];
@@ -1053,7 +1080,10 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 
 	sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: connection attempt from %s", addrstr);
 
-	++g_NetNumClients;
+	// g_NetNumClients is bumped only once a slot is actually assigned (below),
+	// not here — otherwise the reject paths (protocol mismatch / server full)
+	// return having counted a peer that never became a client, and a rejected
+	// peer whose disconnect event is lost drifts the counter up permanently.
 
 	if (data != NET_PROTOCOL_VER) {
 		sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: %s rejected: protocol mismatch", addrstr);
@@ -1094,6 +1124,9 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 		sysLogPrintf(LOG_NOTE, "NET: %s joining in progress as spectator (will spawn next round)", addrstr);
 	}
 	enet_peer_set_data(peer, cl);
+	// Count only now that the peer owns a real client slot; netServerEvDisconnect
+	// (the only path that runs for an attached client) decrements the match.
+	++g_NetNumClients;
 }
 
 static void netServerEvDisconnect(struct netclient *cl)
@@ -1424,8 +1457,9 @@ void netStartFrame(void)
 					if (cl) {
 						netServerEvDisconnect(cl);
 					} else {
+						// No attached client => this peer was rejected before a slot
+						// was assigned, so it was never counted; just log it.
 						sysLogPrintf(LOG_WARNING | LOGFLAG_NOCON, "NET: disconnect from %s without attached client", netFormatPeerAddr(ev.peer));
-						--g_NetNumClients;
 					}
 				}
 				break;
@@ -1490,6 +1524,15 @@ void netEndFrame(void)
 	g_NetReliableFrameLen = 0;
 	g_NetUnreliableFrameLen = 0;
 
+	// /netstats: snapshot the per-message-type byte accumulators once per second.
+	if (g_NetTick - g_NetStatSecBase >= 60u) {
+		for (s32 i = 0; i < NETSTAT_COUNT; ++i) {
+			g_NetStatPerSec[i] = g_NetStatAccum[i];
+			g_NetStatAccum[i] = 0;
+		}
+		g_NetStatSecBase = g_NetTick;
+	}
+
 	// Drain deferred CLC_HIT entries. chrDamage here writes SVC_CHR_DAMAGE
 	// (and SVC_KILL / SVC_SCORE on a kill) into g_NetMsgRel, which was reset
 	// by netStartFrame. The flush below picks them all up.
@@ -1499,6 +1542,21 @@ void netEndFrame(void)
 			const struct net_pending_hit *ph = &g_NetPendingHits[i];
 			if (!ph->target || !ph->target->chr) {
 				continue;
+			}
+			// Server-side hit validation: confirm the server's own authoritative,
+			// lag-comp'd shotCalculateHits trace actually detected this shooter
+			// hitting this target. The client's CLC_HIT is otherwise trusted; this
+			// rejects (or logs) claims the server never saw. Off by default; log
+			// mode applies the hit anyway so agreement can be measured first.
+			if (g_NetHitValidate && ph->playernum >= 0 && ph->target->syncid) {
+				struct netclient *shooter = netClientForPlayerNum(ph->playernum);
+				if (shooter && !netServerHitWasDetected(shooter, (u16)ph->target->syncid)) {
+					netDiagLogf("hit_reject", "shooter=%u target_sid=%u dmg=%.1f mode=%d",
+							shooter->id, (unsigned)ph->target->syncid, ph->damage, g_NetHitValidate);
+					if (g_NetHitValidate >= 2) {
+						continue; // enforce: drop the unvalidated claim
+					}
+				}
 			}
 			if (ph->playernum >= 0) {
 				setCurrentPlayerNum(ph->playernum);
@@ -1574,7 +1632,10 @@ void netEndFrame(void)
 					}
 					const bool needrel = netClientNeedReliableMove(cl);
 					if (needrel || netClientNeedMove(cl)) {
-						netmsgSvcPlayerMoveWrite(needrel ? &g_NetMsgRel : &g_NetMsg, cl);
+						struct netbuf *mb = needrel ? &g_NetMsgRel : &g_NetMsg;
+						const u32 b0 = mb->wp;
+						netmsgSvcPlayerMoveWrite(mb, cl);
+						netStatAdd(NETSTAT_PLAYERMOVE, mb->wp - b0);
 					}
 				}
 			}
@@ -1584,7 +1645,9 @@ void netEndFrame(void)
 				for (s32 i = 0; i < g_BotCount; i++) {
 					struct chrdata *chr = g_MpBotChrPtrs[i];
 					if (chr && chr->prop && chr->prop->syncid) {
-						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+						const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
 					}
 				}
 			}
@@ -1626,7 +1689,9 @@ void netEndFrame(void)
 				for (s32 i = 0; i < g_NetMaxClients; ++i) {
 					struct netclient *cl = &g_NetClients[i];
 					if (cl->state >= CLSTATE_GAME && cl->player && cl->player->prop) {
-						netmsgSvcPlayerStatsWrite(&g_NetMsgRel, cl);
+						const u32 b0 = g_NetMsgRel.wp;
+							netmsgSvcPlayerStatsWrite(&g_NetMsgRel, cl);
+							netStatAdd(NETSTAT_PLAYERSTATS, g_NetMsgRel.wp - b0);
 					}
 				}
 			}
@@ -2181,6 +2246,233 @@ void netLagCompSave(struct netclient *cl)
 	cl->lagcomp_head = (cl->lagcomp_head + 1) % NET_LAGCOMP_SIZE;
 	cl->lagcomp[cl->lagcomp_head].tick = g_NetTick;
 	cl->lagcomp[cl->lagcomp_head].pos  = cl->player->prop->pos;
+}
+
+void netServerRecordDetectedHit(struct netclient *cl, u16 syncid)
+{
+	if (!cl || !syncid) {
+		return;
+	}
+	cl->srvhits_head = (cl->srvhits_head + 1) % NET_SRVHIT_COUNT;
+	cl->srvhits[cl->srvhits_head].syncid = syncid;
+	cl->srvhits[cl->srvhits_head].tick = g_NetTick;
+}
+
+s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid)
+{
+	if (!shooter || !syncid) {
+		return 0;
+	}
+	// Accept a small backward window: the server's shot replay (which records the
+	// detected hit) and the client's CLC_HIT can land a few ticks apart depending
+	// on update rate and jitter. 12 ticks is generous to avoid false rejections.
+	for (s32 i = 0; i < NET_SRVHIT_COUNT; ++i) {
+		if (shooter->srvhits[i].syncid == syncid
+				&& shooter->srvhits[i].tick != 0
+				&& (g_NetTick - shooter->srvhits[i].tick) <= 12u) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* ---- network-chr position interpolation (sims now; co-op NPCs later) ---- */
+
+// Smoothed average gap (in local ticks) between consecutive replicated-chr
+// snapshots. Snapshots are stamped with the local receive tick, so their spacing
+// = client_fps / server_update_hz (e.g. ~4 at 240fps vs a 60Hz server). The
+// interp delay adapts to this so we usually have two snapshots bracketing the
+// render target rather than constantly extrapolating. All sims share the server's
+// update cadence, so a single global estimate suffices.
+static f32 g_NetChrSnapInterval = 1.0f;
+
+s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
+
+static f32 netLerpf(f32 a, f32 b, f32 t)
+{
+	if (!(a > -1.0e4f && a < 1.0e4f)) { // self-heal NaN/inf: snap to target
+		return b;
+	}
+	return a + (b - a) * t;
+}
+
+static f32 netAngleLerp(f32 a, f32 b, f32 t)
+{
+	// Shortest-arc radian interpolation. Bounded-input guard keeps the wrap loops
+	// finite and snaps on a garbage value rather than spinning.
+	if (!(a > -100.f && a < 100.f && b > -100.f && b < 100.f)) {
+		return b;
+	}
+	const f32 TWO_PI = 6.2831853071795865f;
+	f32 d = b - a;
+	while (d >  TWO_PI * 0.5f) d -= TWO_PI;
+	while (d < -TWO_PI * 0.5f) d += TWO_PI;
+	return a + d * t;
+}
+
+void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
+{
+	if (!chr || !pose) {
+		return;
+	}
+	const u32 prev = chr->netsnap[chr->netsnaphead].tick;
+	if (prev && g_NetTick > prev) {
+		const f32 gap = (f32)(g_NetTick - prev);
+		if (gap < 60.f) { // ignore spawn / stall outliers
+			g_NetChrSnapInterval += (gap - g_NetChrSnapInterval) * 0.1f;
+		}
+	}
+	const u32 h = (chr->netsnaphead + 1) % NET_SNAPSHOT_COUNT;
+	chr->netsnaphead = h;
+	chr->netsnap[h].tick           = g_NetTick ? g_NetTick : 1u; // 0 == empty
+	chr->netsnap[h].pos            = pose->pos;
+	chr->netsnap[h].yrot           = pose->yrot;
+	chr->netsnap[h].angleoffset    = pose->angleoffset;
+	chr->netsnap[h].aimupback      = pose->aimupback;
+	chr->netsnap[h].aimsideback    = pose->aimsideback;
+	chr->netsnap[h].aimuplshoulder = pose->aimuplshoulder;
+	chr->netsnap[h].aimuprshoulder = pose->aimuprshoulder;
+	chr->netsnap[h].animnum        = pose->animnum;
+	chr->netsnap[h].framea         = pose->framea;
+	chr->netsnap[h].speed          = pose->speed;
+}
+
+void netChrInterpolate(struct chrdata *chr)
+{
+	if (!g_NetChrInterp || g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
+		return;
+	}
+
+	const u32 head = chr->netsnaphead;
+	if (!chr->netsnap[head].tick) {
+		return; // no snapshots yet — leave the receive-time pose in place
+	}
+
+	// Render in the past at the interp delay. Snapshots are stamped with the same
+	// local g_NetTick clock we read here (arrival time), so no interp_lag
+	// rebaseline is needed. delay = one measured snapshot interval (so two
+	// snapshots normally bracket the target) + g_NetInterpTicks jitter margin
+	// (/interp). Extrapolation below covers a late packet beyond that.
+	u32 interval = (u32)(g_NetChrSnapInterval + 0.5f);
+	if (interval < 1u) { interval = 1u; }
+	const u32 delay = g_NetInterpTicks + interval;
+	const u32 desired = (g_NetTick > delay) ? (g_NetTick - delay) : 0u;
+
+	// Find the two snapshots bracketing `desired` (newest-first walk).
+	s32 inewer = -1, iolder = -1;
+	for (s32 i = 0; i < NET_SNAPSHOT_COUNT; ++i) {
+		const s32 idx = (s32)((head + NET_SNAPSHOT_COUNT - (u32)i) % NET_SNAPSHOT_COUNT);
+		if (!chr->netsnap[idx].tick) {
+			break; // empty slot
+		}
+		if (chr->netsnap[idx].tick >= desired) {
+			inewer = idx;
+		} else {
+			iolder = idx;
+			break;
+		}
+	}
+
+	struct netchrpose out;
+
+	if (inewer >= 0 && iolder >= 0) {
+		// Normal case: interpolate the WHOLE pose between the bracketing snapshots,
+		// so body, facing and aim all reconstruct for the same past instant.
+		const u32 span = chr->netsnap[inewer].tick - chr->netsnap[iolder].tick;
+		const f32 t = (span > 0) ? (f32)(desired - chr->netsnap[iolder].tick) / (f32)span : 1.f;
+		out.pos.x          = netLerpf(chr->netsnap[iolder].pos.x, chr->netsnap[inewer].pos.x, t);
+		out.pos.y          = netLerpf(chr->netsnap[iolder].pos.y, chr->netsnap[inewer].pos.y, t);
+		out.pos.z          = netLerpf(chr->netsnap[iolder].pos.z, chr->netsnap[inewer].pos.z, t);
+		out.yrot           = netAngleLerp(chr->netsnap[iolder].yrot, chr->netsnap[inewer].yrot, t);
+		out.angleoffset    = netAngleLerp(chr->netsnap[iolder].angleoffset, chr->netsnap[inewer].angleoffset, t);
+		out.aimupback      = netLerpf(chr->netsnap[iolder].aimupback, chr->netsnap[inewer].aimupback, t);
+		out.aimsideback    = netLerpf(chr->netsnap[iolder].aimsideback, chr->netsnap[inewer].aimsideback, t);
+		out.aimuplshoulder = netLerpf(chr->netsnap[iolder].aimuplshoulder, chr->netsnap[inewer].aimuplshoulder, t);
+		out.aimuprshoulder = netLerpf(chr->netsnap[iolder].aimuprshoulder, chr->netsnap[inewer].aimuprshoulder, t);
+		// Anim: take the OLDER snapshot's discrete animnum/frame (the value in
+		// effect at the instant we're rendering, [iolder, inewer)), and blend the
+		// continuous playback speed. This time-aligns the legs with the body
+		// position above — the whole point of the fix.
+		out.animnum        = chr->netsnap[iolder].animnum;
+		out.framea         = chr->netsnap[iolder].framea;
+		out.speed          = netLerpf(chr->netsnap[iolder].speed, chr->netsnap[inewer].speed, t);
+	} else {
+		// Single-snapshot / extrapolation: facing + aim hold the newest values;
+		// position dead-reckons (bounded) when desired is ahead of all snapshots.
+		const s32 src = (inewer >= 0) ? inewer : (s32)head;
+		out.pos            = chr->netsnap[src].pos;
+		out.yrot           = chr->netsnap[head].yrot;
+		out.angleoffset    = chr->netsnap[head].angleoffset;
+		out.aimupback      = chr->netsnap[head].aimupback;
+		out.aimsideback    = chr->netsnap[head].aimsideback;
+		out.aimuplshoulder = chr->netsnap[head].aimuplshoulder;
+		out.aimuprshoulder = chr->netsnap[head].aimuprshoulder;
+		out.animnum        = chr->netsnap[head].animnum;
+		out.framea         = chr->netsnap[head].framea;
+		out.speed          = chr->netsnap[head].speed;
+		if (inewer < 0) {
+			const u32 prevh = (head + NET_SNAPSHOT_COUNT - 1u) % NET_SNAPSHOT_COUNT;
+			if (chr->netsnap[prevh].tick && chr->netsnap[head].tick > chr->netsnap[prevh].tick
+					&& desired > chr->netsnap[head].tick) {
+				u32 ahead = desired - chr->netsnap[head].tick;
+				if (ahead > g_NetExtrapMaxTicks) {
+					ahead = g_NetExtrapMaxTicks;
+				}
+				const f32 vscale = (f32)ahead / (f32)(chr->netsnap[head].tick - chr->netsnap[prevh].tick);
+				out.pos.x = chr->netsnap[head].pos.x + (chr->netsnap[head].pos.x - chr->netsnap[prevh].pos.x) * vscale;
+				out.pos.y = chr->netsnap[head].pos.y + (chr->netsnap[head].pos.y - chr->netsnap[prevh].pos.y) * vscale;
+				out.pos.z = chr->netsnap[head].pos.z + (chr->netsnap[head].pos.z - chr->netsnap[prevh].pos.z) * vscale;
+			}
+		}
+	}
+
+	// Apply the reconstructed pose (overrides the receive-time per-packet apply).
+	chr->prop->pos = out.pos;
+	if (chr->model) {
+		modelSetRootPosition(chr->model, &out.pos);
+		modelSetChrRotY(chr->model, out.yrot);
+	}
+	chrSetRotY(chr, out.yrot);
+	if (chr->aibot) {
+		chr->aibot->angleoffset = out.angleoffset;
+	}
+	chr->aimupback      = out.aimupback;
+	chr->aimsideback    = out.aimsideback;
+	chr->aimuplshoulder = out.aimuplshoulder;
+	chr->aimuprshoulder = out.aimuprshoulder;
+	chr->aimendback     = out.aimupback;
+	chr->aimendsideback = out.aimsideback;
+	chr->aimendlshoulder = out.aimuplshoulder;
+	chr->aimendrshoulder = out.aimuprshoulder;
+	chr->aimendcount = 0;
+
+	// ANIMATION (time-aligned with the interpolated body above). The leg/body anim
+	// is reconstructed for the SAME past instant as the position, instead of being
+	// applied at receive time (current) in netmsgSvcPropMoveRead. That removes the
+	// time-domain mismatch that froze the legs mid-stride under a still-gliding body
+	// when a bot decelerated to fire: the server transmits a near-zero anim speed
+	// during deceleration (playerChooseThirdPersonAnimation's soft-turn band), and
+	// the old receive-time apply pinned the legs to that CURRENT ~0 speed while the
+	// body rendered a DELAYED, still-moving position. Now both come from the same
+	// snapshot instant, so they always agree. The client free-runs the frame via its
+	// own chrTick at this speed. The receive-time apply in netmsgSvcPropMoveRead is
+	// the fallback (when /chrinterp is off, or before any snapshot exists — this
+	// whole function early-returns in those cases).
+	if (out.animnum > 0 && animHasFrames(out.animnum) && chr->model && chr->model->anim) {
+		// Lock right-handed: the flip bit is deliberately not synced (it broke
+		// Skedar maps — see netmsgSvcPropMoveWrite's FLIP comment).
+		chr->model->anim->flip = 0;
+		if (chr->model->anim->animnum != out.animnum) {
+			// animnum change: seed the new anim near the server's frame at this
+			// instant and blend the changeover so it doesn't pop.
+			modelSetAnimation(chr->model, out.animnum, 0, (f32)out.framea, out.speed, 0.0625f);
+		} else {
+			// same anim: just track the playback speed and let the frame free-run.
+			// Re-seeding framea here would snap the cycle backward whenever the
+			// server's frame index trailed ours.
+			chr->model->anim->speed = out.speed;
+		}
+	}
 }
 
 static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)
@@ -2859,6 +3151,22 @@ static void netAdminCaptureSetup(void)
 	strcpy(e->name, "admin");
 }
 
+s32 netSecureStrEqual(const char *secret, const char *cand)
+{
+	if (!secret) secret = "";
+	if (!cand) cand = "";
+	const size_t slen = strlen(secret);
+	const size_t clen = strlen(cand);
+	u32 diff = (u32)(slen ^ clen);
+	// Iterate over the secret's length (constant for a given server config),
+	// not the candidate's, so a partial-prefix match doesn't shorten the loop.
+	for (size_t i = 0; i < slen; ++i) {
+		const u8 cc = (i < clen) ? (u8)cand[i] : 0;
+		diff |= (u32)((u8)secret[i] ^ cc);
+	}
+	return diff == 0;
+}
+
 void netServerAdminCommand(struct netclient *cl, const char *line)
 {
 	if (g_NetMode != NETMODE_SERVER || !cl || !line) {
@@ -2887,7 +3195,7 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 	if (strcmp(cmd, "login") == 0) {
 		if (g_NetAdminPassword[0] == '\0') {
 			netAdminReply(cl, "admin: disabled (no Server.AdminPassword / --admin-password set)");
-		} else if (strcmp(arg, g_NetAdminPassword) == 0) {
+		} else if (netSecureStrEqual(g_NetAdminPassword, arg)) {
 			cl->is_admin = 1;
 			netAdminReply(cl, "admin: authenticated. type /admin help for commands.");
 			sysLogPrintf(LOG_NOTE, "NET: client %u (%s) authenticated as admin", cl->id, cl->settings.name);
@@ -3303,6 +3611,11 @@ s32 netConsoleCommand(const char *line)
 	}
 	const char *arg = p; // may be ""
 
+	// Determinism harness commands (/dethash, /detpin, /detinfo) — checked first.
+	if (detConsoleCommand(cmd, arg)) {
+		return 1;
+	}
+
 	if (strcmp(cmd, "lua") == 0) {
 		luaaiConsoleCommand(*arg ? arg : NULL);
 		return 1;
@@ -3364,6 +3677,18 @@ s32 netConsoleCommand(const char *line)
 			g_NetCspCorrFramesMax,
 			sqrtf(g_NetCspCorrThreshSq),
 			sqrtf(g_NetCspTeleportThreshSq));
+	} else if (strcmp(cmd, "netstats") == 0) {
+		// Per-message-type tx bytes GENERATED in the last second (multiply by the
+		// number of clients for actual wire bytes — these go into the broadcast
+		// buffer once). Tells us whether players, sims or stats dominate so we
+		// optimise the right thing.
+		const u32 pm = g_NetStatPerSec[NETSTAT_PLAYERMOVE];
+		const u32 prm = g_NetStatPerSec[NETSTAT_PROPMOVE];
+		const u32 ps = g_NetStatPerSec[NETSTAT_PLAYERSTATS];
+		sysLogPrintf(LOG_CHAT, "NET stats (B/s generated, x%d clients on wire): player_move=%u sim_move=%u player_stats=%u",
+				g_NetNumClients > 1 ? g_NetNumClients - 1 : 0, pm, prm, ps);
+		sysLogPrintf(LOG_CHAT, "NET: sims=%d -> sim_move is the big lever; F9 shows total tx",
+				(s32)g_BotCount);
 	} else if (strcmp(cmd, "interp") == 0) {
 		// /interp <ticks> — entity interpolation lag. Higher = smoother
 		// remote players under jitter but more visible latency; lower =
@@ -3389,6 +3714,55 @@ s32 netConsoleCommand(const char *line)
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: stale-snapshot threshold = %u ticks (usage: /stale <ticks>)", g_NetStaleSnapshotTicks);
 		}
+	} else if (strcmp(cmd, "extrap") == 0) {
+		// /extrap <ticks> — remote-player dead-reckoning window. When the newest
+		// snapshot is older than the interp target (late packet / jitter), the
+		// remote is extrapolated from last velocity for up to this many ticks
+		// instead of freezing. 0 = converge to newest (no extrapolation). Keep
+		// small (default 3) — large values overshoot on direction changes.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetExtrapMaxTicks = (u32)((n < 0) ? 0 : (n > 12 ? 12 : n));
+			sysLogPrintf(LOG_CHAT, "NET: remote extrapolation = %u ticks", g_NetExtrapMaxTicks);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: remote extrapolation = %u ticks (usage: /extrap <ticks>, 0=off)", g_NetExtrapMaxTicks);
+		}
+	} else if (strcmp(cmd, "chrinterp") == 0) {
+		// /chrinterp on|off — full pose interpolation for replicated chrs (sims /
+		// co-op NPCs): position + body facing + aim reconstructed for one
+		// consistent past instant. off reverts to the receive-time per-packet
+		// apply for A/B comparison.
+		if (strcmp(arg, "on") == 0) {
+			g_NetChrInterp = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetChrInterp = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: chr pose interpolation = %s%s", g_NetChrInterp ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /chrinterp on|off)" : "");
+	} else if (strcmp(cmd, "hitvalidate") == 0) {
+		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims
+		// against the server's own lag-comp'd hit detection. 0=off (trust client),
+		// 1=log-only (apply but log mismatches to /diag), 2=enforce (drop claims
+		// the server never detected). Start at 1 and watch the diag log for
+		// 'hit_reject' lines before enabling 2.
+		if (*arg) {
+			const s32 n = atoi(arg);
+			g_NetHitValidate = (n < 0) ? 0 : (n > 2 ? 2 : n);
+		}
+		sysLogPrintf(LOG_CHAT, "NET: hit validation = %d (%s)%s", g_NetHitValidate,
+				g_NetHitValidate == 0 ? "off" : g_NetHitValidate == 1 ? "log-only" : "enforce",
+				*arg ? "" : " (usage: /hitvalidate 0|1|2)");
+	} else if (strcmp(cmd, "hitmarker") == 0) {
+		// Hidden test feature: centred hitmarker flash on a confirmed local hit,
+		// giving immediate feedback at high ping instead of waiting for the
+		// server's damage round-trip. Off by default.
+		if (strcmp(arg, "on") == 0) {
+			g_NetHitmarkerEnabled = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetHitmarkerEnabled = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: hitmarker = %s%s", g_NetHitmarkerEnabled ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /hitmarker on|off)" : "");
 	} else if (strcmp(cmd, "svcrate") == 0) {
 		// /svcrate <N> — server-side update interval. 1 = send every tick
 		// (max bandwidth, smoothest). Larger = bandwidth saving but
@@ -4251,6 +4625,42 @@ Gfx *netKillFeedRender(Gfx *gdl)
 	return gdl;
 }
 
+// Hidden test feature (toggle /hitmarker): a brief centred marker shown the
+// instant the local player's shot registers a chr/player hit, so we can evaluate
+// immediate hit feedback at high ping without waiting for the server's
+// SVC_CHR_DAMAGE round-trip and without touching the crosshair render. Reuses the
+// kill-feed text path (no new gfx primitives). Local-only; not networked.
+Gfx *netHitmarkerRender(Gfx *gdl)
+{
+	if (!g_NetMode || !g_NetHitmarkerEnabled || g_NetTick >= g_NetHitmarkerExpireTick) {
+		return gdl;
+	}
+	if (!g_CharsHandelGothicXs || !g_FontHandelGothicXs) {
+		return gdl;
+	}
+
+	gdl = text0f153628(gdl);
+
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
+
+	// Fade alpha out over the remaining lifetime.
+	const u32 remain = g_NetHitmarkerExpireTick - g_NetTick;
+	u32 a = (remain * 255u) / NET_HITMARKER_TICKS;
+	if (a > 255u) { a = 255u; }
+	const u32 col = 0xffffff00u | a;
+
+	// Centre an "X" mark on the reticle (screen centre). textRender mutates x.
+	char mark[] = "X";
+	s32 x = screenw / 2 - 3;
+	s32 y = screenh / 2 - 4;
+	gdl = textRender(gdl, &x, &y, mark,
+			g_CharsHandelGothicXs, g_FontHandelGothicXs,
+			col, 0x00000080u, screenw, screenh, 0, 0);
+
+	return gdl;
+}
+
 // Hidden vanity easter egg honouring the Perfect Dark content creator Graslu.
 // Deliberately mirrors the weapon/ammo pickup message style (HUDMSGTYPE_DEFAULT
 // in hudmsg.c is a *boxed* message): Handel Gothic Sm font, green text inside a
@@ -4690,6 +5100,7 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.OutRate", &g_NetServerOutRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
+	configRegisterInt("Net.Server.HitValidate", &g_NetHitValidate, 0, 2);
 
 	configRegisterString("Net.Debug.LogPath", g_NetDiagPath, sizeof(g_NetDiagPath) - 1);
 	configRegisterUInt("Net.Debug.LogRate", &g_NetDiagDumpRate, 0, 600);

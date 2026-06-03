@@ -1354,6 +1354,32 @@ struct chrdata {
 	// within TICKS(18) (= ~300ms at 60Hz) is rejected at the top of
 	// chrDamage. Port-only; the N64 build is byte-identical.
 	s32 lastdamagetick60;
+
+	// Client-side POSE interpolation buffer for a network-replicated chr (Combat
+	// Sim bots now; campaign NPCs once online co-op lands — same model: server
+	// runs the AI, replicates state, client interpolates). Populated from
+	// SVC_PROP_MOVE (netmsg.c) stamped with the local receive tick; consumed every
+	// frame by netChrInterpolate (net.c), which reconstructs the WHOLE facing pose
+	// (position + body yaw + aim) for one consistent past instant — like
+	// Source/Quake entity interpolation — so a sim's body, facing and gun all
+	// agree instead of living in different time domains (the old per-packet 50%
+	// blend made a strafing/firing bot look like it had its back turned). Length
+	// must equal NET_SNAPSHOT_COUNT (net.h). Generic on chrdata (not aibot) so it
+	// serves any networked chr.
+	struct {
+		u32 tick;            // local g_NetTick when this snapshot arrived (0 = empty)
+		struct coord pos;    // wire world position
+		f32 yrot;            // body yaw (radians)
+		f32 angleoffset;     // waist twist decoupling facing from move dir (aibot)
+		f32 aimupback;       // upper-body aim joints (gun direction)
+		f32 aimsideback;
+		f32 aimuplshoulder;
+		f32 aimuprshoulder;
+		s16 animnum;         // leg/body animation at this instant (0 = none)
+		s16 framea;          // anim frame index at this instant
+		f32 speed;           // anim playback speed at this instant
+	} netsnap[8];
+	u32 netsnaphead;         // index of the newest netsnap[] entry
 #endif
 };
 

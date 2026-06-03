@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "bss.h"
 #include "data.h"
+#include "det.h"
 #include "game/activemenu.h"
 #include "game/atan2f.h"
 #include "game/bg.h"
@@ -2330,6 +2331,12 @@ void lvTick(void)
 			}
 		}
 	}
+
+	// Determinism harness: when active, pin lvupdate240 to a fixed 1/60 step
+	// before the rest of the derivation runs, so the lvupdate60/60f/freal values
+	// and the lvframe* counters below all advance deterministically. No-op during
+	// normal play. (Must be before the lvupdate60 derivation directly below.)
+	detPinTimestep();
 
 	g_Vars.lvupdate60 = g_Vars.lvupdate240 + g_Vars.lvupdate240rem;
 	g_Vars.lvupdate240rem = g_Vars.lvupdate60 & 3;

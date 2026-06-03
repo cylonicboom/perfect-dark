@@ -934,15 +934,16 @@ s32 botTick(struct prop *prop)
 		if (updateable && g_Vars.lvframe60 >= 145) {
 			botTickUnpaused(chr);
 
-			// Calculate cheap
-			aibot->cheap = true;
-
-			for (i = 0; prop->rooms[i] != -1; i++) {
-				if (bgRoomIsOnscreen(prop->rooms[i]) || bgRoomIsStandby(prop->rooms[i])) {
-					aibot->cheap = false;
-					break;
-				}
-			}
+			// Determinism: a sim bot's AI must not depend on whether its room is
+			// on-screen. That varies per machine (each host/client — and each
+			// local split-screen viewport — has different cameras), so the old
+			// bgRoomIsOnscreen-driven "cheap" approximation (which widens the
+			// bot's detection range to 250 vs 100, see botinv) made bots take
+			// different AI decisions on different machines and desync. Always run
+			// the full (cheap=false) path so every machine simulates bots
+			// identically. Sim bots only exist in Combat Sim, so this is MP-only
+			// by nature; the extra cost is well within PC budget.
+			aibot->cheap = false;
 
 			// Dampen blur
 			if (chr->blurdrugamount > 0) {

@@ -190,12 +190,36 @@ static void bwalkUpdateRemote(void)
 			// Only one snapshot available: lerp toward it
 			target = snap_newer->pos;
 		} else {
-			// No usable snapshots yet: stand still
-			if (cl && (g_NetTick % 60u) == 0u) {
-				netDiagLogf("bwalkrem_exit_nosnap", "cl=%u desired=%u",
-					cl->id, desired_tick);
+			// desired_tick is ahead of every snapshot we hold (late packet /
+			// jitter spike). Rather than freeze (the old behaviour, which made
+			// remote players stutter and then hard-snap under jitter), dead-reckon
+			// from the two newest snapshots' velocity for up to g_NetExtrapMaxTicks
+			// ticks. Capped so a missed direction change can only overshoot a
+			// little; with the cap at 0 this degrades to "converge to newest",
+			// still smoother than standing still. Needs two real snapshots for a
+			// velocity reference.
+			if (inmove->tick && inmoveprev->tick && inmove->tick > inmoveprev->tick
+					&& desired_tick > inmove->tick) {
+				u32 ahead = desired_tick - inmove->tick;
+				if (ahead > g_NetExtrapMaxTicks) {
+					ahead = g_NetExtrapMaxTicks;
+				}
+				const f32 vscale = (f32)ahead / (f32)(inmove->tick - inmoveprev->tick);
+				target.x = inmove->pos.x + (inmove->pos.x - inmoveprev->pos.x) * vscale;
+				target.y = inmove->pos.y + (inmove->pos.y - inmoveprev->pos.y) * vscale;
+				target.z = inmove->pos.z + (inmove->pos.z - inmoveprev->pos.z) * vscale;
+				if (cl && (g_NetTick % 60u) == 0u) {
+					netDiagLogf("bwalkrem_exit_extrap", "cl=%u desired=%u ahead=%u target=(%.1f,%.1f,%.1f)",
+						cl->id, desired_tick, ahead, target.x, target.y, target.z);
+				}
+			} else {
+				// No velocity reference (only one snapshot ever): stand still.
+				if (cl && (g_NetTick % 60u) == 0u) {
+					netDiagLogf("bwalkrem_exit_nosnap", "cl=%u desired=%u",
+						cl->id, desired_tick);
+				}
+				return;
 			}
-			return;
 		}
 
 		// Drive toward the interpolated target using the existing collision-

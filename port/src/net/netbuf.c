@@ -1,4 +1,5 @@
 #include <string.h>
+#include <math.h>
 #include "types.h"
 #include "platform.h"
 #include "system.h"
@@ -27,9 +28,13 @@ s32 netbufReadLeft(const struct netbuf *buf)
 
 static inline u32 netbufCanRead(struct netbuf *buf, const u32 num)
 {
-	if (buf->error || buf->rp + num > buf->wp) {
-		sysLogPrintf(LOG_ERROR, "NET: could not read %u bytes", num);
-		__builtin_trap();
+	// rp + num can overflow if num is attacker-controlled (e.g. a wire-supplied
+	// string length); compare on the remaining space instead so the bound holds.
+	if (buf->error || num > buf->wp || buf->rp > buf->wp - num) {
+		// A short/malformed packet from a remote peer is expected hostile input,
+		// not a programming error: flag it and let the caller's `if (buf->error)`
+		// path drop the packet gracefully. (Previously this __builtin_trap()'d,
+		// turning every truncated datagram into a remote DoS.)
 		buf->error = 1;
 		return false;
 	}
@@ -57,7 +62,11 @@ u8 netbufReadU8(struct netbuf *buf)
 u16 netbufReadU16(struct netbuf *buf)
 {
 	if (netbufCanRead(buf, 2)) {
-		const u16 ret = *(u16 *)&buf->data[buf->rp];
+		// memcpy rather than a cast deref: the packet buffer is not guaranteed
+		// aligned, so *(u16*)&data[rp] is UB on strict-alignment targets and
+		// under -fstrict-aliasing. memcpy compiles to the same load on x86.
+		u16 ret;
+		memcpy(&ret, &buf->data[buf->rp], sizeof(ret));
 		buf->rp += sizeof(ret);
 		return PD_LE16(ret);
 	}
@@ -67,7 +76,8 @@ u16 netbufReadU16(struct netbuf *buf)
 u32 netbufReadU32(struct netbuf *buf)
 {
 	if (netbufCanRead(buf, 4)) {
-		const u32 ret = *(u32 *)&buf->data[buf->rp];
+		u32 ret;
+		memcpy(&ret, &buf->data[buf->rp], sizeof(ret));
 		buf->rp += sizeof(ret);
 		return PD_LE32(ret);
 	}
@@ -77,7 +87,8 @@ u32 netbufReadU32(struct netbuf *buf)
 u64 netbufReadU64(struct netbuf *buf)
 {
 	if (netbufCanRead(buf, 8)) {
-		const u64 ret = *(u64 *)&buf->data[buf->rp];
+		u64 ret;
+		memcpy(&ret, &buf->data[buf->rp], sizeof(ret));
 		buf->rp += sizeof(ret);
 		return PD_LE64(ret);
 	}
@@ -107,15 +118,38 @@ f32 netbufReadF32(struct netbuf *buf)
 		u32 i;
 	} hack;
 	hack.i = netbufReadU32(buf);
+	// Reject non-finite floats at the read boundary. No legitimate wire value
+	// (position, angle, fov, damage, lean...) is ever NaN/inf, but a hostile
+	// peer can send one to poison physics/collision/rendering. Flagging error
+	// makes the whole packet drop via the caller's `if (buf->error)` guard.
+	if (!isfinite(hack.f)) {
+		buf->error = 1;
+		return 0.0f;
+	}
 	return hack.f;
 }
 
 char *netbufReadStr(struct netbuf *buf)
 {
+	static char empty[] = "";
 	const u16 len = netbufReadU16(buf);
+	if (len == 0) {
+		// Writer never emits a zero-length string (it always includes the
+		// trailing NUL in len), but tolerate it: hand back a valid empty C
+		// string rather than a pointer to zero readable bytes.
+		return empty;
+	}
 	if (netbufCanRead(buf, len)) {
 		char *ret = (char *)&buf->data[buf->rp];
 		buf->rp += len;
+		// The buffer is raw packet data with no guaranteed terminator. Every
+		// caller treats the result as a C string (strcmp/%s/strncpy), so a
+		// non-terminated payload is an out-of-bounds read. Require the writer's
+		// trailing NUL to actually be present; drop the packet otherwise.
+		if (ret[len - 1] != '\0') {
+			buf->error = 1;
+			return NULL;
+		}
 		return ret;
 	}
 	return NULL;
@@ -198,7 +232,8 @@ u32 netbufWriteU8(struct netbuf *buf, const u8 v)
 u32 netbufWriteU16(struct netbuf *buf, const u16 v)
 {
 	if (netbufCanWrite(buf, sizeof(v))) {
-		*(u16 *)&buf->data[buf->wp] = PD_LE16(v);
+		const u16 le = PD_LE16(v);
+		memcpy(&buf->data[buf->wp], &le, sizeof(le));
 		buf->wp += sizeof(v);
 		return sizeof(v);
 	}
@@ -208,7 +243,8 @@ u32 netbufWriteU16(struct netbuf *buf, const u16 v)
 u32 netbufWriteU32(struct netbuf *buf, const u32 v)
 {
 	if (netbufCanWrite(buf, sizeof(v))) {
-		*(u32 *)&buf->data[buf->wp] = PD_LE32(v);
+		const u32 le = PD_LE32(v);
+		memcpy(&buf->data[buf->wp], &le, sizeof(le));
 		buf->wp += sizeof(v);
 		return sizeof(v);
 	}
@@ -218,7 +254,8 @@ u32 netbufWriteU32(struct netbuf *buf, const u32 v)
 u32 netbufWriteU64(struct netbuf *buf, const u64 v)
 {
 	if (netbufCanWrite(buf, sizeof(v))) {
-		*(u64 *)&buf->data[buf->wp] = PD_LE64(v);
+		const u64 le = PD_LE64(v);
+		memcpy(&buf->data[buf->wp], &le, sizeof(le));
 		buf->wp += sizeof(v);
 		return sizeof(v);
 	}

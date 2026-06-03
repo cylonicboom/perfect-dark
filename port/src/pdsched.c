@@ -245,9 +245,14 @@ void schedStartFrame(OSSched *sc)
 	videoStartFrame();
 	if (g_Vars.diffframe60) {
 		if (g_NetMode) {
-			videoCapFramerate(120);
+			// Netplay ceiling (configurable, default 120): g_NetTick advances per
+			// render frame, so interpolation/lag-comp timing needs a sane fps bound.
+			// 0 disables the netplay cap (then vidFramerateLimit applies, 0 there =
+			// unlimited — at the user's own risk).
+			videoCapFramerate(videoGetNetplayFramerateLimit());
 			netStartFrame();
 		} else {
+			// Single-player: honour vidFramerateLimit directly (0 = unlimited).
 			videoCapFramerate(0);
 		}
 	}

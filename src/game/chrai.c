@@ -675,8 +675,26 @@ u32 chraiGoToLabel(u8 *ailist, u32 aioffset, u8 label)
 
 s32 chraiLuaStep(u32 off)
 {
+	// Per-list length cache. Transpiler-emitted ctx:exec offsets are always in
+	// range, but a hand-written Lua override can pass an arbitrary integer; if we
+	// indexed ailist[off] with it we'd read the opcode (and the handler's
+	// operands) out of bounds. The length is computed once per list (the pointer
+	// is constant for the duration of a list's dispatch) so the hot path stays
+	// O(1). See docs/netplay-code-review-2026.md (CR-8).
+	static u8 *s_lenlist = NULL;
+	static u32 s_listlen = 0;
 	u8 *cmd;
 	s32 type;
+
+	if (g_Vars.ailist != s_lenlist) {
+		s_lenlist = g_Vars.ailist;
+		s_listlen = chraiGetAilistLength(g_Vars.ailist);
+	}
+	if (!g_Vars.ailist || off + 1 >= s_listlen) {
+		// Out of range: don't switch the list and report no-yield, which
+		// l_ctx_exec maps to LUAAI_TERMINAL so the offending list just ends.
+		return 0;
+	}
 
 	g_Vars.aioffset = off;
 	cmd = g_Vars.aioffset + g_Vars.ailist;
@@ -1040,8 +1058,12 @@ u32 chraiGetCommandLength(u8 *ailist, u32 aioffset)
 
 	if (type == CMD_PRINT) {
 		u32 prop = aioffset + 2;
-
-		while (ailist[prop] != 0) {
+		// CMD_PRINT carries a NUL-terminated string. Cap the terminator scan so a
+		// truncated/corrupt list (whose final CMD_PRINT has no NUL before the end
+		// of the buffer) can't run off the end. Real print strings are short; the
+		// transpiler also bounds its own walk to the list length.
+		const u32 limit = prop + 256;
+		while (prop < limit && ailist[prop] != 0) {
 			++prop;
 		}
 

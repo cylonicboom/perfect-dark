@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 37 // 37: portoptions folded into 64-bit g_MpSetup.options (overflow word removed from CLC_ADMIN_SETUP / SVC_STAGE_START)
+#define NET_PROTOCOL_VER 38 // 38: SVC_PROP_MOVE chr-state block appends a per-hand gunfire-visible byte (continuous muzzle-flash reconcile)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -30,6 +30,11 @@
 // 120 ticks ≈ 2 seconds at 60 Hz. Shots rewinding further than this will use
 // the oldest available snapshot instead.
 #define NET_LAGCOMP_SIZE      120
+
+// Depth of the per-client recent server-detected-hit ring (see netclient.srvhits
+// and g_NetHitValidate). A few ticks of history covers the small timing skew
+// between when the server replays a remote's shot and when its CLC_HIT lands.
+#define NET_SRVHIT_COUNT      12
 
 // Server-side keep-alive cadence (ticks) for KoH-state and lobby-state
 // broadcasts. ~1 second at 60 Hz. The KoH and lobby broadcasts use the same
@@ -69,6 +74,66 @@ extern f32 g_NetCspTeleportThreshSq;
 // bwalkUpdateRemote hard-snaps to it instead of lerping between stale
 // entries. Default 30 (~500ms) tolerates UpdateFrames=2..3 + jitter.
 extern u32 g_NetStaleSnapshotTicks;
+
+// Remote-player extrapolation window (ticks). When the newest snapshot is older
+// than the interpolation target, bwalkUpdateRemote dead-reckons from last
+// velocity for up to this many ticks instead of freezing. 0 = converge to newest
+// (no extrapolation). Tunable via /extrap. See bondwalk.c. Also used by the
+// network-chr (sim/co-op-NPC) interpolation below.
+extern u32 g_NetExtrapMaxTicks;
+
+// Network-replicated chr POSE interpolation (Combat Sim bots now; campaign NPCs
+// under online co-op — same model: server runs the AI, replicates state, client
+// interpolates). One snapshot is the chr's full facing pose at a wire instant.
+struct netchrpose {
+	struct coord pos;
+	f32 yrot;            // body yaw (radians)
+	f32 angleoffset;     // waist twist (aibot; decouples facing from move dir)
+	f32 aimupback;       // upper-body aim joints (gun direction)
+	f32 aimsideback;
+	f32 aimuplshoulder;
+	f32 aimuprshoulder;
+	s16 animnum;         // server's leg/body animation at this instant (0 = none)
+	s16 framea;          // server's anim frame index at this instant
+	f32 speed;           // server's anim playback speed at this instant
+};
+
+// netChrRecordSnapshot stamps the wire pose with the local receive tick into the
+// chr's ring (called from the SVC_PROP_MOVE apply); netChrInterpolate runs every
+// frame on the client and reconstructs the WHOLE pose (position + facing + aim)
+// for one consistent past instant — the same scheme bwalkUpdateRemote uses for
+// remote players, extended to the full facing pose so body/facing/gun agree.
+// Bounded extrapolation when packets are late. Both no-op when there are no
+// snapshots (or when g_NetChrInterp is 0), so they're safe to call on any chr.
+void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose);
+void netChrInterpolate(struct chrdata *chr);
+
+// Live toggle for the chr pose interpolation (console /chrinterp, default 1).
+// 0 reverts to the receive-time per-packet apply (for A/B comparison).
+extern s32 g_NetChrInterp;
+
+// Server-side CLC_HIT validation against the server's own lag-comp'd hit
+// detection. 0 = off (trust the client, current behaviour); 1 = log-only
+// (validate and log would-be rejections via netDiagLogf but still apply the hit
+// — use this to measure agreement before enforcing); 2 = enforce (drop a claimed
+// hit the server's authoritative trace never detected). Config
+// Net.Server.HitValidate / console /hitvalidate. Default 0.
+extern s32 g_NetHitValidate;
+
+// Server-side: record that this client's shot was detected hitting prop `syncid`
+// by the authoritative lag-comp'd shotCalculateHits pass (called from prop.c).
+void netServerRecordDetectedHit(struct netclient *cl, u16 syncid);
+
+// Server-side: did the server recently detect `shooter` hitting `syncid`? Used to
+// validate a CLC_HIT claim. Returns 1 if found within the recent tick window.
+s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid);
+
+// Hidden test feature (toggle /hitmarker): brief centred hitmarker on a confirmed
+// local hit. g_NetHitmarkerExpireTick is set when the local player's shot
+// registers a chr/player hit (see chraction.c). Off by default.
+extern s32 g_NetHitmarkerEnabled;
+extern u32 g_NetHitmarkerExpireTick;
+#define NET_HITMARKER_TICKS 12u // hitmarker visible window (~200ms at 60Hz)
 
 // Kill feed: rolling list of recent eliminations shown top-left. New entries
 // land at index 0 and older ones shift down. Tuned so a 4-way deathmatch keeps
@@ -140,6 +205,13 @@ struct netlobbystate {
 
 #define NET_NULL_CLIENT 0xFF
 #define NET_NULL_PROP 0
+
+// Sanity ceiling for client-reported hit damage (CLC_HIT). No legitimate weapon
+// hit in this engine approaches this; it's a finite-magnitude backstop so a
+// hostile client can't push an extreme value into the damage/health math. It is
+// NOT a substitute for server-side damage authority (hit detection here is still
+// client-reported) — see netmsgClcHitRead and docs/netplay-code-review-2026.md.
+#define NET_MAX_HIT_DAMAGE 1000000.0f
 
 // Sentinel playernum for a spectator netclient. Host spectator clients keep a
 // netclient entry (so they receive broadcasts and can chat) but do not occupy
@@ -279,6 +351,14 @@ struct netclient {
 	struct lagcomp_snapshot lagcomp[NET_LAGCOMP_SIZE];
 	u32 lagcomp_head;
 
+	// Server-side only: recent chr/player prop syncids this client's shots were
+	// detected hitting by the server's own lag-comp'd shotCalculateHits pass.
+	// Used to validate the client's CLC_HIT claims (see g_NetHitValidate): the
+	// client shouldn't be able to claim a hit the server's authoritative,
+	// lag-compensated trace never registered. Ring of {syncid, tick}.
+	struct { u16 syncid; u32 tick; } srvhits[NET_SRVHIT_COUNT];
+	u32 srvhits_head;
+
 	struct netbuf out; // outbound messages are written here, except broadcasts
 	struct netbuf in; // incoming packets are fed here
 
@@ -310,6 +390,14 @@ extern char g_NetPlaylistPath[260];
 #define NET_MAX_PASSWORD 64
 extern char g_NetServerPassword[NET_MAX_PASSWORD];
 extern char g_NetJoinPassword[NET_MAX_PASSWORD];
+
+// Length-independent password compare. Unlike strcmp it does not early-exit on
+// the first mismatching character, so its timing doesn't leak how many leading
+// characters of `secret` the candidate matched. `cand` is only read within its
+// own length, so a short attacker-supplied candidate is never over-read.
+// Returns 1 if equal, 0 otherwise. (ENet itself is unencrypted, so this is
+// defence-in-depth for the admin password, not strong transport security.)
+s32 netSecureStrEqual(const char *secret, const char *cand);
 
 // Admin remote control. g_NetAdminPassword (Server.AdminPassword / --admin-password;
 // empty = admin disabled) gates the CLC_ADMIN `login` command. An authenticated
@@ -519,6 +607,10 @@ Gfx *netGrasluRender(Gfx *gdl);
 
 // Companion red "Redvox57" vanity banner; same HUD slot/renderer as Graslu.
 Gfx *netRedvox57Render(Gfx *gdl);
+
+// Hidden test hitmarker: centred marker shown briefly after a confirmed local
+// hit (toggle /hitmarker). No-op unless enabled and within the flash window.
+Gfx *netHitmarkerRender(Gfx *gdl);
 
 // Spectate mode. When non-NULL, the local player's first-person camera is
 // overridden to ride along with the target chr (player or sim). Cleared by

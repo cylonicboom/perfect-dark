@@ -4185,6 +4185,10 @@ void func0f0341dc(struct chrdata *chr, f32 damage, struct coord *vector, struct 
 			netbufStartWrite(&g_NetMsgRel);
 			netmsgClcHitWrite(&g_NetMsgRel, chr, damage, vector, gset, (s16)hitpart, (s16)side, arg10);
 			netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+			// Hidden test feature: immediate local hit confirmation (centred
+			// marker), so the shooter gets feedback now instead of after the
+			// server's SVC_CHR_DAMAGE round-trip. No-op unless /hitmarker is on.
+			g_NetHitmarkerExpireTick = g_NetTick + NET_HITMARKER_TICKS;
 		}
 		return;
 	}
@@ -4347,7 +4351,15 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	// reset to 0) wraps to a huge unsigned value, which correctly
 	// fails the < TICKS(18) check instead of producing a negative
 	// signed number that would lock the chr into permanent iframes.
-	if (goldeneyeStyleActive()
+	// i-frame enforcement is server-authoritative. On a client, chrDamage is only
+	// ever reached as an authoritative replay of a server-sent SVC_CHR_DAMAGE
+	// (the chrDamageBy* originators all early-return under NETMODE_CLIENT), so the
+	// client must NOT independently re-evaluate the i-frame window against its own
+	// lvframe60 clock — doing so would reject (or admit) hits out of step with the
+	// host, since lastdamagetick60 is stamped locally and never synced. The host
+	// already gated the hit before broadcasting. See review doc (H-3).
+	if (g_NetMode != NETMODE_CLIENT
+			&& goldeneyeStyleActive()
 			&& chr->lastdamagetick60 != 0
 			&& ((u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60) < (u32)TICKS(18)) {
 		netDiagLogf("dmg_block",
@@ -15975,6 +15987,15 @@ void func0f04b740(void)
 
 bool chrSetPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 theta, bool findground)
 {
+	// Net-snap entry point (CSP teleport / force-move). Unlike its sibling
+	// chrMoveToPos this is reached directly from wire-driven paths, so guard the
+	// pointers it unconditionally dereferences below (chr->prop->rooms,
+	// chr->model->...) — a spectator / mid-spawn remote slot can momentarily have
+	// a NULL model or prop. See docs/netplay-code-review-2026.md (M-1).
+	if (chr == NULL || chr->prop == NULL || chr->model == NULL || pos == NULL || rooms == NULL) {
+		return false;
+	}
+
 	const f32 angle = BADDEG2RAD(360.f - theta);
 
 	if (findground) {

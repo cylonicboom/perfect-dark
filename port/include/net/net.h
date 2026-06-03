@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 37 // 37: portoptions folded into 64-bit g_MpSetup.options (overflow word removed from CLC_ADMIN_SETUP / SVC_STAGE_START)
+#define NET_PROTOCOL_VER 38 // 38: SVC_PROP_MOVE chr-state block appends a per-hand gunfire-visible byte (continuous muzzle-flash reconcile)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 

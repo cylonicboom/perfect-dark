@@ -267,6 +267,7 @@ f32 chrGetRotY(struct chrdata *chr);
 void chrSetRotY(struct chrdata *chr, f32 arg1);
 void chrResetAimEndProperties(struct chrdata *chr);
 void chrSetFiring(struct chrdata *chr, s32 hand, bool firing);
+bool chrIsGunfireVisible(struct chrdata *chr, s32 hand);
 void chrStopFiring(struct chrdata *chr);
 void chrSetHandFiring(struct chrdata *chr, s32 hand, bool arg2);
 void func0f0429d8(struct chrdata *chr, f32 arg1, f32 arg2);

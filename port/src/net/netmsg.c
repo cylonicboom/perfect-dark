@@ -1548,6 +1548,29 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		netbufWriteF32(dst, chr->aimuplshoulder);
 		netbufWriteF32(dst, chr->aimuprshoulder);
 		netbufWriteF32(dst, chr->aibot ? chr->aibot->angleoffset : 0.f);
+		// GUNFIRE VISIBILITY (continuous, robust). The muzzle flash was otherwise
+		// driven ONLY by edge-triggered SVC_CHR_FIRE on/off events. A missed
+		// off-edge leaves the flash stuck on — exactly the reported "sim muzzle
+		// flash gets stuck" bug. The off-edge can be missed because chrTickShoot's
+		// transition test (was && !will) only fires on the exact frame firing
+		// stops AND requires the server's own gunfire flag to still be visible at
+		// that instant; a single-frame trigger release, an ammo-out stop, a death,
+		// or a weapon swap between the on and off all slip past it. Send the
+		// authoritative per-hand visible state every snapshot so the read side can
+		// reconcile it and any stuck flash self-clears within one snapshot interval.
+		// SVC_CHR_FIRE still drives the crisp single-frame onset + positional sound;
+		// this byte only guarantees the OFF can never be missed. bit0 = right hand,
+		// bit1 = left hand (HAND_RIGHT=0, HAND_LEFT=1).
+		u8 gunfire = 0;
+		for (s32 h = 0; h < 2; ++h) {
+			struct prop *hp = chrGetHeldProp(chr, h);
+			// Guard hp->obj: weaponIsGunfireVisible (via chrIsGunfireVisible)
+			// dereferences it without its own null check.
+			if (hp && hp->obj && chrIsGunfireVisible(chr, h)) {
+				gunfire |= (1 << h);
+			}
+		}
+		netbufWriteU8(dst, gunfire);
 	}
 
 	return dst->error;
@@ -1716,6 +1739,10 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		const f32 aimuplshoulder = netbufReadF32(src);
 		const f32 aimuprshoulder = netbufReadF32(src);
 		const f32 angleoffset = netbufReadF32(src);
+		// Per-hand gunfire-visible state (bit0 = right, bit1 = left). Read in wire
+		// order here with the other fields; applied after the weapons-held sync
+		// below (the weapon props must exist before we can toggle their flash).
+		const u8 gunfire = netbufReadU8(src);
 		if (prop && prop->chr) {
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
@@ -1943,6 +1970,24 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 							giveweap_logged++;
 						}
 					}
+				}
+			}
+
+			// MUZZLE FLASH RECONCILE (continuous). Force each hand's gunfire-visible
+			// flag to exactly match the server's authoritative state from this
+			// snapshot. This is what makes a stuck flash impossible: even if the
+			// edge-triggered SVC_CHR_FIRE 'off' was missed (death, ammo-out,
+			// single-frame trigger release, weapon swap), the next chr-state
+			// snapshot clears it. Runs AFTER the weapons-held loop so chrGetHeldProp
+			// resolves the current (possibly just-spawned) weapon prop. Guard
+			// weaponprop->obj because weaponSetGunfireVisible derefs it without its
+			// own null check.
+			for (s32 h = 0; h < 2; ++h) {
+				struct prop *weaponprop = chrGetHeldProp(chr, h);
+				if (weaponprop && weaponprop->obj) {
+					const bool visible = (gunfire & (1 << h)) != 0;
+					weaponSetGunfireVisible(weaponprop, visible,
+							chr->prop ? chr->prop->rooms[0] : -1);
 				}
 			}
 		}

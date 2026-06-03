@@ -819,6 +819,20 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	if (g_Vars.coopplayernum >= 0) {
 		netbufWriteU8(dst, NETSTAGEMODE_COOP);
 		netbufWriteU8(dst, (u8)g_MissionConfig.difficulty);
+		// Compact player manifest: {id, playernum} per connected client, promoting
+		// each to CLSTATE_GAME (same effect as the combat manifest below). Without
+		// this remote clients stay in LOBBY on the host, so the per-tick player-move
+		// broadcast (gated state >= CLSTATE_GAME) skips them and players can't see
+		// each other move.
+		netbufWriteU8(dst, g_NetNumClients);
+		for (s32 i = 0; i < g_NetMaxClients; ++i) {
+			struct netclient *ncl = &g_NetClients[i];
+			if (ncl->state) {
+				netbufWriteU8(dst, ncl->id);
+				netbufWriteU8(dst, ncl->playernum);
+				ncl->state = CLSTATE_GAME;
+			}
+		}
 		return dst->error;
 	}
 #endif
@@ -929,13 +943,26 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	// NOT mpStartMatch. Combat Sim setup is not on the wire in this mode.
 	if (mode == NETSTAGEMODE_COOP) {
 		const u8 difficulty = netbufReadU8(src);
+		// Compact player manifest (mirror of the write): set every client's
+		// playernum and promote to CLSTATE_GAME so the per-tick player-move sync
+		// includes them. netPlayersAllocate (playermgr.c) then binds cl->player by
+		// playernum during the stage load below.
+		const u8 numplayers = netbufReadU8(src);
+		for (u8 p = 0; p < numplayers; ++p) {
+			const u8 id = netbufReadU8(src);
+			const u8 pn = netbufReadU8(src);
+			struct netclient *ncl = netResolveWireClient(id);
+			if (ncl) {
+				ncl->id = id;
+				ncl->playernum = pn;
+				ncl->is_spectator = 0;
+				ncl->state = CLSTATE_GAME;
+				ncl->player = NULL;
+			}
+		}
 		if (src->error) {
 			return src->error;
 		}
-		// Enter game state. The combat path does this via the player-roster
-		// manifest (read below); co-op skips that manifest for now, so set our own
-		// state here and let the generic netPlayersAllocate (playermgr.c) seat us.
-		// A full co-op roster manifest (other players' slots) is a Phase-0 follow-up.
 		g_NetLocalClient->state = CLSTATE_GAME;
 		g_MissionConfig.stageindex = 0; // TODO: sync index for briefing/HUD
 		netCoopEnterStage((s32)stagenum, (s32)difficulty);

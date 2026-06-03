@@ -2390,6 +2390,21 @@ s32 chrTick(struct prop *prop)
 	// animation / render. No-op on the server and for any chr with no received
 	// snapshots, so it's safe to call for every chr here.
 	netChrInterpolate(chr);
+
+	// Position-driven sims must NOT run local gravity. The wire syncs prop->pos
+	// (radar/collision/targeting read it) but the chr's RENDERED vertical comes
+	// from chr->manground (chr0f01f378: arg2->y += manground), which is integrated
+	// from the LOCAL ground-find and never corrected by the position sync. For a
+	// sim the client momentarily thinks is airborne (e.g. just after running off a
+	// ledge), fallspeed/manground run away downward and the model sinks under the
+	// floor — invisible, even though the radar blip stays at the correct spot.
+	// Re-assert CHRCFLAG_FORCETOGROUND every tick so chr0f01f378 snaps manground to
+	// the freshly-found ground at the synced X/Z (chr.c:881) instead of free-
+	// falling. PD has no jump, so sims are only ever briefly airborne falling off a
+	// ledge; pinning them to the ground beneath (a step-down) beats vanishing.
+	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid) {
+		chr->chrflags |= CHRCFLAG_FORCETOGROUND;
+	}
 #endif
 	bool needsupdate;
 	bool hatvisible = true;

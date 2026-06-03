@@ -1582,6 +1582,27 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 			}
 		}
 		netbufWriteU8(dst, gunfire);
+		// HEALTH + SHIELD (proto 39). The client reconstructs a sim's HP/shield
+		// purely by replaying SVC_CHR_DAMAGE through chrDamage, which desyncs the
+		// moment a shield/health change doesn't flow through a replayed damage
+		// event — shield PICKUPS and spawn/Dark/option shield are set in the
+		// server-only botReset/bot pickup path (bot.c), health pickups likewise,
+		// and respawn resets chr->damage to 0 — or when a replayed chrDamage
+		// branches on the client's DIVERGED RNG (the headshot x1..6 multiplier,
+		// chraction.c). A sim whose shield the client doesn't know about shows no
+		// shield-hit effect and its replayed damage spills into health early, so it
+		// reads as "won't die" to a client shooter. Send the authoritative values
+		// so the client OVERWRITES cshield/damage every snapshot; the SVC_CHR_DAMAGE
+		// replay then only drives effects (blood, shield flash, knockback, sound),
+		// not the HP bookkeeping. Death VISUALS stay animnum-driven (the client
+		// force-sets ACT_STAND, so chrIsDead never trips there anyway). Shield is
+		// 0..8 -> u8 (1/32-unit precision); damage is raw f32 because an armoured
+		// chr carries a negative chr->damage.
+		f32 cshield = chr->cshield;
+		if (cshield < 0.f) cshield = 0.f;
+		if (cshield > 8.f) cshield = 8.f;
+		netbufWriteU8(dst, (u8)(cshield * (255.0f / 8.0f) + 0.5f));
+		netbufWriteF32(dst, chr->damage);
 	}
 
 	return dst->error;
@@ -1754,6 +1775,10 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// order here with the other fields; applied after the weapons-held sync
 		// below (the weapon props must exist before we can toggle their flash).
 		const u8 gunfire = netbufReadU8(src);
+		// Authoritative sim shield + health (proto 39). Read unconditionally to keep
+		// the buffer aligned even when prop/chr didn't resolve; applied below.
+		const u8 wireshield8 = netbufReadU8(src);
+		const f32 wirehealth = netbufReadF32(src);
 		if (prop && prop->chr) {
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
@@ -2018,6 +2043,18 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 					weaponSetGunfireVisible(weaponprop, visible,
 							chr->prop ? chr->prop->rooms[0] : -1);
 				}
+			}
+
+			// AUTHORITATIVE HP/SHIELD (proto 39). Overwrite the client's locally
+			// replayed values with the server's so the sim's effective health (the
+			// shield-then-health pool) matches the host exactly — independent of
+			// missed shield/health pickups, the diverged-RNG headshot multiplier, or
+			// respawn resets. The SVC_CHR_DAMAGE replay still runs for its effects;
+			// this just keeps the bookkeeping authoritative. Clients only (the host
+			// never receives its own sims' SVC_PROP_MOVE, but guard for clarity).
+			if (g_NetMode == NETMODE_CLIENT) {
+				chr->cshield = (f32)wireshield8 * (8.0f / 255.0f);
+				chr->damage = wirehealth;
 			}
 		}
 	}

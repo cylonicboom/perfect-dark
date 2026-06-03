@@ -1910,6 +1910,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				// Mismatch: delete old, spawn new
 				if (chr->weapons_held[h]) {
 					if (chr->weapons_held[h]->obj) {
+						// Clear any active muzzle flash before orphaning this prop —
+						// otherwise its gunfire-visible flag survives on the deleted
+						// weapon and renders a stuck flash after a weapon swap (the
+						// SVC_CHR_FIRE 'off' targets the NEW held prop, not this one).
+						weaponSetGunfireVisible(chr->weapons_held[h], false,
+								chr->prop ? chr->prop->rooms[0] : 0);
 						chr->weapons_held[h]->obj->hidden |= OBJHFLAG_DELETING;
 					}
 					chr->weapons_held[h] = NULL;
@@ -2566,6 +2572,19 @@ u32 netmsgSvcChrDamageRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	chrDamage(chrprop->chr, damage, &vector, gset, aprop, hitpart, damageshield, prop2, NULL, NULL, side, arg11ptr, explosion, explosionposptr);
+
+	// If this hit killed a firing sim, clear any active muzzle flash on its held
+	// weapons: the server's SVC_CHR_FIRE 'off' (sent from chrTickShoot) may never
+	// arrive because a dead chr stops ticking its shoot logic, leaving the flash
+	// stuck on the corpse. Clear both hands on the client to be safe.
+	if (chrIsDead(chrprop->chr)) {
+		for (s32 h = 0; h < 2; ++h) {
+			struct prop *wp = chrGetHeldProp(chrprop->chr, h);
+			if (wp && wp->obj) {
+				weaponSetGunfireVisible(wp, false, chrprop->rooms[0]);
+			}
+		}
+	}
 
 	if (chrprop->type == PROPTYPE_PLAYER) {
 		setCurrentPlayerNum(prevplayernum);

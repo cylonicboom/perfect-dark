@@ -2391,50 +2391,35 @@ s32 chrTick(struct prop *prop)
 	// snapshots, so it's safe to call for every chr here.
 	netChrInterpolate(chr);
 
-	// Position-driven sims must NOT run local gravity. The wire syncs prop->pos
-	// (radar/collision/targeting read it) but the chr's RENDERED vertical comes
-	// from chr->manground (chr0f01f378: arg2->y += manground), integrated from a
-	// LOCAL ground-find that the position sync never corrects. chr0f01f378 finds
-	// ground at the anim-driven model pos (arg2); once that drifts even slightly,
-	// the ground-find there drifts with it, manground free-falls and the model
-	// sinks under the floor — invisible, though the radar blip (prop->pos) stays
-	// correct. (CHRCFLAG_FORCETOGROUND can't fix this: it's consumed INSIDE
-	// chr0f01f378 after that bad ground-find, so it just re-snaps to the wrong
-	// ground.)
+	// Position-driven sims keep the engine's own gravity (chr0f01f378) so they
+	// fall off ledges, ride slopes and land naturally — we only stop it running
+	// AWAY. The chr's rendered vertical is chr->manground (chr0f01f378:
+	// arg2->y += manground), integrated from a ground-find at the anim-driven
+	// model pos (arg2 = anim_local + manground). On a client that find isn't
+	// corrected by the position sync, so once manground dips below the real floor
+	// the find at the now-too-low arg2 misses the floor, returns garbage-low,
+	// manground free-falls and the model vanishes under the map. (Pinning
+	// manground to the local floor stopped the sink but snapped airborne bots to
+	// the floor; pinning it to the wire Y floated them, since prop->pos.y rides a
+	// fixed offset above the floor.)
 	//
-	// Drive manground from the INTERPOLATED wire Y instead. The host already
-	// applied gravity, so prop->pos.y carries the real fall trajectory; pinning
-	// manground to it each tick reproduces that smooth descent (a bot running off
-	// a ledge floats down with the host's arc) rather than snapping to the floor,
-	// and still can't run away downward — it's re-anchored to the authoritative,
-	// interpolated value every tick (no local integration). The chr's render root
-	// sits ~at manground (anim root translation is ~0 for locomotion, which is why
-	// the earlier ground-pin rendered bots correctly on the floor), so prop->pos.y
-	// is the right value. cdFindGroundInfoAtCyl is kept only as a FLOOR CLAMP so an
-	// interpolation/extrapolation undershoot on landing can never dip below the
-	// real floor (a bad/low ground-find can't pull the bot down — the clamp only
-	// ever raises). ground == manground so chr0f01f378 treats the chr as grounded
-	// and adds no local fall on top.
-	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid
-			&& chr->model && chr->model->definition) {
+	// One clamp breaks the feedback without touching real gravity: never let
+	// manground fall BELOW the floor at the SYNCED prop->pos X/Z. A genuine fall
+	// keeps manground ABOVE the floor (descending toward it), so the clamp is a
+	// no-op for it — chr0f01f378 still produces the natural arc and lands the bot.
+	// It only fires on the runaway, and re-seating manground at the floor puts
+	// arg2 (= anim_local + manground) back above the floor so the very next
+	// floor-find is correct again — so in practice the sink can't even start.
+	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid) {
 		const f32 floor = cdFindGroundInfoAtCyl(&chr->prop->pos, chr->radius,
 				chr->prop->rooms, &chr->floorcol, &chr->floortype, NULL,
 				&chr->floorroom, NULL, NULL);
-		f32 simy = chr->prop->pos.y;
-		if (simy < floor) {
-			simy = floor;
-		}
-		chr->ground = simy;
-		chr->manground = simy;
-		chr->sumground = simy * (PAL ? 8.4175090789795f : 9.999998f);
-		chr->fallspeed.x = 0.0f;
-		chr->fallspeed.y = 0.0f;
-		chr->fallspeed.z = 0.0f;
-
-		struct modelnode *rootnode = chr->model->definition->rootnode;
-		if (rootnode && (rootnode->type & 0xff) == MODELNODETYPE_CHRINFO) {
-			union modelrwdata *rwdata = modelGetNodeRwData(chr->model, rootnode);
-			rwdata->chrinfo.ground = simy;
+		if (chr->manground < floor) {
+			chr->manground = floor;
+			chr->sumground = floor * (PAL ? 8.4175090789795f : 9.999998f);
+			chr->fallspeed.x = 0.0f;
+			chr->fallspeed.y = 0.0f;
+			chr->fallspeed.z = 0.0f;
 		}
 	}
 #endif

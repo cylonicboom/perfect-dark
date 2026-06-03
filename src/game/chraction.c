@@ -13985,6 +13985,34 @@ void chraTick(struct chrdata *chr)
 		chr->sleep = 0;
 
 #ifndef PLATFORM_N64
+		// Campaign co-op (host-authoritative AI): when idle (target == -1) an NPC
+		// perceives only the single player indexed by chr->p1p2. Native splitscreen
+		// co-op alternates it via the chr_toggle_p1p2 ailist command, but not every
+		// NPC/trigger toggles, so remote net players go unnoticed — e.g. a client
+		// entering a scripted region never trips the trigger. Hold each living player
+		// for a short window then advance, so every player is perceived within
+		// ~window ticks (long enough for accumulating sight timers to latch) and can
+		// trip sight/region scripts. Only while idle (target == -1) so an NPC already
+		// engaged with a specific target is untouched. Host + net co-op only
+		// (NETMODE_SERVER excludes splitscreen, which keeps its native toggle); skips
+		// aibots (Combat Sim sims have their own targeting).
+		if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+				&& !chr->aibot && chr->target == -1) {
+			const s32 pcount = PLAYERCOUNT();
+			if (pcount > 1) {
+				const s32 base = (g_Vars.lvframe60 / 20) % pcount;
+				for (s32 n = 0; n < pcount; n++) {
+					const s32 p = (base + n) % pcount;
+					if (g_Vars.players[p] && !g_Vars.players[p]->isdead) {
+						chr->p1p2 = p;
+						break;
+					}
+				}
+			}
+		}
+#endif
+
+#ifndef PLATFORM_N64
 		// Campaign co-op: NPC AI is host-authoritative. On clients, skip the AI
 		// bytecode for synced NPCs — they're position/anim-driven by the host's
 		// chr-state broadcast and forced to ACT_STAND, so running the ailist here

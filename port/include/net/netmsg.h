@@ -40,6 +40,7 @@
 #define SVC_ADMIN        0x4c // admin command response (one text line to the admin)
 #define SVC_OBJECTIVE    0x4d // co-op: host-authoritative per-objective status array (mirrors g_ObjectiveStatuses)
 #define SVC_CHR_SPAWN    0x4e // co-op: a chr spawned at runtime on the host (reinforcement/clone); client creates a matching shell driven by chr-state
+#define SVC_CHR_TALK     0x4f // co-op: an NPC spoke (quip/conversation line); client plays the positional voice line (NPC AI is gated off on clients)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -108,6 +109,12 @@ u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl);
 // ailist; position/anim/weapons/HP all arrive via the chr-state broadcast.
 u32 netmsgSvcChrSpawnWrite(struct netbuf *dst, struct prop *prop, f32 angle, u32 spawnflags);
 u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_CHR_TALK (co-op): an NPC played a voice line (quip/conversation). Wire:
+// { chr_syncid:u32, audioid:u16 }. The client plays the same positional
+// PSTYPE_CHRTALK sound on the chr — NPC AI (and thus its speech) is server-only.
+u32 netmsgSvcChrTalkWrite(struct netbuf *dst, struct prop *prop, s32 audioid);
+u32 netmsgSvcChrTalkRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

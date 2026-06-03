@@ -1210,6 +1210,37 @@ u32 netmsgSvcChrSpawnWrite(struct netbuf *dst, struct prop *prop, f32 angle, u32
 	return dst->error;
 }
 
+u32 netmsgSvcChrTalkWrite(struct netbuf *dst, struct prop *prop, s32 audioid)
+{
+	netbufWriteU8(dst, SVC_CHR_TALK);
+	netbufWritePropPtr(dst, prop);
+	netbufWriteU16(dst, (u16)audioid);
+	return dst->error;
+}
+
+u32 netmsgSvcChrTalkRead(struct netbuf *src, struct netclient *srccl)
+{
+	struct prop *chrprop = netbufReadPropPtr(src);
+	const u16 audioid = netbufReadU16(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	if (!chrprop || !chrprop->chr) {
+		return src->error;
+	}
+
+	// Play the NPC's voice line positionally on the chr, matching the server's
+	// quip/conversation psCreate (PSTYPE_CHRTALK so the chr's prior talk channel
+	// is evicted when it speaks again).
+	psStopSound(chrprop, PSTYPE_CHRTALK, 0xffff);
+	psCreate(0, chrprop, audioid, -1, -1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK,
+			0, -1, 0, -1, -1, -1, -1);
+
+	return src->error;
+}
+
 u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u32 syncid = netbufReadU32(src);

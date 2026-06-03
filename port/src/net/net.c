@@ -1007,6 +1007,21 @@ void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags)
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
 }
 
+// Replicate an NPC voice line (quip/conversation) to clients so they hear it —
+// NPC AI runs server-only. Reliable control channel (a one-shot event).
+void netServerBroadcastChrTalk(struct prop *prop, s32 audioid)
+{
+	// Co-op only: in Combat Sim, sim speech isn't replicated (and would be a
+	// behaviour change). The call sites just hand us the speaking chr's prop.
+	if (g_NetMode != NETMODE_SERVER || g_Vars.coopplayernum < 0 || !prop || !prop->syncid) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcChrTalkWrite(&g_NetMsgRel, prop, audioid);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
 void netServerKick(struct netclient *cl, const u32 reason)
 {
 	if (g_NetMode != NETMODE_SERVER) {
@@ -1349,6 +1364,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_ADMIN: rc = netmsgSvcAdminRead(&cl->in, cl); break;
 			case SVC_OBJECTIVE: rc = netmsgSvcObjectiveRead(&cl->in, cl); break;
 			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
+			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

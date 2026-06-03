@@ -113,6 +113,43 @@ substrate, but the *policy* is new).
   any host-only prop spawn shifting the array. Prefer host-authoritative syncid
   assignment for dynamically spawned campaign props.
 
+## Prop-lifecycle sync: events + a reconciliation backstop (hardening)
+
+The prop world syncs by **events** — `SVC_PROP_SPAWN` (add), `SVC_PROP_FREE`
+(remove, proto 40), `SVC_PROP_MOVE` (pose) — over the reliable channel, on top of
+deterministic positional syncids (`prop − g_Vars.props + 1`). This is correct *if
+complete*: the recent lingering-mine bugs were a missing `SVC_PROP_FREE` and then
+an incomplete client teardown (a bare `propFree` instead of the full
+`objFreePermanently`, which left a stuck mine in its parent chr's child list).
+Co-op multiplies the surface: NPCs dropping weapons, destructibles, scripted
+spawn/despawn — every one needs symmetric add **and** remove, running the engine's
+real teardown on both sides, or the client world drifts.
+
+**Determinism is the real guarantee, not a heartbeat.** Syncids are positional, so
+the scary failure is the two `freeprops` pools diverging: then syncid *N* points at
+different props on each side and everything downstream mismaps. Symmetric
+spawn+free is what keeps the pools locked together — get that right first.
+
+**Add a cheap reconciliation backstop, not a full snapshot.** A full per-prop
+state snapshot every N ticks is too heavy (hundreds of props in a campaign level).
+Instead, periodically (the existing score/stats/KoH heartbeat cadence) send a
+**compact signature of the host's active synced-prop set** — a count plus an
+XOR/rolling checksum of active syncids, ideally over a *window* of the syncid range
+each heartbeat to amortize. The client compares; on a match (the common case) it
+does nothing; on a mismatch the host re-broadcasts the reconciling spawns/frees.
+Two correctness rules:
+- **Ignore in-flight props:** never remove a client prop whose `SVC_PROP_SPAWN`
+  could still be in transit — stamp props with a spawn tick and skip anything
+  younger than ~RTT, or the heal will delete legitimately-new props.
+- **It heals *existence*, not *identity-mismap*.** An existence checksum catches
+  ghosts (client has it, host freed it) and orphans (client missing it), but not
+  "both sides have syncid N pointing at different props" — that only comes from a
+  diverged pool, which the symmetric-free discipline above prevents.
+
+Sequencing: (1) complete the event model; (2) add the rolling checksum heartbeat
+as a backstop; (3) only invest in identity-level reconciliation if checksums keep
+mismatching in practice.
+
 ## `aibot`-gated net logic to widen for co-op (audit list)
 
 Grep `chr->aibot` in net-touched paths and decide per-site whether co-op NPCs

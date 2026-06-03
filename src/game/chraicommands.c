@@ -7034,6 +7034,9 @@ bool aiSayQuip(void)
 						psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 						psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 								-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+						netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 					} else {
 						distance = chrGetDistanceLostToTargetInLastSecond(g_Vars.chrdata);
 
@@ -7041,6 +7044,9 @@ bool aiSayQuip(void)
 							psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 							psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 									-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+							netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 						}
 					}
 
@@ -7097,6 +7103,9 @@ bool aiSayQuip(void)
 							psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 							psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 									-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+							netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 						} else {
 							distance = chrGetDistanceLostToTargetInLastSecond(g_Vars.chrdata);
 
@@ -7104,6 +7113,9 @@ bool aiSayQuip(void)
 								psStopSound(g_Vars.chrdata->prop, PSTYPE_CHRTALK, 0xffff);
 								psCreate(0, g_Vars.chrdata->prop, audioid, -1,
 										-1, PSFLAG_FORPROP, 0, PSTYPE_CHRTALK, 0, -1, 0, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+								netServerBroadcastChrTalk(g_Vars.chrdata->prop, audioid);
+#endif
 							}
 						}
 

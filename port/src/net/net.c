@@ -12,6 +12,7 @@
 #include "net/netmsg.h"
 #include "net/netmaster.h"
 #include "net/playlist.h"
+#include "det.h"
 #include "mpsetups.h"
 #include "types.h"
 #include "constants.h"
@@ -3325,6 +3326,11 @@ s32 netConsoleCommand(const char *line)
 		++p;
 	}
 	const char *arg = p; // may be ""
+
+	// Determinism harness commands (/dethash, /detpin, /detinfo) — checked first.
+	if (detConsoleCommand(cmd, arg)) {
+		return 1;
+	}
 
 	if (strcmp(cmd, "lua") == 0) {
 		luaaiConsoleCommand(*arg ? arg : NULL);

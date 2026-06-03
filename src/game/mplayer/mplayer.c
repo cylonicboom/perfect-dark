@@ -2440,14 +2440,19 @@ struct mpbody g_MpBodies[] = {
 	/*0x36*/ { BODY_PRESIDENT_CLONE2, L_OPTIONS_067,   HEAD_PRESIDENT,   MPFEATURE_CHR_PRESCLONE    },
 	/*0x37*/ { BODY_PELAGIC_GUARD,    L_OPTIONS_068,   1000,             MPFEATURE_CHR_PELAGIC      },
 	/*0x38*/ { BODY_MAIAN_SOLDIER,    L_OPTIONS_069,   HEAD_MAIAN_S,     MPFEATURE_CHR_ELVIS        },
-#ifndef PLATFORM_N64 // PD Plus Mod
-	/*0x39*/ { BODY_PRESIDENT_CLONE,  L_OPTIONS_356,   1000,             0                          }, // Skedar
-	/*0x3a*/ { BODY_TESTCHR,          L_OPTIONS_355,   1000,             0                          }, // Dr. Caroll
-#endif
 	/*0x39*/ { BODY_CONNERY,          L_OPTIONS_070,   1000,             MPFEATURE_8BOTS            },
 	/*0x3a*/ { BODY_MOORE,            L_OPTIONS_070,   1000,             MPFEATURE_8BOTS            },
 	/*0x3b*/ { BODY_DALTON,           L_OPTIONS_070,   1000,             MPFEATURE_8BOTS            },
 	/*0x3c*/ { BODY_DJBOND,           L_OPTIONS_070,   1000,             MPFEATURE_8BOTS            },
+#ifndef PLATFORM_N64 // PD Plus Mod bodies — appended at the end so the original
+	// body indices above (CONNERY..DJBOND = 0x39..0x3c) keep the same values they
+	// have on N64. mpbodynum is a persisted/wire value indexed straight into this
+	// array, so inserting mid-array (the previous layout) silently remapped every
+	// later body for saved configs and for peers with a different table. See the
+	// netplay review doc (M-2).
+	/*0x3d*/ { BODY_PRESIDENT_CLONE,  L_OPTIONS_356,   1000,             0                          }, // Skedar
+	/*0x3e*/ { BODY_TESTCHR,          L_OPTIONS_355,   1000,             0                          }, // Dr. Caroll
+#endif
 };
 
 u32 g_MpMaleHeads[] = {

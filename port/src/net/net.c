@@ -1053,7 +1053,10 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 
 	sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: connection attempt from %s", addrstr);
 
-	++g_NetNumClients;
+	// g_NetNumClients is bumped only once a slot is actually assigned (below),
+	// not here — otherwise the reject paths (protocol mismatch / server full)
+	// return having counted a peer that never became a client, and a rejected
+	// peer whose disconnect event is lost drifts the counter up permanently.
 
 	if (data != NET_PROTOCOL_VER) {
 		sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: %s rejected: protocol mismatch", addrstr);
@@ -1094,6 +1097,9 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 		sysLogPrintf(LOG_NOTE, "NET: %s joining in progress as spectator (will spawn next round)", addrstr);
 	}
 	enet_peer_set_data(peer, cl);
+	// Count only now that the peer owns a real client slot; netServerEvDisconnect
+	// (the only path that runs for an attached client) decrements the match.
+	++g_NetNumClients;
 }
 
 static void netServerEvDisconnect(struct netclient *cl)
@@ -1424,8 +1430,9 @@ void netStartFrame(void)
 					if (cl) {
 						netServerEvDisconnect(cl);
 					} else {
+						// No attached client => this peer was rejected before a slot
+						// was assigned, so it was never counted; just log it.
 						sysLogPrintf(LOG_WARNING | LOGFLAG_NOCON, "NET: disconnect from %s without attached client", netFormatPeerAddr(ev.peer));
-						--g_NetNumClients;
 					}
 				}
 				break;
@@ -2859,6 +2866,22 @@ static void netAdminCaptureSetup(void)
 	strcpy(e->name, "admin");
 }
 
+s32 netSecureStrEqual(const char *secret, const char *cand)
+{
+	if (!secret) secret = "";
+	if (!cand) cand = "";
+	const size_t slen = strlen(secret);
+	const size_t clen = strlen(cand);
+	u32 diff = (u32)(slen ^ clen);
+	// Iterate over the secret's length (constant for a given server config),
+	// not the candidate's, so a partial-prefix match doesn't shorten the loop.
+	for (size_t i = 0; i < slen; ++i) {
+		const u8 cc = (i < clen) ? (u8)cand[i] : 0;
+		diff |= (u32)((u8)secret[i] ^ cc);
+	}
+	return diff == 0;
+}
+
 void netServerAdminCommand(struct netclient *cl, const char *line)
 {
 	if (g_NetMode != NETMODE_SERVER || !cl || !line) {
@@ -2887,7 +2910,7 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 	if (strcmp(cmd, "login") == 0) {
 		if (g_NetAdminPassword[0] == '\0') {
 			netAdminReply(cl, "admin: disabled (no Server.AdminPassword / --admin-password set)");
-		} else if (strcmp(arg, g_NetAdminPassword) == 0) {
+		} else if (netSecureStrEqual(g_NetAdminPassword, arg)) {
 			cl->is_admin = 1;
 			netAdminReply(cl, "admin: authenticated. type /admin help for commands.");
 			sysLogPrintf(LOG_NOTE, "NET: client %u (%s) authenticated as admin", cl->id, cl->settings.name);

@@ -212,6 +212,42 @@ static void luaai_build_pd(lua_State *L)
 	lua_setglobal(L, "pd");
 }
 
+// Sandboxed standard-library set. We deliberately do NOT call luaL_openlibs():
+// that opens os (os.execute / os.remove), io (file write / io.popen), package
+// (package.loadlib -> dlopen native code) and debug (sandbox-escape
+// introspection), which would let any scripts/*.lua on disk — or the /lua
+// console — run arbitrary native code with the game's privileges. We open only
+// the compute/data libraries, then nil out anything that can shell out or load
+// native code. dofile/loadfile/load are kept so the modding system can still
+// chain scripts; with os/io/package gone they can only run further sandboxed
+// Lua, not escape. See docs/netplay-code-review-2026.md (CR-7).
+static void luaai_open_safe_libs(lua_State *L)
+{
+	static const luaL_Reg libs[] = {
+		{ LUA_GNAME,       luaopen_base },
+		{ LUA_TABLIBNAME,  luaopen_table },
+		{ LUA_STRLIBNAME,  luaopen_string },
+		{ LUA_MATHLIBNAME, luaopen_math },
+		{ LUA_COLIBNAME,   luaopen_coroutine },
+		{ LUA_UTF8LIBNAME, luaopen_utf8 },
+		{ NULL, NULL },
+	};
+	for (const luaL_Reg *lib = libs; lib->func; ++lib) {
+		luaL_requiref(L, lib->name, lib->func, 1);
+		lua_pop(L, 1);
+	}
+	// Defensive: ensure the dangerous libraries / loaders aren't reachable even
+	// if a future change pulls them in. (os/io/package/debug aren't opened above,
+	// so these are normally already nil.)
+	static const char *banned[] = {
+		"os", "io", "package", "require", "debug", NULL,
+	};
+	for (const char **g = banned; *g; ++g) {
+		lua_pushnil(L);
+		lua_setglobal(L, *g);
+	}
+}
+
 static int luaai_ensure_state(void)
 {
 	lua_State *L;
@@ -230,7 +266,7 @@ static int luaai_ensure_state(void)
 		return 0;
 	}
 
-	luaL_openlibs(L);
+	luaai_open_safe_libs(L);
 
 	/* registry tables */
 	lua_newtable(L);

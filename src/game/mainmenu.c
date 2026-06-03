@@ -1684,6 +1684,11 @@ MenuItemHandlerResult menuhandlerAntiMainPlayer(s32 operation, struct menuitem *
 		data->dropdown.value = plrcount;
 		break;
 	case MENUOP_GETOPTIONTEXT:
+		// labelidx is bounded by the set-bit count of joyGetConnectedControllers();
+		// clamp to the 4-entry array in case the port ever reports >4 controllers.
+		if (labelidx >= ARRAYCOUNT(labels)) {
+			labelidx = ARRAYCOUNT(labels) - 1;
+		}
 		return (s32) (labels[labelidx]);
 	case MENUOP_SET:
 		g_Vars.pendingantiplayernum = data->dropdown.value ^ 1;

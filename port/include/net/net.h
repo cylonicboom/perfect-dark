@@ -141,6 +141,13 @@ struct netlobbystate {
 #define NET_NULL_CLIENT 0xFF
 #define NET_NULL_PROP 0
 
+// Sanity ceiling for client-reported hit damage (CLC_HIT). No legitimate weapon
+// hit in this engine approaches this; it's a finite-magnitude backstop so a
+// hostile client can't push an extreme value into the damage/health math. It is
+// NOT a substitute for server-side damage authority (hit detection here is still
+// client-reported) — see netmsgClcHitRead and docs/netplay-code-review-2026.md.
+#define NET_MAX_HIT_DAMAGE 1000000.0f
+
 // Sentinel playernum for a spectator netclient. Host spectator clients keep a
 // netclient entry (so they receive broadcasts and can chat) but do not occupy
 // a slot in g_PlayerConfigsArray / g_Vars.players / g_MpAllChrPtrs. Code that
@@ -310,6 +317,14 @@ extern char g_NetPlaylistPath[260];
 #define NET_MAX_PASSWORD 64
 extern char g_NetServerPassword[NET_MAX_PASSWORD];
 extern char g_NetJoinPassword[NET_MAX_PASSWORD];
+
+// Length-independent password compare. Unlike strcmp it does not early-exit on
+// the first mismatching character, so its timing doesn't leak how many leading
+// characters of `secret` the candidate matched. `cand` is only read within its
+// own length, so a short attacker-supplied candidate is never over-read.
+// Returns 1 if equal, 0 otherwise. (ENet itself is unencrypted, so this is
+// defence-in-depth for the admin password, not strong transport security.)
+s32 netSecureStrEqual(const char *secret, const char *cand);
 
 // Admin remote control. g_NetAdminPassword (Server.AdminPassword / --admin-password;
 // empty = admin disabled) gates the CLC_ADMIN `login` command. An authenticated

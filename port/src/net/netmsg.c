@@ -37,6 +37,21 @@
 
 /* utils */
 
+// Resolve a wire-supplied client id to a netclient*, or NULL if out of range.
+// g_NetClients[] has NET_MAX_CLIENTS combatant slots plus one trailing
+// temporary slot (g_NetClients[NET_MAX_CLIENTS]); wire ids must never address
+// the temporary slot, so the valid range is [0, NET_MAX_CLIENTS). Every SVC_*
+// handler that indexes g_NetClients[] with a byte read off the wire MUST route
+// it through this — otherwise a malicious server can index far out of bounds
+// (read or, worse, write a whole netclient struct) on the client.
+static inline struct netclient *netResolveWireClient(u8 id)
+{
+	if (id >= (u32)NET_MAX_CLIENTS) {
+		return NULL;
+	}
+	return &g_NetClients[id];
+}
+
 static inline u32 netbufReadHidden(struct netbuf *buf)
 {
 	u32 hidden = netbufReadU32(buf);
@@ -250,7 +265,7 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 	// the client's CLC_AUTH password must match exactly. The password itself is
 	// never broadcast — only a "passworded" flag rides in the server query /
 	// master heartbeat.
-	if (g_NetServerPassword[0] && strcmp(password ? password : "", g_NetServerPassword) != 0) {
+	if (g_NetServerPassword[0] && !netSecureStrEqual(g_NetServerPassword, password)) {
 		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u supplied an incorrect password, disconnecting", srccl->id);
 		netServerKick(srccl, DISCONNECT_PASSWORD);
 		return src->error;
@@ -298,14 +313,20 @@ u32 netmsgClcChatWrite(struct netbuf *dst, const char *str)
 
 u32 netmsgClcChatRead(struct netbuf *src, struct netclient *srccl)
 {
-	char tmp[1024];
 	const char *msg = netbufReadStr(src);
-	if (msg && !src->error) {
-		sysLogPrintf(LOG_CHAT, "%s", msg);
-		netbufStartWrite(&g_NetMsgRel);
-		netmsgSvcChatWrite(&g_NetMsgRel, msg);
-		netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+	// Only relay chat from a client that has actually joined the lobby/game; a
+	// CONNECTING/AUTH client (or a failed read) shouldn't be able to broadcast.
+	if (src->error || srccl->state < CLSTATE_LOBBY || !msg) {
+		return src->error;
 	}
+	// Cap the relayed length so a client can't flood a huge string to every peer.
+	char chat[160];
+	strncpy(chat, msg, sizeof(chat) - 1);
+	chat[sizeof(chat) - 1] = '\0';
+	sysLogPrintf(LOG_CHAT, "%s", chat);
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcChatWrite(&g_NetMsgRel, chat);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
 	return src->error;
 }
 
@@ -584,6 +605,25 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	// Authorization: only an alive combatant may report a hit. A spectator (or a
+	// client with no allocated player) reporting a hit is the spectator-instakill
+	// cheat — reject it outright. (netbufReadF32 already rejected non-finite
+	// damage by flagging src->error above.)
+	if (srccl->is_spectator || !srccl->player || !srccl->player->prop) {
+		return src->error;
+	}
+
+	// Reject non-positive damage (mirrors netmsgClcPropHitRead) and clamp the
+	// magnitude to a sane backstop so a single packet can't push an absurd
+	// finite value into the chr damage / health math. NOTE: hit detection is
+	// still client-authoritative here — the proper fix is to recompute damage
+	// server-side from the resolved weapon rather than trusting the wire value;
+	// this guard only bounds the blast radius of a hostile client.
+	if (damage <= 0.f) {
+		return src->error;
+	}
+	const f32 clampeddamage = (damage > NET_MAX_HIT_DAMAGE) ? NET_MAX_HIT_DAMAGE : damage;
+
 	// Reject hits whose tick falls outside the lag-compensation buffer.
 	if (g_NetTick > tick && g_NetTick - tick > NET_LAGCOMP_SIZE) {
 		return src->error;
@@ -606,7 +646,7 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
 	// so SVC_CHR_DAMAGE is actually broadcast to clients. Calling chrDamage
 	// here during event processing would have it write to g_NetMsgRel just
 	// before netStartFrame resets the buffer, discarding the broadcast.
-	netServerEnqueueHit(target, damage, &vector, &gset, hitpart, side, arg10,
+	netServerEnqueueHit(target, clampeddamage, &vector, &gset, hitpart, side, arg10,
 			(srccl->playernum < MAX_PLAYERS) ? (s32)srccl->playernum : -1,
 			srccl->player ? srccl->player->prop : NULL);
 
@@ -670,7 +710,12 @@ u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl)
 	const u8 id = netbufReadU8(src);
 	const u8 maxclients = netbufReadU8(src);
 	g_NetTick = netbufReadU32(src);
-	if (g_NetLocalClient->in.error || id == NET_NULL_CLIENT || id == 0 || maxclients == 0) {
+	// id and maxclients are attacker-controlled. id is used immediately to index
+	// g_NetClients[] and copy a whole netclient into that slot, so it must be a
+	// real combatant slot in [1, NET_MAX_CLIENTS) (0 is the server, NET_MAX_CLIENTS
+	// is the temp slot). maxclients must also be clamped to the array size.
+	if (g_NetLocalClient->in.error || id == 0 || id >= (u32)NET_MAX_CLIENTS ||
+			maxclients == 0 || maxclients > NET_MAX_CLIENTS) {
 		sysLogPrintf(LOG_WARNING, "NET: malformed SVC_AUTH from server");
 		return 1;
 	}
@@ -709,7 +754,6 @@ u32 netmsgSvcChatWrite(struct netbuf *dst, const char *str)
 
 u32 netmsgSvcChatRead(struct netbuf *src, struct netclient *srccl)
 {
-	char tmp[1024];
 	const char *msg = netbufReadStr(src);
 	if (msg && !src->error) {
 		sysLogPrintf(LOG_CHAT, "%s", msg);
@@ -885,7 +929,11 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 
 	for (u8 i = 0; i < numplayers; ++i) {
 		const u8 id = netbufReadU8(src);
-		struct netclient *ncl = &g_NetClients[id];
+		struct netclient *ncl = netResolveWireClient(id);
+		if (!ncl) {
+			sysLogPrintf(LOG_WARNING, "NET: SVC_STAGE bad client id %u from server", id);
+			return 2;
+		}
 		ncl->playernum = netbufReadU8(src);
 		ncl->settings.team = netbufReadU8(src);
 		if (ncl != g_NetLocalClient) {
@@ -940,7 +988,12 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 			} else {
 				playernum = ncl->playernum;
 			}
-			g_PlayerConfigsArray[playernum].base.team = ncl->settings.team;
+			// playernum may be the spectator sentinel (0xFE) or, if a prior
+			// field was corrupt, any byte value — never index the config array
+			// with it unguarded.
+			if (playernum < MAX_PLAYERS) {
+				g_PlayerConfigsArray[playernum].base.team = ncl->settings.team;
+			}
 		}
 	}
 
@@ -1094,7 +1147,10 @@ u32 netmsgSvcPlayerMoveRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
-	struct netclient *movecl = &g_NetClients[id];
+	struct netclient *movecl = netResolveWireClient(id);
+	if (!movecl) {
+		return 1;
+	}
 
 	// Push into the snapshot ring buffer
 	movecl->inmove_head = (movecl->inmove_head + 1) % NET_SNAPSHOT_COUNT;
@@ -1218,13 +1274,13 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
-	struct netclient *actcl = g_NetClients + clid;
-	if (actcl->state < CLSTATE_GAME) {
+	struct netclient *actcl = netResolveWireClient(clid);
+	if (!actcl || actcl->state < CLSTATE_GAME) {
 		return 1;
 	}
 
 	struct player *pl = actcl->player;
-	if (!pl || !pl->prop) {
+	if (!pl || !pl->prop || !pl->prop->chr) {
 		return src->error;
 	}
 
@@ -1310,7 +1366,11 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 	// back to it — e.g. unarmed -> gun snaps back to unarmed mid-switch. Remote
 	// players stay server-authoritative (their gunctrl IS driven from the wire).
 	const bool dualwielding = (flags & (1 << 1)) != 0;
-	if (!islocal && !pl->isdead && (newweaponnum != pl->gunctrl.weaponnum || dualwielding != pl->gunctrl.dualwielding)) {
+	// newweaponnum is a raw s8 from the wire fed into bgunEquipWeapon, which
+	// indexes weapon tables; clamp to the engine's own VALIDWEAPON() range so a
+	// hostile server can't drive an out-of-range weapon index.
+	if (!islocal && !pl->isdead && newweaponnum >= WEAPON_UNARMED && newweaponnum <= WEAPON_COMBATBOOST
+			&& (newweaponnum != pl->gunctrl.weaponnum || dualwielding != pl->gunctrl.dualwielding)) {
 		pl->gunctrl.dualwielding = dualwielding;
 		bgunEquipWeapon(newweaponnum);
 	}
@@ -1957,6 +2017,11 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		const s8 unk5e = netbufReadS8(src);
 		const u8 gunfunc = netbufReadU8(src);
 		const s16 timer240 = netbufReadS16(src);
+		// modelnum is a signed wire value used to index g_ModelStates[] and to
+		// drive a ROM model load; reject out-of-range before either.
+		if (modelnum < 0 || modelnum >= NUM_MODELS) {
+			return 1;
+		}
 		setupLoadModeldef(modelnum);
 		struct modeldef *modeldef = g_ModelStates[modelnum].modeldef;
 		struct model *model = modelmgrInstantiateModelWithoutAnim(modeldef);
@@ -2003,13 +2068,20 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		prop = func0f08adc8(weapon, modeldef, prop, model);
 	} else if (type == PROPTYPE_OBJ) {
 		const s16 modelnum = netbufReadS16(src);
+		if (modelnum < 0 || modelnum >= NUM_MODELS) {
+			return 1;
+		}
 		if (objtype == OBJTYPE_AUTOGUN) {
 			// thrown laptop?
 			const u8 ammocount = netbufReadU8(src);
 			const u8 firecount = netbufReadU8(src);
 			const u8 targetteam = netbufReadU8(src);
 			const u8 clid = netbufReadU8(src);
-			struct chrdata *ownerchr = g_NetClients[clid].player->prop->chr;
+			struct netclient *ownercl = netResolveWireClient(clid);
+			if (!ownercl || !ownercl->player || !ownercl->player->prop || !ownercl->player->prop->chr) {
+				return 1;
+			}
+			struct chrdata *ownerchr = ownercl->player->prop->chr;
 			struct autogunobj *obj = laptopDeploy(modelnum, NULL, ownerchr);
 			obj->ammoquantity = ammocount;
 			obj->firecount = firecount;
@@ -2218,10 +2290,10 @@ u32 netmsgSvcPropUseRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
-	struct netclient *actcl = &g_NetClients[clid];
-	if (actcl->is_spectator) {
+	struct netclient *actcl = netResolveWireClient(clid);
+	if (!actcl || actcl->is_spectator) {
 		// Same rationale as in netmsgSvcPropPickupRead — don't index player
-		// arrays by the spectator sentinel.
+		// arrays by an out-of-range id or the spectator sentinel.
 		return src->error;
 	}
 
@@ -2278,7 +2350,7 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	const u32 flags = netbufReadU32(src);
 	const u32 hidden = netbufReadHidden(src);
 
-	struct netclient *actcl = (clid == NET_NULL_CLIENT) ? NULL : &g_NetClients[clid];
+	struct netclient *actcl = (clid == NET_NULL_CLIENT) ? NULL : netResolveWireClient(clid);
 	if (actcl && actcl->is_spectator) {
 		// A spectator can't have triggered a door. Treat it like an attribution-
 		// less event (NET_NULL_CLIENT) so we still process the door state but

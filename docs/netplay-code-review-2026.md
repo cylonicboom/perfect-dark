@@ -29,6 +29,43 @@ handler is attacker-controlled input on the server. That is the lens used below.
 
 ---
 
+## Remediation status (this branch)
+
+The fixes for the findings below have been applied on this branch alongside the
+review. Summary of what changed:
+
+- **CR-1/CR-2/CR-3/CR-4** — added `netResolveWireClient()` and routed every
+  wire-supplied client/player index through it; bounded `SVC_AUTH` id+maxclients,
+  the `SVC_STAGE_START` manifest id/playernum, `SVC_PROP_USE/DOOR/SPAWN`, and the
+  `modelnum` → `g_ModelStates[]` lookups. (`netmsg.c`)
+- **CR-5** — `CLC_HIT` now rejects spectators / non-combatants, rejects
+  non-positive damage, and clamps the magnitude (`NET_MAX_HIT_DAMAGE`). Full
+  server-side damage authority is still a follow-up. (`netmsg.c`, `net.h`)
+- **CR-6 / H-1 / H-2** — `netbufReadStr` requires the wire NUL terminator;
+  `netbufCanRead` no longer `__builtin_trap()`s; `netbufReadF32` rejects
+  non-finite floats (covers all wire positions/damage); reads/writes use `memcpy`
+  for unaligned safety. (`netbuf.c`)
+- **CR-7** — Lua now opens a sandboxed library set (no `os`/`io`/`package`/
+  `debug`), closing the code-execution surface. (`luaai.c`)
+- **CR-8 / H-5** — `ctx:exec` offset is bounded against the current ailist
+  length; the `CMD_PRINT` terminator scan is capped. (`chrai.c`, `chrai.h`)
+- **H-3** — i-frame enforcement is now server-authoritative (the client no longer
+  re-evaluates the GoldenEye i-frame window). (`chraction.c`)
+- **H-6** — admin + join passwords use a length-independent compare
+  (`netSecureStrEqual`). (`net.c`, `netmsg.c`, `net.h`)
+- **M-1** — `chrSetPos` guards its pointers. (`chraction.c`)
+- **M-2** — port-only `g_MpBodies` entries appended (original indices preserved).
+  (`mplayer.c`)
+- **M-3** — wire weapon index clamped to the `VALIDWEAPON()` range. (`netmsg.c`)
+- **M-4** — `g_NetNumClients` counts only attached clients. (`net.c`)
+- **M-5 / L-3** — `CLC_CHAT` is lobby-gated + length-capped; dead buffers removed.
+- **L-1** — mainmenu `labels[]` index clamped. (`mainmenu.c`)
+
+Deeper items left as follow-ups (noted inline): true server-side hit/damage
+authority (beyond the CR-5 clamp), the H-4 ESP/read-API exposure, and the Lua
+re-entrancy / chunk-cache items (M-6..M-9) — these need design decisions rather
+than a mechanical fix.
+
 ## Executive verdict
 
 The netplay design is genuinely good — authoritative server, client-side

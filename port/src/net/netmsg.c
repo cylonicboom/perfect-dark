@@ -169,6 +169,29 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 	return buf->error;
 }
 
+// Resolve a syncid to its prop. O(1) for the common case: netSyncIdsAllocate
+// assigns syncid = (pool index + 1) at stage start, so a direct index hits for
+// players, sims and level objects — verify the slot's syncid matches before
+// trusting it. Falls back to a linear scan for the two props whose syncids are
+// swapped (host/local player) and for props spawned after stage start
+// (projectiles, dropped weapons) which get counter-based syncids > maxprops.
+static inline struct prop *netSyncIdToProp(u32 syncid)
+{
+	if (syncid == 0) {
+		return NULL;
+	}
+	const u32 idx = syncid - 1;
+	if (idx < (u32)g_Vars.maxprops && g_Vars.props[idx].syncid == syncid) {
+		return &g_Vars.props[idx];
+	}
+	for (s32 i = 0; i < g_Vars.maxprops; ++i) {
+		if (g_Vars.props[i].syncid == syncid) {
+			return &g_Vars.props[i];
+		}
+	}
+	return NULL;
+}
+
 static inline u32 netbufWritePropPtr(struct netbuf *buf, const struct prop *prop)
 {
 	netbufWriteU32(buf, prop ? prop->syncid : 0);
@@ -178,19 +201,11 @@ static inline u32 netbufWritePropPtr(struct netbuf *buf, const struct prop *prop
 static inline struct prop *netbufReadPropPtr(struct netbuf *buf)
 {
 	const u32 syncid = netbufReadU32(buf);
-	if (syncid == 0) {
-		return NULL;
+	struct prop *prop = netSyncIdToProp(syncid);
+	if (!prop && syncid != 0) {
+		sysLogPrintf(LOG_WARNING, "NET: prop with syncid %u does not exist", syncid);
 	}
-
-	// TODO: make a map or something
-	for (s32 i = 0; i < g_Vars.maxprops; ++i) {
-		if (g_Vars.props[i].syncid == syncid) {
-			return &g_Vars.props[i];
-		}
-	}
-
-	sysLogPrintf(LOG_WARNING, "NET: prop with syncid %u does not exist", syncid);
-	return NULL;
+	return prop;
 }
 
 static inline s32 propRoomsEqual(const RoomNum *ra, const RoomNum *rb)
@@ -629,13 +644,11 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
-	// Find the target chr prop by syncid.
-	struct prop *target = NULL;
-	for (s32 i = 0; i < g_Vars.maxprops && !target; ++i) {
-		if (g_Vars.props[i].syncid == target_syncid &&
-				(g_Vars.props[i].type == PROPTYPE_CHR || g_Vars.props[i].type == PROPTYPE_PLAYER)) {
-			target = &g_Vars.props[i];
-		}
+	// Find the target chr prop by syncid (O(1) lookup; only a chr/player target
+	// is a valid hit).
+	struct prop *target = netSyncIdToProp(target_syncid);
+	if (target && target->type != PROPTYPE_CHR && target->type != PROPTYPE_PLAYER) {
+		target = NULL;
 	}
 
 	if (!target || !target->chr) {

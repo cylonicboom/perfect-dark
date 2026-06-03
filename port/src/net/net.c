@@ -250,6 +250,15 @@ static u32 g_NetNextUpdate = 0;
 static u32 g_NetReliableFrameLen = 0;
 static u32 g_NetUnreliableFrameLen = 0;
 
+// /netstats — server-side per-message-type tx accounting. Bytes are counted as
+// they are written into the broadcast buffers (so the value is bytes GENERATED;
+// multiply by client count for actual wire bytes). Snapshotted once per ~second.
+enum { NETSTAT_PLAYERMOVE, NETSTAT_PROPMOVE, NETSTAT_PLAYERSTATS, NETSTAT_COUNT };
+static u32 g_NetStatAccum[NETSTAT_COUNT];
+static u32 g_NetStatPerSec[NETSTAT_COUNT];
+static u32 g_NetStatSecBase = 0;
+static inline void netStatAdd(s32 type, u32 bytes) { g_NetStatAccum[type] += bytes; }
+
 // Client-side prediction globals
 struct csp_snapshot g_NetCspHistory[NET_CSP_HISTORY_SIZE];
 u32 g_NetCspHead = 0;
@@ -1514,6 +1523,15 @@ void netEndFrame(void)
 	g_NetReliableFrameLen = 0;
 	g_NetUnreliableFrameLen = 0;
 
+	// /netstats: snapshot the per-message-type byte accumulators once per second.
+	if (g_NetTick - g_NetStatSecBase >= 60u) {
+		for (s32 i = 0; i < NETSTAT_COUNT; ++i) {
+			g_NetStatPerSec[i] = g_NetStatAccum[i];
+			g_NetStatAccum[i] = 0;
+		}
+		g_NetStatSecBase = g_NetTick;
+	}
+
 	// Drain deferred CLC_HIT entries. chrDamage here writes SVC_CHR_DAMAGE
 	// (and SVC_KILL / SVC_SCORE on a kill) into g_NetMsgRel, which was reset
 	// by netStartFrame. The flush below picks them all up.
@@ -1613,7 +1631,10 @@ void netEndFrame(void)
 					}
 					const bool needrel = netClientNeedReliableMove(cl);
 					if (needrel || netClientNeedMove(cl)) {
-						netmsgSvcPlayerMoveWrite(needrel ? &g_NetMsgRel : &g_NetMsg, cl);
+						struct netbuf *mb = needrel ? &g_NetMsgRel : &g_NetMsg;
+						const u32 b0 = mb->wp;
+						netmsgSvcPlayerMoveWrite(mb, cl);
+						netStatAdd(NETSTAT_PLAYERMOVE, mb->wp - b0);
 					}
 				}
 			}
@@ -1623,7 +1644,9 @@ void netEndFrame(void)
 				for (s32 i = 0; i < g_BotCount; i++) {
 					struct chrdata *chr = g_MpBotChrPtrs[i];
 					if (chr && chr->prop && chr->prop->syncid) {
-						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+						const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
 					}
 				}
 			}
@@ -1665,7 +1688,9 @@ void netEndFrame(void)
 				for (s32 i = 0; i < g_NetMaxClients; ++i) {
 					struct netclient *cl = &g_NetClients[i];
 					if (cl->state >= CLSTATE_GAME && cl->player && cl->player->prop) {
-						netmsgSvcPlayerStatsWrite(&g_NetMsgRel, cl);
+						const u32 b0 = g_NetMsgRel.wp;
+							netmsgSvcPlayerStatsWrite(&g_NetMsgRel, cl);
+							netStatAdd(NETSTAT_PLAYERSTATS, g_NetMsgRel.wp - b0);
 					}
 				}
 			}
@@ -3452,6 +3477,18 @@ s32 netConsoleCommand(const char *line)
 			g_NetCspCorrFramesMax,
 			sqrtf(g_NetCspCorrThreshSq),
 			sqrtf(g_NetCspTeleportThreshSq));
+	} else if (strcmp(cmd, "netstats") == 0) {
+		// Per-message-type tx bytes GENERATED in the last second (multiply by the
+		// number of clients for actual wire bytes — these go into the broadcast
+		// buffer once). Tells us whether players, sims or stats dominate so we
+		// optimise the right thing.
+		const u32 pm = g_NetStatPerSec[NETSTAT_PLAYERMOVE];
+		const u32 prm = g_NetStatPerSec[NETSTAT_PROPMOVE];
+		const u32 ps = g_NetStatPerSec[NETSTAT_PLAYERSTATS];
+		sysLogPrintf(LOG_CHAT, "NET stats (B/s generated, x%d clients on wire): player_move=%u sim_move=%u player_stats=%u",
+				g_NetNumClients > 1 ? g_NetNumClients - 1 : 0, pm, prm, ps);
+		sysLogPrintf(LOG_CHAT, "NET: sims=%d -> sim_move is the big lever; F9 shows total tx",
+				(s32)g_BotCount);
 	} else if (strcmp(cmd, "interp") == 0) {
 		// /interp <ticks> — entity interpolation lag. Higher = smoother
 		// remote players under jitter but more visible latency; lower =

@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 46 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
+#define NET_PROTOCOL_VER 47 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
+// 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
 // 44: SVC_OBJECTIVE — host-authoritative co-op objective status mirror
 // 43: CLC_STAGE_COMPLETE — co-op client tells the host its local sim finished the mission so the host ends the stage for all

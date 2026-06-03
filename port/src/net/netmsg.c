@@ -1210,6 +1210,24 @@ u32 netmsgSvcChrSpawnWrite(struct netbuf *dst, struct prop *prop, f32 angle, u32
 	return dst->error;
 }
 
+u32 netmsgSvcStageFlagsWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, SVC_STAGE_FLAGS);
+	netbufWriteU32(dst, g_StageFlags);
+	return dst->error;
+}
+
+u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u32 flags = netbufReadU32(src);
+	if (!src->error) {
+		// Host-authoritative: mirror exactly. Scripts/AI that would set these are
+		// gated off on the client, so it doesn't lose its own flags by overwriting.
+		g_StageFlags = flags;
+	}
+	return src->error;
+}
+
 u32 netmsgSvcChrTalkWrite(struct netbuf *dst, struct prop *prop, s32 audioid)
 {
 	netbufWriteU8(dst, SVC_CHR_TALK);

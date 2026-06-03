@@ -41,6 +41,7 @@
 #define SVC_OBJECTIVE    0x4d // co-op: host-authoritative per-objective status array (mirrors g_ObjectiveStatuses)
 #define SVC_CHR_SPAWN    0x4e // co-op: a chr spawned at runtime on the host (reinforcement/clone); client creates a matching shell driven by chr-state
 #define SVC_CHR_TALK     0x4f // co-op: an NPC spoke (quip/conversation line); client plays the positional voice line (NPC AI is gated off on clients)
+#define SVC_STAGE_FLAGS  0x50 // co-op: host-authoritative g_StageFlags mirror (scripts/objectives/triggers gate on it; set host-side)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -115,6 +116,13 @@ u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl);
 // PSTYPE_CHRTALK sound on the chr — NPC AI (and thus its speech) is server-only.
 u32 netmsgSvcChrTalkWrite(struct netbuf *dst, struct prop *prop, s32 audioid);
 u32 netmsgSvcChrTalkRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_STAGE_FLAGS (co-op): mirror the host-authoritative g_StageFlags bitfield
+// (u32) so the client's flag-gated logic — OBJECTIVETYPE_COMPFLAGS objectives,
+// scripted door/event/cutscene gates — agrees. Set host-side by action blocks
+// and scripts the client doesn't run. Wire: { flags:u32 }.
+u32 netmsgSvcStageFlagsWrite(struct netbuf *dst);
+u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

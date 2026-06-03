@@ -2285,9 +2285,33 @@ s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid)
 // update cadence, so a single global estimate suffices.
 static f32 g_NetChrSnapInterval = 1.0f;
 
-void netChrRecordSnapshot(struct chrdata *chr, const struct coord *pos)
+s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
+
+static f32 netLerpf(f32 a, f32 b, f32 t)
 {
-	if (!chr || !pos) {
+	if (!(a > -1.0e4f && a < 1.0e4f)) { // self-heal NaN/inf: snap to target
+		return b;
+	}
+	return a + (b - a) * t;
+}
+
+static f32 netAngleLerp(f32 a, f32 b, f32 t)
+{
+	// Shortest-arc radian interpolation. Bounded-input guard keeps the wrap loops
+	// finite and snaps on a garbage value rather than spinning.
+	if (!(a > -100.f && a < 100.f && b > -100.f && b < 100.f)) {
+		return b;
+	}
+	const f32 TWO_PI = 6.2831853071795865f;
+	f32 d = b - a;
+	while (d >  TWO_PI * 0.5f) d -= TWO_PI;
+	while (d < -TWO_PI * 0.5f) d += TWO_PI;
+	return a + d * t;
+}
+
+void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
+{
+	if (!chr || !pose) {
 		return;
 	}
 	const u32 prev = chr->netsnap[chr->netsnaphead].tick;
@@ -2297,26 +2321,33 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct coord *pos)
 			g_NetChrSnapInterval += (gap - g_NetChrSnapInterval) * 0.1f;
 		}
 	}
-	chr->netsnaphead = (chr->netsnaphead + 1) % NET_SNAPSHOT_COUNT;
-	chr->netsnap[chr->netsnaphead].tick = g_NetTick ? g_NetTick : 1u; // 0 == empty
-	chr->netsnap[chr->netsnaphead].pos = *pos;
+	const u32 h = (chr->netsnaphead + 1) % NET_SNAPSHOT_COUNT;
+	chr->netsnaphead = h;
+	chr->netsnap[h].tick           = g_NetTick ? g_NetTick : 1u; // 0 == empty
+	chr->netsnap[h].pos            = pose->pos;
+	chr->netsnap[h].yrot           = pose->yrot;
+	chr->netsnap[h].angleoffset    = pose->angleoffset;
+	chr->netsnap[h].aimupback      = pose->aimupback;
+	chr->netsnap[h].aimsideback    = pose->aimsideback;
+	chr->netsnap[h].aimuplshoulder = pose->aimuplshoulder;
+	chr->netsnap[h].aimuprshoulder = pose->aimuprshoulder;
 }
 
 void netChrInterpolate(struct chrdata *chr)
 {
-	if (g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
+	if (!g_NetChrInterp || g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
 		return;
 	}
 
 	const u32 head = chr->netsnaphead;
 	if (!chr->netsnap[head].tick) {
-		return; // no snapshots yet — leave the receive-time position in place
+		return; // no snapshots yet — leave the receive-time pose in place
 	}
 
 	// Render in the past at the interp delay. Snapshots are stamped with the same
 	// local g_NetTick clock we read here (arrival time), so no interp_lag
-	// rebaseline is needed. The delay = one measured snapshot interval (so two
-	// snapshots normally bracket the target) + the jitter margin g_NetInterpTicks
+	// rebaseline is needed. delay = one measured snapshot interval (so two
+	// snapshots normally bracket the target) + g_NetInterpTicks jitter margin
 	// (/interp). Extrapolation below covers a late packet beyond that.
 	u32 interval = (u32)(g_NetChrSnapInterval + 0.5f);
 	if (interval < 1u) { interval = 1u; }
@@ -2338,42 +2369,68 @@ void netChrInterpolate(struct chrdata *chr)
 		}
 	}
 
-	struct coord target;
+	struct netchrpose out;
 
 	if (inewer >= 0 && iolder >= 0) {
-		// Normal case: interpolate between the bracketing snapshots.
+		// Normal case: interpolate the WHOLE pose between the bracketing snapshots,
+		// so body, facing and aim all reconstruct for the same past instant.
 		const u32 span = chr->netsnap[inewer].tick - chr->netsnap[iolder].tick;
 		const f32 t = (span > 0) ? (f32)(desired - chr->netsnap[iolder].tick) / (f32)span : 1.f;
-		target.x = chr->netsnap[iolder].pos.x + (chr->netsnap[inewer].pos.x - chr->netsnap[iolder].pos.x) * t;
-		target.y = chr->netsnap[iolder].pos.y + (chr->netsnap[inewer].pos.y - chr->netsnap[iolder].pos.y) * t;
-		target.z = chr->netsnap[iolder].pos.z + (chr->netsnap[inewer].pos.z - chr->netsnap[iolder].pos.z) * t;
-	} else if (inewer >= 0) {
-		// desired is older than every snapshot we hold: render the oldest known.
-		target = chr->netsnap[inewer].pos;
+		out.pos.x          = netLerpf(chr->netsnap[iolder].pos.x, chr->netsnap[inewer].pos.x, t);
+		out.pos.y          = netLerpf(chr->netsnap[iolder].pos.y, chr->netsnap[inewer].pos.y, t);
+		out.pos.z          = netLerpf(chr->netsnap[iolder].pos.z, chr->netsnap[inewer].pos.z, t);
+		out.yrot           = netAngleLerp(chr->netsnap[iolder].yrot, chr->netsnap[inewer].yrot, t);
+		out.angleoffset    = netAngleLerp(chr->netsnap[iolder].angleoffset, chr->netsnap[inewer].angleoffset, t);
+		out.aimupback      = netLerpf(chr->netsnap[iolder].aimupback, chr->netsnap[inewer].aimupback, t);
+		out.aimsideback    = netLerpf(chr->netsnap[iolder].aimsideback, chr->netsnap[inewer].aimsideback, t);
+		out.aimuplshoulder = netLerpf(chr->netsnap[iolder].aimuplshoulder, chr->netsnap[inewer].aimuplshoulder, t);
+		out.aimuprshoulder = netLerpf(chr->netsnap[iolder].aimuprshoulder, chr->netsnap[inewer].aimuprshoulder, t);
 	} else {
-		// desired is ahead of every snapshot (late/sparse data): dead-reckon from
-		// the two newest for up to g_NetExtrapMaxTicks ticks, else hold newest —
-		// mirrors bwalkUpdateRemote so sims behave like remote players.
-		const u32 prevh = (head + NET_SNAPSHOT_COUNT - 1u) % NET_SNAPSHOT_COUNT;
-		if (chr->netsnap[prevh].tick && chr->netsnap[head].tick > chr->netsnap[prevh].tick
-				&& desired > chr->netsnap[head].tick) {
-			u32 ahead = desired - chr->netsnap[head].tick;
-			if (ahead > g_NetExtrapMaxTicks) {
-				ahead = g_NetExtrapMaxTicks;
+		// Single-snapshot / extrapolation: facing + aim hold the newest values;
+		// position dead-reckons (bounded) when desired is ahead of all snapshots.
+		const s32 src = (inewer >= 0) ? inewer : (s32)head;
+		out.pos            = chr->netsnap[src].pos;
+		out.yrot           = chr->netsnap[head].yrot;
+		out.angleoffset    = chr->netsnap[head].angleoffset;
+		out.aimupback      = chr->netsnap[head].aimupback;
+		out.aimsideback    = chr->netsnap[head].aimsideback;
+		out.aimuplshoulder = chr->netsnap[head].aimuplshoulder;
+		out.aimuprshoulder = chr->netsnap[head].aimuprshoulder;
+		if (inewer < 0) {
+			const u32 prevh = (head + NET_SNAPSHOT_COUNT - 1u) % NET_SNAPSHOT_COUNT;
+			if (chr->netsnap[prevh].tick && chr->netsnap[head].tick > chr->netsnap[prevh].tick
+					&& desired > chr->netsnap[head].tick) {
+				u32 ahead = desired - chr->netsnap[head].tick;
+				if (ahead > g_NetExtrapMaxTicks) {
+					ahead = g_NetExtrapMaxTicks;
+				}
+				const f32 vscale = (f32)ahead / (f32)(chr->netsnap[head].tick - chr->netsnap[prevh].tick);
+				out.pos.x = chr->netsnap[head].pos.x + (chr->netsnap[head].pos.x - chr->netsnap[prevh].pos.x) * vscale;
+				out.pos.y = chr->netsnap[head].pos.y + (chr->netsnap[head].pos.y - chr->netsnap[prevh].pos.y) * vscale;
+				out.pos.z = chr->netsnap[head].pos.z + (chr->netsnap[head].pos.z - chr->netsnap[prevh].pos.z) * vscale;
 			}
-			const f32 vscale = (f32)ahead / (f32)(chr->netsnap[head].tick - chr->netsnap[prevh].tick);
-			target.x = chr->netsnap[head].pos.x + (chr->netsnap[head].pos.x - chr->netsnap[prevh].pos.x) * vscale;
-			target.y = chr->netsnap[head].pos.y + (chr->netsnap[head].pos.y - chr->netsnap[prevh].pos.y) * vscale;
-			target.z = chr->netsnap[head].pos.z + (chr->netsnap[head].pos.z - chr->netsnap[prevh].pos.z) * vscale;
-		} else {
-			target = chr->netsnap[head].pos;
 		}
 	}
 
-	chr->prop->pos = target;
+	// Apply the reconstructed pose (overrides the receive-time per-packet apply).
+	chr->prop->pos = out.pos;
 	if (chr->model) {
-		modelSetRootPosition(chr->model, &target);
+		modelSetRootPosition(chr->model, &out.pos);
+		modelSetChrRotY(chr->model, out.yrot);
 	}
+	chrSetRotY(chr, out.yrot);
+	if (chr->aibot) {
+		chr->aibot->angleoffset = out.angleoffset;
+	}
+	chr->aimupback      = out.aimupback;
+	chr->aimsideback    = out.aimsideback;
+	chr->aimuplshoulder = out.aimuplshoulder;
+	chr->aimuprshoulder = out.aimuprshoulder;
+	chr->aimendback     = out.aimupback;
+	chr->aimendsideback = out.aimsideback;
+	chr->aimendlshoulder = out.aimuplshoulder;
+	chr->aimendrshoulder = out.aimuprshoulder;
+	chr->aimendcount = 0;
 }
 
 static struct coord netLagCompLookup(const struct netclient *cl, u32 target_tick)
@@ -3628,6 +3685,18 @@ s32 netConsoleCommand(const char *line)
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: remote extrapolation = %u ticks (usage: /extrap <ticks>, 0=off)", g_NetExtrapMaxTicks);
 		}
+	} else if (strcmp(cmd, "chrinterp") == 0) {
+		// /chrinterp on|off — full pose interpolation for replicated chrs (sims /
+		// co-op NPCs): position + body facing + aim reconstructed for one
+		// consistent past instant. off reverts to the receive-time per-packet
+		// apply for A/B comparison.
+		if (strcmp(arg, "on") == 0) {
+			g_NetChrInterp = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetChrInterp = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: chr pose interpolation = %s%s", g_NetChrInterp ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /chrinterp on|off)" : "");
 	} else if (strcmp(cmd, "hitvalidate") == 0) {
 		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims
 		// against the server's own lag-comp'd hit detection. 0=off (trust client),

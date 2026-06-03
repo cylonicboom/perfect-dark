@@ -82,16 +82,32 @@ extern u32 g_NetStaleSnapshotTicks;
 // network-chr (sim/co-op-NPC) interpolation below.
 extern u32 g_NetExtrapMaxTicks;
 
-// Network-replicated chr position interpolation (Combat Sim bots now; campaign
-// NPCs under online co-op — same model: server runs the AI, replicates state,
-// client interpolates). netChrRecordSnapshot stamps the wire pos with the local
-// receive tick into the chr's ring (called from the SVC_PROP_MOVE apply);
-// netChrInterpolate runs every frame on the client and drives prop->pos from the
-// buffered snapshots at the interp delay, with bounded extrapolation when packets
-// are late — the same scheme bwalkUpdateRemote uses for remote players. Both are
-// no-ops when there are no snapshots, so they're safe to call on any chr.
-void netChrRecordSnapshot(struct chrdata *chr, const struct coord *pos);
+// Network-replicated chr POSE interpolation (Combat Sim bots now; campaign NPCs
+// under online co-op — same model: server runs the AI, replicates state, client
+// interpolates). One snapshot is the chr's full facing pose at a wire instant.
+struct netchrpose {
+	struct coord pos;
+	f32 yrot;            // body yaw (radians)
+	f32 angleoffset;     // waist twist (aibot; decouples facing from move dir)
+	f32 aimupback;       // upper-body aim joints (gun direction)
+	f32 aimsideback;
+	f32 aimuplshoulder;
+	f32 aimuprshoulder;
+};
+
+// netChrRecordSnapshot stamps the wire pose with the local receive tick into the
+// chr's ring (called from the SVC_PROP_MOVE apply); netChrInterpolate runs every
+// frame on the client and reconstructs the WHOLE pose (position + facing + aim)
+// for one consistent past instant — the same scheme bwalkUpdateRemote uses for
+// remote players, extended to the full facing pose so body/facing/gun agree.
+// Bounded extrapolation when packets are late. Both no-op when there are no
+// snapshots (or when g_NetChrInterp is 0), so they're safe to call on any chr.
+void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose);
 void netChrInterpolate(struct chrdata *chr);
+
+// Live toggle for the chr pose interpolation (console /chrinterp, default 1).
+// 0 reverts to the receive-time per-packet apply (for A/B comparison).
+extern s32 g_NetChrInterp;
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only

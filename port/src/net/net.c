@@ -1252,6 +1252,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_PROP_DOOR: rc = netmsgSvcPropDoorRead(&cl->in, cl); break;
 			case SVC_PROP_LIFT: rc = netmsgSvcPropLiftRead(&cl->in, cl); break;
 			case SVC_PROP_FREE: rc = netmsgSvcPropFreeRead(&cl->in, cl); break;
+			case SVC_PROP_RECONCILE: rc = netmsgSvcPropReconcileRead(&cl->in, cl); break;
 			case SVC_CHR_DAMAGE: rc = netmsgSvcChrDamageRead(&cl->in, cl); break;
 			case SVC_CHR_DISARM: rc = netmsgSvcChrDisarmRead(&cl->in, cl); break;
 			case SVC_CHR_FIRE: rc = netmsgSvcChrFireRead(&cl->in, cl); break;
@@ -1696,6 +1697,14 @@ void netEndFrame(void)
 							netStatAdd(NETSTAT_PLAYERSTATS, g_NetMsgRel.wp - b0);
 					}
 				}
+			}
+
+			// Prop reconciliation backstop: twice a second (phase 10) broadcast the
+			// active weapon/obj syncid set so clients drop ghosts the host already
+			// freed but whose SVC_PROP_FREE they missed (the screen-gated embedded-
+			// mine free path). Backstop only — SVC_PROP_FREE is the primary path.
+			if ((g_NetTick % (NET_HEARTBEAT_INTERVAL / 2u)) == 10u) {
+				netmsgSvcPropReconcileWrite(&g_NetMsgRel);
 			}
 #endif
 			if (g_NetNextUpdate <= g_NetTick) {

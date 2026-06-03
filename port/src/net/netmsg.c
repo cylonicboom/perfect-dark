@@ -2630,6 +2630,64 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+// Periodic reconciliation backstop. The host broadcasts the syncids of all the
+// networked weapon/obj props it currently has; the client removes any weapon/obj
+// synced prop NOT in that set — i.e. a ghost the host already freed but whose
+// SVC_PROP_FREE the client missed (the screen-gated embedded-mine free path is
+// the known offender). The reliable, ordered channel means that when the client
+// processes this message it has already applied every spawn/free sent before it,
+// so a client prop absent from the set is genuinely a ghost (no in-flight skew).
+// Existence-only: it heals ghosts, not identity-mismap (that relies on the
+// deterministic positional syncid pool, kept consistent by symmetric spawn/free).
+#define NET_RECONCILE_MAXSYNCID 4096
+
+u32 netmsgSvcPropReconcileWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, SVC_PROP_RECONCILE);
+	for (s32 i = 0; i < g_Vars.maxprops; i++) {
+		struct prop *prop = &g_Vars.props[i];
+		if (prop->syncid && prop->obj
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+			netbufWriteU16(dst, (u16)prop->syncid);
+		}
+	}
+	netbufWriteU16(dst, 0); // terminator (syncid 0 is never valid)
+	return dst->error;
+}
+
+u32 netmsgSvcPropReconcileRead(struct netbuf *src, struct netclient *srccl)
+{
+	static u8 hostset[NET_RECONCILE_MAXSYNCID / 8];
+	memset(hostset, 0, sizeof(hostset));
+
+	// Drain the host's set into a bitmap (always consume the whole message).
+	u16 sid;
+	while ((sid = netbufReadU16(src)) != 0) {
+		if (sid < NET_RECONCILE_MAXSYNCID) {
+			hostset[sid >> 3] |= (u8)(1 << (sid & 7));
+		}
+	}
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	// Remove ghosts: weapon/obj synced props we hold that the host doesn't.
+	for (s32 i = 0; i < g_Vars.maxprops; i++) {
+		struct prop *prop = &g_Vars.props[i];
+		if (prop->syncid && prop->obj
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+				&& prop->syncid < NET_RECONCILE_MAXSYNCID
+				&& (hostset[prop->syncid >> 3] & (1 << (prop->syncid & 7))) == 0) {
+			// Use the engine's full teardown (objDetach/embedment/model/rooms/free),
+			// same as SVC_PROP_FREE — a ghost may be a child of a chr (stuck mine).
+			objFreePermanently(prop->obj, true);
+		}
+	}
+
+	return src->error;
+}
+
 u32 netmsgSvcChrDamageWrite(struct netbuf *dst, struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset,
 		struct prop *aprop, s32 hitpart, bool damageshield, struct prop *prop2, s32 side, s16 *arg11, bool explosion, struct coord *explosionpos)
 {

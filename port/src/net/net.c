@@ -35,6 +35,7 @@
 #include "spectator.h"
 #include "game/chraction.h"
 #include "game/chr.h"
+#include "game/prop.h"
 #include "game/propobj.h"
 #include "lib/main.h"
 #include "lib/vi.h"
@@ -2335,6 +2336,25 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
 	chr->netsnap[h].animnum        = pose->animnum;
 	chr->netsnap[h].framea         = pose->framea;
 	chr->netsnap[h].speed          = pose->speed;
+	for (s32 ri = 0; ri < 8; ++ri) {
+		chr->netsnap[h].rooms[ri] = pose->rooms[ri];
+	}
+}
+
+// Same -1-terminated room compare as netmsg.c's propRoomsEqual (that one is static
+// to netmsg.c). Used to skip the deregister/register churn when the time-aligned
+// rooms haven't changed since last frame.
+static s32 netChrRoomsEqual(const RoomNum *ra, const RoomNum *rb)
+{
+	for (s32 i = 0; i < 8; ++i) {
+		if (ra[i] != rb[i]) {
+			return 0;
+		}
+		if (ra[i] == -1) {
+			break;
+		}
+	}
+	return 1;
 }
 
 void netChrInterpolate(struct chrdata *chr)
@@ -2374,6 +2394,15 @@ void netChrInterpolate(struct chrdata *chr)
 	}
 
 	struct netchrpose out;
+	// Anim-switch hysteresis: true when we're confident enough in out.animnum to
+	// switch the model to it. False when the two bracketing snapshots disagree on
+	// the animnum — that happens when a firing bot hovers at the stand<->soft-turn
+	// movement threshold and the server toggles its anim every snapshot, which
+	// would otherwise flip-flop the client between a walk and a standstill. We then
+	// hold the current anim (still updating its speed) until a change persists
+	// across two snapshots, so a genuine transition is adopted within ~1 snapshot
+	// but a 1-snapshot blip is ignored.
+	bool animstable = true;
 
 	if (inewer >= 0 && iolder >= 0) {
 		// Normal case: interpolate the WHOLE pose between the bracketing snapshots,
@@ -2396,6 +2425,9 @@ void netChrInterpolate(struct chrdata *chr)
 		out.animnum        = chr->netsnap[iolder].animnum;
 		out.framea         = chr->netsnap[iolder].framea;
 		out.speed          = netLerpf(chr->netsnap[iolder].speed, chr->netsnap[inewer].speed, t);
+		// Only switch the discrete anim when both bracket snapshots agree (see
+		// animstable above); otherwise hold the current anim through the toggle.
+		animstable = (chr->netsnap[inewer].animnum == chr->netsnap[iolder].animnum);
 	} else {
 		// Single-snapshot / extrapolation: facing + aim hold the newest values;
 		// position dead-reckons (bounded) when desired is ahead of all snapshots.
@@ -2428,6 +2460,30 @@ void netChrInterpolate(struct chrdata *chr)
 
 	// Apply the reconstructed pose (overrides the receive-time per-packet apply).
 	chr->prop->pos = out.pos;
+
+	// TIME-ALIGNED ROOMS: re-register prop->rooms from the SAME past instant the body
+	// is rendered at — the older bracket snapshot (matching the discrete animnum
+	// chosen above), or the source snapshot in the single/extrapolation case. The
+	// receive-time path (netmsgSvcPropMoveRead) deliberately skips registering rooms
+	// for interpolated chrs precisely so this owns it: applying the CURRENT wire rooms
+	// to a pos rendered ~interp-delay ticks in the past makes prop->rooms and prop->pos
+	// disagree at room boundaries (ledge/doorway), misfiring func0f08e8ac's visibility
+	// gate and room culling. The chosen snapshot always has tick != 0 (the function
+	// early-returns when head is empty, and iolder/inewer only index recorded slots).
+	{
+		const s32 roomidx = (iolder >= 0) ? iolder : (inewer >= 0 ? inewer : (s32)head);
+		RoomNum *wantrooms = chr->netsnap[roomidx].rooms;
+		if (!netChrRoomsEqual(wantrooms, chr->prop->rooms)) {
+			if (chr->prop->active) {
+				propDeregisterRooms(chr->prop);
+			}
+			roomsCopy(wantrooms, chr->prop->rooms);
+			if (chr->prop->active) {
+				propRegisterRooms(chr->prop);
+			}
+		}
+	}
+
 	if (chr->model) {
 		modelSetRootPosition(chr->model, &out.pos);
 		modelSetChrRotY(chr->model, out.yrot);
@@ -2462,14 +2518,23 @@ void netChrInterpolate(struct chrdata *chr)
 		// Lock right-handed: the flip bit is deliberately not synced (it broke
 		// Skedar maps — see netmsgSvcPropMoveWrite's FLIP comment).
 		chr->model->anim->flip = 0;
-		if (chr->model->anim->animnum != out.animnum) {
-			// animnum change: seed the new anim near the server's frame at this
-			// instant and blend the changeover so it doesn't pop.
-			modelSetAnimation(chr->model, out.animnum, 0, (f32)out.framea, out.speed, 0.0625f);
+		// Adopt the new anim when hysteresis confirms it, OR unconditionally for a
+		// freshly-spawned sim that has no anim yet (animnum 0) so it can't get stuck
+		// pose-less waiting for two agreeing snapshots.
+		if (chr->model->anim->animnum != out.animnum
+				&& (animstable || chr->model->anim->animnum == 0)) {
+			// animnum change (confirmed by hysteresis): seed the new anim near the
+			// server's frame at this instant and cross-fade the changeover. Merge time
+			// 16 matches the host's chr transitions, including bot locomotion
+			// (playerChooseThirdPersonAnimation, player.c:6186), so sim anim switches
+			// fade in/out like the base game instead of popping (0.0625 was ~256x too
+			// short — effectively instant).
+			modelSetAnimation(chr->model, out.animnum, 0, (f32)out.framea, out.speed, 16.0f);
 		} else {
-			// same anim: just track the playback speed and let the frame free-run.
-			// Re-seeding framea here would snap the cycle backward whenever the
-			// server's frame index trailed ours.
+			// Same anim, OR a not-yet-confirmed switch we're holding through a
+			// stand<->walk toggle: just track the playback speed and let the frame
+			// free-run. Re-seeding framea here would snap the cycle backward
+			// whenever the server's frame index trailed ours.
 			chr->model->anim->speed = out.speed;
 		}
 	}

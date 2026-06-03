@@ -1246,7 +1246,24 @@ Gfx *lvRender(Gfx *gdl)
 						dst->viewheight = src->viewheight;
 						dst->fovy = src->fovy;
 						dst->aspect = src->aspect;
+						// Substitute the target into currentplayer/num/stats so this
+						// viewport renders the target's first-person frame, but KEEP
+						// this iteration's render order in currentplayerindex.
+						// setCurrentPlayerNum recomputes currentplayerindex to the
+						// TARGET's order; if the redirected iteration was order 0 (the
+						// host's own pawn normally is), that moves index 0 off this
+						// frame entirely. Every "first time this frame" block keyed on
+						// currentplayerindex==0 — propsTickPlayer's NOTYETTICKED re-arm
+						// (prop.c), bgTickRooms ONSCREEN, player init — then never
+						// fires, so NO prop/sim ever ticks and the whole world freezes
+						// (the lvupdate clock still runs). This is the render-redirect
+						// twin of the panel-path reorder in spectator.c. Restoring the
+						// iteration's index keeps the substitution transparent to the
+						// once-per-frame bookkeeping (each render order is still visited
+						// exactly once); only the rendered viewpoint changes.
+						const s32 savedplayerindex = g_Vars.currentplayerindex;
 						setCurrentPlayerNum(tnum);
+						g_Vars.currentplayerindex = savedplayerindex;
 					}
 				}
 #endif

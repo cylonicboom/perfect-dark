@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 38 // 38: SVC_PROP_MOVE chr-state block appends a per-hand gunfire-visible byte (continuous muzzle-flash reconcile)
+#define NET_PROTOCOL_VER 39 // 39: SVC_PROP_MOVE chr-state block appends authoritative sim shield (u8, 0..8) + health (f32 chr->damage) so clients stop reconstructing sim HP by damage replay (fixes shield-pickup / RNG-headshot / respawn desync)
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
@@ -96,6 +96,7 @@ struct netchrpose {
 	s16 animnum;         // server's leg/body animation at this instant (0 = none)
 	s16 framea;          // server's anim frame index at this instant
 	f32 speed;           // server's anim playback speed at this instant
+	RoomNum rooms[8];    // wire room membership (applied time-aligned with pos in netChrInterpolate)
 };
 
 // netChrRecordSnapshot stamps the wire pose with the local receive tick into the

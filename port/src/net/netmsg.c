@@ -1482,10 +1482,21 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		// ACTIONTYPE: intentionally NOT USED on the client. See netmsgSvcPropMoveRead
 		// for rationale (it would crash due to uninitialized action-state union data).
 		netbufWriteS8(dst, chr->actiontype);
-		// BODY ROTATION: yrot for view direction. The server derives this from AI
-		// decisions; clients apply it directly in modelSetChrRotY so the chr's body
-		// faces the right direction.
-		netbufWriteF32(dst, chrGetRotY(chr));
+		// BODY ROTATION: send the model's RENDERED body yaw, NOT chrGetRotY
+		// (aibot->roty). botApplyMovement renders the body at
+		// angle2 = lookangle - angleoffset via modelSetChrRotY(chr->model, angle2)
+		// and then chrHandleJointPositioned twists the waist by angleoffset
+		// (+aimsideback) ON TOP, so the upper body ends up pointing at the target.
+		// chrGetRotY returns aibot->roty — the separate MOVEMENT facing — which
+		// differs from the rendered yaw by up to ~angleoffset whenever the body is
+		// turned away from the aim (a stationary bot twisting to track you, or a
+		// strafing bot). Sending roty made the client base its whole body on the
+		// wrong yaw, then add angleoffset on top, rotating the entire sim away from
+		// the target — the "stationary sim faces ~90 deg off while firing" bug. The
+		// client applies this rendered yaw via modelSetChrRotY and adds the synced
+		// angleoffset at the waist, reproducing the server's exact pose. Fall back to
+		// chrGetRotY only if the chr somehow has no model.
+		netbufWriteF32(dst, chr->model ? modelGetChrRotY(chr->model) : chrGetRotY(chr));
 		// ANIMATION: animnum, current frame index, and playback speed. anim->speed
 		// is set on the server by playerChooseThirdPersonAnimation (called via
 		// botApplyMovement) and scales the cycle to match the chr's actual
@@ -1571,6 +1582,27 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 			}
 		}
 		netbufWriteU8(dst, gunfire);
+		// HEALTH + SHIELD (proto 39). The client reconstructs a sim's HP/shield
+		// purely by replaying SVC_CHR_DAMAGE through chrDamage, which desyncs the
+		// moment a shield/health change doesn't flow through a replayed damage
+		// event — shield PICKUPS and spawn/Dark/option shield are set in the
+		// server-only botReset/bot pickup path (bot.c), health pickups likewise,
+		// and respawn resets chr->damage to 0 — or when a replayed chrDamage
+		// branches on the client's DIVERGED RNG (the headshot x1..6 multiplier,
+		// chraction.c). A sim whose shield the client doesn't know about shows no
+		// shield-hit effect and its replayed damage spills into health early, so it
+		// reads as "won't die" to a client shooter. Send the authoritative values
+		// so the client OVERWRITES cshield/damage every snapshot; the SVC_CHR_DAMAGE
+		// replay then only drives effects (blood, shield flash, knockback, sound),
+		// not the HP bookkeeping. Death VISUALS stay animnum-driven (the client
+		// force-sets ACT_STAND, so chrIsDead never trips there anyway). Shield is
+		// 0..8 -> u8 (1/32-unit precision); damage is raw f32 because an armoured
+		// chr carries a negative chr->damage.
+		f32 cshield = chr->cshield;
+		if (cshield < 0.f) cshield = 0.f;
+		if (cshield > 8.f) cshield = 8.f;
+		netbufWriteU8(dst, (u8)(cshield * (255.0f / 8.0f) + 0.5f));
+		netbufWriteF32(dst, chr->damage);
 	}
 
 	return dst->error;
@@ -1642,7 +1674,19 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		oldpos = prop->pos;
 		prop->pos = pos;
 
-		if (!propRoomsEqual(rooms, prop->rooms)) {
+		// Room registration. For interpolated chrs (sims) the rooms are applied
+		// TIME-ALIGNED with the interpolated (past) position inside netChrInterpolate
+		// (from the snapshot ring), NOT here: applying the CURRENT wire rooms to a
+		// prop->pos that netChrInterpolate renders ~interp-delay ticks in the past
+		// puts rooms and pos in different time domains. At a room boundary (ledge,
+		// doorway) the two disagree, and func0f08e8ac's visibility gate + room culling
+		// (both read prop->rooms with prop->pos) misfire — the sim freezes or vanishes,
+		// worst when it darts off a ledge and quickly back. Everything else
+		// (projectiles, objects, and chrs when /chrinterp is off) registers
+		// immediately here; netChrInterpolate early-returns in those cases.
+		const bool interp_owns_rooms = g_NetChrInterp && g_NetMode == NETMODE_CLIENT
+				&& prop->chr && prop->type == PROPTYPE_CHR;
+		if (!interp_owns_rooms && !propRoomsEqual(rooms, prop->rooms)) {
 			if (prop->active) {
 				propDeregisterRooms(prop);
 			}
@@ -1743,6 +1787,10 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// order here with the other fields; applied after the weapons-held sync
 		// below (the weapon props must exist before we can toggle their flash).
 		const u8 gunfire = netbufReadU8(src);
+		// Authoritative sim shield + health (proto 39). Read unconditionally to keep
+		// the buffer aligned even when prop/chr didn't resolve; applied below.
+		const u8 wireshield8 = netbufReadU8(src);
+		const f32 wirehealth = netbufReadF32(src);
 		if (prop && prop->chr) {
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
@@ -1773,6 +1821,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				pose.animnum = animnum;
 				pose.framea = animframe;
 				pose.speed = animspeed;
+				// Record the wire rooms verbatim so netChrInterpolate can re-register
+				// prop->rooms time-aligned with the interpolated pos (see the
+				// room-registration note above).
+				for (s32 ri = 0; ri < 8; ++ri) {
+					pose.rooms[ri] = rooms[ri];
+				}
 				netChrRecordSnapshot(chr, &pose);
 			}
 
@@ -1780,31 +1834,23 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// would snap between server positions on each catch-up packet (visible
 			// jitter / teleport). Blend by moving 50% of the way from the last
 			// received pos toward the new one, so the chr glides over a couple of
-			// receives instead of stepping. Skip the blend if the per-receive
-			// delta exceeds 80 units in any axis combined (sqrt(6400)) — that's
-			// above what AI movement can produce in one server update, so it's
-			// almost certainly a respawn / kill-plane drop and blending would
-			// stretch the chr across the map for a frame.
-			struct coord smoothpos = pos;
-			const f32 dx = pos.x - oldpos.x;
-			const f32 dy = pos.y - oldpos.y;
-			const f32 dz = pos.z - oldpos.z;
-			const f32 dist_sq = dx*dx + dy*dy + dz*dz;
-			if (dist_sq < 80.f * 80.f) {
-				const f32 alpha = 0.5f;
-				smoothpos.x = oldpos.x + dx * alpha;
-				smoothpos.y = oldpos.y + dy * alpha;
-				smoothpos.z = oldpos.z + dz * alpha;
-			}
-			// Always commit the position: blended when close, snapped to the wire
-			// pos on a teleport/respawn. Previously prop->pos was written only in
-			// the blend branch, so after a respawn more than 80 units away it stayed
-			// stuck at the death location FOR THE REST OF THE LIFE — every later
-			// packet still measured dist_sq from that stale pos, stayed >80^2, and
-			// kept skipping. The model rendered at the right spot but prop->pos
-			// (which room culling, collision and targeting all read) was frozen,
-			// which can cull the sim to invisibility. smoothpos already holds the
-			// wire pos in the teleport case (it's the default before the blend).
+			// receives instead of stepping.
+			// UNCONDITIONAL 50% blend toward the wire pos. The old "snap if the
+			// per-receive delta exceeds 80 units (sqrt(6400))" speed cap was REMOVED:
+			// it assumed AI can't move >80 units per server update, which is false for
+			// high-speed (Dark) sims, so it mis-fired on legitimate fast movement and
+			// hard-snapped them every update. The blend converges (each packet halves
+			// the remaining error), so a respawn/teleport slides over a few packets
+			// instead of getting stuck. With interp on (default) netChrInterpolate
+			// overrides this from the raw, un-capped snapshot ring anyway.
+			struct coord smoothpos;
+			const f32 alpha = 0.5f;
+			smoothpos.x = oldpos.x + (pos.x - oldpos.x) * alpha;
+			smoothpos.y = oldpos.y + (pos.y - oldpos.y) * alpha;
+			smoothpos.z = oldpos.z + (pos.z - oldpos.z) * alpha;
+			// Commit the position so prop->pos (which room culling, collision and
+			// targeting all read) tracks the wire; it can't get stuck because the
+			// blend always moves toward the wire pos.
 			prop->pos = smoothpos;
 
 			// POSITION TO MODEL: setting prop->pos alone isn't enough. Rendering
@@ -1829,11 +1875,9 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// rather than jerking between server updates (the "stuck facing one
 			// direction" look while a bot tracks/shoots you). yrot is RADIANS
 			// (chrGetRotY / atan2f), so wrap the delta to (-PI, PI] for the
-			// shortest rotation. Reuse the position block's dist_sq guard: on a
-			// teleport/respawn (large move) snap the facing with the position
-			// rather than spinning the chr across the shortest arc.
-			const f32 applyyrot = (dist_sq < 80.f * 80.f)
-				? netSimBlendAngle(chrGetRotY(chr), yrot, 0.5f) : yrot;
+			// shortest rotation. Unconditional, matching the position blend (the
+			// 80-unit speed cap was removed).
+			const f32 applyyrot = netSimBlendAngle(chrGetRotY(chr), yrot, 0.5f);
 			chrSetRotY(chr, applyyrot);
 			if (chr->model) {
 				modelSetChrRotY(chr->model, applyyrot);
@@ -1855,8 +1899,9 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// Two paths once validated:
 			//   - Different anim: full modelSetAnimation, which resets frame
 			//     counters to animframe and applies the server's speed. Pass a
-			//     small merge time (0.0625) so the changeover blends out the
-			//     previous anim's pose over the next tick instead of popping.
+			//     merge time 16 — matching the host's chr transitions
+			//     (player.c:6186) — so the changeover cross-fades like the base
+			//     game instead of popping.
 			//   - Same anim: just poke anim->speed so modelTickAnim picks up
 			//     the new playback rate. Re-calling modelSetAnimation here would
 			//     reset framea/frameb to animframe and visibly snap the cycle
@@ -1874,7 +1919,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				// sim's weapon appears in the wrong hand.
 				chr->model->anim->flip = 0;
 				if (chr->model->anim->animnum != animnum) {
-					modelSetAnimation(chr->model, animnum, 0, (f32)animframe, animspeed, 0.0625f);
+					modelSetAnimation(chr->model, animnum, 0, (f32)animframe, animspeed, 16.0f);
 				} else {
 					chr->model->anim->speed = animspeed;
 				}
@@ -1893,20 +1938,13 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// the visible half of "a bot damages you without looking at you": the
 			// aim is synced but was applied as a hard snap. aim* joints are
 			// limited-range (waist twist / shoulder pitch), so a plain lerp is
-			// safe (no angle wrap). On a teleport/respawn the dist_sq guard snaps
-			// instead, matching the position. Damage is server-side hitscan, so
+			// safe (no angle wrap). Unconditional now (the 80-unit speed cap was
+			// removed), matching the position blend. Damage is server-side hitscan, so
 			// this visual-only lag never affects hit registration.
-			if (dist_sq < 80.f * 80.f) {
-				chr->aimupback      = netSimBlendLinear(chr->aimupback,      aimupback,      0.5f);
-				chr->aimsideback    = netSimBlendLinear(chr->aimsideback,    aimsideback,    0.5f);
-				chr->aimuplshoulder = netSimBlendLinear(chr->aimuplshoulder, aimuplshoulder, 0.5f);
-				chr->aimuprshoulder = netSimBlendLinear(chr->aimuprshoulder, aimuprshoulder, 0.5f);
-			} else {
-				chr->aimupback = aimupback;
-				chr->aimsideback = aimsideback;
-				chr->aimuplshoulder = aimuplshoulder;
-				chr->aimuprshoulder = aimuprshoulder;
-			}
+			chr->aimupback      = netSimBlendLinear(chr->aimupback,      aimupback,      0.5f);
+			chr->aimsideback    = netSimBlendLinear(chr->aimsideback,    aimsideback,    0.5f);
+			chr->aimuplshoulder = netSimBlendLinear(chr->aimuplshoulder, aimuplshoulder, 0.5f);
+			chr->aimuprshoulder = netSimBlendLinear(chr->aimuprshoulder, aimuprshoulder, 0.5f);
 			// Hold the blended/snapped pose: aimend* = aim*, count = 0 so the
 			// per-fulltick chrUpdateAimProperties keeps our value instead of
 			// easing back toward a stale AI target we never receive on the client.
@@ -1924,9 +1962,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				// the same shortest-path wrap as yrot — angleoffset can span up to
 				// +-PI when the aim is opposite the run direction, so a plain lerp
 				// could spin the weapon the long way round for a frame.
-				chr->aibot->angleoffset = (dist_sq < 80.f * 80.f)
-					? netSimBlendAngle(chr->aibot->angleoffset, angleoffset, 0.5f)
-					: angleoffset;
+				chr->aibot->angleoffset = netSimBlendAngle(chr->aibot->angleoffset, angleoffset, 0.5f);
 			}
 
 			// HELD WEAPONS: sync per-hand weapon choices. The server's bot AI
@@ -2007,6 +2043,18 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 					weaponSetGunfireVisible(weaponprop, visible,
 							chr->prop ? chr->prop->rooms[0] : -1);
 				}
+			}
+
+			// AUTHORITATIVE HP/SHIELD (proto 39). Overwrite the client's locally
+			// replayed values with the server's so the sim's effective health (the
+			// shield-then-health pool) matches the host exactly — independent of
+			// missed shield/health pickups, the diverged-RNG headshot multiplier, or
+			// respawn resets. The SVC_CHR_DAMAGE replay still runs for its effects;
+			// this just keeps the bookkeeping authoritative. Clients only (the host
+			// never receives its own sims' SVC_PROP_MOVE, but guard for clarity).
+			if (g_NetMode == NETMODE_CLIENT) {
+				chr->cshield = (f32)wireshield8 * (8.0f / 255.0f);
+				chr->damage = wirehealth;
 			}
 		}
 	}

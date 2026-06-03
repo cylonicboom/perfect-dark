@@ -2390,6 +2390,38 @@ s32 chrTick(struct prop *prop)
 	// animation / render. No-op on the server and for any chr with no received
 	// snapshots, so it's safe to call for every chr here.
 	netChrInterpolate(chr);
+
+	// Position-driven sims keep the engine's own gravity (chr0f01f378) so they
+	// fall off ledges, ride slopes and land naturally — we only stop it running
+	// AWAY. The chr's rendered vertical is chr->manground (chr0f01f378:
+	// arg2->y += manground), integrated from a ground-find at the anim-driven
+	// model pos (arg2 = anim_local + manground). On a client that find isn't
+	// corrected by the position sync, so once manground dips below the real floor
+	// the find at the now-too-low arg2 misses the floor, returns garbage-low,
+	// manground free-falls and the model vanishes under the map. (Pinning
+	// manground to the local floor stopped the sink but snapped airborne bots to
+	// the floor; pinning it to the wire Y floated them, since prop->pos.y rides a
+	// fixed offset above the floor.)
+	//
+	// One clamp breaks the feedback without touching real gravity: never let
+	// manground fall BELOW the floor at the SYNCED prop->pos X/Z. A genuine fall
+	// keeps manground ABOVE the floor (descending toward it), so the clamp is a
+	// no-op for it — chr0f01f378 still produces the natural arc and lands the bot.
+	// It only fires on the runaway, and re-seating manground at the floor puts
+	// arg2 (= anim_local + manground) back above the floor so the very next
+	// floor-find is correct again — so in practice the sink can't even start.
+	if (g_NetMode == NETMODE_CLIENT && chr->aibot && chr->prop && chr->prop->syncid) {
+		const f32 floor = cdFindGroundInfoAtCyl(&chr->prop->pos, chr->radius,
+				chr->prop->rooms, &chr->floorcol, &chr->floortype, NULL,
+				&chr->floorroom, NULL, NULL);
+		if (chr->manground < floor) {
+			chr->manground = floor;
+			chr->sumground = floor * (PAL ? 8.4175090789795f : 9.999998f);
+			chr->fallspeed.x = 0.0f;
+			chr->fallspeed.y = 0.0f;
+			chr->fallspeed.z = 0.0f;
+		}
+	}
 #endif
 	bool needsupdate;
 	bool hatvisible = true;

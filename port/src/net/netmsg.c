@@ -1860,9 +1860,10 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
-			// DEAD-BODY INTANGIBILITY (co-op NPCs) — mirror the host's actiontype
-			// through the whole death so the body goes walk-through the instant it
-			// starts dying (as it does on the host) AND the death animation plays:
+			// DEAD-BODY INTANGIBILITY (Combat Sim aibots + co-op NPCs) — mirror the
+			// host's actiontype through the whole death so the body goes walk-through
+			// the instant it starts dying (as it does on the host) AND the death
+			// animation plays:
 			//   * Host DYING (ACT_DIE): set ACT_DIE here too. chrUpdateGeometry
 			//     (chr.c:5136, run every frame by the collision system regardless of
 			//     AI) emits a BLOCK_SHOOT-only cylinder with NO GEOFLAG_WALL for an
@@ -1880,8 +1881,11 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			// Setting ACT_DEAD early froze the death anim on a vertical frame (the
 			// static-corpse branch doesn't advance it) and the model sank — ACT_DIE
 			// during the fall is what avoids that. KO'd bodies (ACT_DRUGGEDKO) stay
-			// solid, matching SP. Co-op only: Combat Sim sims respawn fast, left as-is.
-			if (g_Vars.coopplayernum >= 0 && chr->prop && chr->prop->syncid) {
+			// solid, matching SP. Applies to Combat Sim aibots too (same fix for the
+			// long-standing "dead sims keep their hitbox" bug); sims respawn cleanly
+			// because the top-of-block ACT_STAND reset takes over once the wire
+			// actiontype is alive again. Gate matches the gravity clamp / tick-skip.
+			if ((chr->aibot || g_Vars.coopplayernum >= 0) && chr->prop && chr->prop->syncid) {
 				if (wireactiontype == ACT_DEAD) {
 					chr->actiontype = ACT_DEAD;
 				} else if (wireactiontype == ACT_DIE) {

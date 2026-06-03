@@ -2599,6 +2599,36 @@ u32 netmsgSvcPropLiftRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgSvcPropFreeWrite(struct netbuf *dst, struct prop *prop)
+{
+	netbufWriteU8(dst, SVC_PROP_FREE);
+	netbufWritePropPtr(dst, prop);
+	return dst->error;
+}
+
+u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
+{
+	struct prop *prop = netbufReadPropPtr(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	// Remove the client's copy of a prop the host destroyed (detonated mine /
+	// projectile, shot-out object). Mirror the host reaper's non-regen free path
+	// (propExecuteTickOperation TICKOP_FREE, prop.c): deregister rooms, delist,
+	// disable, then propFree. Guard prop->active against a double-free if this
+	// slot was already removed.
+	if (prop && prop->active) {
+		propDeregisterRooms(prop);
+		propDelist(prop);
+		propDisable(prop);
+		propFree(prop);
+	}
+
+	return src->error;
+}
+
 u32 netmsgSvcChrDamageWrite(struct netbuf *dst, struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset,
 		struct prop *aprop, s32 hitpart, bool damageshield, struct prop *prop2, s32 side, s16 *arg11, bool explosion, struct coord *explosionpos)
 {

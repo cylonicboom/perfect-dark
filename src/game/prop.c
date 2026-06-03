@@ -206,6 +206,21 @@ struct prop *propAllocate(void)
  */
 void propFree(struct prop *prop)
 {
+#ifndef PLATFORM_N64
+	// Tell clients to remove their copy of a destroyed networked prop (detonated
+	// mines/projectiles, shot-out objects) so it doesn't linger after the host
+	// frees it — SVC_EXPLOSION is cosmetic and carries no syncid. Limited to
+	// weapon/obj props (mines, grenades, dropped guns, destructibles); chr/player/
+	// door/lift props have their own lifecycle sync. Gated to active play so the
+	// subsystem prop frees at stage stop don't spam the reliable channel (clients
+	// reset on SVC_STAGE_END regardless). Must run before propFree clears syncid.
+	if (g_NetMode == NETMODE_SERVER && prop->syncid
+			&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+			&& g_NetLocalClient && g_NetLocalClient->state == CLSTATE_GAME) {
+		netmsgSvcPropFreeWrite(&g_NetMsgRel, prop);
+	}
+#endif
+
 	if (prop->type == PROPTYPE_CHR) {
 		g_Vars.propstates[prop->propstateindex].chrpropcount--;
 	} else {

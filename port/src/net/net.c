@@ -1251,6 +1251,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_PROP_USE: rc = netmsgSvcPropUseRead(&cl->in, cl); break;
 			case SVC_PROP_DOOR: rc = netmsgSvcPropDoorRead(&cl->in, cl); break;
 			case SVC_PROP_LIFT: rc = netmsgSvcPropLiftRead(&cl->in, cl); break;
+			case SVC_PROP_FREE: rc = netmsgSvcPropFreeRead(&cl->in, cl); break;
 			case SVC_CHR_DAMAGE: rc = netmsgSvcChrDamageRead(&cl->in, cl); break;
 			case SVC_CHR_DISARM: rc = netmsgSvcChrDisarmRead(&cl->in, cl); break;
 			case SVC_CHR_FIRE: rc = netmsgSvcChrFireRead(&cl->in, cl); break;

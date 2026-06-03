@@ -24,6 +24,7 @@
 #include "platform.h"
 #include "config.h"
 #include "lib/joy.h"
+#include "video.h"
 #include "det.h"
 
 s32 g_DetMode = DET_OFF;
@@ -532,15 +533,50 @@ s32 detConsoleCommand(const char *cmd, const char *arg)
 		return 1;
 	}
 
-	if (strcmp(cmd, "fixedtick") == 0) {
+	// /fixedtick and /forcetick are aliases: toggle the fixed 60Hz gameplay tick.
+	if (strcmp(cmd, "fixedtick") == 0 || strcmp(cmd, "forcetick") == 0) {
 		if (strcmp(arg, "on") == 0) {
 			g_FixedTickEnabled = 1;
 		} else if (strcmp(arg, "off") == 0) {
 			g_FixedTickEnabled = 0;
+		} else if (*arg == '\0') {
+			g_FixedTickEnabled = !g_FixedTickEnabled; // bare command toggles
 		}
 		sysLogPrintf(LOG_CHAT, "DET: fixed 60Hz gameplay tick = %s%s",
 				g_FixedTickEnabled ? "ON" : "OFF",
-				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /fixedtick on|off)" : "");
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /forcetick [on|off])" : "");
+		return 1;
+	}
+
+	// /framelimit <n> — set the render framerate cap. 0 = truly unlimited (no
+	// pacing) in single-player. During netplay the netplay ceiling (/netframelimit)
+	// still applies on top of this. With vsync on, presentation is paced by the
+	// vblank regardless. (Deliberately doesn't call videoGetFramerateLimit, which
+	// mutates the stored limit from the live target — during netplay that target
+	// is the netplay cap and would clobber the single-player value.)
+	if (strcmp(cmd, "framelimit") == 0) {
+		if (*arg) {
+			const s32 n = atoi(arg);
+			videoSetFramerateLimit(n);
+			sysLogPrintf(LOG_CHAT, "VIDEO: framerate limit = %d%s",
+					n, n == 0 ? " (unlimited)" : "");
+		} else {
+			sysLogPrintf(LOG_CHAT, "VIDEO: usage /framelimit <n> (0 = unlimited)");
+		}
+		return 1;
+	}
+
+	// /netframelimit <n> — set the NETPLAY-only render ceiling. g_NetTick advances
+	// per render frame, so this bounds the fps that interpolation/lag-comp timing
+	// is measured against. 0 disables the netplay cap (then /framelimit applies;
+	// 0 there = unlimited even in netplay — may distort net timing).
+	if (strcmp(cmd, "netframelimit") == 0) {
+		if (*arg) {
+			videoSetNetplayFramerateLimit(atoi(arg));
+		}
+		const s32 nfl = videoGetNetplayFramerateLimit();
+		sysLogPrintf(LOG_CHAT, "VIDEO: netplay framerate cap = %d%s (usage: /netframelimit <n>, 0 = no cap)",
+				nfl, nfl == 0 ? " (no cap)" : "");
 		return 1;
 	}
 

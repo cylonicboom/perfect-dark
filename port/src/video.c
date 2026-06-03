@@ -45,6 +45,13 @@ static s32 vidAllowHiDpi = false;
 static s32 vidVsync = 1;
 static s32 vidMSAA = 1;
 static s32 vidFramerateLimit = 0;
+// Netplay-only framerate ceiling. g_NetTick advances per render frame on the
+// client, so interpolation intervals, snapshot spacing and the lag-comp RTT->tick
+// math are all measured in render frames — letting fps run unbounded in netplay
+// would distort that timing. This caps render fps during netplay only; 0 = no
+// netplay cap (use at your own risk). Single-player honours vidFramerateLimit
+// directly (0 there = truly unlimited).
+static s32 vidNetplayFramerateLimit = 120;
 
 static s32 vidDisplayFPS = 0;
 static f32 vidDisplayFPSInterval = 1.f;
@@ -288,6 +295,16 @@ s32 videoGetFramerateLimit(void)
 	if (!wmAPI) return vidFramerateLimit;
 	vidFramerateLimit = wmAPI->get_target_fps();
 	return vidFramerateLimit;
+}
+
+s32 videoGetNetplayFramerateLimit(void)
+{
+	return vidNetplayFramerateLimit;
+}
+
+void videoSetNetplayFramerateLimit(const s32 limit)
+{
+	vidNetplayFramerateLimit = limit;
 }
 
 s32 videoGetDisplayFPS(void)
@@ -539,16 +556,22 @@ void videoSetVsync(const s32 vsync)
 	if (!wmAPI) return;
 	vidVsync = wmAPI->set_swap_interval(vsync) ? vsync : 0;
 
-	if (vidVsync == 0 && vidFramerateLimit == 0) {
-		// cap FPS if there's no vsync to prevent the game from exploding
-		videoSetFramerateLimit(VIDEO_MAX_FPS);
-	}
+	// No auto-cap on vsync-off: a framerate limit of 0 now means TRULY unlimited
+	// (the SDL layer skips frame pacing when target_fps == 0). Re-apply the current
+	// limit so the swap-interval change takes effect. With vsync on, presentation
+	// is still paced by the vblank regardless of the 0 limit; with vsync off and
+	// limit 0 the renderer runs unbounded (single-player). Netplay applies its own
+	// ceiling via videoCapFramerate (vidNetplayFramerateLimit).
+	videoSetFramerateLimit(vidFramerateLimit);
 }
 
 void videoSetFramerateLimit(const s32 limit)
 {
 	if (!wmAPI) return;
-	vidFramerateLimit = (vidVsync == 0 && limit == 0) ? VIDEO_MAX_FPS : limit;
+	// 0 == truly unlimited (no frame pacing). Previously 0 with vsync off was
+	// force-bumped to VIDEO_MAX_FPS as a safety; that prevented an intentional
+	// unlimited cap, so it's removed. set_target_fps(0) disables pacing entirely.
+	vidFramerateLimit = limit;
 	wmAPI->set_target_fps(vidFramerateLimit);
 }
 
@@ -624,7 +647,8 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.AllowHiDpi", &vidAllowHiDpi, 0, 1);
 	configRegisterInt("Video.VSync", &vidVsync, -1, 10);
 	configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
-	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, VIDEO_MAX_FPS);
+	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, 10000);
+	configRegisterInt("Video.NetplayFramerateLimit", &vidNetplayFramerateLimit, 0, 10000);
 	configRegisterInt("Video.DisplayFPS", &vidDisplayFPS, 0, 1);
 	configRegisterFloat("Video.DisplayFPSInterval", &vidDisplayFPSInterval, 0.01f, 32.f);
 	configRegisterInt("Video.MSAA", &vidMSAA, 1, 16);

@@ -14020,14 +14020,23 @@ void chraTick(struct chrdata *chr)
 #endif
 
 #ifndef PLATFORM_N64
-		// Campaign co-op: NPC AI is host-authoritative. On clients, skip the AI
-		// bytecode for synced NPCs — they're position/anim-driven by the host's
-		// chr-state broadcast and forced to ACT_STAND, so running the ailist here
-		// would make local combat/navigation decisions that desync (client-side
-		// projectiles, drift). Gated to co-op so Combat Sim sims (whose chraiExecute
-		// runs locally and is harmlessly overwritten by chr-state) are unaffected.
-		if (!(g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
-				&& chr->prop && chr->prop->syncid))
+		// Campaign co-op: NPC AND objective-script AI is host-authoritative. On
+		// clients, skip the AI bytecode for every chr in a co-op game:
+		//  - Visible NPCs are position/anim-driven by the host's chr-state broadcast
+		//    and forced to ACT_STAND, so running the ailist would make local
+		//    combat/navigation decisions that desync (client-side projectiles, drift).
+		//  - Invisible objective/trigger MONITOR chrs (the setup's beginloop scripts,
+		//    e.g. ame func100e_check_ecm_mines) must not run either. They have no
+		//    syncid, so the old `chr->prop->syncid` gate let them through — and their
+		//    loop guard is a stage flag (STAGEFLAG_SECURITYHUB_COMPLETE) the host owns
+		//    and re-mirrors via SVC_STAGE_FLAGS, which clears the client's local set
+		//    every tick. The monitor then re-enters its "placed correctly" branch
+		//    every frame, re-triggering show_hudmsg (the message spam) AND
+		//    set_object_sound_playing (the constant ECM sound). The host runs these
+		//    once; objective completion reaches the client through the flag mirror.
+		// Combat Sim sims are excluded by the coopplayernum gate (their local
+		// chraiExecute is harmlessly overwritten by the chr-state apply).
+		if (!(g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0))
 #endif
 		chraiExecute(chr, PROPTYPE_CHR);
 

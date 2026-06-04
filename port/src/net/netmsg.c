@@ -1241,9 +1241,17 @@ u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u32 flags = netbufReadU32(src);
 	if (!src->error) {
-		// Host-authoritative: mirror exactly. Scripts/AI that would set these are
-		// gated off on the client, so it doesn't lose its own flags by overwriting.
-		g_StageFlags = flags;
+		// Host-authoritative mirror, but OR-merge the flags this client's OWN scripts
+		// set locally (g_NetCoopLocalStageFlags). Combat NPC AI is gated off on the
+		// client, but the setup's objective-monitor scripts still run here (they also
+		// hand out mission-start equipment, so they can't be gated off). A monitor's
+		// loop guard is often a stage flag — if the host hasn't set it yet (e.g. it
+		// can't see a client-thrown ECM mine), a plain overwrite would clear the
+		// client's local set every mirror tick and the monitor would re-enter its
+		// "complete" branch forever, re-firing show_hudmsg + the looping ECM sound.
+		// OR-merging the local set lets the guard latch. Host-cleared bits the client
+		// never set locally are still mirrored exactly.
+		g_StageFlags = flags | g_NetCoopLocalStageFlags;
 	}
 	return src->error;
 }

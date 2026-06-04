@@ -947,6 +947,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
+	g_NetCoopLocalStageFlags = 0; // client: clear locally-set stage flags for the new stage
 	g_NetLastCutsceneActive = 0;
 	g_NetLastCutsceneAnim = 0;
 

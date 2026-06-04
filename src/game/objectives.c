@@ -342,16 +342,21 @@ s32 objectiveCheck(s32 index)
 
 #ifndef PLATFORM_N64
 	// Campaign co-op: the host is authoritative for objective state. Overlay the
-	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) on top of the
-	// client's own local evaluation as a UNION — a wire COMPLETE/FAILED forces that
-	// result so the client reflects objectives the host's world finished (incl. the
-	// other player's actions the host runs), while never hiding one the client
-	// itself locally completed. Keeps the objective HUD and mission debrief
-	// consistent across machines. Host-side this is skipped (it computes the
-	// authoritative status it broadcasts). All-zero default = INCOMPLETE = no-op.
+	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) onto the
+	// client's local evaluation as a UNION with a COMPLETE-LATCH: a wire COMPLETE
+	// (the host's world finished it, incl. the other player's actions the host runs)
+	// OR a previously-shown COMPLETE (the cached g_ObjectiveStatuses) forces COMPLETE.
+	// The latch stops the flicker seen when an unstable LOCAL eval — a position /
+	// inventory check on a boundary — drops back to incomplete before the host has
+	// confirmed it; objectives don't un-complete in practice, so latching is safe and
+	// also captures a client-local completion the host can't see (e.g. a HOLOGRAPH
+	// keyed on the client's own camera). FAILED still applies if not already complete.
+	// Host-side this whole block is skipped (it computes the authoritative status it
+	// broadcasts). All-zero default = INCOMPLETE = no-op before any broadcast.
 	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
 			&& index >= 0 && index < MAX_OBJECTIVES) {
-		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE) {
+		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE
+				|| g_ObjectiveStatuses[index] == OBJECTIVE_COMPLETE) {
 			objstatus = OBJECTIVE_COMPLETE;
 		} else if (g_NetCoopObjStatuses[index] == OBJECTIVE_FAILED
 				&& objstatus != OBJECTIVE_COMPLETE) {

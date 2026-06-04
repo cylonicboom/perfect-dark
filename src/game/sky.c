@@ -57,6 +57,20 @@ void skyGetWorldPosFromScreenPos(f32 left, f32 top, struct coord *dst)
 	Mtxf *mtx = camGetProjectionMtxF();
 	f32 pos[2];
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the sky/clouds/horizon are a screen-space projection of the camera
+	// view and bypass the renderer's clip-space world flip, so the cloud texture
+	// (s/t = world X/Z sampled per screen position) scrolled the WRONG way against the
+	// mirrored world when turning (fine standing still, wrong on turn). Reflect the
+	// sampled screen X about the view centre here, BEFORE the camera unprojection, so
+	// every sky/cloud/horizon sample becomes the camera-space horizontal mirror — the
+	// camera rotation applied just below then handles any yaw. Single choke point: all
+	// sky sampling (corners, horizon edges, water) goes through this function.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		left = camGetScreenWidth() - left;
+	}
+#endif
+
 	pos[0] = left + camGetScreenLeft();
 	pos[1] = top + camGetScreenTop() + envGetCurrent()->clouds_height;
 

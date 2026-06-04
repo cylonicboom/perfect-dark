@@ -14,6 +14,7 @@
 #include "game/mplayer/mplayer.h"
 #include "game/options.h"
 #include "game/propobj.h"
+#include "net/net.h" // netDiagLogf (co-op notification diag)
 #include "bss.h"
 #include "lib/lib_317f0.h"
 #include "lib/memp.h"

@@ -5341,7 +5341,15 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 		if (!running) {
 			anim->readyframe = -1; // paused: intro / cutscene / end screen
 		} else if (anim->readyframe < 0) {
-			anim->readyframe = lvf; // timer started (or resumed) counting
+			// Timer resumed after a pause: arm a fresh fade-in and snap away any
+			// leftover fade. Without this, a fade-out that STARTED during a short
+			// cutscene (one shorter than the fade animation) would run to completion
+			// after the cutscene ends and then fade back in — the "fades out then back
+			// in at the cutscene end" glitch. Snapping to HIDDEN here means a single
+			// clean fade-in instead.
+			anim->readyframe = lvf;
+			anim->phase = EGG_HIDDEN;
+			anim->phasestart = lvf;
 		}
 	}
 	const bool show = want && anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;

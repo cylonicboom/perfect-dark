@@ -5291,30 +5291,26 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 
 	s32 lvf = g_Vars.lvframe60;
 
-	// Hard-delete the banner during cutscenes (incl. the mission intro, and the
-	// intro replayed on a mission RESTART) and the end screen, instead of animating
-	// it. This is what keeps a restart clean: whatever state the banner was in, the
-	// restart's intro cutscene wipes it, so it can't stick or animate out-and-back-in
-	// across the reload. It re-arms cleanly once the mission timer starts counting
-	// again. (The mission timer is paused in exactly these states anyway.)
-	if (g_InCutscene || g_MainIsEndscreen) {
-		anim->phase = EGG_HIDDEN;
+	if (lvf < anim->phasestart) {
+		// Stage (re)load — lvframe60 was reset to 0. HARD-reset so nothing carries
+		// across the reload; this is what keeps a mission RESTART clean (no stick, no
+		// stale fade state). Also covers a fresh stage load.
 		anim->phasestart = lvf;
+		anim->phase = EGG_HIDDEN;
 		anim->readyframe = -1;
 		anim->lasttime = g_Vars.currentplayer->bondviewlevtime60;
 		anim->lastframe = lvf;
 		anim->lastadvframe = -1;
-		return gdl;
-	}
-
-	if (lvf < anim->phasestart) {
-		// lvframe60 was reset on stage load: replay the intro from scratch.
-		// Without resetting the phase too, a banner left in EGG_HOLD at the
-		// previous stage's end pops in fully-shown on the new stage instead of
-		// animating in (the bug: toggling /graslu mid-stage animates, but the
-		// banner carried across a stage boundary did not).
-		anim->phasestart = lvf;
-		anim->phase = EGG_HIDDEN;
+	} else if (g_InCutscene || g_MainIsEndscreen) {
+		// MID-mission cutscene / end screen (stage not reloaded): stop counting toward
+		// the fade-in and don't re-arm, but DON'T snap the banner away — fall through
+		// so a fully-shown banner fades OUT gracefully over the cutscene. It keeps
+		// rendering via the HUD path while the HUD is up, and via lv.c's HUD-removed
+		// path (netCoopEggsRenderHidden) when it isn't — so the fade-out is visible
+		// either way. A fade-in caught in progress snaps to hidden in the edge
+		// transitions below. Skip the timer sample (lastframe=lvf) so the paused timer
+		// can't re-arm here, and leave phase/phasestart alone so the fade-out animates
+		// from where it started.
 		anim->readyframe = -1;
 		anim->lasttime = g_Vars.currentplayer->bondviewlevtime60;
 		anim->lastframe = lvf;

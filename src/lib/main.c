@@ -1071,7 +1071,11 @@ void mainTick(void)
 			// frame so the run is reproducible (the fps-driven diffframe60 would
 			// differ between record and replay and cause false divergence). The
 			// det pin still fixes each step to 1/60.
-			if (g_FixedTickEnabled && g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY) {
+			// Netplay always runs the sim on the fixed timestep (forced 60Hz below),
+			// even when Game.FixedTick is off for single player: a steady cadence is
+			// required or the remote interpolation/lag-comp (timed against g_NetTick)
+			// jitters and client/server step differently. Disabling it broke netplay.
+			if ((g_FixedTickEnabled || g_NetMode) && g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY) {
 				// Run the sim at g_FixedTickRate ticks/sec in REAL TIME: each tick
 				// advances game-time by 1/rate second (detPinTimestep pins the
 				// per-tick dt to match), so rate*step == 1 sec/sec — the game runs
@@ -1085,7 +1089,7 @@ void mainTick(void)
 				// every frame, e.g. 4x speed at 240fps). The remainder carries so the
 				// long-run rate is exact at any frame rate. rate=60 reduces to the
 				// old `>> 2` (240/60 == 4).
-				s32 rate = g_FixedTickRate;
+				s32 rate = g_NetMode ? 60 : g_FixedTickRate; // netplay is a fixed 60Hz tick
 				if (rate < 1) {
 					rate = 1;
 				} else if (rate > 240) {

@@ -44,6 +44,13 @@ s32 g_DetMode = DET_OFF;
 // g_DetMode (DET_RECORD/DET_REPLAY) regardless of this flag, so the harness is
 // unaffected. Flip to 1 (Game.FixedTick 1) only to experiment with the fixed
 // step at a capped frame rate.
+//
+// NETPLAY forces the fixed step ON at 60Hz regardless of this flag (see the
+// g_NetMode checks in detPinTimestep and the mainTick accumulator): the sim must
+// advance in steady 1/60 steps or remote interpolation/lag-comp jitters. Netplay
+// caps the frame rate (videoGetNetplayFramerateLimit, default 120) so the
+// accumulator paces correctly there — the "too fast" problem only affects single
+// player with an unlocked frame rate.
 s32 g_FixedTickEnabled = 0;
 
 // Gameplay tick RATE in ticks/sec (Game.FixedTickRate / `/forcetick <n>`). The
@@ -262,7 +269,7 @@ void detComputeHash(struct dethash *out)
 
 void detPinTimestep(void)
 {
-	if (g_DetMode == DET_OFF && !g_FixedTickEnabled) {
+	if (g_DetMode == DET_OFF && !g_FixedTickEnabled && !g_NetMode) {
 		return;
 	}
 	// Respect pause: when the engine chose a zero step (paused / cutscene gate),
@@ -277,14 +284,20 @@ void detPinTimestep(void)
 	// sites inherit the step untouched. (lvupdate240=4 -> lvupdate60=1,
 	// lvupdate60f=1.0.)
 	s32 step = 4; // det record/replay: always a fixed 1/60 step for reproducibility
-	if (g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY && g_FixedTickEnabled) {
-		// /forcetick active (and not pinned for a deterministic record/replay):
-		// pin to the chosen tick rate so each tick advances 1/rate of a second
-		// (real-time-coarse). At rate=1 this is a 240/240 = 1-second MEGA-STEP.
-		// The condition matches the mainTick accumulator (which runs for every
-		// mode except RECORD/REPLAY), keeping the per-tick size and the step count
-		// in sync — otherwise game speed would scale by rate/60.
-		s32 rate = g_FixedTickRate;
+	if (g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY && (g_FixedTickEnabled || g_NetMode)) {
+		// /forcetick active OR netplay (and not pinned for a deterministic
+		// record/replay): pin to the chosen tick rate so each tick advances 1/rate of
+		// a second (real-time-coarse). At rate=1 this is a 240/240 = 1-second
+		// MEGA-STEP. The condition matches the mainTick accumulator (which runs for
+		// every mode except RECORD/REPLAY), keeping the per-tick size and the step
+		// count in sync — otherwise game speed would scale by rate/60.
+		//
+		// NETPLAY always pins to 60Hz regardless of the Game.FixedTick config: the sim
+		// must advance in steady 1/60 steps or the remote entity interpolation /
+		// lag-comp (which time against the per-frame g_NetTick) jitter, and the client
+		// must step identically to the server. (Disabling the fixed tick for single
+		// player is fine — but it broke netplay until this gate was added.)
+		s32 rate = g_NetMode ? 60 : g_FixedTickRate;
 		if (rate < 1) {
 			rate = 1;
 		} else if (rate > 240) {

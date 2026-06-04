@@ -9,7 +9,6 @@
 #include "lib/mtx.h"
 #include "lib/model.h"
 #include "lib/anim.h"
-#include "lib/rng.h" // rngCosmeticRandom — F2 co-op body randomisation (host-side, unsynced)
 #include "game/mplayer/mplayer.h"
 #include "game/chr.h"
 #include "game/chraction.h"
@@ -829,31 +828,17 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 		// broadcast (gated state >= CLSTATE_GAME) skips them and players can't see
 		// each other move.
 		netbufWriteU8(dst, g_NetNumClients);
-		// F2: the host's own body-type choice (g_NetCoopBodyMode) doesn't arrive
-		// via CLC_SETTINGS, so stamp it into the host's own client record before
-		// resolving the per-player bitmask below.
-		g_NetLocalClient->settings.coopbodytype = (u8)g_NetCoopBodyMode;
-		g_NetCoopBodyBits = 0;
 		for (s32 i = 0; i < g_NetMaxClients; ++i) {
 			struct netclient *ncl = &g_NetClients[i];
 			if (ncl->state) {
 				netbufWriteU8(dst, ncl->id);
 				netbufWriteU8(dst, ncl->playernum);
 				ncl->state = CLSTATE_GAME;
-				// Resolve this player's masculine bit from their synced choice.
-				// COOPBODY_RANDOM is rolled here (host side, unsynced cosmetic RNG):
-				// the rolled RESULT is what ships, so every machine agrees and the
-				// network-synced gameplay seed is left clean.
-				if (ncl->playernum < MAX_PLAYERS) {
-					const u8 mode = ncl->settings.coopbodytype;
-					if (mode == COOPBODY_MASCULINE
-							|| (mode == COOPBODY_RANDOM && (rngCosmeticRandom() & 1))) {
-						g_NetCoopBodyBits |= (u8)(1 << ncl->playernum);
-					}
-				}
 			}
 		}
-		// F2: resolved per-player body-type bitmask (bit i = player i masculine). proto 49
+		// F2: per-player body-type bitmask. Already resolved in netPlayersAllocate
+		// (runs before this, after playernums are assigned and before the chrbody is
+		// built), so here we just ship it. proto 49
 		netbufWriteU8(dst, g_NetCoopBodyBits);
 		// F3: lives mutator — mode + count (host setting). proto 50
 		netbufWriteU8(dst, (u8)g_NetCoopLivesMode);

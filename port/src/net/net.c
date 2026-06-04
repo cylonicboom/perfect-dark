@@ -18,6 +18,7 @@
 #include "constants.h"
 #include "data.h"
 #include "bss.h"
+#include "lib/rng.h" // rngCosmeticRandom — F2 co-op body randomisation (unsynced, host-side)
 #include "game/hudmsg.h"
 #include "game/menugfx.h"
 #include "game/playermgr.h"
@@ -1052,7 +1053,9 @@ static void netCoopShowLivesText(s32 count)
 		sprintf(text, "%d lives remaining\n", count);
 	}
 
-	hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ALLOWDUPES);
+	// Bottom-left notification like the kill feed, but held ~1s longer than the
+	// default 80-tick duration so the player has time to read the new life count.
+	hudmsgCreateWithDuration(text, HUDMSGTYPE_DEFAULT, &g_HudmsgTypes[HUDMSGTYPE_DEFAULT], 140);
 }
 
 // Show the lives notification to THIS machine's local player. The local player is
@@ -2310,6 +2313,32 @@ void netPlayersAllocate(void)
 		if (cl->player) {
 			cl->player->client = cl;
 			cl->player->isremote = (cl != g_NetLocalClient);
+		}
+	}
+
+	// F2 body type: resolve the per-player masculine bitmask now — after playernums
+	// are assigned (loop above) but BEFORE the chrbody models are built in the player
+	// tick. The host reads each client's synced choice (settings.coopbodytype) keyed
+	// by its playernum; COOPBODY_RANDOM is rolled here (cosmetic RNG, so the result
+	// ships without touching the gameplay seed). The client keeps the value it read
+	// from SVC_STAGE_START. Resolving here (not in the SVC_STAGE_START write) is what
+	// makes the third-person chrbody pick up the right body, not just the first-person
+	// hands (which re-derive every frame and so updated even when the bits landed late).
+	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0) {
+		if (g_NetLocalClient) {
+			g_NetLocalClient->settings.coopbodytype = (u8)g_NetCoopBodyMode;
+		}
+		g_NetCoopBodyBits = 0;
+		for (s32 bi = 0; bi < g_NetMaxClients; bi++) {
+			struct netclient *bcl = &g_NetClients[bi];
+			if (bcl->state < CLSTATE_LOBBY || bcl->is_spectator || bcl->playernum >= MAX_PLAYERS) {
+				continue;
+			}
+			const u8 mode = bcl->settings.coopbodytype;
+			if (mode == COOPBODY_MASCULINE
+					|| (mode == COOPBODY_RANDOM && (rngCosmeticRandom() & 1))) {
+				g_NetCoopBodyBits |= (u8)(1 << bcl->playernum);
+			}
 		}
 	}
 }

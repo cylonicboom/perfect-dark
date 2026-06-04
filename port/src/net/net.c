@@ -5270,7 +5270,7 @@ enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
 struct netegg {
 	s32 phase;       // EGG_* state
 	s32 phasestart;  // g_Vars.lvframe60 at phase entry
-	s32 readyframe;  // lvframe60 when the player gained control (TICKMODE_NORMAL); -1 otherwise
+	s32 readyframe;  // lvframe60 when the mission started (g_CoopGameplayStarted); -1 before that
 };
 static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1 };
 static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1 };
@@ -5294,13 +5294,15 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 		anim->readyframe = -1;
 	}
 
-	// Animate in once the player actually has control (weapon drawn / gameplay HUD
-	// up), not at mission start. TICKMODE_NORMAL means the level intro fade, opening
-	// cutscene, scripted auto-walk and warp modes are all finished and the weapon has
-	// been pulled out; stay disarmed until then, then a short settle
-	// (EGG_STAGE_INTRO_DELAY) lets the weapon-raise complete before the fade-in.
-	// Re-arms if control is later taken away (a mid-mission cutscene / warp).
-	if (g_Vars.tickmode != TICKMODE_NORMAL) {
+	// Animate in once the mission has actually started — i.e. the player has been
+	// handed control. g_CoopGameplayStarted latches true the first time tickmode
+	// reaches TICKMODE_NORMAL and is reset on the mission-start GE fade-in, so it
+	// stays false through the intro fade, the opening cutscene and the scripted
+	// auto-walk (despite the "Coop" name it's set in playerSetTickMode for every
+	// mode). Unlike the raw stage timer (g_StageTimeElapsed60), which counts from
+	// stage load including the intro, this is the true "mission has begun" moment.
+	// A short settle (EGG_STAGE_INTRO_DELAY) then lets the weapon-raise finish first.
+	if (!g_CoopGameplayStarted) {
 		anim->readyframe = -1;
 	} else if (anim->readyframe < 0) {
 		anim->readyframe = lvf;

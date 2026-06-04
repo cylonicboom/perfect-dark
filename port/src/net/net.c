@@ -5317,10 +5317,11 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 
 	const s32 screenw = viGetWidth();
 	const s32 screenh = viGetHeight();
-	s32 x = 26;
+	s32 x = 27;
 	s32 y = screenh - 2 * lineh - 24;
 	if (cheatIsActive(CHEAT_MIRROR)) {
-		x = screenw - x - tw;
+		// One pixel left of the exact reflection so the mirrored banner lines up.
+		x = screenw - x - tw - 1;
 	}
 	const s32 bx1 = x - 3;
 	const s32 by1 = y - 3;

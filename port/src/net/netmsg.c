@@ -1208,21 +1208,11 @@ u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl)
 	for (s32 i = 0; i < count; ++i) {
 		u8 status = netbufReadU8(src);
 		if (!src->error) {
-			const u8 prev = (u8)g_NetCoopObjStatuses[i];
+			// Mirror the host's authoritative status. The "Objective N Completed" toast
+			// is driven solely by objectivesCheckAll on the client (its co-op fallback
+			// shows it once the objective reads COMPLETE via this latch) — showing it
+			// here too just created a duplicate that competed for the same screen slot.
 			g_NetCoopObjStatuses[i] = status;
-
-			// Host-authoritative objective toast: when the host's status flips, show
-			// the "Objective N: Completed/Failed" notification on the client right here
-			// (the local objectivesCheckAll transition-detect can race the host or miss
-			// it entirely when the completing action happened on the host). Pre-set the
-			// cached g_ObjectiveStatuses to the same value so objectivesCheckAll sees no
-			// transition and won't double-show; a client-LOCAL completion the host never
-			// broadcasts is still caught by objectivesCheckAll's own detection.
-			if (status != prev && status != OBJECTIVE_INCOMPLETE
-					&& (u8)g_ObjectiveStatuses[i] != status) {
-				objectivesShowStatusForIndex(i, status);
-				g_ObjectiveStatuses[i] = status;
-			}
 		}
 	}
 

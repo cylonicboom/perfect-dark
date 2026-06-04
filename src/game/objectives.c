@@ -434,7 +434,18 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 		// 8-player co-op groundwork: show the objective toast to every co-op
 		// player, not just bond+coop. PLAYER_IS_NOT_ANTI is identical for SP /
 		// 2-player / anti, but covers all N co-op players.
-		if (PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)) {
+		if (PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)
+#ifndef PLATFORM_N64
+				// NET co-op: only create the toast for LOCAL players. A remote player's
+				// HUD is never rendered on this machine (hudmsgsRender filters by
+				// playernum), but the toast would still promote to "showing" and occupy
+				// its screen slot — and the occupying-space check is playernum-agnostic,
+				// so an invisible remote toast at the same spot (objective-complete is
+				// centre-screen) blocks the LOCAL player's toast from ever appearing.
+				// Splitscreen co-op keeps all players (none are remote).
+				&& !g_Vars.currentplayer->isremote
+#endif
+				) {
 			hudmsgCreateWithFlags(buffer, hudmsgtype, HUDMSGFLAG_DELAY | HUDMSGFLAG_ALLOWDUPES);
 		}
 	}

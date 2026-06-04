@@ -545,11 +545,17 @@ void mainLoop(void)
 #else
 			if (g_Vars.antiplayernum < 0) {
 				// Counter-Operative now uses a different approach which allows more than 2 players.
-				// Co-Operative, on the other hand, is currently limited to 2 players.
+				// Co-Operative: one chr slot per player (host + remote partners), up
+				// to MAX_PLAYERS. netCoopEnterStage set the player count via
+				// setNumPlayers(N), so getNumPlayers()/numplayers == N here; both
+				// host and client derive the same N (host: g_NetNumClients; client:
+				// the SVC_STAGE_START co-op manifest count), keeping the deterministic
+				// spawn-pad allocation in setup.c identical on both ends.
+				s32 ncoop = (numplayers >= 2 && numplayers <= MAX_PLAYERS) ? numplayers : 2;
 				if (g_MpSetup.chrslots & 0xfff0) {
 					g_MpSetup.storedbotbits = g_MpSetup.chrslots & 0xfff0;
 				}
-				g_MpSetup.chrslots = 0x03;
+				g_MpSetup.chrslots = (1 << ncoop) - 1;
 			}
 #endif
 			mpReset();

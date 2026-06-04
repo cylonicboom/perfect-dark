@@ -79,25 +79,48 @@ nothing here flips the player count.
 > is already correct for co-op (MP death music plays). No bond/coop death-cue site
 > exists in `music.c`; the earlier estimate was wrong. Nothing to widen.
 
-## Bucket C — allocation (the go-live flip)
+## Bucket C — allocation (the go-live flip) — **DONE**
 
-The allocation chain **already scales** — Combat Sim seats up to 8 via it. Only
-the co-op entry hardcodes 2:
+The allocation chain **already scaled** — Combat Sim seats up to 8 via it. Only
+the co-op entry hardcoded 2. Implemented:
 
-- `port/src/net/net.c` `netCoopEnterStage` — `g_Vars.coopplayernum = 1; setNumPlayers(2);`
-  → derive **N** (host: connected co-op clients + 1; client: from the
-  `SVC_STAGE_START` co-op manifest, which already carries the player list) and
-  `setNumPlayers(N)`. Keep `coopplayernum >= 0` as the co-op *gate*.
-- `port/src/pdmain.c` (and `src/lib/main.c`) co-op path — `g_MpSetup.chrslots = 0x03`
-  → `chrslots = (1 << N) - 1`.
-- `setNumPlayers(N)` → `playermgrAllocatePlayers(N)` → `netPlayersAllocate()` sequential
-  playernum assignment — **already N-ready, no change**.
-- `playermgr.c` `g_Vars.coop = g_Vars.players[coopplayernum]` — keep (compat); the
+- `port/src/net/net.c` `netCoopEnterStage(stagenum, difficulty, numplayers)` — now
+  takes the total player count N (clamped to `[1, MAX_PLAYERS]`) and calls
+  `setNumPlayers(numplayers)` instead of `setNumPlayers(2)`. `coopplayernum` stays
+  `1` (the co-op gate + single splitscreen-buddy pointer). **N derivation:**
+  - **Host** (`/coop`): `N = g_NetNumClients`. That counter starts at 1 because the
+    host *is* `g_NetClients[0]` (net.c:461), and increments per remote connect — so
+    it is already host + all remote partners. (No `+1`.)
+  - **Client** (`netmsgSvcStageStartRead` co-op branch): `N = numplayers`, the
+    `SVC_STAGE_START` co-op manifest count, which is the host's `g_NetNumClients`.
+    Both ends therefore derive the identical N.
+- `port/src/pdmain.c` co-op path — `g_MpSetup.chrslots = 0x03` →
+  `(1 << numplayers) - 1` (with a `>=2 && <=MAX_PLAYERS` guard, falling back to
+  `0x03`). `numplayers` here is `getNumPlayers()` == N, so host and client build the
+  same chrslots mask, keeping `setup.c`'s deterministic spawn-pad allocation
+  identical on both ends.
+- `setNumPlayers(N)` → `playermgrAllocatePlayers(N)` → `netPlayersAllocate()`
+  sequential playernum assignment — **already N-ready, unchanged**. The client
+  builds `g_NetClients[]` entries for all N players from the manifest via
+  `netResolveWireClient(id)` (indexed by wire id), so remote partners it has no
+  direct ENet link to still get a player slot + receive relayed `SVC_PLAYER_MOVE`.
+- `playermgr.c` `g_Vars.coop = g_Vars.players[coopplayernum]` — kept (compat); the
   N players live in `g_Vars.players[0..N-1]`.
 
-**Order matters:** do Bucket B *first* (safe, no-op for 2), then flip Bucket C.
-Flipping C before B would route players 2..N-1 through the 2-player checks and
-break objectives / revive / end-of-mission for the extra players.
+**Order respected:** Bucket B (safe, no-op for 2) landed *before* this flip, so
+players 2..N-1 now route through the already-widened objectives / revive /
+end-of-mission / AI-target logic.
+
+### Known follow-ups (post-flip polish, not blockers)
+
+- **Remote partner appearance at N>2.** The co-op manifest carries only
+  `{id, playernum}` per player, not per-client `settings` (body/head/name). A
+  client has no direct link to *other* remote clients, so their `cl->settings`
+  stay default → additional partners may render with a default body/head. The host
+  and the 2-player case are unaffected. Wiring per-client settings into the co-op
+  manifest (or choosing co-op models by slot) is the fix.
+- **Test ladder:** N=3 (host + 2 clients) before 8 — bandwidth is N×N player moves
+  + N×NPC chr-state; the round-robin NPC broadcast helps but re-check at 8.
 
 ## Bucket D — hard caps (mostly already port-widened)
 
@@ -187,11 +210,13 @@ viewport-count-gated model LOD / poly reduction anywhere. No change needed.
 
 1. **Groundwork (this doc):** the `PLAYER_IS_NOT_ANTI` strategy, Bucket B
    conversions (behaviour-identical for 2P), splitscreen-feature re-enablement.
-   *Player count stays 2 — nothing visible changes yet.*
+   *Player count stays 2 — nothing visible changes yet.* **DONE.**
 2. **Lobby/derivation:** host derives N from connected co-op clients; the
    `SVC_STAGE_START` co-op manifest already lists them, so the client mirrors N.
+   **DONE** — folded into the Bucket C flip (`N = g_NetNumClients` host / manifest
+   count client; no new lobby UI — `/coop` just reads who's connected).
 3. **Flip Bucket C:** `netCoopEnterStage(stage, diff, N)`, `chrslots` from N.
-   First test at **N=3** (host + 2 clients) before 8.
+   **DONE.** First test at **N=3** (host + 2 clients) before 8.
 4. **Targeting/AI for N:** verify NPCs distribute attention across N players (the
    idle `p1p2` cycling already perceives all players; scripted toggles widened).
 5. **Polish at 8:** HUD/radar showing N teammates, scoreboard, spawn spread,

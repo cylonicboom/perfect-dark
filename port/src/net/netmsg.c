@@ -965,7 +965,9 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		}
 		g_NetLocalClient->state = CLSTATE_GAME;
 		g_MissionConfig.stageindex = 0; // TODO: sync index for briefing/HUD
-		netCoopEnterStage((s32)stagenum, (s32)difficulty);
+		// numplayers is the host's manifest count = total co-op players N (host +
+		// all remote clients), so the client allocates the same N player slots.
+		netCoopEnterStage((s32)stagenum, (s32)difficulty, (s32)numplayers);
 		return src->error;
 	}
 #endif

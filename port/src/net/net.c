@@ -906,9 +906,21 @@ s32 netStartServer(u16 port, s32 maxclients)
 // both ends reach the same stage with the same co-op player model. The generic
 // stage-load hooks then fire: lv.c's netServerStageStart broadcasts the host's
 // SVC_STAGE_START, and playermgr's netPlayersAllocate seats remote clients.
-// Currently fixed at 2 players (coopplayernum=1); 4-player is Phase 5.
-void netCoopEnterStage(s32 stagenum, s32 difficulty)
+//
+// `numplayers` is the total co-op player count N (host + remote partners), up to
+// MAX_PLAYERS. The host derives it from g_NetNumClients (which already counts the
+// host as g_NetClients[0]); the client mirrors it from the SVC_STAGE_START co-op
+// manifest count. coopplayernum stays 1 (the single splitscreen-buddy pointer /
+// co-op gate); the N players live in g_Vars.players[0..N-1].
+void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 {
+	if (numplayers < 1) {
+		numplayers = 1;
+	}
+	if (numplayers > MAX_PLAYERS) {
+		numplayers = MAX_PLAYERS;
+	}
+
 	// Clear the host-authoritative objective mirror so a previous mission's
 	// completions can't leak into this one (the client overlays these onto its
 	// local objective evaluation; a stale COMPLETE would falsely mark an objective
@@ -931,7 +943,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	g_Vars.bondplayernum = 0;
 	g_Vars.coopplayernum = 1;
 	g_Vars.antiplayernum = -1;
-	setNumPlayers(2);
+	setNumPlayers(numplayers);
 	lvSetDifficulty(difficulty);
 	titleSetNextMode(TITLEMODE_SKIP);
 	mainChangeToStage(stagenum);
@@ -4052,8 +4064,12 @@ s32 netConsoleCommand(const char *line)
 				}
 			}
 			g_MissionConfig.stageindex = idx;
-			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d)", idx, diff);
-			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff);
+			// N = all players currently in the session: g_NetNumClients already
+			// counts the host (g_NetClients[0]) plus every connected remote client.
+			// The SVC_STAGE_START co-op manifest sends this same count so clients
+			// derive the identical N. (Late joins are rejected, so the set is fixed.)
+			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d, %d players)", idx, diff, g_NetNumClients);
+			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff, g_NetNumClients);
 		}
 	} else if (strcmp(cmd, "hitvalidate") == 0) {
 		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims

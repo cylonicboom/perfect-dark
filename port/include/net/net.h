@@ -518,9 +518,10 @@ s32 netDisconnect(void);
 void netStartFrame(void);
 void netEndFrame(void);
 
-// Campaign co-op: enter a solo stage in 2-player co-op (host trigger + client
-// SVC_STAGE_START handler both call this). Phase 0 of co-op session plumbing.
-void netCoopEnterStage(s32 stagenum, s32 difficulty);
+// Campaign co-op: enter a solo stage in N-player co-op (host trigger + client
+// SVC_STAGE_START handler both call this). numplayers = total co-op players N
+// (host + remote partners), up to MAX_PLAYERS.
+void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers);
 
 s32 netStartServer(u16 port, s32 maxclients);
 s32 netStartClient(const char *addr);

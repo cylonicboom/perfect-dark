@@ -1045,6 +1045,25 @@ void netClientSendObjectiveDone(s32 objindex)
 // prop themselves — they send this so the host re-validates against our synced
 // position and grants it via SVC_PROP_PICKUP (which gives us the item + toast).
 // Debounced per-prop so the request RTT doesn't flood the reliable channel.
+// Records the syncid so the host's echoed SVC_PROP_PICKUP for OUR OWN proximity
+// pickup is skipped (we already took it locally) — while host-initiated gives
+// (scripted aiGiveObjectToChr) still apply, since they were never recorded here.
+static u16 g_NetLocalPickupRing[8];
+static s32 g_NetLocalPickupHead;
+
+bool netClientWasLocalPickup(u16 syncid)
+{
+	if (!syncid) {
+		return false;
+	}
+	for (s32 i = 0; i < (s32)ARRAYCOUNT(g_NetLocalPickupRing); i++) {
+		if (g_NetLocalPickupRing[i] == syncid) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void netClientRequestPickup(struct prop *prop)
 {
 	static u16 lastsid = 0;
@@ -1053,6 +1072,10 @@ void netClientRequestPickup(struct prop *prop)
 	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient || !prop || !prop->syncid) {
 		return;
 	}
+
+	// Remember this is OUR local pickup so the host's echo doesn't double-give it.
+	g_NetLocalPickupRing[g_NetLocalPickupHead] = (u16)prop->syncid;
+	g_NetLocalPickupHead = (g_NetLocalPickupHead + 1) % (s32)ARRAYCOUNT(g_NetLocalPickupRing);
 
 	// Skip a re-request for the same prop within ~1/3s; if the host hasn't granted
 	// it by then (LOS/position still settling) we ask again.

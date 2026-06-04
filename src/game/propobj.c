@@ -18013,12 +18013,17 @@ s32 objTestForPickup(struct prop *prop)
 
 		if (pickup) {
 #ifndef PLATFORM_N64
-			// Co-op client: don't grab locally (pickups are host-authoritative).
-			// Ask the host to grant it; it re-validates and broadcasts SVC_PROP_PICKUP,
-			// which gives us the item + toast. Debounced inside netClientRequestPickup.
+			// Co-op client: pick the item up LOCALLY (responsive — correct inventory +
+			// toast, exactly like single-player, in the normal render context) AND tell
+			// the host, which applies it authoritatively for objectives / action blocks
+			// and informs the OTHER clients. The host's echo back to us is ignored
+			// (netmsgSvcPropPickupRead skips our own pickups) so we don't double-give.
+			// Earlier this deferred entirely to the host (return TICKOP_NONE), but the
+			// host's SVC_PROP_PICKUP apply ran in net-processing context where
+			// propPickupByPlayer early-returns (lvupdate240==0), so invGiveProp never
+			// ran and the item never entered the client's inventory.
 			if (g_NetMode == NETMODE_CLIENT) {
 				netClientRequestPickup(prop);
-				return TICKOP_NONE;
 			}
 #endif
 			return propPickupByPlayer(prop, true);

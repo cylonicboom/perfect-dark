@@ -2794,6 +2794,15 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 	struct netclient *actcl = g_NetClients + clid;
+
+	// Co-op: we already picked up our OWN items locally (client-local pickup in
+	// objTestForPickup) — the host echoes the grant to everyone, but applying it
+	// again here would double-give / double-toast. Skip our own; other clients still
+	// apply it so the prop disappears from their world.
+	if (actcl == g_NetLocalClient) {
+		return src->error;
+	}
+
 	if (actcl->is_spectator) {
 		// Spectator clients have no mpchr and no playernum — a SVC_PROP_PICKUP
 		// referencing one is either a stale message or a peer bug. Run the

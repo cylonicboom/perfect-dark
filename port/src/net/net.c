@@ -5263,21 +5263,24 @@ Gfx *netHitmarkerRender(Gfx *gdl)
 // (HUD drawn, var80075d60==2); the fade-out renders from lv.c's HUD-removed path
 // via netCoopEggsRenderHidden, so the banner slides away instead of popping off.
 enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
-// Ticks (lvframe60) the on-screen mission timer must be showing before the banner
-// begins its fade-in, so it lands just behind the timer appearing.
+// Ticks (lvframe60) the mission timer must keep counting before the banner begins
+// its fade-in, so it lands just behind the mission actually starting.
 #define EGG_STAGE_INTRO_DELAY 30
-// Set in hudmsgsRender (hudmsg.c): true while the mission timer is actually drawn
-// on screen for the local player (HUD up, normal camera, slot not taken by a
-// cutscene subtitle). This is the visible timer, which stays hidden through the
-// intro and cutscenes even while bondviewlevtime60 keeps ticking internally.
-extern s32 g_HudMissionTimerOnScreen;
+// How long (lvframe60) the timer may sit flat before we call it paused. The mission
+// timer (bondviewlevtime60 += lvupdate60) only advances on whole 1/60s steps, so
+// above 60fps it's flat for a few frames at a time even during normal play; tolerate
+// that so the banner doesn't flicker, while a real cutscene pause (seconds) trips it.
+#define EGG_TIMER_PAUSE_SLACK 20
 struct netegg {
-	s32 phase;       // EGG_* state
-	s32 phasestart;  // g_Vars.lvframe60 at phase entry
-	s32 readyframe;  // lvframe60 when the timer first appeared on screen; -1 while it's off screen
+	s32 phase;        // EGG_* state
+	s32 phasestart;   // g_Vars.lvframe60 at phase entry
+	s32 readyframe;   // lvframe60 when the mission timer was first seen counting; -1 while paused
+	s32 lasttime;     // last sampled bondviewlevtime60
+	s32 lastframe;    // lvframe60 of the last sample (we sample once per game frame)
+	s32 lastadvframe; // lvframe60 when the timer last INCREASED; -1 = never
 };
-static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1 };
-static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1 };
+static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1, 0, -1, -1 };
+static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1, 0, -1, -1 };
 
 static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol, u32 hicol, bool want, struct netegg *anim)
 {
@@ -5296,24 +5299,39 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 		anim->phasestart = lvf;
 		anim->phase = EGG_HIDDEN;
 		anim->readyframe = -1;
+		anim->lasttime = g_Vars.currentplayer->bondviewlevtime60;
+		anim->lastframe = lvf;
+		anim->lastadvframe = -1;
 	}
 
-	// Track the VISIBLE mission timer (g_HudMissionTimerOnScreen, set in
-	// hudmsgsRender), not its internal value: the displayed timer stays hidden
-	// through the intro and during cutscenes (its slot is taken by the subtitle, or
-	// the HUD is down) even though bondviewlevtime60 keeps ticking — which is why the
-	// banner kept appearing during the intro cutscene before. `want` is false on the
-	// HUD-hidden render path, so this also reads as "off screen" then. The banner is
-	// shown only while the timer is on screen: fades in just after it appears, out
-	// when a cutscene takes the slot, back in afterwards. A short settle
-	// (EGG_STAGE_INTRO_DELAY) keeps the fade-in just behind the timer.
-	const bool ontimer = want && g_HudMissionTimerOnScreen;
-	if (!ontimer) {
-		anim->readyframe = -1;
-	} else if (anim->readyframe < 0) {
-		anim->readyframe = lvf;
+	// Track the MISSION OVERALL timer (bondviewlevtime60 / playerGetMissionTime).
+	// Unlike the raw stage timer (g_StageTimeElapsed60, which counts from stage load),
+	// this one only counts up once the mission has started and the HUD is live — it
+	// stays 0 through the intro cutscene and pauses during mid-mission cutscenes
+	// (player.c playerTick gates it on (tickmode GE_FADEIN|NORMAL) && !g_InCutscene &&
+	// !g_MainIsEndscreen). Sample once per game frame and watch it INCREASE (it's
+	// reset to 0 at stage start — a decrease that must NOT count as advancing, hence
+	// `>` not `!=`); treat the timer as running while the last increase was within
+	// EGG_TIMER_PAUSE_SLACK frames (rides over its 1/60s granularity at high fps). The
+	// banner shows only while the timer counts: fades in just after it starts, out
+	// when it pauses for a cutscene, back in on resume. A short settle keeps the
+	// fade-in just behind the timer.
+	if (lvf != anim->lastframe) {
+		s32 t = g_Vars.currentplayer->bondviewlevtime60;
+		if (t > anim->lasttime) {
+			anim->lastadvframe = lvf; // timer counted up this frame
+		}
+		anim->lasttime = t;
+		anim->lastframe = lvf;
+
+		bool running = anim->lastadvframe >= 0 && (lvf - anim->lastadvframe) <= EGG_TIMER_PAUSE_SLACK;
+		if (!running) {
+			anim->readyframe = -1; // paused: intro / cutscene / end screen
+		} else if (anim->readyframe < 0) {
+			anim->readyframe = lvf; // timer started (or resumed) counting
+		}
 	}
-	const bool show = anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
+	const bool show = want && anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
 
 	// Edge transitions: fade in once shown, fade out as soon as it shouldn't be
 	// (toggle off, or the mission timer paused for a cutscene/auto-walk/end screen).

@@ -29,17 +29,6 @@ u32 g_NextHudMessageId;
 
 u8 g_HudmsgsActive = 0;
 
-#ifndef PLATFORM_N64
-// Port: true on frames where the on-screen mission clock is actually drawn for the
-// local player. Set EXACTLY at the clock's draw call in hudmsgsRender (same full
-// condition, incl. the player's show-mission-time option), so it equals "the clock
-// is visible". The vanity-egg banners in net.c gate on it, so they appear iff the
-// clock does — hidden through the intro / cutscenes (when the clock isn't shown
-// even though bondviewlevtime60 keeps ticking internally), shown only in live play.
-// Defaults false each frame at the top of hudmsgsRender.
-s32 g_HudMissionTimerOnScreen = 0;
-#endif
-
 u32 g_HudmsgColours[] = {
 	/* 0*/ 0x00ff0000, // green
 	/* 1*/ 0x9999ff00, // pastel blue
@@ -1410,9 +1399,6 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	s32 spdc = true;
 #ifndef PLATFORM_N64
 	const s32 playercount = LOCALPLAYERCOUNT();
-	// Default off; set true below only if the mission timer is actually drawn this
-	// frame (so a cutscene subtitle taking the slot, or a hidden HUD, reads as off).
-	g_HudMissionTimerOnScreen = false;
 #endif
 
 #if PAL
@@ -1682,12 +1668,6 @@ Gfx *hudmsgsRender(Gfx *gdl)
 				&& g_Vars.stagenum != STAGE_CITRAINING
 				&& g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY
 				&& g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON) {
-#ifndef PLATFORM_N64
-			// Set the egg-banner gate (net.c) EXACTLY where the mission clock is
-			// drawn, so the banner is shown iff the clock is. The clock is hidden
-			// through the intro / cutscenes, so the banner is too.
-			g_HudMissionTimerOnScreen = true;
-#endif
 			gdl = hudmsgRenderMissionTimer(gdl, timerthing);
 		}
 

@@ -5182,9 +5182,17 @@ char *mainMenuTextLabel(struct menuitem *item)
 		L_MPWEAPONS_133, // "Cheat Counter-Operative"
 	};
 
+#ifndef PLATFORM_N64
+	// Mirror is cosmetic-only (never counts as cheating) — ignore it when
+	// deciding whether to relabel the menus "Cheat Solo Missions" etc.
+	if (g_CheatsEnabledBank0 || (g_CheatsEnabledBank1 & ~(1 << (CHEAT_MIRROR - 32)))) {
+		return langGet(withcheats[item->param]);
+	}
+#else
 	if (g_CheatsEnabledBank0 || g_CheatsEnabledBank1) {
 		return langGet(withcheats[item->param]);
 	}
+#endif
 
 	return langGet(nocheats[item->param]);
 }

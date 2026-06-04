@@ -109,7 +109,8 @@ scissor** (rooms seen through doorways use a portal-clipped screen-space draw-sl
 reflecting it, that geometry would be flipped to the opposite side of the screen but clipped on the
 original side).
 
-State plumbing follows the `CHEAT_WIREFRAME` pattern exactly:
+State plumbing follows the `CHEAT_WIREFRAME` pattern exactly, **except that Mirror is
+cosmetic-only — it never counts as an active cheat**:
 
 - `CHEAT_MIRROR` = **47** (`src/include/constants.h`, append-only — it's a `g_Cheats[]` subscript).
 - Table row + `s_cheat_literal_names[CHEAT_MIRROR] = "Mirror"` + a `MENUITEMTYPE_CHECKBOX` entry in
@@ -118,8 +119,17 @@ State plumbing follows the `CHEAT_WIREFRAME` pattern exactly:
   `gfx_mirror_mode = cheatIsActive(CHEAT_MIRROR) ? 1 : 0;`. Declared `extern unsigned char` game-side
   (game `bool` is `s32`; the renderer's is 1 byte — see the `gfx_wireframe_mode` note for the
   size-mismatch gotcha), and `bool` in `port/fast3d/gfx_api.h` / `gfx_pc.cpp`.
-- `/mirror [on|off]` in `netConsoleCommand` (`port/src/net/net.c`) flips the cheat's active+enabled
-  bits in `g_CheatsActiveBank1` / `g_CheatsEnabledBank1`; `bgTickPortals` picks it up next frame.
+- **Cosmetic-only / doesn't block saving:** every "was the game cheated?" gate tests
+  `g_CheatsActiveBank0 || g_CheatsActiveBank1` (`endscreen.c` mission "Cheated" status,
+  `challenge.c` completions, `mplayer.c` MP awards, `menutick.c` stage unlocks). Mirror is kept
+  **out of the active banks entirely** so all of those ignore it: `cheatIsActive` special-cases
+  `CHEAT_MIRROR` to read its **enabled** bit (`g_CheatsEnabledBank1`) directly, `cheatsReset`
+  masks the bit out of the enabled→active copy, and `cheatActivate` early-returns for it.
+  `mainMenuTextLabel` also masks it so the menus don't relabel to "Cheat Solo Missions".
+  Side effect: the cheats-menu checkbox now takes effect **live** (no stage reload), and the
+  cheat also works in CI Training (actives are zeroed there; the enabled bit isn't).
+- `/mirror [on|off]` in `netConsoleCommand` (`port/src/net/net.c`) flips the cheat's **enabled**
+  bit in `g_CheatsEnabledBank1` only; `bgTickPortals` picks it up next frame.
 
 ## Renderer injection points (fast3d, `port/fast3d/gfx_pc.cpp`)
 

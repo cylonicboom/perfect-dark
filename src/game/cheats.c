@@ -198,6 +198,16 @@ u32 cheatIsUnlocked(s32 cheat_id)
 
 bool cheatIsActive(s32 cheat_id)
 {
+#ifndef PLATFORM_N64
+	// Mirror is cosmetic-only: its live state is the ENABLED bit, and it is
+	// never copied into the active banks (see cheatsReset / cheatActivate),
+	// so having it on doesn't flag the game as cheated — mission completion,
+	// saving and challenges all still count.
+	if (cheat_id == CHEAT_MIRROR) {
+		return g_CheatsEnabledBank1 & (1 << (CHEAT_MIRROR - 32));
+	}
+#endif
+
 	if (cheat_id < 32) {
 		return g_CheatsActiveBank0 & (1 << cheat_id);
 	}
@@ -209,6 +219,13 @@ void cheatActivate(s32 cheat_id)
 {
 	u32 prevplayernum;
 	s32 playernum;
+
+#ifndef PLATFORM_N64
+	// Mirror never enters the active banks (cosmetic-only; see cheatIsActive).
+	if (cheat_id == CHEAT_MIRROR) {
+		return;
+	}
+#endif
 
 	switch (cheat_id) {
 	case CHEAT_INVINCIBLE:
@@ -316,6 +333,12 @@ void cheatsReset(void)
 	if (g_Vars.stagenum != STAGE_CITRAINING) {
 		g_CheatsActiveBank0 = g_CheatsEnabledBank0;
 		g_CheatsActiveBank1 = g_CheatsEnabledBank1;
+
+#ifndef PLATFORM_N64
+		// Mirror is cosmetic-only: keep it out of the active bank so it never
+		// counts as a cheat (cheatIsActive reads its enabled bit directly).
+		g_CheatsActiveBank1 &= ~(1 << (CHEAT_MIRROR - 32));
+#endif
 
 		if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 || g_Vars.normmplayerisrunning) {
 			// Co-op/counter-op/multi - deactivate "Weapons for Jo in Solo" cheats

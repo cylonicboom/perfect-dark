@@ -4863,20 +4863,20 @@ s32 netConsoleCommand(const char *line)
 		// reload. Flips the whole rendered 3D scene left-right (works everywhere,
 		// including the Carrington Institute hub); 2D HUD/text stay readable. The
 		// on/off bit flows to gfx_mirror_mode via bgTickPortals next frame.
-		extern u32 g_CheatsActiveBank1;
+		// Mirror is cosmetic-only: it lives in the ENABLED bank only and never
+		// enters the active bank (cheatIsActive special-cases it), so it doesn't
+		// flag the game as cheated or block mission completion / saving.
 		extern u32 g_CheatsEnabledBank1;
 		const u32 bit = 1u << (CHEAT_MIRROR - 32);
 		bool on;
 		if (!arg[0]) {
-			on = !(g_CheatsActiveBank1 & bit);
+			on = !(g_CheatsEnabledBank1 & bit);
 		} else {
 			on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
 		}
 		if (on) {
-			g_CheatsActiveBank1 |= bit;
 			g_CheatsEnabledBank1 |= bit;
 		} else {
-			g_CheatsActiveBank1 &= ~bit;
 			g_CheatsEnabledBank1 &= ~bit;
 		}
 		sysLogPrintf(LOG_CHAT, "mirror %s", on ? "ON" : "OFF");

@@ -5263,14 +5263,14 @@ Gfx *netHitmarkerRender(Gfx *gdl)
 // (HUD drawn, var80075d60==2); the fade-out renders from lv.c's HUD-removed path
 // via netCoopEggsRenderHidden, so the banner slides away instead of popping off.
 enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
-// Ticks (lvframe60) after the player gains control before the banner begins its
-// fade-in, so it lands once the weapon-raise has finished rather than the instant
-// control is handed over.
+// Ticks (lvframe60) the mission timer must run before the banner begins its
+// fade-in, so it lands after the weapon-raise / cutscene-out finishes rather than
+// the instant the timer (re)starts.
 #define EGG_STAGE_INTRO_DELAY 30
 struct netegg {
 	s32 phase;       // EGG_* state
 	s32 phasestart;  // g_Vars.lvframe60 at phase entry
-	s32 readyframe;  // lvframe60 when the mission started (g_CoopGameplayStarted); -1 before that
+	s32 readyframe;  // lvframe60 when the mission timer (re)started running; -1 while it's paused
 };
 static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1 };
 static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1 };
@@ -5294,28 +5294,31 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 		anim->readyframe = -1;
 	}
 
-	// Animate in once the mission has actually started — i.e. the player has been
-	// handed control. g_CoopGameplayStarted latches true the first time tickmode
-	// reaches TICKMODE_NORMAL and is reset on the mission-start GE fade-in, so it
-	// stays false through the intro fade, the opening cutscene and the scripted
-	// auto-walk (despite the "Coop" name it's set in playerSetTickMode for every
-	// mode). Unlike the raw stage timer (g_StageTimeElapsed60), which counts from
-	// stage load including the intro, this is the true "mission has begun" moment.
-	// A short settle (EGG_STAGE_INTRO_DELAY) then lets the weapon-raise finish first.
-	if (!g_CoopGameplayStarted) {
+	// Drive the banner from the mission timer's run-state: show it only while the
+	// timer is actually counting — real gameplay, not the intro fade-from-black-into
+	// -control, the opening cutscene, a scripted auto-walk, a MID-MISSION cutscene,
+	// or the end screen. This mirrors the mission-timer increment condition in
+	// player.c (bondviewlevtime60 / playerGetMissionTime). Because the timer also
+	// pauses for mid-mission cutscenes, the banner now fades out for those and fades
+	// back in afterwards. A short settle (EGG_STAGE_INTRO_DELAY) after the timer
+	// (re)starts lets the weapon-raise / cutscene-out transition finish before the
+	// fade-in; a mid-game /graslu toggle is already past the settle so it's instant.
+	const bool timerrunning = (g_Vars.tickmode == TICKMODE_GE_FADEIN || g_Vars.tickmode == TICKMODE_NORMAL)
+			&& !g_InCutscene && !g_MainIsEndscreen;
+	if (!timerrunning) {
 		anim->readyframe = -1;
 	} else if (anim->readyframe < 0) {
 		anim->readyframe = lvf;
 	}
-	const bool introready = anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
+	const bool show = want && timerrunning
+			&& anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
 
-	// Edge transitions between the four phases. The fade-in waits for introready
-	// (post-cutscene + settle); a mid-game toggle is already past it so it animates
-	// in immediately.
-	if (want && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT) && introready) {
+	// Edge transitions: fade in once shown, fade out as soon as it shouldn't be
+	// (toggle off, or the mission timer paused for a cutscene/auto-walk/end screen).
+	if (show && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT)) {
 		anim->phase = EGG_FADEIN;
 		anim->phasestart = lvf;
-	} else if (!want && (anim->phase == EGG_FADEIN || anim->phase == EGG_HOLD)) {
+	} else if (!show && (anim->phase == EGG_FADEIN || anim->phase == EGG_HOLD)) {
 		anim->phase = EGG_FADEOUT;
 		anim->phasestart = lvf;
 	}

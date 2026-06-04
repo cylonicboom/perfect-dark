@@ -1250,6 +1250,7 @@ s32 netDisconnect(void)
 	// Clear the kill feed and lobby state so a fresh session starts clean.
 	netKillFeedClear();
 	g_NetLobbyState.valid = 0;
+	g_NetCoopHosting = 0; // co-op hosting intent is per-session
 
 	// Free any packets still sitting in the lag-sim queue (they'll never be
 	// sent since the peers are gone). Keep g_NetSimLagMs / g_NetSimPacketLoss
@@ -2613,6 +2614,7 @@ static f32 g_NetChrSnapInterval = 1.0f;
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
 s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
 s32 g_NetCoopObjWireDriven = 1; // /coopobj toggle; ON (default) makes networked OBJ props wire-driven on clients so they stick to the host pos instead of drifting/floating (/coopobj off reverts)
+s32 g_NetCoopHosting = 0;                  // host: server started for co-op (set by the co-op menu's Start Hosting)
 s32 g_NetCoopBodyMode = COOPBODY_FEMININE; // F2 local player's choice; synced via CLC_SETTINGS
 u8 g_NetCoopBodyBits = 0;                  // F2 resolved per-player masculine bitmask (host-assembled in SVC_STAGE_START write)
 s32 g_NetCoopLivesMode = COOP_LIVES_OFF;    // F3 host setting, synced

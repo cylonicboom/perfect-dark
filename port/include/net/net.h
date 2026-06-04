@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 51 // 51: F3b co-op lives respawn notification (SVC_COOP_LIVES 0x52)
+#define NET_PROTOCOL_VER 52 // 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -134,6 +134,7 @@ extern s32 g_NetCoopObjWireDriven;
 #define COOPBODY_FEMININE  0
 #define COOPBODY_MASCULINE 1
 #define COOPBODY_RANDOM    2
+extern s32 g_NetCoopHosting;  // host: this server was started for campaign co-op (advertised as netlobbystate.iscoop)
 extern s32 g_NetCoopBodyMode; // COOPBODY_* — local player's choice (synced via CLC_SETTINGS)
 extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (host-assembled, synced)
 
@@ -225,6 +226,7 @@ struct netlobbybot {
 
 struct netlobbystate {
 	u8 valid;
+	u8 iscoop; // host is running a campaign co-op lobby (clients show the co-op window, not the Combat Sim one)
 	u8 scenario;
 	u8 stagenum;
 	u64 options; // mirrors g_MpSetup.options (64-bit)

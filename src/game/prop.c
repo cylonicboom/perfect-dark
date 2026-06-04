@@ -3,6 +3,7 @@
 #include "../lib/naudio/n_sndp.h"
 #include "game/bondmove.h"
 #include "game/bondwalk.h"
+#include "game/cheats.h"
 #include "game/chraction.h"
 #include "game/dlights.h"
 #include "game/chr.h"
@@ -3033,7 +3034,18 @@ void autoaimTick(void)
 		}
 
 		if (bmoveIsAutoAimXEnabledForCurrentWeapon() || iscmpsec) {
-			bmoveUpdateAutoAimXProp(bestprop, (aimpos[0] - camGetScreenLeft()) / (camGetScreenWidth() * 0.5f) - 1);
+			f32 aimx = (aimpos[0] - camGetScreenLeft()) / (camGetScreenWidth() * 0.5f) - 1;
+#ifndef PLATFORM_N64
+			// CHEAT_MIRROR: the world renders left-right flipped and the shot direction
+			// is taken from the REFLECTED crosshair (see PORT_MIRROR.md). So the auto-aim
+			// must pull the crosshair to the target's MIRRORED screen side — negate the
+			// horizontal offset — otherwise it tracks the opposite side from where the
+			// target appears and the bullet misses. Local player only.
+			if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+				aimx = -aimx;
+			}
+#endif
+			bmoveUpdateAutoAimXProp(bestprop, aimx);
 		}
 
 		if (cangangsta) {

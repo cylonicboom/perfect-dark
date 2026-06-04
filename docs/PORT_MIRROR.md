@@ -36,8 +36,23 @@ reticle reaches a screen edge).
 
 An earlier approach negated the raw stick/mouse inputs at the source in `bmoveProcessInput`; that
 over-inverted strafe + aim + crosshair and was reverted in favour of these two motion-level negates.
-**Limitation:** only walk-mode yaw/strafe are handled — turret / vehicle / other movement modes are
-not inverted.
+
+**Other control paths now inverted too** (same `cheatIsActive(CHEAT_MIRROR) && !isremote` gate, at the
+input→motion point):
+
+- **Eyespy / camspy** (`bondeyespy.c` `eyespyProcessInput`) renders through the same flipped `lvRender`
+  but doesn't run the walk-mode negates — so its horizontal **look** (mouse `mdx` + stick `c1stickx`
+  → `eyespy->theta`) and **strafe** (`sidespeed`) are negated locally.
+- **Held / grabbed object** (`bondgrab.c`) rotation is driven by raw `speedtheta` (the walk fix only
+  negates `rotateamount`/`speedsideways`, not `speedtheta`), so the held box/bed tracked backwards;
+  the `speedtheta`-derived rotation is negated at both apply sites (`f0` in the "doextra" path and
+  `angle` in `bgrab0f0cdef0`). The rotation-induced lateral and `speedsideways` already line up.
+- **Auto-aim X** (`prop.c` `autoaimTick`): the horizontal target-offset fed to
+  `bmoveUpdateAutoAimXProp` is negated, because the shot direction is taken from the *reflected*
+  crosshair — so auto-aim must pull the crosshair to the target's **mirrored** screen side (otherwise
+  it tracked the opposite side and the bullet missed).
+
+**Limitation:** turret / vehicle (hovercraft, etc.) movement modes are still not inverted.
 
 ## Ammo HUD mirror (`bondgun.c` `bgunDrawHud`)
 

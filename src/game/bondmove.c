@@ -2429,6 +2429,18 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	}
 
 	g_Vars.currentplayer->speedtheta = g_Vars.currentplayer->speedthetacontrol;
+
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: in bike mode the yaw/look turn is driven by speedtheta (feeding
+	// bike->w -> the angledelta in bbikeCalculateNewPosition), unlike walk mode whose
+	// turn is negated in bwalkUpdateTheta. Invert the turn input so left/right match the
+	// mirrored view. Bike-only so walk's own negate isn't double-applied. Local only.
+	if (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE
+			&& cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+		g_Vars.currentplayer->speedtheta = -g_Vars.currentplayer->speedtheta;
+	}
+#endif
+
 	bmoveUpdateSpeedTheta();
 
 	if (movedata.detonating) {

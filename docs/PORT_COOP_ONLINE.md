@@ -32,33 +32,59 @@ co-op features off it.
 
 ## F0 — the Cooperative lobby menu
 
-Lives in `port/src/net/netmenu.c` alongside the existing `Host Network Game` /
-`Join Game` / `Server Browser` menus, using the same `menuitem` / `menudialogdef`
-framework. A new **"Cooperative"** entry on the top network menu
-(`g_NetMenuItems`) opens `g_NetCoopMenuDialog`.
+**Placement: its own top-level path, separate from Combat Simulator.** The port
+main menu (`g_MainMenuMenuItems`, mainmenu.c) already has four top-level entries —
+Solo Missions, Combat Simulator, **Co-Operative**, Counter-Operative — and each
+mode entry opens a small **Local / Online** submenu. Combat Simulator → Online
+goes to the Combat Sim network menu (`g_NetMenuDialog`); the **Co-Operative →
+Online** entry was a disabled placeholder. F0 wires that entry to the new co-op
+lobby `g_NetCoopMenuDialog`, so co-op online is fully separate from the Combat Sim
+network menu:
 
-**Flow (host):** Network Game → Cooperative → pick Mission + Difficulty +
-mutators → **Start Hosting** (`netStartServer`, enters lobby; clients can now
-join) → wait for partners → **Launch Mission** (`netCoopEnterStage(stage, diff,
+```
+Main Menu
+├─ Combat Simulator → Local / Online → g_NetMenuDialog      (Combat Sim network)
+└─ Co-Operative     → Local / Online → g_NetCoopMenuDialog  (co-op lobby — this)
+```
+
+The dialog itself lives in `port/src/net/netmenu.c` (non-static so mainmenu.c can
+reference it) using the same `menuitem` / `menudialogdef` framework as the other
+net menus. The wiring edit is in `src/game/mainmenu.c` `g_CoopModeMenuItems`
+(remove `MENUITEMFLAG_ALWAYSDISABLED`, add `OPENSDIALOG` → `&g_NetCoopMenuDialog`).
+
+**Flow (host):** Co-Operative → Online → pick Mission + Difficulty + mutators →
+**Start Hosting** (`netStartServer`, enters lobby; clients can now join) → wait
+for partners → **Launch Mission** (`netCoopEnterStage(stage, diff,
 g_NetNumClients)`, the same entry point `/coop` used). **Clients** join via the
-existing Join Game / Server Browser and are pulled into the stage by the host's
-`SVC_STAGE_START` (`NETSTAGEMODE_COOP`) — no co-op menu needed client-side.
+existing Combat Simulator → Online → Join Game / Server Browser (the join path is
+mode-agnostic) and are pulled into the stage by the host's `SVC_STAGE_START`
+(`NETSTAGEMODE_COOP`) — no co-op menu needed client-side.
 
 ### Menu layout (increment 1)
 
+The Online entry opens a **hub** (Host / Join / Browser) mirroring the Combat Sim
+network menu but separate from it; Join / Browser reuse the mode-agnostic
+handlers (the host's `SVC_STAGE_START NETSTAGEMODE_COOP` is what makes it co-op).
+
 ```
-Cooperative
-  Mission            (dropdown — g_SoloStages[0..NUM_SOLOSTAGES-1], name3)
-  Difficulty         (dropdown — Agent / Special Agent / Perfect Agent / Perfect Dark)
-  ---
-  Lives              (dropdown — Off (Steal Health) / Per Player / Shared Pool)   [F3 stores; gameplay wiring later]
-  Body Type          (dropdown — Feminine / Masculine / Random)                   [F2 stores; render wiring later]
-  Import Combat Sim Profile                                                       [F1 stub]
-  ---
-  Start Hosting      (netStartServer if not already hosting)
-  Launch Mission     (netCoopEnterStage — host only)
-  ---
+Co-Operative > Online        (g_NetCoopMenuDialog — hub)
+  Host Co-op Game            → g_NetCoopHostMenuDialog (below)
+  Join Game                  → menuhandlerJoinGame      (reused)
+  Server Browser             → menuhandlerServerBrowser (reused)
   Back
+
+  Host Co-op Game            (g_NetCoopHostMenuDialog — setup)
+    Mission                  (dropdown — g_SoloStages[0..NUM_SOLOSTAGES-1], name3)
+    Difficulty               (dropdown — Agent / Special Agent / Perfect Agent / Perfect Dark)
+    ---
+    Lives                    (dropdown — Off (Steal Health) / Per Player / Shared Pool)   [F3 stores; gameplay wiring later]
+    Body Type                (dropdown — Feminine / Masculine / Random)                   [F2 stores; render wiring later]
+    Import Combat Sim Profile                                                             [F1 stub]
+    ---
+    Start Hosting            (netStartServer if not already hosting)
+    Launch Mission           (netCoopEnterStage — host only)
+    ---
+    Back
 ```
 
 **Increment 1 (this pass)** wires Mission / Difficulty / Start Hosting / Launch

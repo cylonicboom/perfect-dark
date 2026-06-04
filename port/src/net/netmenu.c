@@ -2384,17 +2384,8 @@ static MenuItemHandlerResult menuhandlerNetCoopLaunch(s32 operation, struct menu
 	return 0;
 }
 
-static struct menudialogdef g_NetCoopMenuDialog;
-
-MenuItemHandlerResult menuhandlerCooperative(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	if (operation == MENUOP_SET) {
-		menuPushDialog(&g_NetCoopMenuDialog);
-	}
-	return 0;
-}
-
-static struct menuitem g_NetCoopMenuItems[] = {
+// Host setup: mission + difficulty + mutators + Start Hosting / Launch Mission.
+static struct menuitem g_NetCoopHostMenuItems[] = {
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Mission", 0, menuhandlerNetCoopStage },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Difficulty", 0, menuhandlerNetCoopDifficulty },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
@@ -2409,7 +2400,31 @@ static struct menuitem g_NetCoopMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
-static struct menudialogdef g_NetCoopMenuDialog = {
+static struct menudialogdef g_NetCoopHostMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Host Co-op Game",
+	g_NetCoopHostMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+// Co-Operative -> Online hub: Host / Join / Server Browser, mirroring the Combat
+// Sim network menu (g_NetMenuItems) but kept SEPARATE from it. Join / Browser
+// reuse the mode-agnostic handlers (joining is identical; the host's
+// SVC_STAGE_START NETSTAGEMODE_COOP is what selects co-op). Non-static dialog:
+// referenced from the main-menu "Co-Operative -> Online" entry
+// (src/game/mainmenu.c g_CoopModeMenuItems).
+static struct menuitem g_NetCoopMenuItems[] = {
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Host Co-op Game\n", 0, (void *)&g_NetCoopHostMenuDialog },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Join Game\n", 0, menuhandlerJoinGame },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Server Browser\n", 0, menuhandlerServerBrowser },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Back\n", 0, NULL },
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_NetCoopMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	(uintptr_t)"Cooperative",
 	g_NetCoopMenuItems,
@@ -2426,14 +2441,6 @@ struct menuitem g_NetMenuItems[] = {
 		(uintptr_t)"Host Game\n",
 		0,
 		menuhandlerHostGame,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Cooperative\n",
-		0,
-		menuhandlerCooperative,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

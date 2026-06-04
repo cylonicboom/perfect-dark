@@ -174,6 +174,13 @@ if(NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
   add_compile_options(-Og)
 endif()
 
+# Always embed DWARF debug info so the crash handler's addr2line fallback
+# (port/src/crash.c -> crashAppendDwarf) can symbolise pd.crash.log on ANY build
+# type. CMake's plain `Release` config compiles WITHOUT -g, which is what produces
+# raw-offset (un-symbolised) crash dumps. The desktop exe is never stripped (only
+# the Switch .nro is stripped separately below), so this just guarantees symbols.
+add_compile_options(-g)
+
 # Common CFLAGS
 add_compile_options(
   -fno-inline-functions

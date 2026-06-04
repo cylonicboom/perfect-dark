@@ -2268,6 +2268,11 @@ static s32 g_NetCoopMenuDiff = DIFF_A;
 
 static MenuItemHandlerResult menuhandlerNetCoopStage(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	// Host-only setting: greyed out (disabled) for clients; the host owns these.
+	if (operation == MENUOP_CHECKDISABLED) {
+		return (g_NetMode == NETMODE_CLIENT) ? 1 : 0;
+	}
+
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
 		data->dropdown.value = NUM_SOLOSTAGES;
@@ -2286,6 +2291,11 @@ static MenuItemHandlerResult menuhandlerNetCoopStage(s32 operation, struct menui
 
 static MenuItemHandlerResult menuhandlerNetCoopDifficulty(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	// Host-only setting: greyed out (disabled) for clients; the host owns these.
+	if (operation == MENUOP_CHECKDISABLED) {
+		return (g_NetMode == NETMODE_CLIENT) ? 1 : 0;
+	}
+
 	static const char *const opts[] = { "Agent", "Special Agent", "Perfect Agent", "Perfect Dark" };
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
@@ -2305,6 +2315,11 @@ static MenuItemHandlerResult menuhandlerNetCoopDifficulty(s32 operation, struct 
 
 static MenuItemHandlerResult menuhandlerNetCoopLives(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	// Host-only setting: greyed out (disabled) for clients; the host owns these.
+	if (operation == MENUOP_CHECKDISABLED) {
+		return (g_NetMode == NETMODE_CLIENT) ? 1 : 0;
+	}
+
 	// F3 host mutator. Off = stock steal-half-a-buddy's-health revive; Per Player /
 	// Shared Pool replace it with a respawn budget. Synced in SVC_STAGE_START.
 	static const char *const opts[] = { "Off (Steal Health)", "Per Player", "Shared Pool" };
@@ -2326,6 +2341,11 @@ static MenuItemHandlerResult menuhandlerNetCoopLives(s32 operation, struct menui
 
 static MenuItemHandlerResult menuhandlerNetCoopLivesCount(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	// Host-only setting: greyed out (disabled) for clients; the host owns these.
+	if (operation == MENUOP_CHECKDISABLED) {
+		return (g_NetMode == NETMODE_CLIENT) ? 1 : 0;
+	}
+
 	// F3: lives granted per player (Per Player) or, scaled by player count, the
 	// shared pool (Shared Pool). Options 1..9. Only meaningful when Lives != Off.
 	static const char *const opts[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
@@ -2382,6 +2402,11 @@ static MenuItemHandlerResult menuhandlerNetCoopImportProfile(s32 operation, stru
 
 static MenuItemHandlerResult menuhandlerNetCoopStartHosting(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	// Host-only setting: greyed out (disabled) for clients; the host owns these.
+	if (operation == MENUOP_CHECKDISABLED) {
+		return (g_NetMode == NETMODE_CLIENT) ? 1 : 0;
+	}
+
 	if (operation == MENUOP_SET) {
 		if (g_NetMode == NETMODE_SERVER) {
 			sysLogPrintf(LOG_CHAT, "NET: already hosting — configure, then Launch Mission");
@@ -2396,6 +2421,11 @@ static MenuItemHandlerResult menuhandlerNetCoopStartHosting(s32 operation, struc
 
 static MenuItemHandlerResult menuhandlerNetCoopLaunch(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	// Host-only setting: greyed out (disabled) for clients; the host owns these.
+	if (operation == MENUOP_CHECKDISABLED) {
+		return (g_NetMode == NETMODE_CLIENT) ? 1 : 0;
+	}
+
 	if (operation == MENUOP_SET) {
 		if (g_NetMode != NETMODE_SERVER) {
 			sysLogPrintf(LOG_CHAT, "NET: Start Hosting first");
@@ -2413,6 +2443,11 @@ static MenuItemHandlerResult menuhandlerNetCoopLaunch(s32 operation, struct menu
 
 // Host setup: mission + difficulty + mutators + Start Hosting / Launch Mission.
 static struct menuitem g_NetCoopHostMenuItems[] = {
+	// Per-player customisation — enabled for everyone (host AND each client).
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"My Body Type", 0, menuhandlerNetCoopBody },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	// Host-only match settings — greyed out for clients (the handlers return
+	// MENUOP_CHECKDISABLED when g_NetMode == NETMODE_CLIENT).
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Mission", 0, menuhandlerNetCoopStage },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Difficulty", 0, menuhandlerNetCoopDifficulty },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
@@ -2429,24 +2464,21 @@ static struct menuitem g_NetCoopHostMenuItems[] = {
 
 static struct menudialogdef g_NetCoopHostMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
-	(uintptr_t)"Host Co-op Game",
+	(uintptr_t)"Co-op Match Setup",
 	g_NetCoopHostMenuItems,
 	NULL,
 	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
 	NULL,
 };
 
-// Co-Operative -> Online hub: Host / Join / Server Browser, mirroring the Combat
-// Sim network menu (g_NetMenuItems) but kept SEPARATE from it. Join / Browser
-// reuse the mode-agnostic handlers (joining is identical; the host's
+// Co-Operative -> Online hub: Match Setup / Join / Server Browser, mirroring the
+// Combat Sim network menu (g_NetMenuItems) but kept SEPARATE from it. Join /
+// Browser reuse the mode-agnostic handlers (joining is identical; the host's
 // SVC_STAGE_START NETSTAGEMODE_COOP is what selects co-op). Non-static dialog:
 // referenced from the main-menu "Co-Operative -> Online" entry
 // (src/game/mainmenu.c g_CoopModeMenuItems).
 static struct menuitem g_NetCoopMenuItems[] = {
-	// Per-player customisation (applies whether you host or join).
-	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"My Body Type", 0, menuhandlerNetCoopBody },
-	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
-	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Host Co-op Game\n", 0, (void *)&g_NetCoopHostMenuDialog },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Match Setup\n", 0, (void *)&g_NetCoopHostMenuDialog },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Join Game\n", 0, menuhandlerJoinGame },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Server Browser\n", 0, menuhandlerServerBrowser },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },

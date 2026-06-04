@@ -192,15 +192,17 @@ quadrant.
   (`skyRenderArtifacts`→`skyRenderFlare`, `sky.c`) reflect their screen X about the view centre when
   `CHEAT_MIRROR` is active, so they track the mirrored world. The glares' *visibility* is a world-space
   LOS test, which is unaffected by the screen-space flip.
-- **Sky / horizon / water are mirrored game-side** (`sky.c`). The sky dome, clouds, horizon line and
-  water surface are NOT 3D geometry — they're computed in screen space and drawn straight to the RDP
-  edge-walker (`gImmp1`/`G_RDPHALF` in `skyRenderTri`/`skyRenderFull`), so they bypass the renderer's
-  clip-space flip and would otherwise scroll the wrong way against the mirrored world (the "sky moves
-  strange" symptom). Both helpers reflect each vertex's screen X about the view centre into local
-  copies when `CHEAT_MIRROR` is active; sky 2D coords are in 4x-subpixel space, so the reflection uses
-  `(camGetScreenLeft()*2 + camGetScreenWidth()) * 4 - x`. All the edge/winding math derives from
-  `vtx->x`, so the flipped triangle comes out correct (no winding fix needed). The solid water fill-rect
-  fallback (`env->water_enabled == 0`) reflects + swaps its X bounds the same way.
+- **Sky / clouds / horizon are mirrored at the sampling input** (`sky.c` `skyGetWorldPosFromScreenPos`).
+  The sky is a screen-space projection of the camera view (not 3D geometry), so it bypasses the
+  renderer's clip-space flip; its cloud texture coords (`.s`/`.t` = world X/Z sampled per screen
+  position) made the clouds scroll the **wrong way on turn** while looking fine standing still.
+  Reflecting the rendered vertex *positions* doesn't help — the sky is a full-screen quad, so the
+  scroll lives entirely in the per-pixel `s/t`. The fix reflects the **sampled screen X about the view
+  centre** (`left = camGetScreenWidth() - left`) inside `skyGetWorldPosFromScreenPos`, *before* the
+  `cam0f0b4c3c` unprojection + camera rotation — making each sample the camera-space horizontal mirror
+  (the camera rotation that follows absorbs the yaw, so it's correct at any heading). One choke point
+  covers clouds, the horizon line, and the water surface (all sky sampling routes through it). N64
+  `#ifndef`'d; mirror-off byte-identical.
 - **GL backend only** (the renderer this port uses). Other rapi backends are untouched.
 
 ## Verification

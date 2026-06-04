@@ -68,17 +68,18 @@ handlers (the host's `SVC_STAGE_START NETSTAGEMODE_COOP` is what makes it co-op)
 
 ```
 Co-Operative > Online        (g_NetCoopMenuDialog — hub)
+  My Body Type               (dropdown — Feminine / Masculine / Random)  [F2 per-player; synced via CLC_SETTINGS]
+  ---
   Host Co-op Game            → g_NetCoopHostMenuDialog (below)
   Join Game                  → menuhandlerJoinGame      (reused)
   Server Browser             → menuhandlerServerBrowser (reused)
   Back
 
-  Host Co-op Game            (g_NetCoopHostMenuDialog — setup)
+  Host Co-op Game            (g_NetCoopHostMenuDialog — host-only setup)
     Mission                  (dropdown — g_SoloStages[0..NUM_SOLOSTAGES-1], name3)
     Difficulty               (dropdown — Agent / Special Agent / Perfect Agent / Perfect Dark)
     ---
     Lives                    (dropdown — Off (Steal Health) / Per Player / Shared Pool)   [F3 stores; gameplay wiring later]
-    Body Type                (dropdown — Feminine / Masculine / Random)                   [F2 stores; render wiring later]
     Import Combat Sim Profile                                                             [F1 stub]
     ---
     Start Hosting            (netStartServer if not already hosting)
@@ -86,6 +87,9 @@ Co-Operative > Online        (g_NetCoopMenuDialog — hub)
     ---
     Back
 ```
+
+"My Body Type" is in the hub (not the host-only setup) because it's a **per-player**
+customisation each client sets for themselves.
 
 **Increment 1 (this pass)** wires Mission / Difficulty / Start Hosting / Launch
 fully (a menu replacement for `/coop`, which is kept). The Lives and Body Type
@@ -123,22 +127,41 @@ per level** — `playerChooseBodyAndHead` resolves an `outfit` (combat suit, lea
 wetsuit, lab coat, …) and the switch on it sets `*bodynum`/`*headnum`. So the
 masculine model is a **per-outfit counterpart**, not a single global body.
 
+**Body type is a PER-PLAYER choice** (each player's own customisation), and **the
+head is ALWAYS the player's Combat Sim profile head** — the fixed campaign
+Joanna/Velvet heads are never used in co-op (feminine *and* masculine bodies take
+the CS head).
+
 Implemented:
-- **Menu → net global.** The lobby "Body Type" dropdown writes `g_NetCoopBodyMode`
-  (`COOPBODY_FEMININE` / `MASCULINE` / `RANDOM`, `net.h`).
-- **Host resolve + sync.** `netCoopEnterStage` (host only, `g_NetMode !=
-  NETMODE_CLIENT`) resolves the mode into a per-player bitmask `g_NetCoopBodyBits`
-  (bit *i* = player *i* uses the masculine body). `RANDOM` rolls each bit from the
-  **cosmetic** RNG (`rngCosmeticRandom`) — the host *broadcasts the result*, so
-  determinism isn't required and the network-synced gameplay seed is untouched.
-  The bitmask ships in the `SVC_STAGE_START` co-op branch (proto 49); the client
-  applies the wire value in `netmsgSvcStageStartRead` *before* its own
-  `netCoopEnterStage` (which is gated not to re-resolve).
-- **Render hook.** `playerChooseBodyAndHead`, after the outfit switch: if this
-  co-op player's bit is set, `coopGetMasculineModel(outfit, stagenum, solo, …)`
-  supplies the masculine body+head — currently a `switch (outfit) { default:
-  return false; }` stub, so every outfit falls back to feminine. **Authoring drops
-  in per-outfit `case`s here.** `#ifndef PLATFORM_N64`; N64 byte-identical.
+- **Per-player choice → CLC_SETTINGS.** The "My Body Type" dropdown (in the
+  co-op Online *hub*, reachable by host and clients alike) writes
+  `g_NetCoopBodyMode` (`COOPBODY_FEMININE`/`MASCULINE`/`RANDOM`) and calls
+  `netClientSettingsChanged()`. Each player's choice rides `CLC_SETTINGS`
+  (`settings.coopbodytype`) to the host.
+- **Host assembles + syncs.** In the `SVC_STAGE_START` co-op write the host stamps
+  its own choice into `g_NetLocalClient->settings.coopbodytype`, then walks the
+  client manifest and resolves every player's `coopbodytype` into the bitmask
+  `g_NetCoopBodyBits` (bit *i* = player *i* masculine). `RANDOM` is rolled here
+  from the **cosmetic** RNG (`rngCosmeticRandom`) — the *result* ships, so all
+  machines agree and the network-synced gameplay seed stays clean. The client
+  applies the wire bitmask in `netmsgSvcStageStartRead` before its
+  `netCoopEnterStage`. (proto 49 covers both the CLC field and the SVC bitmask.)
+- **Render hook.** `playerChooseBodyAndHead`, after the outfit switch, for co-op:
+  - **HEAD** is always set from `g_PlayerConfigsArray[mpindex].base.mpheadnum`
+    (same source as the Combat Sim path) — each player looks like their CS
+    character, never the campaign default.
+  - **BODY**: if this player's `g_NetCoopBodyBits` bit is set,
+    `coopGetMasculineBody(outfit, stagenum)` supplies the masculine body —
+    currently a `switch (outfit) { default: return -1; }` stub, so every outfit
+    falls back to feminine. **Per-outfit masculine bodies drop in as `case`s
+    here.** `#ifndef PLATFORM_N64`; N64 byte-identical.
+
+  *Known caveat (invisible until art):* the host assembles the bitmask in the
+  `SVC_STAGE_START` write, which fires during stage load; if the host's own
+  `playerChooseBodyAndHead` runs before that write, the host renders *itself*
+  feminine for that load. Harmless while masculine == feminine; when art lands,
+  hoist the host resolve to `netPlayersAllocate` (pre-body-choice, playernums
+  valid).
 
 ## F3 — lives mutator (later)
 

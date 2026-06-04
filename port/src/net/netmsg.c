@@ -9,6 +9,7 @@
 #include "lib/mtx.h"
 #include "lib/model.h"
 #include "lib/anim.h"
+#include "lib/rng.h" // rngCosmeticRandom — F2 co-op body randomisation (host-side, unsynced)
 #include "game/mplayer/mplayer.h"
 #include "game/chr.h"
 #include "game/chraction.h"
@@ -554,6 +555,7 @@ u32 netmsgClcSettingsWrite(struct netbuf *dst)
 	netbufWriteF32(dst, g_NetLocalClient->settings.fovy);
 	netbufWriteF32(dst, g_NetLocalClient->settings.fovzoommult);
 	netbufWriteStr(dst, g_NetLocalClient->settings.name);
+	netbufWriteU8(dst, (u8)g_NetCoopBodyMode); // F2: this player's co-op body-type choice (proto 49)
 	return dst->error;
 }
 
@@ -565,6 +567,7 @@ u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl)
 	const f32 fovy = netbufReadF32(src);
 	const f32 fovzoommult = netbufReadF32(src);
 	char *name = netbufReadStr(src);
+	const u8 coopbodytype = netbufReadU8(src); // F2 (proto 49)
 
 	if (src->error) {
 		sysLogPrintf(LOG_WARNING, "NET: malformed CLC_SETTINGS from client %u", srccl->id);
@@ -582,6 +585,7 @@ u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl)
 	srccl->settings.headnum = headnum;
 	srccl->settings.fovy = fovy;
 	srccl->settings.fovzoommult = fovzoommult;
+	srccl->settings.coopbodytype = (coopbodytype <= COOPBODY_RANDOM) ? coopbodytype : COOPBODY_FEMININE;
 
 	return src->error;
 }
@@ -825,16 +829,31 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 		// broadcast (gated state >= CLSTATE_GAME) skips them and players can't see
 		// each other move.
 		netbufWriteU8(dst, g_NetNumClients);
+		// F2: the host's own body-type choice (g_NetCoopBodyMode) doesn't arrive
+		// via CLC_SETTINGS, so stamp it into the host's own client record before
+		// resolving the per-player bitmask below.
+		g_NetLocalClient->settings.coopbodytype = (u8)g_NetCoopBodyMode;
+		g_NetCoopBodyBits = 0;
 		for (s32 i = 0; i < g_NetMaxClients; ++i) {
 			struct netclient *ncl = &g_NetClients[i];
 			if (ncl->state) {
 				netbufWriteU8(dst, ncl->id);
 				netbufWriteU8(dst, ncl->playernum);
 				ncl->state = CLSTATE_GAME;
+				// Resolve this player's masculine bit from their synced choice.
+				// COOPBODY_RANDOM is rolled here (host side, unsynced cosmetic RNG):
+				// the rolled RESULT is what ships, so every machine agrees and the
+				// network-synced gameplay seed is left clean.
+				if (ncl->playernum < MAX_PLAYERS) {
+					const u8 mode = ncl->settings.coopbodytype;
+					if (mode == COOPBODY_MASCULINE
+							|| (mode == COOPBODY_RANDOM && (rngCosmeticRandom() & 1))) {
+						g_NetCoopBodyBits |= (u8)(1 << ncl->playernum);
+					}
+				}
 			}
 		}
-		// F2: per-player body-type bitmask (bit i = player i uses the masculine
-		// body). Host-resolved in netCoopEnterStage. (proto 49)
+		// F2: resolved per-player body-type bitmask (bit i = player i masculine). proto 49
 		netbufWriteU8(dst, g_NetCoopBodyBits);
 		return dst->error;
 	}

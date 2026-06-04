@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 49 // 49: SVC_STAGE_START co-op branch carries the per-player body-type bitmask (F2)
+#define NET_PROTOCOL_VER 49 // 49: F2 co-op body type — CLC_SETTINGS carries each player's choice; SVC_STAGE_START co-op branch carries the resolved per-player bitmask
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -121,18 +121,21 @@ extern s32 g_NetChrInterp;
 extern s32 g_NetCoopChrLifecycle;
 extern s32 g_NetCoopObjWireDriven;
 
-// Campaign co-op body type (F2, docs/PORT_COOP_ONLINE.md). g_NetCoopBodyMode is
-// the host's lobby selection; at stage start the host resolves it into per-player
-// bits in g_NetCoopBodyBits (bit i = player i uses the masculine body) and ships
-// them in SVC_STAGE_START so all machines agree (esp. for COOPBODY_RANDOM).
-// Jo's body+head are outfit-driven per level (playerChooseBodyAndHead), so the
-// "masculine" model is a per-outfit counterpart; until that art exists the hook
-// falls back to the feminine model, so this is currently a no-op visually.
+// Campaign co-op body type (F2, docs/PORT_COOP_ONLINE.md). PER-PLAYER choice:
+// g_NetCoopBodyMode is THIS machine's local player's selection; it rides
+// CLC_SETTINGS to the host (settings.coopbodytype). At SVC_STAGE_START the host
+// resolves every player's choice into per-player bits in g_NetCoopBodyBits (bit i
+// = player i uses the masculine body) — COOPBODY_RANDOM is rolled host-side so all
+// machines agree — and ships the bitmask. Jo's body+head are outfit-driven per
+// level (playerChooseBodyAndHead); the "masculine" model is a per-outfit
+// counterpart, falling back to the feminine model until that art exists (so this
+// is currently a no-op visually). The HEAD is always the player's Combat Sim
+// profile head, independent of body type.
 #define COOPBODY_FEMININE  0
 #define COOPBODY_MASCULINE 1
 #define COOPBODY_RANDOM    2
-extern s32 g_NetCoopBodyMode; // COOPBODY_* — host lobby choice
-extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (synced)
+extern s32 g_NetCoopBodyMode; // COOPBODY_* — local player's choice (synced via CLC_SETTINGS)
+extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (host-assembled, synced)
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only
@@ -322,6 +325,7 @@ struct netclient {
 		u8 headnum;
 		u8 bodynum;
 		u8 team;
+		u8 coopbodytype; // F2: COOPBODY_* — this player's co-op body-type choice
 		f32 fovy;
 		f32 fovzoommult;
 	} settings;

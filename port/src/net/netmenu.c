@@ -2325,8 +2325,11 @@ static MenuItemHandlerResult menuhandlerNetCoopLives(s32 operation, struct menui
 
 static MenuItemHandlerResult menuhandlerNetCoopBody(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	// F2: render effect not yet wired — selection is stored. "Masculine" will fall
-	// back to the feminine model until per-mission masculine art exists.
+	// F2: PER-PLAYER body-type choice. Stored in g_NetCoopBodyMode and pushed to
+	// the host via CLC_SETTINGS (netClientSettingsChanged), where it is resolved
+	// into the synced per-player bitmask at stage start. "Masculine" falls back to
+	// the feminine model until per-outfit masculine art exists. The head is always
+	// the player's Combat Sim profile head regardless of this choice.
 	static const char *const opts[] = { "Feminine", "Masculine", "Random" };
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
@@ -2336,6 +2339,7 @@ static MenuItemHandlerResult menuhandlerNetCoopBody(s32 operation, struct menuit
 		return (intptr_t)opts[data->dropdown.value];
 	case MENUOP_SET:
 		g_NetCoopBodyMode = (s32)data->checkbox.value;
+		netClientSettingsChanged(); // push the choice to the host (no-op when hosting)
 		break;
 	case MENUOP_GETSELECTEDINDEX:
 		data->dropdown.value = (g_NetCoopBodyMode >= COOPBODY_FEMININE && g_NetCoopBodyMode <= COOPBODY_RANDOM) ? g_NetCoopBodyMode : COOPBODY_FEMININE;
@@ -2391,7 +2395,6 @@ static struct menuitem g_NetCoopHostMenuItems[] = {
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Difficulty", 0, menuhandlerNetCoopDifficulty },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives", 0, menuhandlerNetCoopLives },
-	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Body Type", 0, menuhandlerNetCoopBody },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Import Combat Sim Profile\n", 0, menuhandlerNetCoopImportProfile },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Start Hosting\n", 0, menuhandlerNetCoopStartHosting },
@@ -2417,6 +2420,9 @@ static struct menudialogdef g_NetCoopHostMenuDialog = {
 // referenced from the main-menu "Co-Operative -> Online" entry
 // (src/game/mainmenu.c g_CoopModeMenuItems).
 static struct menuitem g_NetCoopMenuItems[] = {
+	// Per-player customisation (applies whether you host or join).
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"My Body Type", 0, menuhandlerNetCoopBody },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Host Co-op Game\n", 0, (void *)&g_NetCoopHostMenuDialog },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Join Game\n", 0, menuhandlerJoinGame },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Server Browser\n", 0, menuhandlerServerBrowser },

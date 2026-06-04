@@ -1296,27 +1296,23 @@ void playersTickAllChrBodies(void)
 }
 
 #ifndef PLATFORM_N64
-// F2 (docs/PORT_COOP_ONLINE.md): pick the masculine campaign body+head for a given
-// outfit. Jo's feminine body+head are outfit-driven per level (the outfit switch
-// in playerChooseBodyAndHead), so the masculine model is authored as a per-outfit
-// counterpart. Returns true and fills *bodyout/*headout when masculine art exists
-// for that outfit; returns false otherwise, leaving the caller's feminine choice
-// in place — the current behaviour for every outfit until per-mission masculine
-// art is supplied. `solo` distinguishes the lead (Joanna) from co-op partners
-// (Velvet) for the head, matching the switch.
-static bool coopGetMasculineModel(s32 outfit, s32 stagenum, bool solo, s32 *bodyout, s32 *headout)
+// F2 (docs/PORT_COOP_ONLINE.md): pick the masculine campaign BODY for a given
+// outfit. Jo's feminine body is outfit-driven per level (the outfit switch in
+// playerChooseBodyAndHead), so the masculine body is authored as a per-outfit
+// counterpart. Returns the masculine body model when art exists for that outfit,
+// or -1 otherwise (feminine fallback — the current behaviour for every outfit
+// until per-mission masculine art is supplied). The HEAD is NOT chosen here: co-op
+// always uses the player's Combat Sim profile head (see playerChooseBodyAndHead).
+static s32 coopGetMasculineBody(s32 outfit, s32 stagenum)
 {
 	(void)stagenum;
-	(void)solo;
 
 	switch (outfit) {
-	// Per-outfit masculine models drop in here as art is authored, e.g.:
-	//   case OUTFIT_DEFAULT:
-	//       *bodyout = BODY_<masculine combat>;
-	//       *headout = HEAD_<masculine>;
-	//       return true;
+	// Per-outfit masculine BODY models drop in here as art is authored, e.g.:
+	//   case OUTFIT_DEFAULT: return BODY_<masculine combat>;
+	//   case OUTFIT_LEATHER: return BODY_<masculine leather>;
 	default:
-		return false; // no masculine art for this outfit yet -> feminine fallback
+		return -1; // no masculine body authored for this outfit yet -> feminine fallback
 	}
 }
 #endif
@@ -1449,21 +1445,31 @@ void playerChooseBodyAndHead(s32 *bodynum, s32 *headnum, s32 *arg2)
 	}
 
 #ifndef PLATFORM_N64
-	// F2: if this co-op player is assigned the masculine body (g_NetCoopBodyBits,
-	// resolved on the host from the lobby choice and synced to clients), swap in
-	// the masculine counterpart of the outfit just selected. Falls back to the
-	// feminine model when none is authored, so this is currently a no-op visually.
-	// Campaign co-op only (Combat Sim / anti returned earlier).
-	if (g_Vars.coopplayernum >= 0
-			&& g_Vars.currentplayernum < MAX_PLAYERS
-			&& (g_NetCoopBodyBits & (1 << g_Vars.currentplayernum))) {
-		s32 mbody = -1;
-		s32 mhead = -1;
+	// Campaign co-op model assembly (port). Combat Sim / anti returned earlier, so
+	// this is campaign co-op only.
+	//  - HEAD: always the player's Combat Sim profile head (same source as the
+	//    Combat Sim path above) so each co-op player is recognisable as their CS
+	//    character, instead of the fixed Joanna/Velvet heads.
+	//  - BODY: the per-level outfit body chosen above, or its masculine counterpart
+	//    when this player's F2 body bit (g_NetCoopBodyBits, host-resolved + synced)
+	//    is set — falling back to feminine until per-outfit masculine art exists.
+	if (g_Vars.coopplayernum >= 0) {
+		s32 mpheadnum = g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.mpheadnum;
 
-		if (coopGetMasculineModel(outfit, g_Vars.stagenum, solo, &mbody, &mhead)) {
-			*bodynum = mbody;
-			if (mhead >= 0) {
-				*headnum = mhead;
+		if (mpheadnum < mpGetNumHeads2()) {
+			*headnum = mpGetHeadId(mpheadnum);
+		} else {
+			*headnum = mpheadnum - mpGetNumHeads2();
+			if (arg2) {
+				*arg2 = true;
+			}
+		}
+
+		if (g_Vars.currentplayernum < MAX_PLAYERS
+				&& (g_NetCoopBodyBits & (1 << g_Vars.currentplayernum))) {
+			s32 mbody = coopGetMasculineBody(outfit, g_Vars.stagenum);
+			if (mbody >= 0) {
+				*bodynum = mbody;
 			}
 		}
 	}

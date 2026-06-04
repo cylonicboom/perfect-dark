@@ -2178,7 +2178,30 @@ void propsTickPlayer(bool islastplayer)
 				g_Vars.propstates[prop->propstateindex].foregroundpropcount++;
 
 				if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR) {
+#ifndef PLATFORM_N64
+					// Co-op (experimental, /coopobj): objTickPlayer runs the obj's
+					// local physics unconditionally on clients (unlike sims, whose
+					// botTick is server-gated). For a movable/pushable object that
+					// drifts prop->pos — and the rendered model (objRender reads
+					// prop->pos) — away from the wire, which only corrects it at
+					// 50%/packet, splitting model from hitbox at high ping and lagging
+					// items parented to it. When enabled, snap a networked OBJ prop back
+					// to the wire pos after the tick so the host's position is the sole
+					// source; pickups/interactions in the tick still run.
+					struct coord objwirepos = {0, 0, 0};
+					const bool objrestore = g_NetCoopObjWireDriven
+							&& g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+							&& prop->syncid && prop->obj;
+					if (objrestore) {
+						objwirepos = prop->pos;
+					}
 					op = objTickPlayer(prop);
+					if (objrestore && op != TICKOP_FREE && prop->obj) {
+						prop->pos = objwirepos;
+					}
+#else
+					op = objTickPlayer(prop);
+#endif
 				} else if (prop->type == PROPTYPE_EXPLOSION) {
 					op = explosionTickPlayer(prop);
 				} else if (prop->type == PROPTYPE_SMOKE) {

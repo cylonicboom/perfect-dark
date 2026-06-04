@@ -2484,6 +2484,7 @@ static f32 g_NetChrSnapInterval = 1.0f;
 
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
 s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
+s32 g_NetCoopObjWireDriven = 0; // /coopobj toggle; OFF=current. ON makes networked OBJ props wire-driven on clients (skip local physics fight)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {
@@ -4012,6 +4013,20 @@ s32 netConsoleCommand(const char *line)
 		}
 		sysLogPrintf(LOG_CHAT, "NET: co-op runtime chr lifecycle = %s%s", g_NetCoopChrLifecycle ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopchr on|off)" : "");
+	} else if (strcmp(cmd, "coopobj") == 0) {
+		// /coopobj on|off (default off) — EXPERIMENTAL. On a CLIENT, make networked
+		// OBJ props fully wire-driven: after objTickPlayer runs, snap prop->pos back to
+		// the host's authoritative position, discarding the client's local physics
+		// integration (which otherwise drifts the model away from the wire-corrected
+		// hitbox at high ping, and lags items parented to a moving object). Pickups /
+		// interactions still run. Flip on each client to A/B the physics-object desync.
+		if (strcmp(arg, "on") == 0) {
+			g_NetCoopObjWireDriven = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetCoopObjWireDriven = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: co-op OBJ wire-driven = %s%s", g_NetCoopObjWireDriven ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopobj on|off)" : "");
 	} else if (strcmp(cmd, "coop") == 0) {
 		// /coop [solostageindex] [difficulty] — HOST only. Start a campaign co-op
 		// session on a solo stage (default Defection, index 0). Difficulty is

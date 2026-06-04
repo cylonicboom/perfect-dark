@@ -29,19 +29,6 @@ u32 g_NextHudMessageId;
 
 u8 g_HudmsgsActive = 0;
 
-#ifndef PLATFORM_N64
-// Port: true on frames where the on-screen mission clock WOULD be drawn for the
-// local player, ignoring the player's numeric Show-Mission-Time option. Set in
-// hudmsgsRender from the clock's visibility conditions minus that option (and while
-// inside `if (timerthing)` — its slot not taken by a cutscene subtitle / bottom
-// text, which is what hides the clock during the intro and cutscenes). The
-// vanity-egg banners in net.c gate on it, so they appear exactly when the clock
-// would — hidden through the intro / cutscenes, shown in live play — regardless of
-// whether the numeric clock itself is enabled. Defaults false each frame at the top
-// of hudmsgsRender.
-s32 g_HudMissionTimerOnScreen = 0;
-#endif
-
 u32 g_HudmsgColours[] = {
 	/* 0*/ 0x00ff0000, // green
 	/* 1*/ 0x9999ff00, // pastel blue
@@ -1412,9 +1399,6 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	s32 spdc = true;
 #ifndef PLATFORM_N64
 	const s32 playercount = LOCALPLAYERCOUNT();
-	// Default off; set true below only if the mission timer is actually drawn this
-	// frame (so a cutscene subtitle taking the slot, or a hidden HUD, reads as off).
-	g_HudMissionTimerOnScreen = false;
 #endif
 
 #if PAL
@@ -1678,20 +1662,6 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	}
 
 	if (timerthing) {
-#ifndef PLATFORM_N64
-		// Egg-banner gate (net.c): track WHEN the mission clock would be on screen,
-		// WITHOUT requiring the player's numeric Show-Mission-Time option. These are
-		// the clock's visibility conditions below minus that option — and crucially
-		// we're inside `if (timerthing)`, i.e. the clock's slot isn't taken by a
-		// cutscene subtitle / bottom-aligned text, which is what hides it during the
-		// intro and cutscenes. So the banner appears exactly when the clock would,
-		// whether or not the numeric clock itself is enabled.
-		g_HudMissionTimerOnScreen = var80075d60 == 2
-				&& g_Vars.normmplayerisrunning == false
-				&& g_Vars.stagenum != STAGE_CITRAINING
-				&& g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY
-				&& g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON;
-#endif
 		if (optionsGetShowMissionTime(g_Vars.currentplayerstats->mpindex)
 				&& var80075d60 == 2
 				&& g_Vars.normmplayerisrunning == false

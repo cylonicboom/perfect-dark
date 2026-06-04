@@ -17445,20 +17445,9 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 	}
 #endif
 
-#ifndef PLATFORM_N64
-	// Wire-driven pickups (SVC_PROP_PICKUP, g_NetPickupWireShowMsg >= 0) are
-	// host-authoritative and applied in net-processing context where lvupdate240
-	// can be 0 this frame; apply them regardless of the local frame step (otherwise
-	// invGiveProp never runs and the item never enters the client's inventory).
-	if (g_Vars.currentplayer->isdead
-			|| (g_Vars.lvupdate240 == 0 && g_NetPickupWireShowMsg < 0)) {
-		return TICKOP_NONE;
-	}
-#else
 	if (g_Vars.currentplayer->isdead || g_Vars.lvupdate240 == 0) {
 		return TICKOP_NONE;
 	}
-#endif
 
 	// Suppress HUD pickup messages during cutscenes (e.g. items given at
 	// mission start via aiGiveObjectToChr). In co-op, keep showing them for

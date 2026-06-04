@@ -191,8 +191,21 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 	y = timery;
 
 #ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the mission clock is a 2D HUD element (not flipped by the
+	// renderer), so move it to the bottom-RIGHT to match the mirrored ammo HUD.
+	// Reflect its left-anchored x about the view centre and subtract the text width so
+	// the string sits flush against the now-right side. Same convention as bondgun.c's
+	// bgunHudMirrorX / bgunHudMirrorAlign ammo-HUD mirror.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		s32 mirrorth = 0;
+		s32 mirrortw = 0;
+		textMeasure(&mirrorth, &mirrortw, buffer, g_CharsNumeric, g_FontNumeric, 0);
+		x = (2 * viGetViewLeft() + viGetViewWidth()) / g_ScaleX - x - mirrortw;
+	}
+
 	if (playercount < 2 || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL)) {
-		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
+		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT,
+				cheatIsActive(CHEAT_MIRROR) ? g_HudAlignModeR : g_HudAlignModeL);
 	}
 #endif
 

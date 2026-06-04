@@ -82,6 +82,13 @@ and the block's `bgunHudMirrorAlign`). Those labels are 2D texrects (`textRender
 `gSPTextureRectangleEXT`), so they're moved game-side. On N64 the helpers are identity macros, so
 `bgunDrawHud` is byte-identical.
 
+The **mission clock** (`hudmsg.c` `hudmsgRenderMissionTimer`) is moved the same way — it's a 2D HUD
+element, so with the ammo gauge now on the left the clock would otherwise overlap it on the bottom
+**left**. Under `CHEAT_MIRROR` its left-anchored x is reflected about the view centre and the text
+width subtracted (`x = (2*viGetViewLeft() + viGetViewWidth())/g_ScaleX - x - textwidth`, the
+`bgunHudMirrorX(x) - textwidth` convention), and its widescreen edge anchor swaps
+`g_HudAlignModeL`→`g_HudAlignModeR`, so the clock sits flush in the bottom **right**. N64 byte-identical.
+
 ## Audio channel swap (`mixer.c` `aInterleaveImpl`)
 
 When the world is mirrored, the output **stereo channels are swapped** so a sound from the

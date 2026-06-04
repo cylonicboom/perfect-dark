@@ -2795,11 +2795,15 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	struct netclient *actcl = g_NetClients + clid;
 
-	// Co-op: we already picked up our OWN items locally (client-local pickup in
-	// objTestForPickup) — the host echoes the grant to everyone, but applying it
-	// again here would double-give / double-toast. Skip our own; other clients still
-	// apply it so the prop disappears from their world.
-	if (actcl == g_NetLocalClient) {
+	// We already picked up our OWN items locally ONLY in co-op (the client-local
+	// pickup in objTestForPickup runs for coopplayernum >= 0); the host echoes the
+	// grant to everyone, so applying it again would double-give / double-toast — skip
+	// our own there. In COMBAT SIM (coopplayernum < 0) the client does NOT pick up
+	// locally (objTestForPickup bails for non-co-op clients), so the host's echo is the
+	// ONLY source of our own pickup — apply it, or weapons/ammo vanish on the host but
+	// stay on the client and never enter our inventory. Other clients always apply it
+	// so the prop disappears from their world.
+	if (actcl == g_NetLocalClient && g_Vars.coopplayernum >= 0) {
 		return src->error;
 	}
 

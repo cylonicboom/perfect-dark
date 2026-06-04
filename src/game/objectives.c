@@ -248,7 +248,12 @@ s32 objectiveCheck(s32 index)
 							prevplayernum = g_Vars.currentplayernum;
 
 							for (i = 0; i < PLAYERCOUNT(); i++) {
-								if (g_Vars.players[i] == g_Vars.bond || g_Vars.players[i] == g_Vars.coop) {
+								// 8-player co-op groundwork: "is a co-op player" generalised.
+								// g_Vars.coop is the single splitscreen buddy; in net co-op there
+								// are N co-op players, all of which are non-anti. PLAYER_IS_NOT_ANTI
+								// is identical for SP / 2-player / anti, but catches all N co-op
+								// players instead of just bond+coop.
+								if (PLAYER_IS_NOT_ANTI(g_Vars.players[i])) {
 									setCurrentPlayerNum(i);
 
 									if (invHasProp(obj->prop)) {
@@ -275,7 +280,12 @@ s32 objectiveCheck(s32 index)
 							s32 prevplayernum = g_Vars.currentplayernum;
 
 							for (i = 0; i < PLAYERCOUNT(); i++) {
-								if (g_Vars.players[i] == g_Vars.bond || g_Vars.players[i] == g_Vars.coop) {
+								// 8-player co-op groundwork: "is a co-op player" generalised.
+								// g_Vars.coop is the single splitscreen buddy; in net co-op there
+								// are N co-op players, all of which are non-anti. PLAYER_IS_NOT_ANTI
+								// is identical for SP / 2-player / anti, but catches all N co-op
+								// players instead of just bond+coop.
+								if (PLAYER_IS_NOT_ANTI(g_Vars.players[i])) {
 									setCurrentPlayerNum(i);
 
 									if (invHasProp(obj->prop)) {

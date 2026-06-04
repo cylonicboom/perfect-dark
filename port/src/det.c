@@ -29,16 +29,22 @@
 
 s32 g_DetMode = DET_OFF;
 
-// Fixed-step gameplay tick (port-only; ON by default — Game.FixedTick /
-// /fixedtick / /forcetick). When set, mainTick runs the gameplay sim a whole
-// number of fixed steps per render frame (catch-up at low fps, render-only
-// frames at high fps) instead of one variable-dt step, and detPinTimestep pins
-// each lvTick to the chosen step. This LOCKS gameplay speed to the tick rate
-// (default 60Hz = real-time) independent of the render frame rate, so unlocking
-// fps gives more frames without speeding the sim up. Set to 0 (Game.FixedTick 0
-// / /forcetick off) to fall back to the legacy variable-dt path, which couples
-// the sim to fps via the mininc60 clamp (runs faster than 1x at high fps).
-s32 g_FixedTickEnabled = 1;
+// Fixed-step gameplay tick (port-only, experimental; OFF by default —
+// Game.FixedTick / /fixedtick / /forcetick). When set, mainTick runs the
+// gameplay sim a whole number of fixed steps per render frame (catch-up at low
+// fps, render-only frames at high fps) instead of one variable-dt step, and
+// detPinTimestep pins each lvTick to the chosen step. The intent is to lock
+// gameplay speed to the tick rate independent of the render frame rate.
+//
+// DEFAULT OFF: this path does NOT yet hold 1x speed when the frame rate is
+// unlocked (Options -> "unlock frame rate" / Game.TickRateDivisor 0) — the
+// sim runs far too fast. Until that's fixed it must stay opt-in so normal play
+// uses the engine's native variable-dt path (correct speed at any fps, capped
+// or uncapped). Determinism record/replay still pins the step internally via
+// g_DetMode (DET_RECORD/DET_REPLAY) regardless of this flag, so the harness is
+// unaffected. Flip to 1 (Game.FixedTick 1) only to experiment with the fixed
+// step at a capped frame rate.
+s32 g_FixedTickEnabled = 0;
 
 // Gameplay tick RATE in ticks/sec (Game.FixedTickRate / `/forcetick <n>`). The
 // sim runs in REAL TIME at this rate: each tick advances game-time by 1/rate of

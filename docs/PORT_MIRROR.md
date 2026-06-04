@@ -82,6 +82,18 @@ and the block's `bgunHudMirrorAlign`). Those labels are 2D texrects (`textRender
 `gSPTextureRectangleEXT`), so they're moved game-side. On N64 the helpers are identity macros, so
 `bgunDrawHud` is byte-identical.
 
+## Audio channel swap (`mixer.c` `aInterleaveImpl`)
+
+When the world is mirrored, the output **stereo channels are swapped** so a sound from the
+on-screen-left comes out of the left speaker (otherwise positional audio fights the flipped view).
+This is done at the single final-interleave choke point: `aInterleaveImpl` (the N64 audio microcode's
+MAIN_L/MAIN_R → interleaved-stereo step) swaps the `l`/`r` source pointers when `gfx_mirror_mode` is
+set. It's a blanket L/R swap (SFX, music, ambience all flip), which is the correct behaviour for a
+full left-right mirror. `gfx_mirror_mode` is the same renderer global the visual flip keys off (set
+from `CHEAT_MIRROR` in `bgTickPortals`), declared `extern unsigned char` in `mixer.c` per the
+`bool`(fast3d)/1-byte(game) bridging convention. N64 build is unaffected (the cheat never sets the
+flag there).
+
 ## How it works
 
 A horizontal mirror = **negate clip-space X** + **compensate triangle winding** (mirroring reverses

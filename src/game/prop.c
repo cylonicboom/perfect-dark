@@ -2189,9 +2189,14 @@ void propsTickPlayer(bool islastplayer)
 					// to the wire pos after the tick so the host's position is the sole
 					// source; pickups/interactions in the tick still run.
 					struct coord objwirepos = {0, 0, 0};
+					// PROPTYPE_OBJ only: doors (PROPTYPE_DOOR) and weapons
+					// (PROPTYPE_WEAPON) alias prop->obj via the union but have their
+					// own position/animation logic — wire-snapping a door breaks its
+					// open animation (opens then snaps to centre). Doors stay synced
+					// via SVC_PROP_DOOR; only movable objects are wire-driven here.
 					const bool objrestore = g_NetCoopObjWireDriven
 							&& g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
-							&& prop->syncid && prop->obj;
+							&& prop->type == PROPTYPE_OBJ && prop->syncid && prop->obj;
 					if (objrestore) {
 						objwirepos = prop->pos;
 					}

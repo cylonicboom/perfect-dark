@@ -51,8 +51,16 @@ input→motion point):
   `bmoveUpdateAutoAimXProp` is negated, because the shot direction is taken from the *reflected*
   crosshair — so auto-aim must pull the crosshair to the target's **mirrored** screen side (otherwise
   it tracked the opposite side and the bullet missed).
+- **Hoverbike** (`MOVEMODE_BIKE`, `bondbike.c` `bbikeApplyMoveData`): steers via `speedsideways`
+  (its `speedtheta` stays 0 — `bmoveUpdateSpeedTheta` is a no-op for BIKE), and the walk-mode strafe
+  negate doesn't run in bike mode, so the steering is negated here. (The `speedsideways^2` speed
+  magnitude is unaffected; the gun-sway use flips harmlessly.)
 
-**Limitation:** turret / vehicle (hovercraft, etc.) movement modes are still not inverted.
+**Note on "turrets":** there is **no player-controlled turret movement mode** in this codebase —
+`player.bondonturret` is only ever reset to `false` (never enabled) and never gates any control, and
+the `OBJTYPE_AUTOGUN` sentries are AI-driven, not player-aimed. So nothing to invert there. If a
+specific mounted-gun / mode shows inverted controls in-game, identify the level + situation and the
+same input→motion negate pattern applies.
 
 ## Ammo HUD mirror (`bondgun.c` `bgunDrawHud`)
 

@@ -17450,8 +17450,15 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 	}
 
 	// Suppress HUD pickup messages during cutscenes (e.g. items given at
-	// mission start via aiGiveObjectToChr)
-	if (g_Vars.in_cutscene)
+	// mission start via aiGiveObjectToChr). In co-op, keep showing them for
+	// MID-mission pickups (once the player has reached normal gameplay this stage)
+	// so the client sees "picked up X" for items like Cassandra's necklace grabbed
+	// during a scripted moment — only the intro loadout gives stay suppressed.
+	if (g_Vars.in_cutscene
+#ifndef PLATFORM_N64
+			&& !(g_Vars.coopplayernum >= 0 && g_CoopGameplayStarted)
+#endif
+			)
 	{
 		showhudmsg = false;
 	}

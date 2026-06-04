@@ -1720,10 +1720,25 @@ void playerRemoveChrBody(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Co-op: true once the local player has reached normal gameplay this stage. Lets
+// pickup toasts show for MID-mission cutscene pickups (e.g. Cassandra's necklace)
+// while the start-of-mission loadout gives during the intro cutscene stay
+// suppressed. Reset on the mission-start GE fade-in, set when control is handed over.
+s32 g_CoopGameplayStarted = 0;
+#endif
+
 void playerSetTickMode(s32 tickmode)
 {
 	g_Vars.tickmode = tickmode;
 	g_Vars.in_cutscene = false;
+#ifndef PLATFORM_N64
+	if (tickmode == TICKMODE_GE_FADEIN) {
+		g_CoopGameplayStarted = false;
+	} else if (tickmode == TICKMODE_NORMAL) {
+		g_CoopGameplayStarted = true;
+	}
+#endif
 }
 
 void playerBeginGeFadeIn(void)

@@ -5290,6 +5290,23 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 	}
 
 	s32 lvf = g_Vars.lvframe60;
+
+	// Hard-delete the banner during cutscenes (incl. the mission intro, and the
+	// intro replayed on a mission RESTART) and the end screen, instead of animating
+	// it. This is what keeps a restart clean: whatever state the banner was in, the
+	// restart's intro cutscene wipes it, so it can't stick or animate out-and-back-in
+	// across the reload. It re-arms cleanly once the mission timer starts counting
+	// again. (The mission timer is paused in exactly these states anyway.)
+	if (g_InCutscene || g_MainIsEndscreen) {
+		anim->phase = EGG_HIDDEN;
+		anim->phasestart = lvf;
+		anim->readyframe = -1;
+		anim->lasttime = g_Vars.currentplayer->bondviewlevtime60;
+		anim->lastframe = lvf;
+		anim->lastadvframe = -1;
+		return gdl;
+	}
+
 	if (lvf < anim->phasestart) {
 		// lvframe60 was reset on stage load: replay the intro from scratch.
 		// Without resetting the phase too, a banner left in EGG_HOLD at the

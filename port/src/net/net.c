@@ -2835,15 +2835,6 @@ void netChrInterpolate(struct chrdata *chr)
 	}
 
 	const u32 head = chr->netsnaphead;
-	// Defensive bounds check: netsnaphead is normally kept in [0, NET_SNAPSHOT_COUNT)
-	// (advanced with `% NET_SNAPSHOT_COUNT` when a snapshot is pushed). But on a client
-	// LEAVE/teardown, chrTick can run one extra render frame over a stale/recycled chr
-	// whose netsnaphead is garbage; netsnap[head] with an out-of-range head then indexes
-	// far outside the chrdata struct and faults (0xc0000005 reading netsnap[head].tick,
-	// the reported client-disconnect crash). Treat an invalid head as "no snapshots".
-	if (head >= NET_SNAPSHOT_COUNT) {
-		return;
-	}
 	if (!chr->netsnap[head].tick) {
 		return; // no snapshots yet — leave the receive-time pose in place
 	}

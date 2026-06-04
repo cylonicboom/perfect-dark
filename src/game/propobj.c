@@ -17476,6 +17476,16 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 
 	switch (obj->type) {
 	case OBJTYPE_KEY:
+#ifndef PLATFORM_N64
+		// DIAG (co-op notification hunt): records key/necklace pickups + the toast
+		// decision and cutscene state on each machine.
+		if (g_Vars.coopplayernum >= 0) {
+			netDiagLogf("key_pickup", "show=%d wire=%d incut=%d coopstarted=%d tick=%d pnum=%d netmode=%d",
+					(s32)showhudmsg, (s32)g_NetPickupWireShowMsg, (s32)g_Vars.in_cutscene,
+					(s32)g_CoopGameplayStarted, (s32)g_Vars.tickmode,
+					g_Vars.currentplayernum, g_NetMode);
+		}
+#endif
 		if (g_Vars.in_cutscene == false) {
 			playerSndStart(var80095200, SFX_PICKUP_KEYCARD, NULL, g_Vars.currentplayernum, -1, -1, -1);
 		}

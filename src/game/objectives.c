@@ -418,6 +418,16 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 	s32 prevplayernum = g_Vars.currentplayernum;
 	s32 i;
 
+#ifndef PLATFORM_N64
+	// DIAG (co-op notification hunt): records every objective-toast attempt so we can
+	// see whether it fires on each machine and the cutscene/HUD state at the time.
+	if (g_Vars.coopplayernum >= 0) {
+		netDiagLogf("obj_toast", "type=%d netmode=%d incut=%d tick=%d pcount=%d text=%s",
+				hudmsgtype, g_NetMode, (s32)g_Vars.in_cutscene, (s32)g_Vars.tickmode,
+				(s32)PLAYERCOUNT(), buffer ? buffer : "(null)");
+	}
+#endif
+
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		setCurrentPlayerNum(i);
 
@@ -487,6 +497,19 @@ void objectivesCheckAll(void)
 		for (i = 0; i <= g_ObjectiveLastIndex; i++) {
 			s32 status = objectiveCheck(i);
 
+#ifndef PLATFORM_N64
+			// DIAG (co-op notification hunt): log every status transition so we can see
+			// whether/when objectivesCheckAll detects the necklace objective completing
+			// and in what HUD/cutscene state.
+			if (g_Vars.coopplayernum >= 0 && g_ObjectiveStatuses[i] != status) {
+				netDiagLogf("obj_trans", "i=%d old=%d new=%d netmode=%d incut=%d tick=%d",
+						i, (s32)g_ObjectiveStatuses[i], status, g_NetMode,
+						(s32)g_Vars.in_cutscene, (s32)g_Vars.tickmode);
+			}
+
+			const bool objjusttransitioned = (g_ObjectiveStatuses[i] != status);
+#endif
+
 			if (g_ObjectiveStatuses[i] != status) {
 				g_ObjectiveStatuses[i] = status;
 #ifndef PLATFORM_N64
@@ -542,6 +565,25 @@ void objectivesCheckAll(void)
 #endif
 				}
 			}
+
+#ifndef PLATFORM_N64
+			// Co-op: an objective can complete while the full HUD isn't rendering (a
+			// scripted beat / cutscene), so this loop doesn't run and the transition
+			// toast above is missed; once the HUD returns g_ObjectiveStatuses is already
+			// COMPLETE so no transition fires. Show the toast the first time we see the
+			// objective COMPLETE with the HUD up (this loop only runs with the HUD up),
+			// unless the transition above already showed it this frame (avoids a double).
+			if (g_Vars.coopplayernum >= 0
+					&& status == OBJECTIVE_COMPLETE
+					&& i < MAX_OBJECTIVES
+					&& !g_NetCoopObjToastShown[i]
+					&& (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty()))) {
+				if (!objjusttransitioned) {
+					objectivesShowStatusForIndex(i, OBJECTIVE_COMPLETE);
+				}
+				g_NetCoopObjToastShown[i] = 1;
+			}
+#endif
 
 			if (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty())) {
 				availableindex++;

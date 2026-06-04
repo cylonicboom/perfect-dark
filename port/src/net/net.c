@@ -947,6 +947,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
 	memset(g_NetCoopClientObjDone, 0, sizeof(u8) * MAX_OBJECTIVES); // host: clear client-reported completions
+	memset(g_NetCoopObjToastShown, 0, sizeof(u8) * MAX_OBJECTIVES); // clear per-objective completion-toast latches
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
 	g_NetCoopLocalStageFlags = 0; // client: clear locally-set stage flags for the new stage
 	g_NetLastCutsceneActive = 0;
@@ -1076,6 +1077,12 @@ u32 g_NetCoopObjStatuses[MAX_OBJECTIVES];
 // couldn't witness itself. Latched into objectiveCheck() so the host's authoritative
 // status includes them. Reset at stage start with g_NetCoopObjStatuses.
 u8 g_NetCoopClientObjDone[MAX_OBJECTIVES];
+
+// Co-op: per-objective "completion toast already shown" latch. An objective can
+// complete while the full HUD isn't rendering (a scripted beat), so objectivesCheckAll
+// misses the transition toast; this lets it show once the HUD returns. Reset at stage
+// start with the status arrays.
+u8 g_NetCoopObjToastShown[MAX_OBJECTIVES];
 
 // Client: while processing a wire-driven SVC_PROP_PICKUP, holds the host's show-toast
 // decision (0/1); -1 otherwise. propPickupByPlayer mirrors it instead of re-running

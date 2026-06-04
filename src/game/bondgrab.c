@@ -404,8 +404,8 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 			// CHEAT_MIRROR: the world (and the grabbed object) renders left-right
 			// flipped, so the speedtheta-driven rotation of the held object tracks
 			// backwards vs the flipped view. Negate it (this also flips the
-			// rotation-induced lateral X in sp88; speedsideways is already inverted by
-			// bwalkUpdateSpeedSideways). Local player only.
+			// rotation-induced lateral X in sp88; the speedsideways strafe term is
+			// inverted at its source in bgrabUpdateSpeedSideways). Local player only.
 			if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
 				f0 = -f0;
 			}
@@ -933,6 +933,16 @@ void bgrabUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 	}
 
 	g_Vars.currentplayer->speedsideways = g_Vars.currentplayer->speedstrafe;
+
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: grab mode uses its OWN speedsideways path (not
+	// bwalkUpdateSpeedSideways), so the held-object strafe AND the player's lateral
+	// carry movement aren't inverted by the walk fix. Invert at the source so left/right
+	// match the flipped view (companion to the held-object rotation negate). Local only.
+	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+		g_Vars.currentplayer->speedsideways = -g_Vars.currentplayer->speedsideways;
+	}
+#endif
 }
 
 void bgrabUpdateSpeedForwards(f32 target, f32 speed)

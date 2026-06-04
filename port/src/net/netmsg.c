@@ -2909,9 +2909,14 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 	// embedment/projectile, unregisters the proximity-mine proxy, frees the model,
 	// deregisters rooms, delists and disables. Symmetric removal also keeps the
 	// positional syncid pool consistent. Guard prop->active against a double-free.
-	if (prop && prop->obj && prop->active) {
-		objFreePermanently(prop->obj, true);
-	} else if (prop && prop->chr && prop->active && prop->chr->model) {
+	// DISPATCH BY prop->type, NOT by which union pointer is set: prop->chr and
+	// prop->obj are the SAME storage (the union at prop+0x00), so "prop->obj"
+	// is also non-NULL for a chr prop — feeding a chrdata into objFree reads
+	// obj->prop at the wrong offset and tears down through a garbage pointer
+	// (crashed every client in wallhitsFreeByProp on the first reaped co-op
+	// corpse). Scope the obj branch to the types the write side actually sends
+	// (prop.c propFree: WEAPON/OBJ, plus CHR for co-op corpses).
+	if (prop && prop->type == PROPTYPE_CHR) {
 		// Co-op NPC corpse the host reaped. Don't tear it down by hand — set the
 		// engine's own delete flag and let the client's chrTick reap it through the
 		// normal path (chr.c: CHRHFLAG_DELETING -> chrRemove + TICKOP_FREE ->
@@ -2921,7 +2926,12 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 		// Require a loaded model: chrRemove dereferences chr->model (modelFreeVertices),
 		// so skip a not-yet-loaded shell rather than risk a NULL deref (it'll be
 		// caught by the next reconcile pass if it really is a ghost).
-		prop->chr->hidden |= CHRHFLAG_DELETING;
+		if (prop->chr && prop->active && prop->chr->model) {
+			prop->chr->hidden |= CHRHFLAG_DELETING;
+		}
+	} else if (prop && prop->obj && prop->active
+			&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+		objFreePermanently(prop->obj, true);
 	}
 
 	return src->error;

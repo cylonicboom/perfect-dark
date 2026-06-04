@@ -51,10 +51,16 @@ input→motion point):
   `bmoveUpdateAutoAimXProp` is negated, because the shot direction is taken from the *reflected*
   crosshair — so auto-aim must pull the crosshair to the target's **mirrored** screen side (otherwise
   it tracked the opposite side and the bullet missed).
-- **Hoverbike** (`MOVEMODE_BIKE`, `bondbike.c` `bbikeApplyMoveData`): steers via `speedsideways`
-  (its `speedtheta` stays 0 — `bmoveUpdateSpeedTheta` is a no-op for BIKE), and the walk-mode strafe
-  negate doesn't run in bike mode, so the steering is negated here. (The `speedsideways^2` speed
-  magnitude is unaffected; the gun-sway use flips harmlessly.)
+- **Hoverbike** (`MOVEMODE_BIKE`): two separate inputs, negated in two places.
+  - **Strafe** (sideways) is negated in `bondbike.c` `bbikeApplyMoveData` (the walk-mode strafe negate
+    doesn't run in bike mode). The `speedsideways^2` speed magnitude is unaffected; the gun-sway use
+    flips harmlessly.
+  - **Yaw / look** (the actual steering of the bike's facing) is driven by `speedtheta`, set in
+    `bondmove.c` `bmoveProcessInput` from `speedthetacontrol` (line ~2431) and consumed by
+    `hoverbikeUpdateMovement` → `bike->w` → the `angledelta` rotation in `bbikeCalculateNewPosition`.
+    `bmoveUpdateSpeedTheta` is a no-op for BIKE (it does **not** stay 0 — the assignment at 2431
+    feeds it), so `speedtheta` is negated there, gated to `MOVEMODE_BIKE` so walk's own
+    `bwalkUpdateTheta` negate isn't double-applied.
 
 **Note on "turrets":** there is **no player-controlled turret movement mode** in this codebase —
 `player.bondonturret` is only ever reset to `false` (never enabled) and never gates any control, and

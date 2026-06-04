@@ -1226,6 +1226,13 @@ void hudmsgsTick(void)
 					for (i = 0; i < g_NumHudMessages; i++) {
 						if (g_HudMessages[i].state != HUDMSGSTATE_FREE
 								&& g_HudMessages[i].state != HUDMSGSTATE_QUEUED
+#ifndef PLATFORM_N64
+								// Only same-player messages compete for visible space:
+								// hudmsgsRender draws each message for its own player's
+								// viewport, so a different player's (e.g. a remote co-op
+								// player's, never-rendered) message must not block ours.
+								&& g_HudMessages[i].playernum == msg->playernum
+#endif
 								&& g_HudMessages[i].x + g_HudMessages[i].width >= msg->x
 								&& g_HudMessages[i].x <= msg->x + msg->width
 								&& g_HudMessages[i].y + g_HudMessages[i].height >= msg->y

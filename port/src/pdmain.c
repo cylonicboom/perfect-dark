@@ -545,11 +545,17 @@ void mainLoop(void)
 #else
 			if (g_Vars.antiplayernum < 0) {
 				// Counter-Operative now uses a different approach which allows more than 2 players.
-				// Co-Operative, on the other hand, is currently limited to 2 players.
+				// Co-Operative: one chr slot per player (host + remote partners), up
+				// to MAX_PLAYERS. netCoopEnterStage set the player count via
+				// setNumPlayers(N), so getNumPlayers()/numplayers == N here; both
+				// host and client derive the same N (host: g_NetNumClients; client:
+				// the SVC_STAGE_START co-op manifest count), keeping the deterministic
+				// spawn-pad allocation in setup.c identical on both ends.
+				s32 ncoop = (numplayers >= 2 && numplayers <= MAX_PLAYERS) ? numplayers : 2;
 				if (g_MpSetup.chrslots & 0xfff0) {
 					g_MpSetup.storedbotbits = g_MpSetup.chrslots & 0xfff0;
 				}
-				g_MpSetup.chrslots = 0x03;
+				g_MpSetup.chrslots = (1 << ncoop) - 1;
 			}
 #endif
 			mpReset();
@@ -1052,14 +1058,18 @@ void func0000e990(void)
 	objectivesCheckAll();
 	objectivesDisableChecking();
 
-	// Co-op stage flow is host-authoritative. This is the mission-complete choke
-	// point (reached the exit/lift, or a scripted mission-complete ailist command).
-	// On a CLIENT, also tell the host so it ends the stage for ALL players — the
-	// host's mainEndStage broadcasts SVC_STAGE_END. Without this, only the player
-	// whose local sim finished saw the debrief; the others were left in the level.
-	// The host itself falls straight through to mainEndStage -> netServerStageEnd.
+	// Co-op mission end is HOST-AUTHORITATIVE. A CLIENT only NOTIFIES the host and
+	// then waits for SVC_STAGE_END — it must NOT run mainEndStage itself. Doing so
+	// dumped the client straight to the debrief out of sync with (and ahead of) the
+	// host's outro: the client's local sim can reach this choke point at a different
+	// time than the host's, so each machine ended independently. Instead the host
+	// drives the end — its script plays the outro (synced to the client via
+	// SVC_CUTSCENE) and then runs mainEndStage -> netServerStageEnd -> SVC_STAGE_END,
+	// which the client receives and ends on. The host falls through to mainEndStage
+	// below.
 	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
 		netClientStageComplete();
+		return;
 	}
 
 	mainEndStage();

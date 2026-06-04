@@ -53,8 +53,8 @@ void gamefilePrintFlags(void)
 
 void gamefileApplyOptions(struct gamefile *file)
 {
-	s32 player1 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 0 : 4;
-	s32 player2 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 1 : 5;
+	s32 player1 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 0 : MAX_PLAYERS;
+	s32 player2 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 1 : MAX_PLAYERS + 1;
 
 	optionsSetForwardPitch(player1, pakHasBitflag(GAMEFILEFLAG_P1_FORWARDPITCH, file->flags));
 	optionsSetAutoAim(player1, pakHasBitflag(GAMEFILEFLAG_P1_AUTOAIM, file->flags));
@@ -142,8 +142,8 @@ void gamefileApplyOptions(struct gamefile *file)
 
 void gamefileLoadDefaults(struct gamefile *file)
 {
-	s32 player1 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 0 : 4;
-	s32 player2 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 1 : 5;
+	s32 player1 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 0 : MAX_PLAYERS;
+	s32 player2 = (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) ? 1 : MAX_PLAYERS + 1;
 	s32 i;
 	s32 j;
 
@@ -303,8 +303,8 @@ s32 gamefileLoad(s32 device)
 	s32 ret;
 	u32 stack;
 
-	p1index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 0 : 4;
-	p2index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 1 : 5;
+	p1index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 0 : MAX_PLAYERS;
+	p2index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 1 : MAX_PLAYERS + 1;
 
 	if (device >= 0) {
 		savebufferClear(&buffer);
@@ -417,8 +417,8 @@ s32 gamefileSave(s32 device, s32 fileid, u16 deviceserial)
 	s32 p2index;
 	struct savebuffer buffer;
 
-	p1index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 0 : 4;
-	p2index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 1 : 5;
+	p1index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 0 : MAX_PLAYERS;
+	p2index = g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 ? 1 : MAX_PLAYERS + 1;
 
 	var80075bd0[0] = 1;
 

@@ -23,6 +23,9 @@ void resetSomeStageThings(void)
 	}
 
 	g_StageFlags = 0;
+#ifndef PLATFORM_N64
+	g_NetCoopLocalStageFlags = 0; // clear co-op client's locally-set stage flags with the stage reset
+#endif
 
 	g_EnemyAccuracyScale = 1;
 	g_PlayerDamageRxScale = 1;

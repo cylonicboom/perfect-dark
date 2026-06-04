@@ -18,6 +18,7 @@
 #include "constants.h"
 #include "data.h"
 #include "bss.h"
+#include "lib/rng.h" // rngCosmeticRandom — F2 co-op body randomisation (unsynced, host-side)
 #include "game/hudmsg.h"
 #include "game/menugfx.h"
 #include "game/playermgr.h"
@@ -747,8 +748,14 @@ struct netclient *netClientForPlayerNum(s32 playernum)
 	return NULL;
 }
 
+static void netApplyEggConfig(void);
+
 void netInit(void)
 {
+	// Auto-enable a vanity egg banner from the "Egg" ini key (config is already
+	// loaded by now). Done before the ENet check so it works even if net init fails.
+	netApplyEggConfig();
+
 	if (enet_initialize() < 0) {
 		sysLogPrintf(LOG_ERROR, "NET: could not init ENet, disabling networking");
 		return;
@@ -906,9 +913,38 @@ s32 netStartServer(u16 port, s32 maxclients)
 // both ends reach the same stage with the same co-op player model. The generic
 // stage-load hooks then fire: lv.c's netServerStageStart broadcasts the host's
 // SVC_STAGE_START, and playermgr's netPlayersAllocate seats remote clients.
-// Currently fixed at 2 players (coopplayernum=1); 4-player is Phase 5.
-void netCoopEnterStage(s32 stagenum, s32 difficulty)
+//
+// `numplayers` is the total co-op player count N (host + remote partners), up to
+// MAX_PLAYERS. The host derives it from g_NetNumClients (which already counts the
+// host as g_NetClients[0]); the client mirrors it from the SVC_STAGE_START co-op
+// manifest count. coopplayernum stays 1 (the single splitscreen-buddy pointer /
+// co-op gate); the N players live in g_Vars.players[0..N-1].
+void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 {
+	if (numplayers < 1) {
+		numplayers = 1;
+	}
+	if (numplayers > MAX_PLAYERS) {
+		numplayers = MAX_PLAYERS;
+	}
+
+	// F2 body type is per-player: each player's choice (g_NetCoopBodyMode) rides
+	// CLC_SETTINGS to the host, which assembles the resolved per-player bitmask
+	// (g_NetCoopBodyBits) in the SVC_STAGE_START write. The client applied that
+	// wire value in netmsgSvcStageStartRead before calling this, so nothing to do
+	// here.
+
+	// F3 lives: the HOST seeds the respawn budget. PER_PLAYER gives each player
+	// `count` lives; SHARED gives one pool of `count * N`. The client gets the
+	// mode + count from SVC_STAGE_START (read before this call) and follows the
+	// host's authoritative respawn / all-out decisions, so it doesn't seed here.
+	if (g_NetMode != NETMODE_CLIENT) {
+		for (s32 i = 0; i < MAX_PLAYERS; i++) {
+			g_NetCoopLives[i] = g_NetCoopLivesCount;
+		}
+		g_NetCoopSharedLives = g_NetCoopLivesCount * numplayers;
+	}
+
 	// Clear the host-authoritative objective mirror so a previous mission's
 	// completions can't leak into this one (the client overlays these onto its
 	// local objective evaluation; a stale COMPLETE would falsely mark an objective
@@ -916,7 +952,10 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	// Explicit size: only the incomplete `extern u32[]` from net.h is in scope here
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
+	memset(g_NetCoopClientObjDone, 0, sizeof(u8) * MAX_OBJECTIVES); // host: clear client-reported completions
+	memset(g_NetCoopObjToastShown, 0, sizeof(u8) * MAX_OBJECTIVES); // clear per-objective completion-toast latches
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
+	g_NetCoopLocalStageFlags = 0; // client: clear locally-set stage flags for the new stage
 	g_NetLastCutsceneActive = 0;
 	g_NetLastCutsceneAnim = 0;
 
@@ -931,7 +970,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	g_Vars.bondplayernum = 0;
 	g_Vars.coopplayernum = 1;
 	g_Vars.antiplayernum = -1;
-	setNumPlayers(2);
+	setNumPlayers(numplayers);
 	lvSetDifficulty(difficulty);
 	titleSetNextMode(TITLEMODE_SKIP);
 	mainChangeToStage(stagenum);
@@ -990,10 +1029,71 @@ void netClientStageComplete(void)
 	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
+// Co-op client: report an objective WE completed that the host can't witness (a
+// scripted trigger room we entered, a mine we threw onto an object, a holograph our
+// camera saw). The host latches it (g_NetCoopClientObjDone) into objectiveCheck and
+// rebroadcasts the authoritative status. Reliable, so a single send is enough.
+void netClientSendObjectiveDone(s32 objindex)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient
+			|| objindex < 0 || objindex >= MAX_OBJECTIVES) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netbufWriteU8(&g_NetMsgRel, CLC_OBJECTIVE_DONE);
+	netbufWriteU8(&g_NetMsgRel, (u8)objindex);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
+// Co-op client: ask the host to let us pick up an OBJ/weapon prop. Clients run the
+// same (read-only) pickup tests the host does (objTestForPickup) but can't take the
+// prop themselves — they send this so the host re-validates against our synced
+// position and grants it via SVC_PROP_PICKUP (which gives us the item + toast).
+// Debounced per-prop so the request RTT doesn't flood the reliable channel.
+void netClientRequestPickup(struct prop *prop)
+{
+	static u16 lastsid = 0;
+	static u32 lasttick = 0;
+
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient || !prop || !prop->syncid) {
+		return;
+	}
+
+	// Skip a re-request for the same prop within ~1/3s; if the host hasn't granted
+	// it by then (LOS/position still settling) we ask again.
+	if (prop->syncid == lastsid && (u32)(g_NetTick - lasttick) < 20u) {
+		return;
+	}
+	lastsid = prop->syncid;
+	lasttick = g_NetTick;
+
+	netbufStartWrite(&g_NetMsgRel);
+	netbufWriteU8(&g_NetMsgRel, CLC_PICKUP_REQUEST);
+	netbufWriteU16(&g_NetMsgRel, (u16)prop->syncid);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
 // Co-op host-authoritative objective status. Set by SVC_OBJECTIVE on clients and
 // overlaid onto objectiveCheck() (see objectives.c). Zeroed (= OBJECTIVE_INCOMPLETE)
 // at boot and reset at stage start so a previous mission's completions can't leak.
 u32 g_NetCoopObjStatuses[MAX_OBJECTIVES];
+
+// Co-op host: objectives a client reported done (CLC_OBJECTIVE_DONE) that the host
+// couldn't witness itself. Latched into objectiveCheck() so the host's authoritative
+// status includes them. Reset at stage start with g_NetCoopObjStatuses.
+u8 g_NetCoopClientObjDone[MAX_OBJECTIVES];
+
+// Co-op: per-objective "completion toast already shown" latch. An objective can
+// complete while the full HUD isn't rendering (a scripted beat), so objectivesCheckAll
+// misses the transition toast; this lets it show once the HUD returns. Reset at stage
+// start with the status arrays.
+u8 g_NetCoopObjToastShown[MAX_OBJECTIVES];
+
+// Client: while processing a wire-driven SVC_PROP_PICKUP, holds the host's show-toast
+// decision (0/1); -1 otherwise. propPickupByPlayer mirrors it instead of re-running
+// its local in_cutscene gate, so co-op pickup toasts match the host (see netmsg.c).
+s8 g_NetPickupWireShowMsg = -1;
 
 // Broadcast the host's objective status array to all clients (reliable). Called
 // from objectivesCheckAll when any objective status changes, in a co-op game.
@@ -1006,6 +1106,77 @@ void netServerBroadcastObjectives(void)
 	netbufStartWrite(&g_NetMsgRel);
 	netmsgSvcObjectiveWrite(&g_NetMsgRel);
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+}
+
+// F3 lives: render "N lives remaining" to the CURRENT player as a bottom-left
+// notification, mirroring Combat Sim's "Killed by X" (hudmsgCreate / DEFAULT).
+static void netCoopShowLivesText(s32 count)
+{
+	char text[48];
+
+	// The trailing '\n' matters: the hud-message box height comes from textMeasure,
+	// which only accrues height on a newline (the pickup/kill-feed lang strings all
+	// end in '\n'). Without it the box collapses to a 5px sliver in the wrong spot.
+	if (count == 1) {
+		sprintf(text, "1 life remaining\n");
+	} else {
+		sprintf(text, "%d lives remaining\n", count);
+	}
+
+	// Bottom-left notification like the kill feed, but held ~1s longer than the
+	// default 80-tick duration so the player has time to read the new life count.
+	hudmsgCreateWithDuration(text, HUDMSGTYPE_DEFAULT, &g_HudmsgTypes[HUDMSGTYPE_DEFAULT], 140);
+}
+
+// Show the lives notification to THIS machine's local player. The local player is
+// always slot g_NetLocalClient->playernum (0 on host and, after the
+// netPlayersAllocate swap, on clients too).
+void netCoopShowLivesMsg(s32 count)
+{
+	s32 prev = g_Vars.currentplayernum;
+	setCurrentPlayerNum((s32)g_NetLocalClient->playernum);
+	netCoopShowLivesText(count);
+	setCurrentPlayerNum(prev);
+}
+
+// Host-side: notify about a respawn. SHARED -> everyone (host-local + all clients);
+// per-player -> only the victim (host-local if it's the host, else unicast to that
+// client). Non-net (splitscreen) co-op shows directly to the victim's viewport.
+void netServerNotifyLives(s32 victimplayernum, s32 count, bool shared)
+{
+	if (g_NetMode == NETMODE_CLIENT) {
+		return;
+	}
+
+	if (g_NetMode == NETMODE_NONE) {
+		// splitscreen co-op (non-net): show to the victim's own viewport.
+		s32 prev = g_Vars.currentplayernum;
+		setCurrentPlayerNum(victimplayernum);
+		netCoopShowLivesText(count);
+		setCurrentPlayerNum(prev);
+		return;
+	}
+
+	if (shared) {
+		netCoopShowLivesMsg(count); // host's local player
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgSvcCoopLivesWrite(&g_NetMsgRel, count);
+		netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT); // every client
+	} else if (victimplayernum == (s32)g_NetLocalClient->playernum) {
+		netCoopShowLivesMsg(count); // the host is the victim
+	} else {
+		// unicast to the victim's client
+		for (s32 i = 0; i < g_NetMaxClients; i++) {
+			struct netclient *cl = &g_NetClients[i];
+			if (cl != g_NetLocalClient && !cl->is_spectator
+					&& cl->state >= CLSTATE_GAME && (s32)cl->playernum == victimplayernum) {
+				netbufStartWrite(&g_NetMsgRel);
+				netmsgSvcCoopLivesWrite(&g_NetMsgRel, count);
+				netSend(cl, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+				break;
+			}
+		}
+	}
 }
 
 // Replicate a host runtime chr spawn (reinforcement/clone) to clients so they
@@ -1149,6 +1320,7 @@ s32 netDisconnect(void)
 	// Clear the kill feed and lobby state so a fresh session starts clean.
 	netKillFeedClear();
 	g_NetLobbyState.valid = 0;
+	g_NetCoopHosting = 0; // co-op hosting intent is per-session
 
 	// Free any packets still sitting in the lag-sim queue (they'll never be
 	// sent since the peers are gone). Keep g_NetSimLagMs / g_NetSimPacketLoss
@@ -1311,6 +1483,8 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_ADMIN_SETUP: rc = netmsgClcAdminSetupRead(&cl->in, cl); break;
 			case CLC_PROP_HIT: rc = netmsgClcPropHitRead(&cl->in, cl); break;
 			case CLC_STAGE_COMPLETE: rc = netmsgClcStageCompleteRead(&cl->in, cl); break;
+			case CLC_OBJECTIVE_DONE: rc = netmsgClcObjectiveDoneRead(&cl->in, cl); break;
+			case CLC_PICKUP_REQUEST: rc = netmsgClcPickupRequestRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1381,6 +1555,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
+			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1805,6 +1980,59 @@ void netEndFrame(void)
 				coopnpcstart = i; // resume here next tick
 			}
 
+			// Co-op movable OBJ position sync. An OBJ's position is otherwise only
+			// broadcast on impulse events (push / throw / drop) in propobj.c — never as
+			// it settles, nor while it quietly drifts. Clients run the obj's local
+			// physics and (with /coopobj, default on) wire-snap to the LAST received
+			// pos, so a pushed object freezes mid-arc and "floats", and a settled
+			// object that drifted from its host counterpart never re-syncs. Fix: the
+			// host re-broadcasts networked OBJ positions itself, in two parts:
+			//  - Pass 1, every tick: any OBJ in motion (OBJHFLAG_PROJECTILE = airborne
+			//    / sliding / falling) so the client follows the full arc and lands
+			//    exactly where the host does (the projectile block carries speed +
+			//    rotation so the motion matches). Usually 0-2 objs, so the full scan is
+			//    cheap.
+			//  - Pass 2, round-robin: refresh a few SETTLED objs each tick from a
+			//    rotating cursor, so every networked obj re-syncs within
+			//    ~maxprops/budget ticks — healing a settled-but-drifted obj, a missed
+			//    impulse packet, or a JIP client, without a once-a-second burst.
+			// Unreliable (g_NetMsg) like the sim/NPC moves above: latest-wins, and a
+			// dropped frame self-heals on the next tick / cursor sweep.
+			if (g_Vars.coopplayernum >= 0) {
+				const s32 maxprops = g_Vars.maxprops;
+				// Pass 1: moving objs, every tick.
+				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 64; i++) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
+							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+					}
+				}
+				// Pass 2: settled objs, round-robin (a few per tick from a cursor).
+				static s32 coopobjcursor = 0;
+				if (coopobjcursor >= maxprops) {
+					coopobjcursor = 0;
+				}
+				s32 scanned = 0;
+				s32 sent = 0;
+				s32 i = coopobjcursor;
+				while (scanned < maxprops && sent < 4 && g_NetMsg.wp < NET_BUFSIZE - 64) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
+							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE) == 0) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						sent++;
+					}
+					i = (i + 1) % maxprops;
+					scanned++;
+				}
+				coopobjcursor = i; // resume here next tick
+			}
+
 			// Co-op stage flags: scripts, objectives and triggered events gate on
 			// g_StageFlags, set host-side by action blocks / scripts the client
 			// doesn't run. Mirror it (reliable) so the client's flag-gated logic
@@ -2152,6 +2380,19 @@ void netPlayersAllocate(void)
 			const s32 svplayernum = g_NetLocalClient->playernum;
 			g_NetLocalClient->playernum = 0;
 			g_NetClients[0].playernum = svplayernum;
+
+			// F2 body bits arrive wire-indexed (by the host's dense playernums). The
+			// swap above moves the local client to slot 0 and the host to svplayernum,
+			// so mirror that swap in g_NetCoopBodyBits — playerChooseBodyAndHead indexes
+			// it by the LOCAL g_Vars.players[] slot, so without this the client reads the
+			// wrong player's masculine choice (its own body ends up keyed to the host's).
+			if (svplayernum > 0 && svplayernum < MAX_PLAYERS) {
+				const u8 bit0 = (u8)((g_NetCoopBodyBits >> 0) & 1);
+				const u8 bitsv = (u8)((g_NetCoopBodyBits >> svplayernum) & 1);
+				g_NetCoopBodyBits &= (u8)~((1 << 0) | (1 << svplayernum));
+				g_NetCoopBodyBits |= (u8)(bit0 << svplayernum);
+				g_NetCoopBodyBits |= (u8)(bitsv << 0);
+			}
 		}
 	}
 
@@ -2211,6 +2452,32 @@ void netPlayersAllocate(void)
 		if (cl->player) {
 			cl->player->client = cl;
 			cl->player->isremote = (cl != g_NetLocalClient);
+		}
+	}
+
+	// F2 body type: resolve the per-player masculine bitmask now — after playernums
+	// are assigned (loop above) but BEFORE the chrbody models are built in the player
+	// tick. The host reads each client's synced choice (settings.coopbodytype) keyed
+	// by its playernum; COOPBODY_RANDOM is rolled here (cosmetic RNG, so the result
+	// ships without touching the gameplay seed). The client keeps the value it read
+	// from SVC_STAGE_START. Resolving here (not in the SVC_STAGE_START write) is what
+	// makes the third-person chrbody pick up the right body, not just the first-person
+	// hands (which re-derive every frame and so updated even when the bits landed late).
+	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0) {
+		if (g_NetLocalClient) {
+			g_NetLocalClient->settings.coopbodytype = (u8)g_NetCoopBodyMode;
+		}
+		g_NetCoopBodyBits = 0;
+		for (s32 bi = 0; bi < g_NetMaxClients; bi++) {
+			struct netclient *bcl = &g_NetClients[bi];
+			if (bcl->state < CLSTATE_LOBBY || bcl->is_spectator || bcl->playernum >= MAX_PLAYERS) {
+				continue;
+			}
+			const u8 mode = bcl->settings.coopbodytype;
+			if (mode == COOPBODY_MASCULINE
+					|| (mode == COOPBODY_RANDOM && (rngCosmeticRandom() & 1))) {
+				g_NetCoopBodyBits |= (u8)(1 << bcl->playernum);
+			}
 		}
 	}
 }
@@ -2484,6 +2751,14 @@ static f32 g_NetChrSnapInterval = 1.0f;
 
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
 s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
+s32 g_NetCoopObjWireDriven = 1; // /coopobj toggle; ON (default) makes networked OBJ props wire-driven on clients so they stick to the host pos instead of drifting/floating (/coopobj off reverts)
+s32 g_NetCoopHosting = 0;                  // host: server started for co-op (set by the co-op menu's Start Hosting)
+s32 g_NetCoopBodyMode = COOPBODY_FEMININE; // F2 local player's choice; synced via CLC_SETTINGS
+u8 g_NetCoopBodyBits = 0;                  // F2 resolved per-player masculine bitmask (host-assembled in SVC_STAGE_START write)
+s32 g_NetCoopLivesMode = COOP_LIVES_OFF;    // F3 host setting, synced
+s32 g_NetCoopLivesCount = 3;                // F3 lives per player (host setting, synced)
+s32 g_NetCoopLives[MAX_PLAYERS] = {0};      // F3 per-player remaining (host-authoritative)
+s32 g_NetCoopSharedLives = 0;               // F3 shared pool remaining (host-authoritative)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {
@@ -3851,6 +4126,21 @@ static s32 g_GrasluEgg = 0;
 // enabled alongside Graslu. Purely local (nothing goes on the wire).
 static s32 g_Redvox57Egg = 0;
 
+// Config "Game.Egg" (pd.ini, under [Game] as `Egg=`): leave "0" (default) for no
+// banner, or set to a vanity egg's command name ("graslu" / "redvox57") to
+// auto-enable it on boot. Applied once in netInit, after the config is loaded.
+// Case-insensitive.
+static char g_EggConfig[16] = "0";
+
+static void netApplyEggConfig(void)
+{
+	if (strcasecmp(g_EggConfig, "graslu") == 0) {
+		g_GrasluEgg = 1;
+	} else if (strcasecmp(g_EggConfig, "redvox57") == 0) {
+		g_Redvox57Egg = 1;
+	}
+}
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -4012,6 +4302,20 @@ s32 netConsoleCommand(const char *line)
 		}
 		sysLogPrintf(LOG_CHAT, "NET: co-op runtime chr lifecycle = %s%s", g_NetCoopChrLifecycle ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopchr on|off)" : "");
+	} else if (strcmp(cmd, "coopobj") == 0) {
+		// /coopobj on|off (default off) — EXPERIMENTAL. On a CLIENT, make networked
+		// OBJ props fully wire-driven: after objTickPlayer runs, snap prop->pos back to
+		// the host's authoritative position, discarding the client's local physics
+		// integration (which otherwise drifts the model away from the wire-corrected
+		// hitbox at high ping, and lags items parented to a moving object). Pickups /
+		// interactions still run. Flip on each client to A/B the physics-object desync.
+		if (strcmp(arg, "on") == 0) {
+			g_NetCoopObjWireDriven = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetCoopObjWireDriven = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: co-op OBJ wire-driven = %s%s", g_NetCoopObjWireDriven ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopobj on|off)" : "");
 	} else if (strcmp(cmd, "coop") == 0) {
 		// /coop [solostageindex] [difficulty] — HOST only. Start a campaign co-op
 		// session on a solo stage (default Defection, index 0). Difficulty is
@@ -4037,8 +4341,12 @@ s32 netConsoleCommand(const char *line)
 				}
 			}
 			g_MissionConfig.stageindex = idx;
-			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d)", idx, diff);
-			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff);
+			// N = all players currently in the session: g_NetNumClients already
+			// counts the host (g_NetClients[0]) plus every connected remote client.
+			// The SVC_STAGE_START co-op manifest sends this same count so clients
+			// derive the identical N. (Late joins are rejected, so the set is fixed.)
+			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d, %d players)", idx, diff, g_NetNumClients);
+			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff, g_NetNumClients);
 		}
 	} else if (strcmp(cmd, "hitvalidate") == 0) {
 		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims
@@ -4968,130 +5276,220 @@ Gfx *netHitmarkerRender(Gfx *gdl)
 // green-bordered translucent box. Drawn on the HUD layer — called from
 // playerRenderHud right after hudmsgsRender so it shares the pickups' layer —
 // and stacked one row above them. Toggled by /graslu. Local-only: not networked.
-Gfx *netGrasluRender(Gfx *gdl)
+// ---- Vanity easter-egg banners (/graslu, /redvox57) ----
+// A boxed lower-left HUD banner mimicking a weapon/ammo pickup. It now has the
+// full notification lifecycle (like the kill feed / lives toast): animate IN when
+// the player HUD is drawn, HOLD (a bright highlight marching around the box), then
+// animate OUT when the HUD is removed. Fade-in/hold render from playerRenderHud
+// (HUD drawn, var80075d60==2); the fade-out renders from lv.c's HUD-removed path
+// via netCoopEggsRenderHidden, so the banner slides away instead of popping off.
+enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
+// Ticks (lvframe60) the mission timer must keep counting before the banner begins
+// its fade-in, so it lands just behind the mission actually starting.
+#define EGG_STAGE_INTRO_DELAY 30
+// How long (lvframe60) the timer may sit flat before we call it paused. The mission
+// timer (bondviewlevtime60 += lvupdate60) only advances on whole 1/60s steps, so
+// above 60fps it's flat for a few frames at a time even during normal play; tolerate
+// that so the banner doesn't flicker, while a real cutscene pause (seconds) trips it.
+#define EGG_TIMER_PAUSE_SLACK 20
+struct netegg {
+	s32 phase;        // EGG_* state
+	s32 phasestart;   // g_Vars.lvframe60 at phase entry
+	s32 readyframe;   // lvframe60 when the mission timer was first seen counting; -1 while paused
+	s32 lasttime;     // last sampled bondviewlevtime60
+	s32 lastframe;    // lvframe60 of the last sample (we sample once per game frame)
+	s32 lastadvframe; // lvframe60 when the timer last INCREASED; -1 = never
+};
+static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1, 0, -1, -1 };
+static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1, 0, -1, -1 };
+
+static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol, u32 hicol, bool want, struct netegg *anim)
 {
-	if (!g_GrasluEgg) {
+	// Gate: only on the HUD layer, in a running level, with the pickup font loaded.
+	if (g_Vars.stagenum == STAGE_TITLE || !g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
+		want = false;
+	}
+
+	s32 lvf = g_Vars.lvframe60;
+
+	if (lvf < anim->phasestart) {
+		// Stage (re)load — lvframe60 was reset to 0. HARD-reset so nothing carries
+		// across the reload; this is what keeps a mission RESTART clean (no stick, no
+		// stale fade state). Also covers a fresh stage load.
+		anim->phasestart = lvf;
+		anim->phase = EGG_HIDDEN;
+		anim->readyframe = -1;
+		anim->lasttime = g_Vars.currentplayer->bondviewlevtime60;
+		anim->lastframe = lvf;
+		anim->lastadvframe = -1;
+	} else if (g_InCutscene || g_MainIsEndscreen) {
+		// MID-mission cutscene / end screen (stage not reloaded): stop counting toward
+		// the fade-in and don't re-arm, but DON'T snap the banner away — fall through
+		// so a fully-shown banner fades OUT gracefully over the cutscene. It keeps
+		// rendering via the HUD path while the HUD is up, and via lv.c's HUD-removed
+		// path (netCoopEggsRenderHidden) when it isn't — so the fade-out is visible
+		// either way. A fade-in caught in progress snaps to hidden in the edge
+		// transitions below. Skip the timer sample (lastframe=lvf) so the paused timer
+		// can't re-arm here, and leave phase/phasestart alone so the fade-out animates
+		// from where it started.
+		anim->readyframe = -1;
+		anim->lasttime = g_Vars.currentplayer->bondviewlevtime60;
+		anim->lastframe = lvf;
+		anim->lastadvframe = -1;
+	}
+
+	// Track the MISSION OVERALL timer (bondviewlevtime60 / playerGetMissionTime).
+	// Unlike the raw stage timer (g_StageTimeElapsed60, which counts from stage load),
+	// this one only counts up once the mission has started and the HUD is live — it
+	// stays 0 through the intro cutscene and pauses during mid-mission cutscenes
+	// (player.c playerTick gates it on (tickmode GE_FADEIN|NORMAL) && !g_InCutscene &&
+	// !g_MainIsEndscreen). Sample once per game frame and watch it INCREASE (it's
+	// reset to 0 at stage start — a decrease that must NOT count as advancing, hence
+	// `>` not `!=`); treat the timer as running while the last increase was within
+	// EGG_TIMER_PAUSE_SLACK frames (rides over its 1/60s granularity at high fps). The
+	// banner shows only while the timer counts: fades in just after it starts, out
+	// when it pauses for a cutscene, back in on resume. A short settle keeps the
+	// fade-in just behind the timer.
+	if (lvf != anim->lastframe) {
+		s32 t = g_Vars.currentplayer->bondviewlevtime60;
+		if (t > anim->lasttime) {
+			anim->lastadvframe = lvf; // timer counted up this frame
+		}
+		anim->lasttime = t;
+		anim->lastframe = lvf;
+
+		bool running = anim->lastadvframe >= 0 && (lvf - anim->lastadvframe) <= EGG_TIMER_PAUSE_SLACK;
+		if (!running) {
+			anim->readyframe = -1; // paused: intro / cutscene / end screen
+		} else if (anim->readyframe < 0) {
+			// Timer resumed after a pause: arm a fresh fade-in and snap away any
+			// leftover fade. Without this, a fade-out that STARTED during a short
+			// cutscene (one shorter than the fade animation) would run to completion
+			// after the cutscene ends and then fade back in — the "fades out then back
+			// in at the cutscene end" glitch. Snapping to HIDDEN here means a single
+			// clean fade-in instead.
+			anim->readyframe = lvf;
+			anim->phase = EGG_HIDDEN;
+			anim->phasestart = lvf;
+		}
+	}
+	const bool show = want && anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
+
+	// Edge transitions: fade in once shown; when it should hide, fade OUT only if it
+	// was fully shown (HOLD). If it's interrupted while still fading IN — a cutscene
+	// triggering or the mission restarting before the fade-in finishes — snap it
+	// straight to HIDDEN instead of reversing into a fade-out, so we don't get the
+	// "fade out then fade back in" glitch; it just fades in once, cleanly, afterward.
+	if (show && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT)) {
+		anim->phase = EGG_FADEIN;
+		anim->phasestart = lvf;
+	} else if (!show) {
+		if (anim->phase == EGG_HOLD) {
+			anim->phase = EGG_FADEOUT;
+			anim->phasestart = lvf;
+		} else if (anim->phase == EGG_FADEIN) {
+			anim->phase = EGG_HIDDEN; // interrupted mid-fade-in: snap, don't reverse-fade
+		}
+	}
+
+	if (anim->phase == EGG_HIDDEN) {
 		return gdl;
 	}
 
-	// In-game only — suppress on the title / main menu.
-	if (g_Vars.stagenum == STAGE_TITLE) {
-		return gdl;
-	}
-
-	// Same font the pickup messages use; bail silently if assets aren't loaded.
-	if (!g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
-		return gdl;
-	}
-
-	const s32 screenw = viGetWidth();
-	const s32 screenh = viGetHeight();
-
-	// Box the text exactly like a one-line pickup. textMeasure only accrues
-	// height on a newline, and the pickup lang strings end in '\n', so a plain
-	// "Graslu" measures height 0 (a 5px sliver box). Measure "Graslu\n" for the
-	// real single-line height the ammo/weapon pickups use, and plain "Graslu"
-	// for the width we actually render. Pickups (hudmsgsRender,
-	// HUDMSGALIGN_LEFT/BOTTOM) bottom-anchor at y = viewheight - lineheight - 14
-	// in this same viGetWidth()/viGetHeight() space, indented
-	// x = xmarginextra(24) + 3 = 27; g_ScaleX is left set by the hudmsgsRender
-	// call that immediately precedes us in playerRenderHud.
+	// Measure: height from "<text>\n" (one pickup line), width from "<text>".
+	char nl[24];
 	s32 lineh = 0;
 	s32 tw = 0;
 	s32 discard = 0;
-	textMeasure(&lineh, &discard, "Graslu\n", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-	textMeasure(&discard, &tw, "Graslu", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+	snprintf(nl, sizeof(nl), "%s\n", text);
+	textMeasure(&lineh, &discard, nl, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+	textMeasure(&discard, &tw, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
 
-	// Lift two line-heights (plus a few px clearance) above the bottom so our box
-	// sits just above the pickup row's box without overlapping it.
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
 	s32 x = 27;
 	s32 y = screenh - 2 * lineh - 24;
-	// CHEAT_MIRROR: reflect the banner to the right side like the pickup boxes it
-	// mimics, so it matches the rest of the flipped HUD (account for its width so
-	// the whole box lands mirrored; the align flag below flips to match).
 	if (cheatIsActive(CHEAT_MIRROR)) {
-		x = screenw - x - tw;
+		// One pixel left of the exact reflection so the mirrored banner lines up.
+		x = screenw - x - tw - 1;
 	}
-	const s32 boxr = x + tw + 3; // right edge: 1px wider than the text + pad
+	const s32 bx1 = x - 3;
+	const s32 by1 = y - 3;
+	const s32 bx2 = x + tw + 3;
+	const s32 by2 = y + lineh + 2;
 
-	// Driven off g_Vars.lvframe60 (60Hz ticks since stage start, reset in lvReset,
-	// so it restarts each mission/match):
-	//   * for the first ~fadeintime ticks, the exact weapon/ammo pickup fade-in
-	//     (box fill alpha ramps while the name wipes in along the diagonal blend);
-	//   * afterwards the box holds steady with solid text and a bright highlight
-	//     marching around its outline ("the line around the box").
-	const f32 fadeintime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
-	const s32 lvf = g_Vars.lvframe60;
+	// The pickup-style wipe duration (also the fade-in / fade-out length).
+	const f32 animtime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
+	const f32 dur = animtime > 30.0f ? 30.0f : animtime;
+	const s32 elapsed = lvf - anim->phasestart;
 
 	gdl = text0f153628(gdl);
-	// Anchor to the left edge so the banner hugs the HUD edge in widescreen,
-	// the same flag the kill feed and console message strip use. (CHEAT_MIRROR
-	// flips it to the right edge so the reflected banner hugs that side.)
 	gSPSetExtraGeometryModeEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? G_ASPECT_RIGHT_EXT : G_ASPECT_LEFT_EXT);
 
-	// Box like the pickup messages: green border (pickup textcolour | 0x40) over a
-	// dark translucent fill, then the green text (textcolour | 0xa0) on top via
-	// textRenderProjected — the same renderer boxed hud messages use.
-	if ((f32)lvf < fadeintime) {
-		// First draw of the mission — identical to a weapon/ammo pickup fade-in:
-		// box fill alpha (spc0) ramps while the text wipes in along the blend.
-		f32 dur = fadeintime > 30.0f ? 30.0f : fadeintime;
-		f32 spc0 = (f32)lvf / dur;
-		if (spc0 > 1.0f) {
-			spc0 = 1.0f;
-		}
-		if (spc0 < 0.0f) {
-			spc0 = 0.0f;
-		}
+	if (anim->phase == EGG_FADEIN) {
+		f32 a = (f32)elapsed / dur;
+		if (a > 1.0f) a = 1.0f;
+		if (a < 0.0f) a = 0.0f;
 
-		textSetDiagonalBlend(x, y, (f32)lvf * PALUPF(7.0f), DIAGMODE_FADEIN);
-		gdl = hudmsgRenderBox(gdl, x - 3, y - 3, boxr, y + lineh + 2, 1.0f, 0x00ff0040, spc0);
-		if (spc0 > 0.0f) {
-			gdl = textRenderProjected(gdl, &x, &y, "Graslu",
-					g_CharsHandelGothicSm, g_FontHandelGothicSm,
-					0x00ff00a0, screenw, screenh, 0, 0);
+		textSetDiagonalBlend(x, y, (f32)elapsed * PALUPF(7.0f), DIAGMODE_FADEIN);
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, bordercol, a);
+		if (a > 0.0f) {
+			gdl = textRenderProjected(gdl, &x, &y, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, textcol, screenw, screenh, 0, 0);
 		}
 		textResetBlends();
+
+		if ((f32)elapsed >= animtime) {
+			anim->phase = EGG_HOLD;
+			anim->phasestart = lvf;
+		}
+	} else if (anim->phase == EGG_FADEOUT) {
+		// Mirror of the hud-message fade-out (hudmsg.c): a diagonal wipe from the far
+		// corner with a counting-down timer, box alpha ramping to 0.
+		f32 a = (f32)elapsed / dur;
+		if (a > 1.0f) a = 1.0f;
+		if (a < 0.0f) a = 0.0f;
+
+		textSetDiagonalBlend(x + tw, y + lineh, (animtime - (f32)elapsed) * PALUPF(7.0f), DIAGMODE_FADEOUT);
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, bordercol, 1.0f - a);
+		if (a < 1.0f) {
+			gdl = textRenderProjected(gdl, &x, &y, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, textcol, screenw, screenh, 0, 0);
+		}
+		textResetBlends();
+
+		if ((f32)elapsed >= animtime) {
+			anim->phase = EGG_HIDDEN;
+		}
 	} else {
-		// Settled: solid box + solid text, with a bright highlight marching around
-		// the outline (top -> right -> bottom -> left, looping). The blend system
-		// can only tint text, so the moving line is drawn as a small filled rect.
-		const s32 bx1 = x - 3;
-		const s32 by1 = y - 3;
-		const s32 bx2 = boxr;
-		const s32 by2 = y + lineh + 2;
+		// EGG_HOLD: solid box + text, with a bright highlight marching around the
+		// outline (top -> right -> bottom -> left, looping ~2px/tick).
 		const s32 bw = bx2 - bx1;
 		const s32 bh = by2 - by1;
 		const s32 perim = 2 * (bw + bh);
-		const s32 seg = 10;                          // highlight length along the edge
-		const u32 hi = 0x80ff80ff;                   // bright green highlight
-		const s32 p = perim > 0 ? (lvf * 2) % perim : 0; // ~2px/tick around the border
+		const s32 seg = 10;
+		const s32 p = perim > 0 ? (lvf * 2) % perim : 0;
 		s32 sx1, sy1, sx2, sy2;
 
-		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, 0x00ff0040, 1.0f);
-		gdl = textRenderProjected(gdl, &x, &y, "Graslu",
-				g_CharsHandelGothicSm, g_FontHandelGothicSm,
-				0x00ff00a0, screenw, screenh, 0, 0);
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, bordercol, 1.0f);
+		gdl = textRenderProjected(gdl, &x, &y, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, textcol, screenw, screenh, 0, 0);
 
-		// Map the perimeter position p to a short segment on the matching edge.
-		if (p < bw) {                   // top: left -> right
+		if (p < bw) {
 			sx1 = bx1 + p;       sy1 = by1;
 			sx2 = sx1 + seg;     sy2 = by1 + 2;
 			if (sx2 > bx2) sx2 = bx2;
-		} else if (p < bw + bh) {       // right: top -> bottom
+		} else if (p < bw + bh) {
 			sx1 = bx2 - 1;       sy1 = by1 + (p - bw);
 			sx2 = bx2 + 1;       sy2 = sy1 + seg;
 			if (sy2 > by2) sy2 = by2;
-		} else if (p < 2 * bw + bh) {   // bottom: right -> left
+		} else if (p < 2 * bw + bh) {
 			sx2 = bx2 - (p - bw - bh); sy1 = by2 - 1;
 			sx1 = sx2 - seg;     sy2 = by2 + 1;
 			if (sx1 < bx1) sx1 = bx1;
-		} else {                        // left: bottom -> top
+		} else {
 			sx1 = bx1;           sy2 = by2 - (p - 2 * bw - bh);
 			sx2 = bx1 + 2;       sy1 = sy2 - seg;
 			if (sy1 < by1) sy1 = by1;
 		}
-		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hi, hi);
+		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hicol, hicol);
 	}
 
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
@@ -5099,105 +5497,22 @@ Gfx *netGrasluRender(Gfx *gdl)
 	return gdl;
 }
 
-// Same boxed-pickup banner renderer as netGrasluRender, but in red (the in-game
-// "mission failed" / menu red) reading "Redvox57", in the same HUD slot.
+Gfx *netGrasluRender(Gfx *gdl)
+{
+	return netEggRender(gdl, "Graslu", 0x00ff0040, 0x00ff00a0, 0x80ff80ff, g_GrasluEgg != 0, &g_GrasluAnim);
+}
+
 Gfx *netRedvox57Render(Gfx *gdl)
 {
-	if (!g_Redvox57Egg) {
-		return gdl;
-	}
+	return netEggRender(gdl, "Redvox57", 0xff000040, 0xff0000a0, 0xff8080ff, g_Redvox57Egg != 0, &g_Redvox57Anim);
+}
 
-	if (g_Vars.stagenum == STAGE_TITLE) {
-		return gdl;
-	}
-
-	if (!g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
-		return gdl;
-	}
-
-	const s32 screenw = viGetWidth();
-	const s32 screenh = viGetHeight();
-
-	// Measure "Redvox57\n" for the single-line height, "Redvox57" for the width.
-	s32 lineh = 0;
-	s32 tw = 0;
-	s32 discard = 0;
-	textMeasure(&lineh, &discard, "Redvox57\n", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-	textMeasure(&discard, &tw, "Redvox57", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-
-	// Exact same slot as the Graslu banner (the two are never enabled together).
-	s32 x = 27;
-	s32 y = screenh - 2 * lineh - 24;
-	if (cheatIsActive(CHEAT_MIRROR)) {
-		x = screenw - x - tw;
-	}
-	const s32 boxr = x + tw + 3;
-
-	const f32 fadeintime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
-	const s32 lvf = g_Vars.lvframe60;
-
-	gdl = text0f153628(gdl);
-	gSPSetExtraGeometryModeEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? G_ASPECT_RIGHT_EXT : G_ASPECT_LEFT_EXT);
-
-	// Red border (0xff0000 | 0x40) over a dark fill, red text (| 0xa0) on top.
-	if ((f32)lvf < fadeintime) {
-		f32 dur = fadeintime > 30.0f ? 30.0f : fadeintime;
-		f32 spc0 = (f32)lvf / dur;
-		if (spc0 > 1.0f) {
-			spc0 = 1.0f;
-		}
-		if (spc0 < 0.0f) {
-			spc0 = 0.0f;
-		}
-
-		textSetDiagonalBlend(x, y, (f32)lvf * PALUPF(7.0f), DIAGMODE_FADEIN);
-		gdl = hudmsgRenderBox(gdl, x - 3, y - 3, boxr, y + lineh + 2, 1.0f, 0xff000040, spc0);
-		if (spc0 > 0.0f) {
-			gdl = textRenderProjected(gdl, &x, &y, "Redvox57",
-					g_CharsHandelGothicSm, g_FontHandelGothicSm,
-					0xff0000a0, screenw, screenh, 0, 0);
-		}
-		textResetBlends();
-	} else {
-		const s32 bx1 = x - 3;
-		const s32 by1 = y - 3;
-		const s32 bx2 = boxr;
-		const s32 by2 = y + lineh + 2;
-		const s32 bw = bx2 - bx1;
-		const s32 bh = by2 - by1;
-		const s32 perim = 2 * (bw + bh);
-		const s32 seg = 10;
-		const u32 hi = 0xff8080ff;                   // bright red highlight
-		const s32 p = perim > 0 ? (lvf * 2) % perim : 0;
-		s32 sx1, sy1, sx2, sy2;
-
-		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, 0xff000040, 1.0f);
-		gdl = textRenderProjected(gdl, &x, &y, "Redvox57",
-				g_CharsHandelGothicSm, g_FontHandelGothicSm,
-				0xff0000a0, screenw, screenh, 0, 0);
-
-		if (p < bw) {                   // top: left -> right
-			sx1 = bx1 + p;       sy1 = by1;
-			sx2 = sx1 + seg;     sy2 = by1 + 2;
-			if (sx2 > bx2) sx2 = bx2;
-		} else if (p < bw + bh) {       // right: top -> bottom
-			sx1 = bx2 - 1;       sy1 = by1 + (p - bw);
-			sx2 = bx2 + 1;       sy2 = sy1 + seg;
-			if (sy2 > by2) sy2 = by2;
-		} else if (p < 2 * bw + bh) {   // bottom: right -> left
-			sx2 = bx2 - (p - bw - bh); sy1 = by2 - 1;
-			sx1 = sx2 - seg;     sy2 = by2 + 1;
-			if (sx1 < bx1) sx1 = bx1;
-		} else {                        // left: bottom -> top
-			sx1 = bx1;           sy2 = by2 - (p - 2 * bw - bh);
-			sx2 = bx1 + 2;       sy1 = sy2 - seg;
-			if (sy1 < by1) sy1 = by1;
-		}
-		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hi, hi);
-	}
-
-	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
-	gdl = text0f153780(gdl);
+// HUD-removed frames (lv.c var80075d60 != 2): drive both banners' fade-out
+// (want=false) so they animate away. No-op once each has finished fading.
+Gfx *netCoopEggsRenderHidden(Gfx *gdl)
+{
+	gdl = netEggRender(gdl, "Graslu", 0x00ff0040, 0x00ff00a0, 0x80ff80ff, false, &g_GrasluAnim);
+	gdl = netEggRender(gdl, "Redvox57", 0xff000040, 0xff0000a0, 0xff8080ff, false, &g_Redvox57Anim);
 	return gdl;
 }
 
@@ -5409,4 +5724,10 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterString("Server.Name", g_NetServerName, sizeof(g_NetServerName) - 1);
 	configRegisterString("Server.PlaylistPath", g_NetPlaylistPath, sizeof(g_NetPlaylistPath) - 1);
 	configRegisterString("Server.AdminPassword", g_NetAdminPassword, sizeof(g_NetAdminPassword) - 1);
+
+	// Vanity egg auto-enable: "0" (default) = off; "graslu" / "redvox57" turns that
+	// banner on at boot (same as typing the /graslu or /redvox57 console command).
+	// Must be a sectioned key ("Game.Egg" -> "[Game]" / "Egg=..."): the config
+	// system mangles section-less keys (seclen 0 drops the first char on save).
+	configRegisterString("Game.Egg", g_EggConfig, sizeof(g_EggConfig) - 1);
 }

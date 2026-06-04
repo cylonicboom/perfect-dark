@@ -51,6 +51,7 @@ struct menudialogdef g_CinemaMenuDialog;
 #ifndef PLATFORM_N64
 extern struct menudialogdef g_ExtendedMenuDialog;
 extern struct menudialogdef g_NetMenuDialog;
+extern struct menudialogdef g_NetCoopMenuDialog;
 extern MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerJoinStart(s32 operation, struct menuitem *item, union handlerdata *data);
 extern MenuItemHandlerResult menuhandlerHostGame(s32 operation, struct menuitem *item, union handlerdata *data);
@@ -5250,10 +5251,10 @@ struct menuitem g_CoopModeMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_ALWAYSDISABLED,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Online",
 		0,
-		NULL,
+		(void *)&g_NetCoopMenuDialog,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

@@ -5,7 +5,10 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 48 // 48: SVC_CUTSCENE — mirror host in-engine cutscene state to co-op clients (intro/mid-mission/outro start+end in lockstep)
+#define NET_PROTOCOL_VER 55 // 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
+// 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it
+// 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness
+// 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -119,6 +122,38 @@ void netChrInterpolate(struct chrdata *chr);
 // 0 reverts to the receive-time per-packet apply (for A/B comparison).
 extern s32 g_NetChrInterp;
 extern s32 g_NetCoopChrLifecycle;
+extern s32 g_NetCoopObjWireDriven;
+
+// Campaign co-op body type (F2, docs/PORT_COOP_ONLINE.md). PER-PLAYER choice:
+// g_NetCoopBodyMode is THIS machine's local player's selection; it rides
+// CLC_SETTINGS to the host (settings.coopbodytype). At SVC_STAGE_START the host
+// resolves every player's choice into per-player bits in g_NetCoopBodyBits (bit i
+// = player i uses the masculine body) — COOPBODY_RANDOM is rolled host-side so all
+// machines agree — and ships the bitmask. Jo's body+head are outfit-driven per
+// level (playerChooseBodyAndHead); the "masculine" model is a per-outfit
+// counterpart, falling back to the feminine model until that art exists (so this
+// is currently a no-op visually). The HEAD is always the player's Combat Sim
+// profile head, independent of body type.
+#define COOPBODY_FEMININE  0
+#define COOPBODY_MASCULINE 1
+#define COOPBODY_RANDOM    2
+extern s32 g_NetCoopHosting;  // host: this server was started for campaign co-op (advertised as netlobbystate.iscoop)
+extern s32 g_NetCoopBodyMode; // COOPBODY_* — local player's choice (synced via CLC_SETTINGS)
+extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (host-assembled, synced)
+
+// Campaign co-op LIVES mutator (F3, docs/PORT_COOP_ONLINE.md). Host setting,
+// synced in SVC_STAGE_START. COOP_LIVES_OFF keeps the stock steal-half-a-buddy's-
+// health revive; PER_PLAYER / SHARED replace it with a respawn budget — each death
+// spends a life (own counter, or a shared pool of count*N), and at zero the player
+// stays down. Host-authoritative: the host owns the counters and the all-out
+// mission-end. (Per-player HUD readout + full counter sync is F3b.)
+#define COOP_LIVES_OFF       0
+#define COOP_LIVES_PERPLAYER 1
+#define COOP_LIVES_SHARED    2
+extern s32 g_NetCoopLivesMode;          // COOP_LIVES_* — host setting, synced
+extern s32 g_NetCoopLivesCount;         // lives granted per player (host setting, synced)
+extern s32 g_NetCoopLives[MAX_PLAYERS]; // per-player remaining (host-authoritative)
+extern s32 g_NetCoopSharedLives;        // shared pool remaining (host-authoritative)
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only
@@ -194,6 +229,7 @@ struct netlobbybot {
 
 struct netlobbystate {
 	u8 valid;
+	u8 iscoop; // host is running a campaign co-op lobby (clients show the co-op window, not the Combat Sim one)
 	u8 scenario;
 	u8 stagenum;
 	u64 options; // mirrors g_MpSetup.options (64-bit)
@@ -308,6 +344,7 @@ struct netclient {
 		u8 headnum;
 		u8 bodynum;
 		u8 team;
+		u8 coopbodytype; // F2: COOPBODY_* — this player's co-op body-type choice
 		f32 fovy;
 		f32 fovzoommult;
 	} settings;
@@ -517,9 +554,10 @@ s32 netDisconnect(void);
 void netStartFrame(void);
 void netEndFrame(void);
 
-// Campaign co-op: enter a solo stage in 2-player co-op (host trigger + client
-// SVC_STAGE_START handler both call this). Phase 0 of co-op session plumbing.
-void netCoopEnterStage(s32 stagenum, s32 difficulty);
+// Campaign co-op: enter a solo stage in N-player co-op (host trigger + client
+// SVC_STAGE_START handler both call this). numplayers = total co-op players N
+// (host + remote partners), up to MAX_PLAYERS.
+void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers);
 
 s32 netStartServer(u16 port, s32 maxclients);
 s32 netStartClient(const char *addr);
@@ -564,8 +602,16 @@ void netServerStageStart(void);
 void netServerStageEnd(void);
 void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
+void netClientSendObjectiveDone(s32 objindex);
+void netClientRequestPickup(struct prop *prop);
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);
+// F3 lives: "N lives remaining" respawn notification. The host calls
+// netServerNotifyLives on a respawn (shared -> all players; individual -> just the
+// victim); it shows the message to host-local players and sends SVC_COOP_LIVES to
+// the relevant client(s), whose netCoopShowLivesMsg renders it for their local player.
+void netServerNotifyLives(s32 victimplayernum, s32 count, bool shared);
+void netCoopShowLivesMsg(s32 count);
 void netServerKick(struct netclient *cl, const u32 reason);
 
 // Co-op host-authoritative objective status, set by SVC_OBJECTIVE on the client
@@ -573,6 +619,9 @@ void netServerKick(struct netclient *cl, const u32 reason);
 // MAX_OBJECTIVES in net.c; declared incomplete here so net.h needn't pull in
 // constants.h. Indexed by objective index.
 extern u32 g_NetCoopObjStatuses[];
+extern u8 g_NetCoopClientObjDone[]; // host: objectives a client reported done via CLC_OBJECTIVE_DONE (latched into objectiveCheck)
+extern u8 g_NetCoopObjToastShown[]; // co-op: per-objective completion-toast-shown latch (shows the toast once the HUD is up even if it completed during a cutscene)
+extern s8 g_NetPickupWireShowMsg;   // client: -1 = normal local gate; 0/1 = host's toast decision for a wire-driven SVC_PROP_PICKUP
 
 struct netclient *netClientForPlayerNum(s32 playernum);
 
@@ -629,6 +678,12 @@ Gfx *netGrasluRender(Gfx *gdl);
 
 // Companion red "Redvox57" vanity banner; same HUD slot/renderer as Graslu.
 Gfx *netRedvox57Render(Gfx *gdl);
+
+// Renders the egg banners' FADE-OUT only, for the frames where the player HUD is
+// removed (lv.c's `var80075d60 != 2` path). netGrasluRender/netRedvox57Render
+// drive the fade-in/hold while the HUD is drawn; this drives the animate-away when
+// it is removed, so the banner slides out instead of vanishing. No-op once gone.
+Gfx *netCoopEggsRenderHidden(Gfx *gdl);
 
 // Hidden test hitmarker: centred marker shown briefly after a confirmed local
 // hit (toggle /hitmarker). No-op unless enabled and within the flash window.

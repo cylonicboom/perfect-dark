@@ -17450,8 +17450,26 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 	}
 
 	// Suppress HUD pickup messages during cutscenes (e.g. items given at
-	// mission start via aiGiveObjectToChr)
-	if (g_Vars.in_cutscene)
+	// mission start via aiGiveObjectToChr). In co-op, keep showing them for
+	// MID-mission pickups (once the player has reached normal gameplay this stage)
+	// so the client sees "picked up X" for items like Cassandra's necklace grabbed
+	// during a scripted moment — only the intro loadout gives stay suppressed.
+#ifndef PLATFORM_N64
+	if (g_NetPickupWireShowMsg >= 0) {
+		// Wire-driven pickup (SVC_PROP_PICKUP): clients can't grab OBJ/key items
+		// themselves (objTestForPickup early-returns on NETMODE_CLIENT), so these
+		// always come from the host, which already decided whether to show the toast
+		// against ITS cutscene state at the pickup moment. Mirror that verbatim — the
+		// client's own in_cutscene can differ (the host grabbed Cassandra's necklace
+		// during a host-side scripted beat), which previously dropped the toast.
+		showhudmsg = (g_NetPickupWireShowMsg != 0);
+	} else
+#endif
+	if (g_Vars.in_cutscene
+#ifndef PLATFORM_N64
+			&& !(g_Vars.coopplayernum >= 0 && g_CoopGameplayStarted)
+#endif
+			)
 	{
 		showhudmsg = false;
 	}
@@ -17521,7 +17539,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 						weaponPlayPickupSound(weapon->weaponnum);
 #ifndef PLATFORM_N64
 						if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->client) {
-							netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, sp64);
+							netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, sp64, showhudmsg);
 						}
 #endif
 					}
@@ -17536,7 +17554,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 						weaponPlayPickupSound(weapon->weaponnum);
 #ifndef PLATFORM_N64
 						if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->client) {
-							netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, sp64);
+							netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, sp64, showhudmsg);
 						}
 #endif
 					}
@@ -17711,7 +17729,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 		netDiagLogf("pickup_svc_write", "cl=%u prop_sid=%u result=%d",
 				(unsigned)g_Vars.currentplayer->client->id,
 				(unsigned)prop->syncid, result);
-		netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, result);
+		netmsgSvcPropPickupWrite(&g_NetMsgRel, g_Vars.currentplayer->client, prop, result, showhudmsg);
 		netmsgSvcPlayerStatsWrite(&g_NetMsgRel, g_Vars.currentplayer->client);
 	}
 #endif
@@ -17741,8 +17759,15 @@ s32 objTestForPickup(struct prop *prop)
 	}
 
 #ifndef PLATFORM_N64
-	// if we aren't the authority, don't do anything
-	if (g_NetMode == NETMODE_CLIENT) {
+	// Co-op: clients used to bail out here ("not the authority"), which meant a
+	// client could never collect an OBJ / key / objective item — only the host
+	// could, making any mission gated on a client-collected item unbeatable. Now
+	// the client runs the same (read-only) pickup checks and, when it would pick
+	// up, sends CLC_PICKUP_REQUEST to the host instead of taking it locally (see
+	// the pickup site below). The host re-validates against the client's synced
+	// position and grants authoritatively via SVC_PROP_PICKUP. Non-co-op clients
+	// (shouldn't exist) keep the old bail-out.
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum < 0) {
 		return TICKOP_NONE;
 	}
 #endif
@@ -17977,6 +18002,20 @@ s32 objTestForPickup(struct prop *prop)
 		}
 
 		if (pickup) {
+#ifndef PLATFORM_N64
+			// Co-op client: pick the item up LOCALLY (responsive — correct inventory +
+			// toast, exactly like single-player, in the normal render context) AND tell
+			// the host, which applies it authoritatively for objectives / action blocks
+			// and informs the OTHER clients. The host's echo back to us is ignored
+			// (netmsgSvcPropPickupRead skips our own pickups) so we don't double-give.
+			// Earlier this deferred entirely to the host (return TICKOP_NONE), but the
+			// host's SVC_PROP_PICKUP apply ran in net-processing context where
+			// propPickupByPlayer early-returns (lvupdate240==0), so invGiveProp never
+			// ran and the item never entered the client's inventory.
+			if (g_NetMode == NETMODE_CLIENT) {
+				netClientRequestPickup(prop);
+			}
+#endif
 			return propPickupByPlayer(prop, true);
 		}
 	}

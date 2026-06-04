@@ -8937,7 +8937,9 @@ bool aiClearInventory(void)
 	for (playernum = 0; playernum < PLAYERCOUNT(); playernum++) {
 		setCurrentPlayerNum(playernum);
 
-		if (g_Vars.currentplayer == g_Vars.bond || g_Vars.currentplayer == g_Vars.coop) {
+		// 8-player co-op groundwork: clear inventory for every co-op player, not
+		// just bond+coop. PLAYER_IS_NOT_ANTI is identical for 2 players, correct N.
+		if (PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)) {
 			invClear();
 #if VERSION >= VERSION_NTSC_1_0
 			g_Vars.currentplayer->devicesactive = 0;
@@ -9085,10 +9087,21 @@ bool aiToggleP1P2(void)
 		struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[2]);
 
 		if (chr) {
-			if (chr->p1p2 == g_Vars.bondplayernum && !g_Vars.coop->isdead) {
-				chr->p1p2 = g_Vars.coopplayernum;
-			} else if (!g_Vars.bond->isdead) {
-				chr->p1p2 = g_Vars.bondplayernum;
+			// 8-player co-op groundwork: cycle the NPC's target to the next ALIVE
+			// co-op player after the current one (wrapping). For 2 players this is
+			// exactly the original bond<->coop toggle; for N it round-robins over
+			// all living co-op players.
+			s32 cyclei;
+
+			for (cyclei = 1; cyclei <= PLAYERCOUNT(); cyclei++) {
+				s32 cand = (chr->p1p2 + cyclei) % PLAYERCOUNT();
+
+				if (g_Vars.players[cand]
+						&& PLAYER_IS_NOT_ANTI(g_Vars.players[cand])
+						&& !g_Vars.players[cand]->isdead) {
+					chr->p1p2 = cand;
+					break;
+				}
 			}
 		}
 	}
@@ -9113,11 +9126,10 @@ bool aiChrSetP1P2(void)
 			u32 playernum = playermgrGetPlayerNumByProp(chr2->prop);
 
 			if (!g_Vars.players[playernum]->isdead) {
-				if (chr2->prop == g_Vars.coop->prop) {
-					chr1->p1p2 = g_Vars.coopplayernum;
-				} else {
-					chr1->p1p2 = g_Vars.bondplayernum;
-				}
+				// 8-player co-op groundwork: target the player that chr2 actually
+				// represents. playernum is already that player's index, so this is
+				// identical to the bond/coop branch for 2 players and correct for N.
+				chr1->p1p2 = playernum;
 			}
 		}
 	}

@@ -3,6 +3,7 @@
 #include "game/bondbike.h"
 #include "game/bondmove.h"
 #include "game/camera.h"
+#include "game/cheats.h"
 #include "game/chraction.h"
 #include "game/prop.h"
 #include "game/setuputils.h"
@@ -283,6 +284,17 @@ void bbikeApplyMoveData(struct movedata *data)
 	} else {
 		g_Vars.currentplayer->speedsideways = 0;
 	}
+
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the hoverbike renders left-right flipped (same lvRender path), but the
+	// walk-mode strafe negate doesn't run in bike mode. Invert the strafe (sideways) input
+	// so left/right match the mirrored view. (The speedsideways^2 speed-magnitude use is
+	// unaffected; the gun-sway use flips harmlessly.) The yaw/look turn is handled
+	// separately by negating speedtheta in bmoveProcessInput. Local only.
+	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+		g_Vars.currentplayer->speedsideways = -g_Vars.currentplayer->speedsideways;
+	}
+#endif
 
 	{
 		f32 sp3c;

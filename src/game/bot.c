@@ -348,7 +348,7 @@ u32 botPickupProp(struct prop *prop, struct chrdata *chr)
 		// moves, prop moves, chr damage) accumulated by earlier code paths
 		// in this same tick, and route this entry to a separate ENet send
 		// that races with the channel-ordered flush.
-		netmsgSvcPropPickupWrite(&g_NetMsgRel, NULL, prop, TICKOP_FREE);
+		netmsgSvcPropPickupWrite(&g_NetMsgRel, NULL, prop, TICKOP_FREE, false); // sim pickup (clid 0xff): reader skips the toast path
 	}
 #endif
 

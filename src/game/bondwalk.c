@@ -1593,7 +1593,15 @@ void bwalkUpdateTheta(void)
 	// turning matches the mirrored view. Strafe, manual aim and the crosshair
 	// swivel read the original (un-negated) input/speedtheta and stay natural.
 	// Local player only (remote players are force-positioned from the wire).
-	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+	//
+	// EXCEPTION — scripted autowalk (TICKMODE_AUTOWALK, e.g. dataDyne Extraction's
+	// "open the door then the game walks you to a point"): the turn input here is the
+	// game's synthetic autocontrol_x, already aimed at the WORLD target. Negating it
+	// would turn the player AWAY from the target so they physically walk to the wrong
+	// spot. Leave it un-negated so the player reaches the real target — and on the
+	// flipped screen that target appears mirrored too, so it still looks correct.
+	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote
+			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
 		rotateamount = -rotateamount;
 	}
 #endif

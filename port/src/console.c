@@ -36,6 +36,17 @@ static s32 conInputCol = 0;
 static u32 conTextColour = 0x00ff00ff;
 static s32 conOpen = 0;
 static s32 conButton = 0;
+// Console.ShowMessages: when 0 (default), log/chat lines do NOT flash on screen
+// while the console is closed — boot and play stay clean (good for streaming).
+// The dev console (~) still opens and shows full scrollback either way; only the
+// transient closed-console overlay (conRenderMsgs) is gated. Set to 1 to restore
+// the on-screen message popups.
+static s32 conShowMsgs = 0;
+
+PD_CONSTRUCTOR static void consoleConfigInit(void)
+{
+	configRegisterInt("Console.ShowMessages", &conShowMsgs, 0, 1);
+}
 // Scrollback offset in rows. 0 = pinned to the live tail (newest line at the
 // bottom). Positive values pan back through the ring buffer. PageUp/PageDown
 // move it by CON_SCROLLSTEP. Capped so we never wrap past the oldest valid
@@ -161,6 +172,14 @@ void conPrintf(s32 showmsg, const char *fmt, ...)
 
 static inline Gfx *conRenderMsgs(Gfx *gdl)
 {
+	if (!conShowMsgs) {
+		// Overlay disabled: don't draw the transient popups, and drop any queued
+		// rows so they can't appear if it's re-enabled mid-session.
+		conMsgRows = 0;
+		conMsgTimer = 0;
+		return gdl;
+	}
+
 	if (conMsgRows) {
 		s32 x, y;
 		const u32 c = (conTextColour & 0xffffff00) | 0xa0;

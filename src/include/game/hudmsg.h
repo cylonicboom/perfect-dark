@@ -18,6 +18,9 @@ void hudmsgCreate(char *text, s32 type);
 void hudmsgCreateWithFlags(char *text, s32 type, u32 flags);
 void hudmsgCreateWithColour(char *text, s32 type, u8 colour);
 void hudmsgCreateWithDuration(char *text, s32 type, struct hudmsgtype *config, s32 duration60);
+// Per-type config table (default colours/alignment/duration). Exposed so port code
+// can reuse a built-in type's config with a custom duration via hudmsgCreateWithDuration.
+extern struct hudmsgtype g_HudmsgTypes[];
 void hudmsgCreateAsSubtitle(char *text, s32 type, u8 colourindex, s32 audiochannelnum);
 void hudmsgCalculatePosition(struct hudmessage *msg);
 void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf02,

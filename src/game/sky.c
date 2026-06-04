@@ -57,6 +57,20 @@ void skyGetWorldPosFromScreenPos(f32 left, f32 top, struct coord *dst)
 	Mtxf *mtx = camGetProjectionMtxF();
 	f32 pos[2];
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the sky/clouds/horizon are a screen-space projection of the camera
+	// view and bypass the renderer's clip-space world flip, so the cloud texture
+	// (s/t = world X/Z sampled per screen position) scrolled the WRONG way against the
+	// mirrored world when turning (fine standing still, wrong on turn). Reflect the
+	// sampled screen X about the view centre here, BEFORE the camera unprojection, so
+	// every sky/cloud/horizon sample becomes the camera-space horizontal mirror — the
+	// camera rotation applied just below then handles any yaw. Single choke point: all
+	// sky sampling (corners, horizon edges, water) goes through this function.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		left = camGetScreenWidth() - left;
+	}
+#endif
+
 	pos[0] = left + camGetScreenLeft();
 	pos[1] = top + camGetScreenTop() + envGetCurrent()->clouds_height;
 
@@ -2592,7 +2606,13 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 
 	xscale = 1;
 
-	if (env->numsuns <= 0 || !g_ZbufPtr1 || g_Vars.mplayerisrunning) {
+	// Sun discs are disabled in any MP mode (splitscreen can't afford the
+	// z-buffer-occluded sun render across viewports). Net co-op draws ONE local
+	// viewport per machine, so re-enable for SP + net co-op via the
+	// single-viewport gate. Byte-identical to `mplayerisrunning` on N64 (no
+	// single-viewport co-op there). Render-only, no gameplay RNG.
+	if (env->numsuns <= 0 || !g_ZbufPtr1
+			|| LOCALPLAYERCOUNT() != 1 || g_Vars.normmplayerisrunning) {
 		return gdl;
 	}
 
@@ -3074,7 +3094,11 @@ Gfx *skyRenderArtifacts(Gfx *gdl)
 		gdl = skyRenderTeleportFlares(gdl);
 	}
 
-	if (env->numsuns <= 0 || !g_ZbufPtr1 || g_Vars.mplayerisrunning) {
+	// Sun lens flares (the bright streak chain from the sun across the screen)
+	// are disabled in any MP mode. Re-enable for SP + net co-op (single local
+	// viewport). Byte-identical to `mplayerisrunning` on N64. Render-only.
+	if (env->numsuns <= 0 || !g_ZbufPtr1
+			|| LOCALPLAYERCOUNT() != 1 || g_Vars.normmplayerisrunning) {
 		return gdl;
 	}
 

@@ -1361,7 +1361,10 @@ Gfx *bgRenderArtifacts(Gfx *gdl)
 {
 	s32 i;
 
-	if (g_Vars.mplayerisrunning == false && g_NumRoomsWithGlares > 0) {
+	// Match the single-viewport gate used when the glares were calculated
+	// (bgCalculateGlaresForVisibleRooms): SP and net co-op render glares,
+	// splitscreen does not. Byte-identical to `mplayerisrunning == false` on N64.
+	if (LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning && g_NumRoomsWithGlares > 0) {
 		gdl = artifactsConfigureForGlares(gdl);
 
 		for (i = 0; i < g_NumRoomsWithGlares; i++) {
@@ -7376,9 +7379,18 @@ void bgCalculateGlaresForVisibleRooms(void)
 	// surfaces before testing for light obstructions
 	g_BgHitXluDisabled = true;
 
-	if (!g_Vars.mplayerisrunning) {
+	// Light glares are normally disabled in any multiplayer mode (the engine
+	// splits the screen between local viewports and can't afford them). Net
+	// co-op draws a SINGLE local viewport per machine, so it can afford glares
+	// exactly like single-player. Gate on the local-viewport count instead of
+	// the game mode: enable for SP and net co-op (one viewport, not normal MP),
+	// keep them off for splitscreen co-op / Combat Sim. This is byte-identical
+	// to the original `!mplayerisrunning` on N64 (no single-viewport co-op
+	// exists there). Use bgRoomIsOnscreen so MP-mode per-player room visibility
+	// is honoured (ROOMFLAG_ONSCREEN is not maintained when mplayerisrunning).
+	if (LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning) {
 		for (i = 1; i < g_Vars.roomcount; i++) {
-			if (g_Rooms[i].flags & ROOMFLAG_ONSCREEN) {
+			if (bgRoomIsOnscreen(i)) {
 				artifactsCalculateGlaresForRoom(i);
 				if (g_NumRoomsWithGlares < 100) {
 					g_GlareRooms[g_NumRoomsWithGlares++] = i;

@@ -136,9 +136,20 @@ void aLoadADPCMImpl(int num_entries_times_16, const int16_t *book_source_addr) {
     memcpy(rspa.adpcm_table, book_source_addr, num_entries_times_16);
 }
 
+// Set from CHEAT_MIRROR via bgTickPortals (the renderer's left-right world flip;
+// declared `bool` in fast3d, 1-byte here — see the bg.c bool/u8 bridging note).
+// When the world is mirrored we swap the output stereo channels too, so a sound
+// from the on-screen left comes out of the left speaker.
+extern unsigned char gfx_mirror_mode;
+
 void aInterleaveImpl(void) {
     const int16_t *l = BUF_S16(OFS_MAIN_L);
     const int16_t *r = BUF_S16(OFS_MAIN_R);
+    if (gfx_mirror_mode) {
+        const int16_t *tmp = l;
+        l = r;
+        r = tmp;
+    }
     int count = ROUND_UP_16(NUM_SAMPLES) / 8;
     int16_t *d = BUF_S16(OFS_BASE);
     while (count > 0) {

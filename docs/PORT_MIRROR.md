@@ -36,8 +36,37 @@ reticle reaches a screen edge).
 
 An earlier approach negated the raw stick/mouse inputs at the source in `bmoveProcessInput`; that
 over-inverted strafe + aim + crosshair and was reverted in favour of these two motion-level negates.
-**Limitation:** only walk-mode yaw/strafe are handled — turret / vehicle / other movement modes are
-not inverted.
+
+**Other control paths now inverted too** (same `cheatIsActive(CHEAT_MIRROR) && !isremote` gate, at the
+input→motion point):
+
+- **Eyespy / camspy** (`bondeyespy.c` `eyespyProcessInput`) renders through the same flipped `lvRender`
+  but doesn't run the walk-mode negates — so its horizontal **look** (mouse `mdx` + stick `c1stickx`
+  → `eyespy->theta`) and **strafe** (`sidespeed`) are negated locally.
+- **Held / grabbed object** (`bondgrab.c`) rotation is driven by raw `speedtheta` (the walk fix only
+  negates `rotateamount`/`speedsideways`, not `speedtheta`), so the held box/bed tracked backwards;
+  the `speedtheta`-derived rotation is negated at both apply sites (`f0` in the "doextra" path and
+  `angle` in `bgrab0f0cdef0`). The rotation-induced lateral and `speedsideways` already line up.
+- **Auto-aim X** (`prop.c` `autoaimTick`): the horizontal target-offset fed to
+  `bmoveUpdateAutoAimXProp` is negated, because the shot direction is taken from the *reflected*
+  crosshair — so auto-aim must pull the crosshair to the target's **mirrored** screen side (otherwise
+  it tracked the opposite side and the bullet missed).
+- **Hoverbike** (`MOVEMODE_BIKE`): two separate inputs, negated in two places.
+  - **Strafe** (sideways) is negated in `bondbike.c` `bbikeApplyMoveData` (the walk-mode strafe negate
+    doesn't run in bike mode). The `speedsideways^2` speed magnitude is unaffected; the gun-sway use
+    flips harmlessly.
+  - **Yaw / look** (the actual steering of the bike's facing) is driven by `speedtheta`, set in
+    `bondmove.c` `bmoveProcessInput` from `speedthetacontrol` (line ~2431) and consumed by
+    `hoverbikeUpdateMovement` → `bike->w` → the `angledelta` rotation in `bbikeCalculateNewPosition`.
+    `bmoveUpdateSpeedTheta` is a no-op for BIKE (it does **not** stay 0 — the assignment at 2431
+    feeds it), so `speedtheta` is negated there, gated to `MOVEMODE_BIKE` so walk's own
+    `bwalkUpdateTheta` negate isn't double-applied.
+
+**Note on "turrets":** there is **no player-controlled turret movement mode** in this codebase —
+`player.bondonturret` is only ever reset to `false` (never enabled) and never gates any control, and
+the `OBJTYPE_AUTOGUN` sentries are AI-driven, not player-aimed. So nothing to invert there. If a
+specific mounted-gun / mode shows inverted controls in-game, identify the level + situation and the
+same input→motion negate pattern applies.
 
 ## Ammo HUD mirror (`bondgun.c` `bgunDrawHud`)
 
@@ -52,6 +81,18 @@ fill boxes, `x = bgunHudMirrorX(x) - textwidth` for the rightward-rendered `text
 and the block's `bgunHudMirrorAlign`). Those labels are 2D texrects (`textRenderProjected` →
 `gSPTextureRectangleEXT`), so they're moved game-side. On N64 the helpers are identity macros, so
 `bgunDrawHud` is byte-identical.
+
+## Audio channel swap (`mixer.c` `aInterleaveImpl`)
+
+When the world is mirrored, the output **stereo channels are swapped** so a sound from the
+on-screen-left comes out of the left speaker (otherwise positional audio fights the flipped view).
+This is done at the single final-interleave choke point: `aInterleaveImpl` (the N64 audio microcode's
+MAIN_L/MAIN_R → interleaved-stereo step) swaps the `l`/`r` source pointers when `gfx_mirror_mode` is
+set. It's a blanket L/R swap (SFX, music, ambience all flip), which is the correct behaviour for a
+full left-right mirror. `gfx_mirror_mode` is the same renderer global the visual flip keys off (set
+from `CHEAT_MIRROR` in `bgTickPortals`), declared `extern unsigned char` in `mixer.c` per the
+`bool`(fast3d)/1-byte(game) bridging convention. N64 build is unaffected (the cheat never sets the
+flag there).
 
 ## How it works
 
@@ -151,6 +192,17 @@ quadrant.
   (`skyRenderArtifacts`→`skyRenderFlare`, `sky.c`) reflect their screen X about the view centre when
   `CHEAT_MIRROR` is active, so they track the mirrored world. The glares' *visibility* is a world-space
   LOS test, which is unaffected by the screen-space flip.
+- **Sky / clouds / horizon are mirrored at the sampling input** (`sky.c` `skyGetWorldPosFromScreenPos`).
+  The sky is a screen-space projection of the camera view (not 3D geometry), so it bypasses the
+  renderer's clip-space flip; its cloud texture coords (`.s`/`.t` = world X/Z sampled per screen
+  position) made the clouds scroll the **wrong way on turn** while looking fine standing still.
+  Reflecting the rendered vertex *positions* doesn't help — the sky is a full-screen quad, so the
+  scroll lives entirely in the per-pixel `s/t`. The fix reflects the **sampled screen X about the view
+  centre** (`left = camGetScreenWidth() - left`) inside `skyGetWorldPosFromScreenPos`, *before* the
+  `cam0f0b4c3c` unprojection + camera rotation — making each sample the camera-space horizontal mirror
+  (the camera rotation that follows absorbs the yaw, so it's correct at any heading). One choke point
+  covers clouds, the horizon line, and the water surface (all sky sampling routes through it). N64
+  `#ifndef`'d; mirror-off byte-identical.
 - **GL backend only** (the renderer this port uses). Other rapi backends are untouched.
 
 ## Verification

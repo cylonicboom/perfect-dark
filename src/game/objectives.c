@@ -248,7 +248,12 @@ s32 objectiveCheck(s32 index)
 							prevplayernum = g_Vars.currentplayernum;
 
 							for (i = 0; i < PLAYERCOUNT(); i++) {
-								if (g_Vars.players[i] == g_Vars.bond || g_Vars.players[i] == g_Vars.coop) {
+								// 8-player co-op groundwork: "is a co-op player" generalised.
+								// g_Vars.coop is the single splitscreen buddy; in net co-op there
+								// are N co-op players, all of which are non-anti. PLAYER_IS_NOT_ANTI
+								// is identical for SP / 2-player / anti, but catches all N co-op
+								// players instead of just bond+coop.
+								if (PLAYER_IS_NOT_ANTI(g_Vars.players[i])) {
 									setCurrentPlayerNum(i);
 
 									if (invHasProp(obj->prop)) {
@@ -275,7 +280,12 @@ s32 objectiveCheck(s32 index)
 							s32 prevplayernum = g_Vars.currentplayernum;
 
 							for (i = 0; i < PLAYERCOUNT(); i++) {
-								if (g_Vars.players[i] == g_Vars.bond || g_Vars.players[i] == g_Vars.coop) {
+								// 8-player co-op groundwork: "is a co-op player" generalised.
+								// g_Vars.coop is the single splitscreen buddy; in net co-op there
+								// are N co-op players, all of which are non-anti. PLAYER_IS_NOT_ANTI
+								// is identical for SP / 2-player / anti, but catches all N co-op
+								// players instead of just bond+coop.
+								if (PLAYER_IS_NOT_ANTI(g_Vars.players[i])) {
 									setCurrentPlayerNum(i);
 
 									if (invHasProp(obj->prop)) {
@@ -342,21 +352,39 @@ s32 objectiveCheck(s32 index)
 
 #ifndef PLATFORM_N64
 	// Campaign co-op: the host is authoritative for objective state. Overlay the
-	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) on top of the
-	// client's own local evaluation as a UNION — a wire COMPLETE/FAILED forces that
-	// result so the client reflects objectives the host's world finished (incl. the
-	// other player's actions the host runs), while never hiding one the client
-	// itself locally completed. Keeps the objective HUD and mission debrief
-	// consistent across machines. Host-side this is skipped (it computes the
-	// authoritative status it broadcasts). All-zero default = INCOMPLETE = no-op.
+	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) onto the
+	// client's local evaluation as a UNION with a COMPLETE-LATCH: a wire COMPLETE
+	// (the host's world finished it, incl. the other player's actions the host runs)
+	// OR a previously-shown COMPLETE (the cached g_ObjectiveStatuses) forces COMPLETE.
+	// The latch stops the flicker seen when an unstable LOCAL eval — a position /
+	// inventory check on a boundary — drops back to incomplete before the host has
+	// confirmed it; objectives don't un-complete in practice, so latching is safe and
+	// also captures a client-local completion the host can't see (e.g. a HOLOGRAPH
+	// keyed on the client's own camera). FAILED still applies if not already complete.
+	// Host-side this whole block is skipped (it computes the authoritative status it
+	// broadcasts). All-zero default = INCOMPLETE = no-op before any broadcast.
 	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
 			&& index >= 0 && index < MAX_OBJECTIVES) {
-		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE) {
+		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE
+				|| g_ObjectiveStatuses[index] == OBJECTIVE_COMPLETE) {
 			objstatus = OBJECTIVE_COMPLETE;
 		} else if (g_NetCoopObjStatuses[index] == OBJECTIVE_FAILED
 				&& objstatus != OBJECTIVE_COMPLETE) {
 			objstatus = OBJECTIVE_FAILED;
 		}
+	}
+
+	// Co-op host: latch objectives a client reported done via CLC_OBJECTIVE_DONE.
+	// Those completions hinge on events the host can't witness itself — the client
+	// entering a scripted trigger room, throwing a mine onto an object, or a
+	// holograph keyed on the client's own camera — so the host's local eval above
+	// stays INCOMPLETE for them. Folding the client's report in makes the host's
+	// authoritative status COMPLETE, which objectivesCheckAll then broadcasts to all.
+	// Don't override a genuine FAILED.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+			&& index >= 0 && index < MAX_OBJECTIVES
+			&& g_NetCoopClientObjDone[index] && objstatus != OBJECTIVE_FAILED) {
+		objstatus = OBJECTIVE_COMPLETE;
 	}
 #endif
 
@@ -393,12 +421,67 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		setCurrentPlayerNum(i);
 
-		if (g_Vars.currentplayer == g_Vars.bond || g_Vars.currentplayer == g_Vars.coop) {
+		// 8-player co-op groundwork: show the objective toast to every co-op
+		// player, not just bond+coop. PLAYER_IS_NOT_ANTI is identical for SP /
+		// 2-player / anti, but covers all N co-op players.
+		if (PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)
+#ifndef PLATFORM_N64
+				// NET co-op: only create the toast for LOCAL players. A remote player's
+				// HUD is never rendered on this machine (hudmsgsRender filters by
+				// playernum), but the toast would still promote to "showing" and occupy
+				// its screen slot — and the occupying-space check is playernum-agnostic,
+				// so an invisible remote toast at the same spot (objective-complete is
+				// centre-screen) blocks the LOCAL player's toast from ever appearing.
+				// Splitscreen co-op keeps all players (none are remote).
+				&& !g_Vars.currentplayer->isremote
+#endif
+				) {
 			hudmsgCreateWithFlags(buffer, hudmsgtype, HUDMSGFLAG_DELAY | HUDMSGFLAG_ALLOWDUPES);
 		}
 	}
 
 	setCurrentPlayerNum(prevplayernum);
+}
+#endif
+
+#ifndef PLATFORM_N64
+// Co-op: show the "Objective N: Completed / Incomplete / Failed" toast for a single
+// objective, host-authoritative — called from netmsgSvcObjectiveRead when the host's
+// SVC_OBJECTIVE broadcast flips a status. Mirrors the per-objective branch in
+// objectivesCheckAll so the displayed number + wording match exactly. The displayed
+// number ("Objective N") is the count of difficulty-matching objectives up to this
+// index, same as objectivesCheckAll's availableindex.
+void objectivesShowStatusForIndex(s32 objindex, s32 status)
+{
+	char buffer[50] = "";
+	s32 availableindex = 0;
+	s32 j;
+
+	if (objindex < 0 || objindex > g_ObjectiveLastIndex) {
+		return;
+	}
+	if (!(objectiveGetDifficultyBits(objindex) & (1 << lvGetDifficulty()))) {
+		return; // this objective isn't shown at the current difficulty
+	}
+
+	for (j = 0; j < objindex; j++) {
+		if (objectiveGetDifficultyBits(j) & (1 << lvGetDifficulty())) {
+			availableindex++;
+		}
+	}
+
+	sprintf(buffer, "%s %d: ", langGet(L_MISC_044), availableindex + 1); // "Objective"
+
+	if (status == OBJECTIVE_COMPLETE) {
+		strcat(buffer, langGet(L_MISC_045)); // "Completed"
+		objectivesShowHudmsg(buffer, HUDMSGTYPE_OBJECTIVECOMPLETE);
+	} else if (status == OBJECTIVE_INCOMPLETE) {
+		strcat(buffer, langGet(L_MISC_046)); // "Incomplete"
+		objectivesShowHudmsg(buffer, HUDMSGTYPE_OBJECTIVECOMPLETE);
+	} else if (status == OBJECTIVE_FAILED) {
+		strcat(buffer, langGet(L_MISC_047)); // "Failed"
+		objectivesShowHudmsg(buffer, HUDMSGTYPE_OBJECTIVEFAILED);
+	}
 }
 #endif
 
@@ -415,10 +498,26 @@ void objectivesCheckAll(void)
 		for (i = 0; i <= g_ObjectiveLastIndex; i++) {
 			s32 status = objectiveCheck(i);
 
+#ifndef PLATFORM_N64
+			const bool objjusttransitioned = (g_ObjectiveStatuses[i] != status);
+#endif
+
 			if (g_ObjectiveStatuses[i] != status) {
 				g_ObjectiveStatuses[i] = status;
 #ifndef PLATFORM_N64
 				netobjchanged = true;
+
+				// Co-op client: if WE just completed an objective the host doesn't know
+				// about (its mirrored status isn't COMPLETE), report it so the host
+				// latches it and rebroadcasts authoritative completion to everyone.
+				// Covers objectives whose trigger the host can't witness (client room
+				// entry / throw-on-object / camera holograph). Reliable, one send.
+				if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+						&& status == OBJECTIVE_COMPLETE
+						&& i < MAX_OBJECTIVES
+						&& g_NetCoopObjStatuses[i] != OBJECTIVE_COMPLETE) {
+					netClientSendObjectiveDone(i);
+				}
 #endif
 
 				if (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty())) {
@@ -458,6 +557,25 @@ void objectivesCheckAll(void)
 #endif
 				}
 			}
+
+#ifndef PLATFORM_N64
+			// Co-op: an objective can complete while the full HUD isn't rendering (a
+			// scripted beat / cutscene), so this loop doesn't run and the transition
+			// toast above is missed; once the HUD returns g_ObjectiveStatuses is already
+			// COMPLETE so no transition fires. Show the toast the first time we see the
+			// objective COMPLETE with the HUD up (this loop only runs with the HUD up),
+			// unless the transition above already showed it this frame (avoids a double).
+			if (g_Vars.coopplayernum >= 0
+					&& status == OBJECTIVE_COMPLETE
+					&& i < MAX_OBJECTIVES
+					&& !g_NetCoopObjToastShown[i]
+					&& (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty()))) {
+				if (!objjusttransitioned) {
+					objectivesShowStatusForIndex(i, OBJECTIVE_COMPLETE);
+				}
+				g_NetCoopObjToastShown[i] = 1;
+			}
+#endif
 
 			if (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty())) {
 				availableindex++;

@@ -184,6 +184,10 @@ extern struct attackanimgroup *g_KneelDualAttackAnims[][32];
 extern struct attackanimconfig g_RollAttackAnims[];
 extern struct attackanimconfig g_WalkAttackAnims[];
 extern u32 g_StageFlags;
+#ifndef PLATFORM_N64
+extern s32 g_CoopGameplayStarted; // co-op: player reached normal gameplay this stage (mid-mission pickup-toast gate)
+extern u32 g_NetCoopLocalStageFlags; // co-op client: stage flags this client's own scripts set locally; OR-merged over the host's SVC_STAGE_FLAGS mirror so a local guard flag latches (stops objective-monitor re-trigger spam)
+#endif
 extern struct chrdata *g_BgChrs;
 extern s16 *g_BgChrnums;
 extern s32 g_NumBgChrs;

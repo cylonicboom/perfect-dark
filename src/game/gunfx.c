@@ -73,7 +73,7 @@ void beamCreate(struct beam *beam, s32 weaponnum, struct coord *from, struct coo
 			beam->mindist = 3000;
 		}
 
-		beam->dist = (-0.1f - RANDOMFRAC() * 0.3f) * distance;
+		beam->dist = (-0.1f - RANDOMFRACCOSMETIC() * 0.3f) * distance;
 	} else if (weaponnum == -2) {
 		beam->speed = 0;
 		beam->mindist = distance;
@@ -92,7 +92,7 @@ void beamCreate(struct beam *beam, s32 weaponnum, struct coord *from, struct coo
 			beam->mindist = 3000;
 		}
 
-		tmp = RANDOMFRAC();
+		tmp = RANDOMFRACCOSMETIC();
 		beam->dist = (tmp + tmp - 1) * beam->speed;
 	}
 
@@ -450,7 +450,10 @@ Gfx *beamRender(Gfx *gdl, struct beam *beam, bool arg2, u8 arg3)
 
 				if (beam->weaponnum);
 
-				if (beam->weaponnum == -2 && PLAYERCOUNT() == 1) {
+				// Laser secondary-fire beam detail: enabled in SP, skipped in MP.
+				// Re-enable for net co-op (single local viewport). Byte-identical
+				// to PLAYERCOUNT()==1 on N64. Beam jitter is cosmetic-RNG driven.
+				if (beam->weaponnum == -2 && LOCALPLAYERCOUNT() == 1) {
 					spcc.f[0] = sp138.f[0] + beam->dir.f[0] * sp12c;
 					spcc.f[1] = sp138.f[1] + beam->dir.f[1] * sp12c;
 					spcc.f[2] = sp138.f[2] + beam->dir.f[2] * sp12c;
@@ -612,7 +615,7 @@ void beamTick(struct beam *beam)
 				beam->dist += beam->speed * g_Vars.lvupdate60f;
 			} else {
 				// Lagging
-				beam->dist += beam->speed * (2 + RANDOMFRAC() * 0.5f);
+				beam->dist += beam->speed * (2 + RANDOMFRACCOSMETIC() * 0.5f);
 			}
 
 			if (beam->dist >= beam->maxdist) {
@@ -693,7 +696,14 @@ void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
 		return;
 	}
 
-	if (PLAYERCOUNT() >= 2) {
+	// Shell casings are skipped in splitscreen (multiple viewports). Net co-op
+	// draws ONE local viewport per machine, so gate on the local-viewport count:
+	// emit casings for SP and net co-op, skip only for splitscreen. Byte-identical
+	// to PLAYERCOUNT()>=2 on N64 (no remote players there). The casing's random
+	// spawn velocity/rotation now draws from the cosmetic RNG stream
+	// (RANDOMFRACCOSMETIC), so this purely-visual desync between host/client can't
+	// drift the synced gameplay seed.
+	if (LOCALPLAYERCOUNT() >= 2) {
 		return;
 	}
 
@@ -719,15 +729,15 @@ void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
 
 		if (weaponnum == WEAPON_PP9I || weaponnum == WEAPON_CC13
 				|| weaponnum == WEAPON_FALCON2 || weaponnum == WEAPON_MAGSEC4) {
-			casing->speed.x = -(RANDOMFRAC() * 0.5333333f * 0.0625f + 0.5333333f);
-			casing->speed.y = RANDOMFRAC() * 2.5f * 0.0625f + 2.5f;
+			casing->speed.x = -(RANDOMFRACCOSMETIC() * 0.5333333f * 0.0625f + 0.5333333f);
+			casing->speed.y = RANDOMFRACCOSMETIC() * 2.5f * 0.0625f + 2.5f;
 			casing->speed.z = 0.0f;
 
 			mtx4RotateVecInPlace(mtx, &casing->speed);
 
-			spa4.x = 2.0f * RANDOMFRAC() * M_BADTAU * 0.0625f - 0.39263657f;
-			spa4.y = 2.0f * RANDOMFRAC() * M_BADTAU * 0.0625f - 0.39263657f;
-			spa4.z = 2.0f * RANDOMFRAC() * M_BADTAU * 0.0625f - 0.39263657f;
+			spa4.x = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.0625f - 0.39263657f;
+			spa4.y = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.0625f - 0.39263657f;
+			spa4.z = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.0625f - 0.39263657f;
 
 			mtx4LoadRotation(&spa4, &sp64);
 			mtx4ToMtx3(&sp64, spc8);
@@ -756,11 +766,11 @@ void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
 			}
 		} else {
 			if (weaponnum == WEAPON_REAPER) {
-				casing->speed.x = -(RANDOMFRAC() * 0.41666666f * 0.125f + 0.41666666f);
-				casing->speed.y = RANDOMFRAC() * 3.3333333f * 0.125f + 3.3333333f;
+				casing->speed.x = -(RANDOMFRACCOSMETIC() * 0.41666666f * 0.125f + 0.41666666f);
+				casing->speed.y = RANDOMFRACCOSMETIC() * 3.3333333f * 0.125f + 3.3333333f;
 			} else {
-				casing->speed.x = -((RANDOMFRAC() * 1.4166666f * 0.125f) + 1.4166666f);
-				casing->speed.y = RANDOMFRAC() * 1.6666666f * 0.125f + 1.6666666f;
+				casing->speed.x = -((RANDOMFRACCOSMETIC() * 1.4166666f * 0.125f) + 1.4166666f);
+				casing->speed.y = RANDOMFRACCOSMETIC() * 1.6666666f * 0.125f + 1.6666666f;
 			}
 
 			casing->speed.z = 0.0f;
@@ -774,17 +784,17 @@ void casingCreateForHand(s32 handnum, f32 ground, Mtxf *mtx)
 			mtx4RotateVecInPlace(mtx, &casing->speed);
 
 			if (weaponnum == WEAPON_REAPER) {
-				spa4.x = 2.0f * RANDOMFRAC() * M_BADTAU * 0.015625f - 0.09815914f;
-				spa4.y = 2.0f * RANDOMFRAC() * M_BADTAU * 0.015625f - 0.09815914f;
-				spa4.z = 2.0f * RANDOMFRAC() * M_BADTAU * 0.015625f - 0.09815914f;
+				spa4.x = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.015625f - 0.09815914f;
+				spa4.y = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.015625f - 0.09815914f;
+				spa4.z = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.015625f - 0.09815914f;
 
 				mtx4LoadRotation(&spa4, &sp64);
 				mtx4RotateVecInPlace(&sp64, &casing->speed);
 			}
 
-			spa4.x = 2.0f * RANDOMFRAC() * M_BADTAU * 0.015625f - 0.09815914f;
-			spa4.y = 2.0f * RANDOMFRAC() * M_BADTAU * 0.015625f - 0.09815914f;
-			spa4.z = 2.0f * RANDOMFRAC() * M_BADTAU * 0.015625f - 0.09815914f;
+			spa4.x = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.015625f - 0.09815914f;
+			spa4.y = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.015625f - 0.09815914f;
+			spa4.z = 2.0f * RANDOMFRACCOSMETIC() * M_BADTAU * 0.015625f - 0.09815914f;
 
 			mtx4LoadRotation(&spa4, &sp64);
 			mtx4ToMtx3(&sp64, spc8);

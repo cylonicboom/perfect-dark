@@ -17,6 +17,7 @@
 #include "game/explosions.h"
 #include "game/dlights.h"
 #include "game/lang.h"
+#include "game/objectives.h"
 #include "game/player.h"
 #include "game/playermgr.h"
 #include "game/bondgun.h"
@@ -554,6 +555,7 @@ u32 netmsgClcSettingsWrite(struct netbuf *dst)
 	netbufWriteF32(dst, g_NetLocalClient->settings.fovy);
 	netbufWriteF32(dst, g_NetLocalClient->settings.fovzoommult);
 	netbufWriteStr(dst, g_NetLocalClient->settings.name);
+	netbufWriteU8(dst, (u8)g_NetCoopBodyMode); // F2: this player's co-op body-type choice (proto 49)
 	return dst->error;
 }
 
@@ -565,6 +567,7 @@ u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl)
 	const f32 fovy = netbufReadF32(src);
 	const f32 fovzoommult = netbufReadF32(src);
 	char *name = netbufReadStr(src);
+	const u8 coopbodytype = netbufReadU8(src); // F2 (proto 49)
 
 	if (src->error) {
 		sysLogPrintf(LOG_WARNING, "NET: malformed CLC_SETTINGS from client %u", srccl->id);
@@ -582,6 +585,7 @@ u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl)
 	srccl->settings.headnum = headnum;
 	srccl->settings.fovy = fovy;
 	srccl->settings.fovzoommult = fovzoommult;
+	srccl->settings.coopbodytype = (coopbodytype <= COOPBODY_RANDOM) ? coopbodytype : COOPBODY_FEMININE;
 
 	return src->error;
 }
@@ -833,6 +837,13 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 				ncl->state = CLSTATE_GAME;
 			}
 		}
+		// F2: per-player body-type bitmask. Already resolved in netPlayersAllocate
+		// (runs before this, after playernums are assigned and before the chrbody is
+		// built), so here we just ship it. proto 49
+		netbufWriteU8(dst, g_NetCoopBodyBits);
+		// F3: lives mutator — mode + count (host setting). proto 50
+		netbufWriteU8(dst, (u8)g_NetCoopLivesMode);
+		netbufWriteU8(dst, (u8)g_NetCoopLivesCount);
 		return dst->error;
 	}
 #endif
@@ -960,12 +971,22 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 				ncl->player = NULL;
 			}
 		}
+		// F2: per-player body-type bitmask (proto 49). Applied before
+		// netCoopEnterStage so it is set when the stage loads / chooses bodies;
+		// the client's netCoopEnterStage is gated not to re-resolve it.
+		g_NetCoopBodyBits = netbufReadU8(src);
+		// F3: lives mutator mode + count (proto 50). The client uses the mode to
+		// gate its revive path; the host drives the authoritative counters.
+		g_NetCoopLivesMode = netbufReadU8(src);
+		g_NetCoopLivesCount = netbufReadU8(src);
 		if (src->error) {
 			return src->error;
 		}
 		g_NetLocalClient->state = CLSTATE_GAME;
 		g_MissionConfig.stageindex = 0; // TODO: sync index for briefing/HUD
-		netCoopEnterStage((s32)stagenum, (s32)difficulty);
+		// numplayers is the host's manifest count = total co-op players N (host +
+		// all remote clients), so the client allocates the same N player slots.
+		netCoopEnterStage((s32)stagenum, (s32)difficulty, (s32)numplayers);
 		return src->error;
 	}
 #endif
@@ -1187,6 +1208,10 @@ u32 netmsgSvcObjectiveRead(struct netbuf *src, struct netclient *srccl)
 	for (s32 i = 0; i < count; ++i) {
 		u8 status = netbufReadU8(src);
 		if (!src->error) {
+			// Mirror the host's authoritative status. The "Objective N Completed" toast
+			// is driven solely by objectivesCheckAll on the client (its co-op fallback
+			// shows it once the objective reads COMPLETE via this latch) — showing it
+			// here too just created a duplicate that competed for the same screen slot.
 			g_NetCoopObjStatuses[i] = status;
 		}
 	}
@@ -1221,9 +1246,17 @@ u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u32 flags = netbufReadU32(src);
 	if (!src->error) {
-		// Host-authoritative: mirror exactly. Scripts/AI that would set these are
-		// gated off on the client, so it doesn't lose its own flags by overwriting.
-		g_StageFlags = flags;
+		// Host-authoritative mirror, but OR-merge the flags this client's OWN scripts
+		// set locally (g_NetCoopLocalStageFlags). Combat NPC AI is gated off on the
+		// client, but the setup's objective-monitor scripts still run here (they also
+		// hand out mission-start equipment, so they can't be gated off). A monitor's
+		// loop guard is often a stage flag — if the host hasn't set it yet (e.g. it
+		// can't see a client-thrown ECM mine), a plain overwrite would clear the
+		// client's local set every mirror tick and the monitor would re-enter its
+		// "complete" branch forever, re-firing show_hudmsg + the looping ECM sound.
+		// OR-merging the local set lets the guard latch. Host-cleared bits the client
+		// never set locally are still mirrored exactly.
+		g_StageFlags = flags | g_NetCoopLocalStageFlags;
 	}
 	return src->error;
 }
@@ -1261,6 +1294,27 @@ u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl)
 		}
 	}
 
+	return src->error;
+}
+
+// F3 lives: a respawn-notification carrying the recipient's remaining lives. The
+// host targets it (broadcast for a shared pool, unicast to the victim for
+// per-player); the recipient shows "N lives remaining" to its local player.
+u32 netmsgSvcCoopLivesWrite(struct netbuf *dst, s32 count)
+{
+	if (count < 0) { count = 0; }
+	if (count > 255) { count = 255; }
+	netbufWriteU8(dst, SVC_COOP_LIVES);
+	netbufWriteU8(dst, (u8)count);
+	return dst->error;
+}
+
+u32 netmsgSvcCoopLivesRead(struct netbuf *src, struct netclient *srccl)
+{
+	const s32 count = netbufReadU8(src);
+	if (!src->error) {
+		netCoopShowLivesMsg(count);
+	}
 	return src->error;
 }
 
@@ -1344,6 +1398,57 @@ u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl)
 	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0 && !g_MainIsEndscreen) {
 		mainEndStage();
 	}
+
+	return src->error;
+}
+
+u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl)
+{
+	// A co-op client completed an objective whose triggering action the host can't
+	// witness (the client entering a scripted trigger room, throwing a mine onto an
+	// object, a holograph keyed on the client's own camera). Latch it so the host's
+	// objectiveCheck includes it; the host's objectivesCheckAll then sees COMPLETE
+	// and rebroadcasts the authoritative status to everyone via SVC_OBJECTIVE.
+	const u8 objindex = netbufReadU8(src);
+	if (!src->error && g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+			&& objindex < MAX_OBJECTIVES) {
+		g_NetCoopClientObjDone[objindex] = 1;
+	}
+
+	return src->error;
+}
+
+u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
+{
+	// A co-op client walked up to an OBJ / weapon / key it wants (its own
+	// objTestForPickup passed) but can't take itself — pickups are host-authoritative.
+	// Re-validate and grant as the requesting client's player: with that player's slot
+	// current, objTestForPickup re-checks proximity (the client's synced position) /
+	// LOS / inventory exactly as the host does for its own players, and on success
+	// propPickupByPlayer (inside) gives the item, runs the host's toast gate, and
+	// broadcasts SVC_PROP_PICKUP — which the requesting client applies (item + toast).
+	// propExecuteTickOperation mirrors the normal propsTestForPickup flow.
+	const u16 syncid = netbufReadU16(src);
+	if (src->error || g_NetMode != NETMODE_SERVER || g_Vars.coopplayernum < 0
+			|| srccl->state < CLSTATE_GAME || srccl->is_spectator
+			|| !srccl->player || !srccl->player->prop
+			|| srccl->playernum >= MAX_PLAYERS) {
+		return src->error;
+	}
+
+	struct prop *prop = netSyncIdToProp(syncid);
+	if (!prop || !prop->obj
+			|| (prop->type != PROPTYPE_OBJ && prop->type != PROPTYPE_WEAPON)) {
+		return src->error;
+	}
+
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	setCurrentPlayerNum(srccl->playernum);
+	const s32 op = objTestForPickup(prop);
+	if (op != TICKOP_NONE) {
+		propExecuteTickOperation(prop, op);
+	}
+	setCurrentPlayerNum(prevplayernum);
 
 	return src->error;
 }
@@ -2645,7 +2750,7 @@ u32 netmsgSvcPropDamageRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
-u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop)
+u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop, bool showmsg)
 {
 	netbufWriteU8(dst, SVC_PROP_PICKUP);
 	// 0xff = sim/AI pickup with no human attribution. The reader skips the
@@ -2654,6 +2759,11 @@ u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct
 	// server, which freed it via botPickupProp's objFree call.
 	netbufWriteU8(dst, actcl ? actcl->id : 0xff);
 	netbufWriteS8(dst, tickop);
+	// The host's effective show-toast decision (its in_cutscene / g_CoopGameplayStarted
+	// at the pickup moment). The client mirrors it instead of re-evaluating against its
+	// own cutscene state, so co-op pickup toasts (e.g. Cassandra's necklace) match the
+	// host exactly. (proto 54)
+	netbufWriteU8(dst, showmsg ? 1 : 0);
 	netbufWritePropPtr(dst, prop);
 	return dst->error;
 }
@@ -2662,6 +2772,7 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 clid = netbufReadU8(src);
 	const s8 tickop = netbufReadS8(src);
+	const u8 showmsg = netbufReadU8(src); // host's show-toast decision (proto 54)
 	struct prop *prop = netbufReadPropPtr(src);
 	if (src->error || !prop || srccl->state < CLSTATE_GAME) {
 		return src->error;
@@ -2683,6 +2794,15 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 	struct netclient *actcl = g_NetClients + clid;
+
+	// Co-op: we already picked up our OWN items locally (client-local pickup in
+	// objTestForPickup) — the host echoes the grant to everyone, but applying it
+	// again here would double-give / double-toast. Skip our own; other clients still
+	// apply it so the prop disappears from their world.
+	if (actcl == g_NetLocalClient) {
+		return src->error;
+	}
+
 	if (actcl->is_spectator) {
 		// Spectator clients have no mpchr and no playernum — a SVC_PROP_PICKUP
 		// referencing one is either a stale message or a peer bug. Run the
@@ -2697,7 +2817,11 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(actcl->playernum);
 
+	// Mirror the host's toast decision (it ran the gate against its own cutscene
+	// state at the pickup moment) rather than re-evaluating locally.
+	g_NetPickupWireShowMsg = (s8)(showmsg ? 1 : 0);
 	propPickupByPlayer(prop, true);
+	g_NetPickupWireShowMsg = -1;
 	if (tickop != TICKOP_NONE) {
 		propExecuteTickOperation(prop, tickop);
 	}
@@ -3664,6 +3788,10 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 
 	netbufWriteU8(dst, SVC_LOBBY_STATE);
 
+	// Co-op lobby flag (proto 52): the client shows the co-op window instead of the
+	// Combat Sim lobby. Set by the co-op menu's Start Hosting.
+	netbufWriteU8(dst, (u8)(g_NetCoopHosting ? 1 : 0));
+
 	netbufWriteU8(dst, g_MpSetup.scenario);
 	netbufWriteU8(dst, g_MpSetup.stagenum);
 	netbufWriteU64(dst, g_MpSetup.options);
@@ -3746,6 +3874,7 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 
 u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 {
+	const u8 iscoop          = netbufReadU8(src); // proto 52
 	const u8 scenario        = netbufReadU8(src);
 	const u8 stagenum        = netbufReadU8(src);
 	const u64 options        = netbufReadU64(src);
@@ -3809,6 +3938,7 @@ u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	g_NetLobbyState.valid          = 1;
+	g_NetLobbyState.iscoop         = iscoop;
 	g_NetLobbyState.scenario       = scenario;
 	g_NetLobbyState.stagenum       = stagenum;
 	g_NetLobbyState.options        = options;

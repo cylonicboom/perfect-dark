@@ -1571,6 +1571,12 @@ Gfx *lvRender(Gfx *gdl)
 					if (g_Vars.currentplayer->visionmode != VISIONMODE_XRAY) {
 						gdl = bgRenderArtifacts(gdl);
 					}
+
+#ifndef PLATFORM_N64
+					// Player HUD is removed this frame: animate the vanity egg
+					// banners away (their fade-in/hold render from playerRenderHud).
+					gdl = netCoopEggsRenderHidden(gdl);
+#endif
 				}
 
 				if (g_DebugScreenshotRgb <= 0) {

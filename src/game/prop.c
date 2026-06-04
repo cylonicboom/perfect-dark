@@ -3,6 +3,7 @@
 #include "../lib/naudio/n_sndp.h"
 #include "game/bondmove.h"
 #include "game/bondwalk.h"
+#include "game/cheats.h"
 #include "game/chraction.h"
 #include "game/dlights.h"
 #include "game/chr.h"
@@ -2178,7 +2179,42 @@ void propsTickPlayer(bool islastplayer)
 				g_Vars.propstates[prop->propstateindex].foregroundpropcount++;
 
 				if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR) {
+#ifndef PLATFORM_N64
+					// Co-op (experimental, /coopobj): objTickPlayer runs the obj's
+					// local physics unconditionally on clients (unlike sims, whose
+					// botTick is server-gated). For a movable/pushable object that
+					// drifts prop->pos — and the rendered model (objRender reads
+					// prop->pos) — away from the wire, which only corrects it at
+					// 50%/packet, splitting model from hitbox at high ping and lagging
+					// items parented to it. When enabled, snap a networked OBJ prop back
+					// to the wire pos after the tick so the host's position is the sole
+					// source; pickups/interactions in the tick still run.
+					struct coord objwirepos = {0, 0, 0};
+					// PROPTYPE_OBJ only: doors (PROPTYPE_DOOR) and weapons
+					// (PROPTYPE_WEAPON) alias prop->obj via the union but have their
+					// own position/animation logic — wire-snapping a door breaks its
+					// open animation (opens then snaps to centre). Doors stay synced
+					// via SVC_PROP_DOOR; only movable objects are wire-driven here.
+					const bool objrestore = g_NetCoopObjWireDriven
+							&& g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+							&& prop->type == PROPTYPE_OBJ && prop->syncid && prop->obj;
+					if (objrestore) {
+						objwirepos = prop->pos;
+					}
 					op = objTickPlayer(prop);
+					if (objrestore && op != TICKOP_FREE && prop->obj) {
+						prop->pos = objwirepos;
+						// objTickPlayer rebuilt the obj's collision geometry from the
+						// locally-drifted pos this frame (the model/hitbox desync the
+						// user saw). Re-derive it from the restored wire pos so the
+						// collision cylinder / floor tiles line up with the rendered
+						// model (objRender reads prop->pos). func0f069c1c overwrites the
+						// obj's geometry buffer in place, so re-calling it is safe.
+						func0f069c1c(prop->obj);
+					}
+#else
+					op = objTickPlayer(prop);
+#endif
 				} else if (prop->type == PROPTYPE_EXPLOSION) {
 					op = explosionTickPlayer(prop);
 				} else if (prop->type == PROPTYPE_SMOKE) {
@@ -2998,7 +3034,18 @@ void autoaimTick(void)
 		}
 
 		if (bmoveIsAutoAimXEnabledForCurrentWeapon() || iscmpsec) {
-			bmoveUpdateAutoAimXProp(bestprop, (aimpos[0] - camGetScreenLeft()) / (camGetScreenWidth() * 0.5f) - 1);
+			f32 aimx = (aimpos[0] - camGetScreenLeft()) / (camGetScreenWidth() * 0.5f) - 1;
+#ifndef PLATFORM_N64
+			// CHEAT_MIRROR: the world renders left-right flipped and the shot direction
+			// is taken from the REFLECTED crosshair (see PORT_MIRROR.md). So the auto-aim
+			// must pull the crosshair to the target's MIRRORED screen side — negate the
+			// horizontal offset — otherwise it tracks the opposite side from where the
+			// target appears and the bullet misses. Local player only.
+			if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+				aimx = -aimx;
+			}
+#endif
+			bmoveUpdateAutoAimXProp(bestprop, aimx);
 		}
 
 		if (cangangsta) {

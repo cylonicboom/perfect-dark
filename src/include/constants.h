@@ -81,6 +81,10 @@
 #define MIXCOLOUR(dialog, property) dialog->transitionfrac < 0.0f ? g_MenuColours[dialog->type].property : colourBlend(g_MenuColours[dialog->type2].property, g_MenuColours[dialog->type].property, dialog->colourweight)
 #define MPCHR(index)        ((index) < MAX_PLAYERS ? &g_PlayerConfigsArray[index].base : &g_BotConfigsArray[(index) - MAX_PLAYERS].base)
 #define RANDOMFRAC()        (rngRandom() * (1.0f / U32_MAX))
+// Cosmetic-stream sibling of RANDOMFRAC() — draws from the unsynced cosmetic RNG
+// (rngCosmeticRandom, see src/game/rngcosmetic_c.c) so purely-visual effects do
+// not advance the network-synced gameplay seed. Use for casings/smoke/beam etc.
+#define RANDOMFRACCOSMETIC() (rngCosmeticRandom() * (1.0f / U32_MAX))
 #define SECSTOTIME240(secs) (secs * 240)
 #define SECSTOTIME60(secs)  (secs * 60)
 #define PFS(device)         (device == SAVEDEVICE_GAMEPAK ? NULL : &g_Pfses[device])

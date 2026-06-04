@@ -43,6 +43,7 @@
 #define SVC_CHR_TALK     0x4f // co-op: an NPC spoke (quip/conversation line); client plays the positional voice line (NPC AI is gated off on clients)
 #define SVC_STAGE_FLAGS  0x50 // co-op: host-authoritative g_StageFlags mirror (scripts/objectives/triggers gate on it; set host-side)
 #define SVC_CUTSCENE     0x51 // co-op: host-authoritative in-engine cutscene state (active + anim); client starts/ends in lockstep
+#define SVC_COOP_LIVES   0x52 // co-op: "N lives remaining" respawn notification (F3 lives mutator); shown to the recipient's local player
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -56,6 +57,8 @@
 #define CLC_ADMIN_SETUP 0x09 // admin pushes a full g_MpSetup + bot config; server starts the match
 #define CLC_PROP_HIT 0x0a // client-reported destructible-prop/glass hit; server validates + applies
 #define CLC_STAGE_COMPLETE 0x0b // co-op client reached the exit / scripted mission-complete; host ends the stage for all
+#define CLC_OBJECTIVE_DONE 0x0c // co-op client completed an objective the host can't witness (room entered, throw-on-object, holograph); host latches + rebroadcasts
+#define CLC_PICKUP_REQUEST 0x0d // co-op client wants to pick up an OBJ/weapon prop (by syncid); host re-validates + grants via SVC_PROP_PICKUP
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -96,6 +99,8 @@ u32 netmsgClcPropHitRead(struct netbuf *src, struct netclient *srccl);
 // scripted mission-complete tells the host. Host is authoritative for stage flow:
 // on read it runs mainEndStage(), which broadcasts SVC_STAGE_END to all. Empty body.
 u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl);
 
 // SVC_OBJECTIVE (co-op): host-authoritative objective status mirror. Wire:
 // { count:u8, status[count]:u8 } — count = g_ObjectiveLastIndex+1, each status is
@@ -131,6 +136,8 @@ u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl);
 // client would never start/end them in sync. Wire: { active:u8, animnum:s16 }.
 u32 netmsgSvcCutsceneWrite(struct netbuf *dst, s32 active, s16 animnum);
 u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcCoopLivesWrite(struct netbuf *dst, s32 count);
+u32 netmsgSvcCoopLivesRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);
@@ -150,7 +157,7 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPropDamageWrite(struct netbuf *dst, struct prop *prop, f32 damage, struct coord *pos, s32 weaponnum, s32 playernum);
 u32 netmsgSvcPropDamageRead(struct netbuf *src, struct netclient *srccl);
-u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop);
+u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop, bool showmsg);
 u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPropUseWrite(struct netbuf *dst, struct prop *prop, struct netclient *usercl, const s32 tickop);
 u32 netmsgSvcPropUseRead(struct netbuf *src, struct netclient *srccl);

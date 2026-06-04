@@ -5412,7 +5412,13 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 		if (!ignore[h]) {
 			hand = &player->hands[h];
 
-			if (hand->hasdotinfo && !g_Vars.mplayerisrunning) {
+			// Laser-sighted weapons (Falcon 2) track the crosshair to the red
+			// dot's on-screen position; the engine skips this in any MP mode
+			// (multiple viewports). Net co-op has a single local viewport, so
+			// re-enable it for SP + net co-op via the local-viewport gate.
+			// Byte-identical to `!mplayerisrunning` on N64 (no single-viewport
+			// co-op there).
+			if (hand->hasdotinfo && LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning) {
 				sp94.x = hand->dotpos.x;
 				sp94.y = hand->dotpos.y;
 				sp94.z = hand->dotpos.z;
@@ -6720,8 +6726,12 @@ void bgunDisarm(struct prop *attackerprop)
 		// Coop must not allow player to drop a mission critical weapon
 		// because AI lists can fail the mission if the player has zero
 		// quantity.
+		// 8-player co-op groundwork: protect mission-critical weapons for ANY
+		// co-op player, not just bond+coop. In co-op there are no anti players, so
+		// every player prop is a teammate — `attackerprop->type == PROPTYPE_PLAYER`
+		// is identical to the bond/coop test for 2 players and correct for N.
 		if (g_Vars.coopplayernum >= 0
-				&& (attackerprop == g_Vars.bond->prop || attackerprop == g_Vars.coop->prop)
+				&& attackerprop && attackerprop->type == PROPTYPE_PLAYER
 				&& bgunIsMissionCritical(weaponnum)) {
 			return;
 		}
@@ -8562,7 +8572,11 @@ void bgun0f0a5550(s32 handnum)
 		bgunCreateFx(hand, handnum, funcdef, weaponnum, modeldef, mtxallocation);
 	}
 
-	if (PLAYERCOUNT() == 1 && IS8MB() && g_Vars.lvupdate240 != 0) {
+	// Muzzle smoke is single-player-only in the stock game; re-enable for net
+	// co-op (single local viewport). Smoke spawns at the world muzzle position,
+	// so it also works for remote partners. Byte-identical to PLAYERCOUNT()==1 on
+	// N64. Smoke particle randomness now draws from the cosmetic RNG stream.
+	if (LOCALPLAYERCOUNT() == 1 && IS8MB() && g_Vars.lvupdate240 != 0) {
 		bgunUpdateSmoke(hand, handnum, weaponnum, funcdef);
 	}
 
@@ -8570,12 +8584,30 @@ void bgun0f0a5550(s32 handnum)
 		bgunTickEject(hand, modeldef, isdetonator);
 	}
 
+#ifndef PLATFORM_N64
+	// Falcon 2 laser sight: the engine only updates it in true single-player
+	// (PLAYERCOUNT()==1, multiple viewports can't afford it); net co-op has a
+	// single local viewport, so re-enable it for net co-op too. g_LaserSights[]
+	// is keyed by hand (not player), so a remote player's tick must NOT touch it
+	// — that would clobber the local player's sight. Byte-identical to the N64
+	// path below for SP / N64 co-op / Combat Sim.
+	if (g_Vars.currentplayer->isremote) {
+		// remote player in net co-op: leave the local laser-sight slots alone
+	} else if ((PLAYERCOUNT() == 1 || (LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning))
+			&& IS8MB() && hand->visible
+			&& weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_FALCON2_SCOPE) {
+		bgunUpdateLasersight(hand, modeldef, handnum, mtxallocation);
+	} else {
+		lasersightFree(handnum);
+	}
+#else
 	if (PLAYERCOUNT() == 1 && IS8MB() && hand->visible
 			&& weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_FALCON2_SCOPE) {
 		bgunUpdateLasersight(hand, modeldef, handnum, mtxallocation);
 	} else {
 		lasersightFree(handnum);
 	}
+#endif
 
 	hand->animframeinc = 0;
 
@@ -11465,7 +11497,9 @@ void bgunRender(Gfx **gdlptr)
 		gdl = vi0000b0e8(gdl, 60, f2);
 	}
 
-	if (PLAYERCOUNT() == 1 && IS8MB()) {
+	// Render the Falcon 2 laser beam in SP and net co-op (a single local
+	// viewport can afford it). Byte-identical to PLAYERCOUNT()==1 on N64.
+	if ((PLAYERCOUNT() == 1 || (LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning)) && IS8MB()) {
 		gdl = lasersightRenderBeam(gdl);
 	}
 

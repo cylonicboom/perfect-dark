@@ -90,6 +90,7 @@ Two ENet channels:
 | 0x04 | CLC_MOVE | Player input + position this tick |
 | 0x05 | CLC_SETTINGS | Player settings changed (head, body, FOV, etc.) |
 | 0x0b | CLC_STAGE_COMPLETE | Co-op: client's local sim reached the exit / scripted mission-complete; host ends the stage for all (added on `port-net-predict`) |
+| 0x0c | CLC_OBJECTIVE_DONE | Co-op: client completed an objective the host can't witness (trigger room entered, throw-on-object, camera holograph); host latches it into `objectiveCheck` (`g_NetCoopClientObjDone`) and rebroadcasts `SVC_OBJECTIVE` (proto 53) |
 
 > **Co-op stage-completion handshake.** Mission-complete is detected per-machine on
 > the local player (`func0000e990` → `mainEndStage`). The host ending broadcasts

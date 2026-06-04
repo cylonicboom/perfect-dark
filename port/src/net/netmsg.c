@@ -1412,6 +1412,22 @@ u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl)
+{
+	// A co-op client completed an objective whose triggering action the host can't
+	// witness (the client entering a scripted trigger room, throwing a mine onto an
+	// object, a holograph keyed on the client's own camera). Latch it so the host's
+	// objectiveCheck includes it; the host's objectivesCheckAll then sees COMPLETE
+	// and rebroadcasts the authoritative status to everyone via SVC_OBJECTIVE.
+	const u8 objindex = netbufReadU8(src);
+	if (!src->error && g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+			&& objindex < MAX_OBJECTIVES) {
+		g_NetCoopClientObjDone[objindex] = 1;
+	}
+
+	return src->error;
+}
+
 u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 {
 	if (movecl->state < CLSTATE_GAME || !movecl->player || !movecl->player->prop) {

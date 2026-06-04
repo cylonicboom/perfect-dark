@@ -373,6 +373,19 @@ s32 objectiveCheck(s32 index)
 			objstatus = OBJECTIVE_FAILED;
 		}
 	}
+
+	// Co-op host: latch objectives a client reported done via CLC_OBJECTIVE_DONE.
+	// Those completions hinge on events the host can't witness itself — the client
+	// entering a scripted trigger room, throwing a mine onto an object, or a
+	// holograph keyed on the client's own camera — so the host's local eval above
+	// stays INCOMPLETE for them. Folding the client's report in makes the host's
+	// authoritative status COMPLETE, which objectivesCheckAll then broadcasts to all.
+	// Don't override a genuine FAILED.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+			&& index >= 0 && index < MAX_OBJECTIVES
+			&& g_NetCoopClientObjDone[index] && objstatus != OBJECTIVE_FAILED) {
+		objstatus = OBJECTIVE_COMPLETE;
+	}
 #endif
 
 	return objstatus;
@@ -478,6 +491,18 @@ void objectivesCheckAll(void)
 				g_ObjectiveStatuses[i] = status;
 #ifndef PLATFORM_N64
 				netobjchanged = true;
+
+				// Co-op client: if WE just completed an objective the host doesn't know
+				// about (its mirrored status isn't COMPLETE), report it so the host
+				// latches it and rebroadcasts authoritative completion to everyone.
+				// Covers objectives whose trigger the host can't witness (client room
+				// entry / throw-on-object / camera holograph). Reliable, one send.
+				if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+						&& status == OBJECTIVE_COMPLETE
+						&& i < MAX_OBJECTIVES
+						&& g_NetCoopObjStatuses[i] != OBJECTIVE_COMPLETE) {
+					netClientSendObjectiveDone(i);
+				}
 #endif
 
 				if (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty())) {

@@ -1428,6 +1428,41 @@ u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
+{
+	// A co-op client walked up to an OBJ / weapon / key it wants (its own
+	// objTestForPickup passed) but can't take itself — pickups are host-authoritative.
+	// Re-validate and grant as the requesting client's player: with that player's slot
+	// current, objTestForPickup re-checks proximity (the client's synced position) /
+	// LOS / inventory exactly as the host does for its own players, and on success
+	// propPickupByPlayer (inside) gives the item, runs the host's toast gate, and
+	// broadcasts SVC_PROP_PICKUP — which the requesting client applies (item + toast).
+	// propExecuteTickOperation mirrors the normal propsTestForPickup flow.
+	const u16 syncid = netbufReadU16(src);
+	if (src->error || g_NetMode != NETMODE_SERVER || g_Vars.coopplayernum < 0
+			|| srccl->state < CLSTATE_GAME || srccl->is_spectator
+			|| !srccl->player || !srccl->player->prop
+			|| srccl->playernum >= MAX_PLAYERS) {
+		return src->error;
+	}
+
+	struct prop *prop = netSyncIdToProp(syncid);
+	if (!prop || !prop->obj
+			|| (prop->type != PROPTYPE_OBJ && prop->type != PROPTYPE_WEAPON)) {
+		return src->error;
+	}
+
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	setCurrentPlayerNum(srccl->playernum);
+	const s32 op = objTestForPickup(prop);
+	if (op != TICKOP_NONE) {
+		propExecuteTickOperation(prop, op);
+	}
+	setCurrentPlayerNum(prevplayernum);
+
+	return src->error;
+}
+
 u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 {
 	if (movecl->state < CLSTATE_GAME || !movecl->player || !movecl->player->prop) {

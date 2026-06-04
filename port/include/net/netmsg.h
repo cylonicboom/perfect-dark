@@ -58,6 +58,7 @@
 #define CLC_PROP_HIT 0x0a // client-reported destructible-prop/glass hit; server validates + applies
 #define CLC_STAGE_COMPLETE 0x0b // co-op client reached the exit / scripted mission-complete; host ends the stage for all
 #define CLC_OBJECTIVE_DONE 0x0c // co-op client completed an objective the host can't witness (room entered, throw-on-object, holograph); host latches + rebroadcasts
+#define CLC_PICKUP_REQUEST 0x0d // co-op client wants to pick up an OBJ/weapon prop (by syncid); host re-validates + grants via SVC_PROP_PICKUP
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -99,6 +100,7 @@ u32 netmsgClcPropHitRead(struct netbuf *src, struct netclient *srccl);
 // on read it runs mainEndStage(), which broadcasts SVC_STAGE_END to all. Empty body.
 u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl);
 
 // SVC_OBJECTIVE (co-op): host-authoritative objective status mirror. Wire:
 // { count:u8, status[count]:u8 } — count = g_ObjectiveLastIndex+1, each status is

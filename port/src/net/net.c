@@ -1039,6 +1039,34 @@ void netClientSendObjectiveDone(s32 objindex)
 	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
+// Co-op client: ask the host to let us pick up an OBJ/weapon prop. Clients run the
+// same (read-only) pickup tests the host does (objTestForPickup) but can't take the
+// prop themselves — they send this so the host re-validates against our synced
+// position and grants it via SVC_PROP_PICKUP (which gives us the item + toast).
+// Debounced per-prop so the request RTT doesn't flood the reliable channel.
+void netClientRequestPickup(struct prop *prop)
+{
+	static u16 lastsid = 0;
+	static u32 lasttick = 0;
+
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient || !prop || !prop->syncid) {
+		return;
+	}
+
+	// Skip a re-request for the same prop within ~1/3s; if the host hasn't granted
+	// it by then (LOS/position still settling) we ask again.
+	if (prop->syncid == lastsid && (u32)(g_NetTick - lasttick) < 20u) {
+		return;
+	}
+	lastsid = prop->syncid;
+	lasttick = g_NetTick;
+
+	netbufStartWrite(&g_NetMsgRel);
+	netbufWriteU8(&g_NetMsgRel, CLC_PICKUP_REQUEST);
+	netbufWriteU16(&g_NetMsgRel, (u16)prop->syncid);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
 // Co-op host-authoritative objective status. Set by SVC_OBJECTIVE on clients and
 // overlaid onto objectiveCheck() (see objectives.c). Zeroed (= OBJECTIVE_INCOMPLETE)
 // at boot and reset at stage start so a previous mission's completions can't leak.
@@ -1443,6 +1471,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_PROP_HIT: rc = netmsgClcPropHitRead(&cl->in, cl); break;
 			case CLC_STAGE_COMPLETE: rc = netmsgClcStageCompleteRead(&cl->in, cl); break;
 			case CLC_OBJECTIVE_DONE: rc = netmsgClcObjectiveDoneRead(&cl->in, cl); break;
+			case CLC_PICKUP_REQUEST: rc = netmsgClcPickupRequestRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

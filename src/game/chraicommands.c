@@ -2321,40 +2321,25 @@ bool aiGiveObjectToChr(void)
 
 	if (obj && obj->prop && chr && chr->prop) {
 		if (chr->prop->type == PROPTYPE_PLAYER) {
-#ifndef PLATFORM_N64
-			// Co-op client: a scripted object give to a PLAYER is host-authoritative.
-			// The host gives it and broadcasts SVC_PROP_PICKUP attributed by CLIENT ID,
-			// so it lands on the right physical player. Running it here mis-targets —
-			// CHR_BOND/CHR_COOP map to DIFFERENT players on the client (the local player
-			// is always slot 0; the host occupies the "coop" slot), so e.g. a necklace
-			// scripted to CHR_COOP would be handed to the REMOTE host on the client and
-			// the local player would never get it — and it would consume the prop before
-			// the host's authoritative grant arrives. So skip the local give on clients.
-			if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
-				// host's SVC_PROP_PICKUP applies it to the correct player
-			} else
-#endif
-			{
-				u32 something;
-				u32 prevplayernum = g_Vars.currentplayernum;
-				struct defaultobj *obj2 = obj->prop->obj;
-				u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
-				setCurrentPlayerNum(playernum);
+			u32 something;
+			u32 prevplayernum = g_Vars.currentplayernum;
+			struct defaultobj *obj2 = obj->prop->obj;
+			u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
+			setCurrentPlayerNum(playernum);
 
 #if VERSION >= VERSION_NTSC_1_0
-				if (obj->prop->parent) {
-					objDetach(obj->prop);
-					objFreeEmbedmentOrProjectile(obj->prop);
-					propActivate(obj->prop);
-				}
+			if (obj->prop->parent) {
+				objDetach(obj->prop);
+				objFreeEmbedmentOrProjectile(obj->prop);
+				propActivate(obj->prop);
+			}
 #endif
 
-				something = propPickupByPlayer(obj->prop, 1);
-				propExecuteTickOperation(obj->prop, something);
-				playernum = playermgrGetPlayerNumByProp(chr->prop);
-				obj2->hidden = (playernum << 28) | (obj2->hidden & 0x0fffffff);
-				setCurrentPlayerNum(prevplayernum);
-			}
+			something = propPickupByPlayer(obj->prop, 1);
+			propExecuteTickOperation(obj->prop, something);
+			playernum = playermgrGetPlayerNumByProp(chr->prop);
+			obj2->hidden = (playernum << 28) | (obj2->hidden & 0x0fffffff);
+			setCurrentPlayerNum(prevplayernum);
 		} else {
 			if (obj->prop->parent) {
 				objDetach(obj->prop);

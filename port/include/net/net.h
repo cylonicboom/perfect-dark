@@ -604,7 +604,6 @@ void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
 void netClientSendObjectiveDone(s32 objindex);
 void netClientRequestPickup(struct prop *prop);
-bool netClientWasLocalPickup(u16 syncid); // client: did WE proximity-pick-up this syncid (so skip the host's echo)
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);
 // F3 lives: "N lives remaining" respawn notification. The host calls

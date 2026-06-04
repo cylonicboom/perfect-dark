@@ -137,22 +137,44 @@ including co-op; `normmplayerisrunning` is **false** in co-op / anti (set in
 | `bondgun.c` `bgun0f0a5550` (~8573) | Falcon 2 laser **sight** update | same; **plus `isremote` skip** — `g_LaserSights[]` is keyed by hand, not player, so a remote tick must not update/free the local slot |
 | `sky.c` `skyRenderSuns` (~2595) | **sun disc(s)** | `mplayerisrunning` early-return → `LOCALPLAYERCOUNT()!=1 \|\| normmplayerisrunning` |
 | `sky.c` `skyRenderArtifacts` (~3077) | **sun lens flare** (streak chain from the sun) | same single-viewport early-return gate |
+| `gunfx.c` `casingCreateForHand` (~696) | gun **shell casings** | `PLAYERCOUNT()>=2` skip → `LOCALPLAYERCOUNT()>=2` skip; spawn RNG → cosmetic stream |
+| `bondgun.c` `bgunTickGameplay2` (~8565) | gun **muzzle smoke** | `PLAYERCOUNT()==1` → `LOCALPLAYERCOUNT()==1`; smoke spawns at world muzzle (works for remote partners); smoke RNG → cosmetic stream |
+| `gunfx.c` `beamRender` (~453) | Laser **secondary-fire beam** detail | `PLAYERCOUNT()==1` → `LOCALPLAYERCOUNT()==1`; beam jitter RNG → cosmetic stream |
 
 The glare and laser-sight paths were verified free of `rngRandom()`, so enabling
 them on a client/host that renders different things cannot drift the gameplay RNG.
 
-### Deferred until RNG isolation (workstream B) — desync risk
+### Casings / smoke / laser-beam: cosmetic-RNG conversion (the desync-safe enable)
 
-Shell casings (`gunfx.c:696` `PLAYERCOUNT()>=2` early-return), gun smoke
-(`bondgun.c:8565`), and the Laser secondary-fire beam detail (`gunfx.c:453`
-`PLAYERCOUNT()==1`) are also splitscreen-removed visuals, **but their particle
-spawns draw from the gameplay RNG stream** (`casingtick.c` / `smoke.c` are named
-cosmetic-RNG offenders in the determinism review). Re-enabling them now would
-let an on-screen-dependent cosmetic effect advance `g_RngSeed` differently on
-host vs client → gameplay desync. Re-enable these **after** the cosmetic RNG is
-split onto its own unsynced stream. (`gunfx.c:131` `PLAYERCOUNT()>=2` is the
-inverse — it *adds* chr-fireslot beam sharing for 2+ players, already correct for
-co-op; leave it.)
+These three were initially deferred because their particle randomness drew from
+the **synced gameplay** stream (`RANDOMFRAC()` → `rngRandom()`), so re-enabling
+them would let an on-screen-dependent effect drift `g_RngSeed` between host and
+client → *gameplay* desync, not just visual. The branch already has a cosmetic
+RNG stream (`rngCosmeticRandom()`, `src/game/rngcosmetic_c.c`, unsynced + excluded
+from the determinism hash), and these files (`gunfx.c`, `casingtick.c`, `smoke.c`)
+had been *partially* converted (the integer `% N` calls). The remaining
+`RANDOMFRAC()` float calls in those three files were converted to a new
+`RANDOMFRACCOSMETIC()` macro (cosmetic-stream sibling of `RANDOMFRAC`, in
+`constants.h`). Now the casing/smoke/beam visuals may freely diverge per machine
+(short-lived, cosmetic) **without** touching the gameplay seed — which is exactly
+the "client-side, OK to desync" property wanted. This also incidentally removes
+the *existing* gameplay-seed contamination from explosion smoke (which already
+ran in co-op via `smoke.c`).
+
+(`gunfx.c:131` `PLAYERCOUNT()>=2` is the inverse — it *adds* chr-fireslot beam
+sharing for 2+ players, already correct for co-op; leave it.)
+
+### Weapon / character models — already full quality in net co-op (verified)
+
+`playerTickChrBody` (`player.c:1441`) has an SP branch
+(`!mplayerisrunning || (IS4MB() && PLAYERCOUNT()==1)`) that loads the local
+player's body + held-weapon model defs, and an MP `else` branch that just updates
+the existing chr (the body/weapon were loaded by the **MP spawn system**). Net
+co-op runs `mplayerisrunning == true`, so it takes the MP path — the **same**
+full-quality character-body + weapon loading Combat Sim uses. The
+`weaponmodeldef`/`PLAYERCOUNT()==1` logic at `player.c:1640-1690` lives *inside*
+the SP branch and never runs in co-op. A sweep of `model*.c` / `chr.c` found **no**
+viewport-count-gated model LOD / poly reduction anywhere. No change needed.
 
 ## Phased order
 
@@ -173,9 +195,13 @@ co-op; leave it.)
 
 - `objectives.c` COLLECTOBJ / THROWOBJ loops widened to `PLAYER_IS_NOT_ANTI`
   (identical for ≤2 players, correct for N).
-- Splitscreen visual re-enablement for net co-op: light glares (`bg.c`), Falcon 2
-  laser sight beam + sight update + dot crosshair tracking (`bondgun.c`) — see the
-  table above. All N64 byte-identical; casings/smoke deferred for RNG safety.
+- Splitscreen visual re-enablement for net co-op: light glares (`bg.c`), sun disc
+  + sun lens flare (`sky.c`), Falcon 2 laser sight beam + sight update + dot
+  crosshair tracking (`bondgun.c`), plus shell casings / muzzle smoke / laser
+  secondary beam (`gunfx.c`, `bondgun.c`, with their randomness routed to the
+  cosmetic RNG stream so the visual desync can't drift gameplay) — see the table.
+- Verified weapon/character models are already full quality in net co-op (MP
+  spawn path == Combat Sim); no change needed.
 - This design doc.
 
 ## Risks

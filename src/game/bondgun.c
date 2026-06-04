@@ -8568,7 +8568,11 @@ void bgun0f0a5550(s32 handnum)
 		bgunCreateFx(hand, handnum, funcdef, weaponnum, modeldef, mtxallocation);
 	}
 
-	if (PLAYERCOUNT() == 1 && IS8MB() && g_Vars.lvupdate240 != 0) {
+	// Muzzle smoke is single-player-only in the stock game; re-enable for net
+	// co-op (single local viewport). Smoke spawns at the world muzzle position,
+	// so it also works for remote partners. Byte-identical to PLAYERCOUNT()==1 on
+	// N64. Smoke particle randomness now draws from the cosmetic RNG stream.
+	if (LOCALPLAYERCOUNT() == 1 && IS8MB() && g_Vars.lvupdate240 != 0) {
 		bgunUpdateSmoke(hand, handnum, weaponnum, funcdef);
 	}
 

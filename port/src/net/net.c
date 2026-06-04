@@ -5263,13 +5263,17 @@ Gfx *netHitmarkerRender(Gfx *gdl)
 // (HUD drawn, var80075d60==2); the fade-out renders from lv.c's HUD-removed path
 // via netCoopEggsRenderHidden, so the banner slides away instead of popping off.
 enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
-// Ticks (lvframe60) after a stage starts before the banner begins its fade-in,
-// so it animates in once the level is actually running rather than popping in
-// during the load / fade-from-black.
+// Ticks (lvframe60) of actual gameplay after a cutscene ends before the banner
+// begins its fade-in, so it lands a handful of ticks into play rather than the
+// instant the cutscene/transition clears.
 #define EGG_STAGE_INTRO_DELAY 30
-struct netegg { s32 phase; s32 phasestart; }; // phasestart = g_Vars.lvframe60 at phase entry
-static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0 };
-static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0 };
+struct netegg {
+	s32 phase;       // EGG_* state
+	s32 phasestart;  // g_Vars.lvframe60 at phase entry
+	s32 readyframe;  // lvframe60 when non-cutscene gameplay began; -1 while a cutscene plays
+};
+static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1 };
+static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1 };
 
 static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol, u32 hicol, bool want, struct netegg *anim)
 {
@@ -5280,21 +5284,32 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 
 	s32 lvf = g_Vars.lvframe60;
 	if (lvf < anim->phasestart) {
-		// lvframe60 was reset on stage load: replay the fade-in from scratch.
+		// lvframe60 was reset on stage load: replay the intro from scratch.
 		// Without resetting the phase too, a banner left in EGG_HOLD at the
 		// previous stage's end pops in fully-shown on the new stage instead of
 		// animating in (the bug: toggling /graslu mid-stage animates, but the
 		// banner carried across a stage boundary did not).
 		anim->phasestart = lvf;
 		anim->phase = EGG_HIDDEN;
+		anim->readyframe = -1;
 	}
 
-	// Edge transitions between the four phases. The fade-in is held off for a
-	// handful of ticks after a stage starts (EGG_STAGE_INTRO_DELAY) so it animates
-	// in cleanly once the level is up. A mid-stage toggle (lvf already past the
-	// delay) animates in immediately.
-	if (want && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT)
-			&& lvf >= EGG_STAGE_INTRO_DELAY) {
+	// Animate in AFTER the (opening) cutscene, not at mission start: stay disarmed
+	// while a cutscene plays, then start a short settle once gameplay is running so
+	// the fade-in lands a handful of ticks into actual play. Re-arms after any later
+	// cutscene too. (The HUD-hidden render path runs every cutscene frame, so this
+	// is maintained throughout.)
+	if (g_Vars.in_cutscene) {
+		anim->readyframe = -1;
+	} else if (anim->readyframe < 0) {
+		anim->readyframe = lvf;
+	}
+	const bool introready = anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
+
+	// Edge transitions between the four phases. The fade-in waits for introready
+	// (post-cutscene + settle); a mid-game toggle is already past it so it animates
+	// in immediately.
+	if (want && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT) && introready) {
 		anim->phase = EGG_FADEIN;
 		anim->phasestart = lvf;
 	} else if (!want && (anim->phase == EGG_FADEIN || anim->phase == EGG_HOLD)) {

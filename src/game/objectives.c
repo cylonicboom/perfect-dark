@@ -420,6 +420,47 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 }
 #endif
 
+#ifndef PLATFORM_N64
+// Co-op: show the "Objective N: Completed / Incomplete / Failed" toast for a single
+// objective, host-authoritative — called from netmsgSvcObjectiveRead when the host's
+// SVC_OBJECTIVE broadcast flips a status. Mirrors the per-objective branch in
+// objectivesCheckAll so the displayed number + wording match exactly. The displayed
+// number ("Objective N") is the count of difficulty-matching objectives up to this
+// index, same as objectivesCheckAll's availableindex.
+void objectivesShowStatusForIndex(s32 objindex, s32 status)
+{
+	char buffer[50] = "";
+	s32 availableindex = 0;
+	s32 j;
+
+	if (objindex < 0 || objindex > g_ObjectiveLastIndex) {
+		return;
+	}
+	if (!(objectiveGetDifficultyBits(objindex) & (1 << lvGetDifficulty()))) {
+		return; // this objective isn't shown at the current difficulty
+	}
+
+	for (j = 0; j < objindex; j++) {
+		if (objectiveGetDifficultyBits(j) & (1 << lvGetDifficulty())) {
+			availableindex++;
+		}
+	}
+
+	sprintf(buffer, "%s %d: ", langGet(L_MISC_044), availableindex + 1); // "Objective"
+
+	if (status == OBJECTIVE_COMPLETE) {
+		strcat(buffer, langGet(L_MISC_045)); // "Completed"
+		objectivesShowHudmsg(buffer, HUDMSGTYPE_OBJECTIVECOMPLETE);
+	} else if (status == OBJECTIVE_INCOMPLETE) {
+		strcat(buffer, langGet(L_MISC_046)); // "Incomplete"
+		objectivesShowHudmsg(buffer, HUDMSGTYPE_OBJECTIVECOMPLETE);
+	} else if (status == OBJECTIVE_FAILED) {
+		strcat(buffer, langGet(L_MISC_047)); // "Failed"
+		objectivesShowHudmsg(buffer, HUDMSGTYPE_OBJECTIVEFAILED);
+	}
+}
+#endif
+
 void objectivesCheckAll(void)
 {
 	s32 availableindex = 0;

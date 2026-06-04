@@ -26,6 +26,9 @@ bool objectiveIsAllComplete(void);
 void objectivesDisableChecking(void);
 void objectivesShowHudmsg(char *buffer, s32 hudmsgtype);
 void objectivesCheckAll(void);
+#ifndef PLATFORM_N64
+void objectivesShowStatusForIndex(s32 objindex, s32 status); // co-op: host-authoritative objective-status toast (driven by SVC_OBJECTIVE)
+#endif
 void objectiveCheckRoomEntered(s32 currentroom);
 void objectiveCheckThrowInRoom(s32 arg0, RoomNum *requiredrooms);
 void objectiveCheckHolograph(f32 sqdist);

@@ -66,10 +66,13 @@ nothing here flips the player count.
 | `player.c` all-dead mission end (~4614) | `bond && coop both dead` → end | **DONE** — iterate: end only when **all** co-op players are fully dead |
 | `chr.c` cloaked-NPC hide / no-autoaim (~5203) | skip autoaim if prop is bond/coop | **DONE** — co-op has no anti, so `prop->type == PROPTYPE_PLAYER` ≡ bond\|\|coop for 2P, correct for N |
 | `bondgun.c` mission-critical-weapon guard (~6730) | attacker is bond/coop | **DONE** — `attackerprop->type == PROPTYPE_PLAYER` (same reasoning) |
-| `endscreen.c` mission-fail (~1712) | both dead / either aborted | → all co-op dead / any aborted (not yet done) |
-| `mplayer.c` respawn-restart (~1801) | can't restart if both dead | → can't restart if all co-op dead (not yet done) |
-| `chraicommands.c` `chr_toggle_p1p2` (~9088) | swap NPC target bond↔coop | → cycle target across all alive co-op players (host-side idle `p1p2` cycling in `chraTick` already perceives all players; this is the scripted-toggle variant) (not yet done) |
+| `endscreen.c` mission status + push (`endscreenMenuTextMissionStatus`, `endscreenPushCoop`, `endscreenPushSolo`) | both dead / either aborted | **DONE** — new `COOP_ALLDEAD()` / `COOP_ABORTED()` macros (iterate on port via `#if MAX_COOPCHRS > 2`, bond/coop on N64) mirroring the existing `ANTI_ABORTED()` pattern |
+| `mplayer.c` `mpRenderModalText` respawn-restart (~1801) | can't restart if both dead | **DONE** — `MP_COOP_ALLDEAD()` macro (same `MAX_COOPCHRS > 2` pattern) |
+| `chraicommands.c` `aiToggleP1P2` (~9088) | swap NPC target bond↔coop | **DONE** — cycle target to the next ALIVE co-op player (wrapping); bond↔coop toggle for 2P |
+| `chraicommands.c` `aiChrSetP1P2` (~9116) | set NPC target to a player's prop | **DONE** — `chr1->p1p2 = playernum` (the index is already resolved from the prop) |
+| `chraicommands.c` `aiClearInventory` (~8940) | clear inventory for bond/coop | **DONE** — `bond\|\|coop` → `PLAYER_IS_NOT_ANTI` |
 | `chr.c` `chrGetTargetProp` / `p1p2` | NPC's single target slot | already handled host-side by the idle `p1p2` cycling; verify scripted set-pieces |
+| `chraicommands.c` `OBJHFLAG_ACTIVATED_BY_BOND/COOP` (~2176) | "object activated by bond vs coop" | **deferred** — only two flag bits exist; widening to N needs a per-player activation record, not a 1-token swap |
 
 > `music.c` death cue: the only player-count music gate found is `player.c:5079`
 > (`musicStartSoloDeath` vs `musicStartMpDeath`, gated on `mplayerisrunning`) — that
@@ -203,8 +206,14 @@ viewport-count-gated model LOD / poly reduction anywhere. No change needed.
   `objectives.c` `objectivesShowHudmsg`, `player.c` co-op revive buddy-pick +
   all-dead mission end, `chr.c` no-autoaim teammate test, `bondgun.c`
   mission-critical-weapon guard. See the Bucket B table for the per-site rule.
-  Remaining: `endscreen.c`, `mplayer.c` restart, `chraicommands.c` scripted
-  `chr_toggle_p1p2`.
+  Then completed the rest of Bucket B: `endscreen.c` mission status/fail
+  (`COOP_ALLDEAD()`/`COOP_ABORTED()` macros), `mplayer.c` respawn-restart
+  (`MP_COOP_ALLDEAD()`), and the `chraicommands.c` AI-target commands
+  (`aiToggleP1P2` cycle, `aiChrSetP1P2`, `aiClearInventory`). **Bucket B is now
+  essentially complete** — only the `OBJHFLAG_ACTIVATED_BY_BOND/COOP` 2-bit flag
+  (needs a per-player activation record) is deferred. Next is Bucket C: flip the
+  player count (`netCoopEnterStage(N)`, `chrslots` from N, lobby derivation),
+  tested at N=3 first.
 - Splitscreen visual re-enablement for net co-op: light glares (`bg.c`), sun disc
   + sun lens flare (`sky.c`), Falcon 2 laser sight beam + sight update + dot
   crosshair tracking (`bondgun.c`), plus shell casings / muzzle smoke / laser

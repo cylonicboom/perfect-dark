@@ -1727,6 +1727,27 @@ void mpSetPaused(u8 mode)
 	g_MpSetup.paused = mode;
 }
 
+// 8-player co-op groundwork: "all co-op players dead". Mirrors the endscreen
+// ANTI_ABORTED() pattern — iterate over N players on the port, keep the original
+// bond/coop expression on N64 so that build stays byte-identical.
+#if MAX_COOPCHRS > 2
+static bool mpIsCoopAllDead(void)
+{
+	s32 i;
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		if (g_Vars.players[i] && PLAYER_IS_NOT_ANTI(g_Vars.players[i]) && !g_Vars.players[i]->isdead) {
+			return false;
+		}
+	}
+
+	return true;
+}
+#define MP_COOP_ALLDEAD() mpIsCoopAllDead()
+#else
+#define MP_COOP_ALLDEAD() (g_Vars.bond->isdead && g_Vars.coop->isdead)
+#endif
+
 /**
  * Render "Paused" in the middle of the viewport if paused,
  * or "Press START" if player has finished their death animation.
@@ -1798,7 +1819,7 @@ Gfx *mpRenderModalText(Gfx *gdl)
 			&& g_Vars.currentplayer->isdead
 			&& g_Vars.currentplayer->redbloodfinished
 			&& g_Vars.currentplayer->deathanimfinished
-			&& !(g_Vars.coopplayernum >= 0 && ((g_Vars.bond->isdead && g_Vars.coop->isdead) || !g_Vars.currentplayer->coopcanrestart || g_InCutscene))
+			&& !(g_Vars.coopplayernum >= 0 && (MP_COOP_ALLDEAD() || !g_Vars.currentplayer->coopcanrestart || g_InCutscene))
 			&& !(g_Vars.antiplayernum >= 0 && ((PLAYER_IS_NOT_ANTI(g_Vars.currentplayer) || g_InCutscene)))
 			&& g_NumReasonsToEndMpMatch == 0) {
 		// Render "Press START" text

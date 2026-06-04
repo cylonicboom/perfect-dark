@@ -6726,8 +6726,12 @@ void bgunDisarm(struct prop *attackerprop)
 		// Coop must not allow player to drop a mission critical weapon
 		// because AI lists can fail the mission if the player has zero
 		// quantity.
+		// 8-player co-op groundwork: protect mission-critical weapons for ANY
+		// co-op player, not just bond+coop. In co-op there are no anti players, so
+		// every player prop is a teammate — `attackerprop->type == PROPTYPE_PLAYER`
+		// is identical to the bond/coop test for 2 players and correct for N.
 		if (g_Vars.coopplayernum >= 0
-				&& (attackerprop == g_Vars.bond->prop || attackerprop == g_Vars.coop->prop)
+				&& attackerprop && attackerprop->type == PROPTYPE_PLAYER
 				&& bgunIsMissionCritical(weaponnum)) {
 			return;
 		}

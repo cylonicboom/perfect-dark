@@ -4612,10 +4612,25 @@ void playerTick(bool arg0)
 			if (g_Vars.mplayerisrunning == false) {
 				mainEndStage();
 			} else if (g_Vars.coopplayernum >= 0) {
-				if (g_Vars.currentplayer == g_Vars.bond
-						&& g_Vars.coop->isdead
-						&& g_Vars.coop->redbloodfinished
-						&& g_Vars.coop->deathanimfinished) {
+				// 8-player co-op groundwork: end the mission only when EVERY co-op
+				// player is fully dead, not just bond+coop. currentplayer is already
+				// fully dead here (checked above), so for 2 players this reduces to
+				// "the other player is also fully dead" — identical to the original
+				// bond+coop test — and is correct for N players.
+				bool coopallfullydead = true;
+				s32 coopdeadi;
+
+				for (coopdeadi = 0; coopdeadi < PLAYERCOUNT(); coopdeadi++) {
+					if (PLAYER_IS_NOT_ANTI(g_Vars.players[coopdeadi])
+							&& (!g_Vars.players[coopdeadi]->isdead
+								|| !g_Vars.players[coopdeadi]->redbloodfinished
+								|| !g_Vars.players[coopdeadi]->deathanimfinished)) {
+						coopallfullydead = false;
+						break;
+					}
+				}
+
+				if (coopallfullydead) {
 					mainEndStage();
 				} else {
 					chrsClearRefsToPlayer(g_Vars.currentplayernum);
@@ -5125,8 +5140,28 @@ Gfx *playerRenderHud(Gfx *gdl)
 							}
 						} else {
 							// Coop
-							if (g_Vars.coopplayernum >= 0 &&
-									(!g_Vars.bond->isdead || !g_Vars.coop->isdead)) {
+							// 8-player co-op groundwork: steal health from an ALIVE
+							// co-op buddy to respawn, rather than the fixed "other
+							// slot". Find the first living co-op teammate (!= the dead
+							// current player). For 2 players this is exactly the other
+							// player (behaviour identical, since current is already
+							// dead here so the old `!bond->isdead || !coop->isdead`
+							// gate == "the other is alive" == "a buddy exists"); for N
+							// it picks any living buddy. The buddy's low-health case is
+							// still handled by the totalhealth check below.
+							s32 coopbuddynum = -1;
+							s32 coopbuddyi;
+
+							for (coopbuddyi = 0; coopbuddyi < PLAYERCOUNT(); coopbuddyi++) {
+								if (coopbuddyi != (s32)g_Vars.currentplayernum
+										&& PLAYER_IS_NOT_ANTI(g_Vars.players[coopbuddyi])
+										&& !g_Vars.players[coopbuddyi]->isdead) {
+									coopbuddynum = coopbuddyi;
+									break;
+								}
+							}
+
+							if (g_Vars.coopplayernum >= 0 && coopbuddynum >= 0) {
 								f32 totalhealth;
 								u32 buddyplayernum = g_Vars.bondplayernum;
 								u32 prevplayernum = g_Vars.currentplayernum;
@@ -5142,8 +5177,8 @@ Gfx *playerRenderHud(Gfx *gdl)
 								canrestart = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), 0xb000) && !mpIsPaused();
 
 								// Get ready to respawn.
-								// The other player's health will be halved.
-								buddyplayernum = g_Vars.currentplayer == g_Vars.coop ? g_Vars.bondplayernum : g_Vars.coopplayernum;
+								// The buddy's health will be halved.
+								buddyplayernum = coopbuddynum;
 
 								setCurrentPlayerNum(buddyplayernum);
 								shield = chrGetShield(g_Vars.currentplayer->prop->chr) * 0.125f;

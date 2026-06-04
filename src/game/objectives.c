@@ -408,7 +408,10 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		setCurrentPlayerNum(i);
 
-		if (g_Vars.currentplayer == g_Vars.bond || g_Vars.currentplayer == g_Vars.coop) {
+		// 8-player co-op groundwork: show the objective toast to every co-op
+		// player, not just bond+coop. PLAYER_IS_NOT_ANTI is identical for SP /
+		// 2-player / anti, but covers all N co-op players.
+		if (PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)) {
 			hudmsgCreateWithFlags(buffer, hudmsgtype, HUDMSGFLAG_DELAY | HUDMSGFLAG_ALLOWDUPES);
 		}
 	}

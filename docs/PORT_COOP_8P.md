@@ -61,16 +61,20 @@ nothing here flips the player count.
 | Site | What it does | Widening |
 |---|---|---|
 | `objectives.c` COLLECTOBJ / THROWOBJ loops | "any co-op player holding the item" | **DONE** — `bond\|\|coop` → `PLAYER_IS_NOT_ANTI` |
-| `objectives.c` `objectivesShowHudmsg` | show objective toast to each co-op player | `bond\|\|coop` → `PLAYER_IS_NOT_ANTI` |
-| `player.c` co-op revive (~5128) | dying player steals half a buddy's health | pick an **alive** co-op buddy among N (first-alive / most-health), not the fixed other slot |
-| `player.c` all-dead mission end (~4615) | `bond && coop both dead` → end | → **all** co-op players dead |
-| `endscreen.c` mission-fail (~1712) | both dead / either aborted | → all co-op dead / any aborted |
-| `mplayer.c` respawn-restart (~1801) | can't restart if both dead | → can't restart if all co-op dead |
-| `music.c` death cue (~1059) | any co-op alive | → any of N alive (`PLAYER_IS_NOT_ANTI` + `!isdead`) |
-| `chr.c` cloaked-NPC hide (~5203) | hide if prop is bond/coop | → prop is **any** co-op player |
-| `bondgun.c` mission-critical-weapon guard (~6724) | attacker is bond/coop | → attacker is any co-op player |
-| `chraicommands.c` `chr_toggle_p1p2` (~9088) | swap NPC target bond↔coop | → cycle target across all alive co-op players (the host-side `p1p2` cycling in `chraTick` already does "perceive all players"; this is the scripted-toggle variant) |
+| `objectives.c` `objectivesShowHudmsg` (~411) | show objective toast to each co-op player | **DONE** — `bond\|\|coop` → `PLAYER_IS_NOT_ANTI` |
+| `player.c` co-op revive (~5128) | dying player steals half a buddy's health | **DONE** — pick the **first alive** co-op buddy among N (identical to "the other player" at 2P, since current is already dead). N>2 economics (first-alive vs most-health) can be refined when flipping C |
+| `player.c` all-dead mission end (~4614) | `bond && coop both dead` → end | **DONE** — iterate: end only when **all** co-op players are fully dead |
+| `chr.c` cloaked-NPC hide / no-autoaim (~5203) | skip autoaim if prop is bond/coop | **DONE** — co-op has no anti, so `prop->type == PROPTYPE_PLAYER` ≡ bond\|\|coop for 2P, correct for N |
+| `bondgun.c` mission-critical-weapon guard (~6730) | attacker is bond/coop | **DONE** — `attackerprop->type == PROPTYPE_PLAYER` (same reasoning) |
+| `endscreen.c` mission-fail (~1712) | both dead / either aborted | → all co-op dead / any aborted (not yet done) |
+| `mplayer.c` respawn-restart (~1801) | can't restart if both dead | → can't restart if all co-op dead (not yet done) |
+| `chraicommands.c` `chr_toggle_p1p2` (~9088) | swap NPC target bond↔coop | → cycle target across all alive co-op players (host-side idle `p1p2` cycling in `chraTick` already perceives all players; this is the scripted-toggle variant) (not yet done) |
 | `chr.c` `chrGetTargetProp` / `p1p2` | NPC's single target slot | already handled host-side by the idle `p1p2` cycling; verify scripted set-pieces |
+
+> `music.c` death cue: the only player-count music gate found is `player.c:5079`
+> (`musicStartSoloDeath` vs `musicStartMpDeath`, gated on `mplayerisrunning`) — that
+> is already correct for co-op (MP death music plays). No bond/coop death-cue site
+> exists in `music.c`; the earlier estimate was wrong. Nothing to widen.
 
 ## Bucket C — allocation (the go-live flip)
 
@@ -195,6 +199,12 @@ viewport-count-gated model LOD / poly reduction anywhere. No change needed.
 
 - `objectives.c` COLLECTOBJ / THROWOBJ loops widened to `PLAYER_IS_NOT_ANTI`
   (identical for ≤2 players, correct for N).
+- Bucket B shared-logic widenings (all behaviour-identical at 2 players):
+  `objectives.c` `objectivesShowHudmsg`, `player.c` co-op revive buddy-pick +
+  all-dead mission end, `chr.c` no-autoaim teammate test, `bondgun.c`
+  mission-critical-weapon guard. See the Bucket B table for the per-site rule.
+  Remaining: `endscreen.c`, `mplayer.c` restart, `chraicommands.c` scripted
+  `chr_toggle_p1p2`.
 - Splitscreen visual re-enablement for net co-op: light glares (`bg.c`), sun disc
   + sun lens flare (`sky.c`), Falcon 2 laser sight beam + sight update + dot
   crosshair tracking (`bondgun.c`), plus shell casings / muzzle smoke / laser

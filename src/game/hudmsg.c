@@ -1419,6 +1419,21 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	for (i = 0; i < g_NumHudMessages; i++) {
 		msg = &g_HudMessages[i];
 
+#ifndef PLATFORM_N64
+		// DIAG (co-op notification hunt): log objective-complete (type 1) messages we
+		// consider drawing + the filter result, to see if the toast reaches render in a
+		// visible state for the local viewport.
+		if (g_Vars.coopplayernum >= 0 && msg->type == HUDMSGTYPE_OBJECTIVECOMPLETE
+				&& msg->state != HUDMSGSTATE_FREE) {
+			const s32 filtered = (!msg->opacity
+					|| msg->state == HUDMSGSTATE_QUEUED
+					|| (spdc && g_Vars.currentplayernum != msg->playernum)) ? 1 : 0;
+			netDiagLogf("obj_render", "state=%d pnum=%d cur=%d spdc=%d op=%d filt=%d x=%d y=%d w=%d h=%d",
+					(s32)msg->state, (s32)msg->playernum, g_Vars.currentplayernum, (s32)spdc,
+					(s32)msg->opacity, filtered, (s32)msg->x, (s32)msg->y, (s32)msg->width, (s32)msg->height);
+		}
+#endif
+
 		if (!msg->opacity) {
 			continue;
 		}

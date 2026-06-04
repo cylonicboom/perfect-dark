@@ -2198,6 +2198,13 @@ void propsTickPlayer(bool islastplayer)
 					op = objTickPlayer(prop);
 					if (objrestore && op != TICKOP_FREE && prop->obj) {
 						prop->pos = objwirepos;
+						// objTickPlayer rebuilt the obj's collision geometry from the
+						// locally-drifted pos this frame (the model/hitbox desync the
+						// user saw). Re-derive it from the restored wire pos so the
+						// collision cylinder / floor tiles line up with the rendered
+						// model (objRender reads prop->pos). func0f069c1c overwrites the
+						// obj's geometry buffer in place, so re-calling it is safe.
+						func0f069c1c(prop->obj);
 					}
 #else
 					op = objTickPlayer(prop);

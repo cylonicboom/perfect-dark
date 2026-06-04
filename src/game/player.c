@@ -1312,7 +1312,11 @@ static s32 coopGetMasculineBody(s32 outfit, s32 stagenum)
 	//   case OUTFIT_DEFAULT: return BODY_<masculine combat>;
 	//   case OUTFIT_LEATHER: return BODY_<masculine leather>;
 	default:
-		return -1; // no masculine body authored for this outfit yet -> feminine fallback
+		// Placeholder until per-outfit masculine art exists: a generic MALE body so
+		// "Masculine" is visibly distinct from the feminine BODY_DARK_COMBAT default.
+		// "If not found, use this body type." BODY_MRBLONDE is an MP-selectable male
+		// character so it is guaranteed loadable as a player body.
+		return BODY_MRBLONDE;
 	}
 }
 #endif

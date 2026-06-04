@@ -1043,13 +1043,16 @@ static void netCoopShowLivesText(s32 count)
 {
 	char text[48];
 
+	// The trailing '\n' matters: the hud-message box height comes from textMeasure,
+	// which only accrues height on a newline (the pickup/kill-feed lang strings all
+	// end in '\n'). Without it the box collapses to a 5px sliver in the wrong spot.
 	if (count == 1) {
-		sprintf(text, "1 life remaining");
+		sprintf(text, "1 life remaining\n");
 	} else {
-		sprintf(text, "%d lives remaining", count);
+		sprintf(text, "%d lives remaining\n", count);
 	}
 
-	hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+	hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ALLOWDUPES);
 }
 
 // Show the lives notification to THIS machine's local player. The local player is

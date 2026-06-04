@@ -155,7 +155,7 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPropDamageWrite(struct netbuf *dst, struct prop *prop, f32 damage, struct coord *pos, s32 weaponnum, s32 playernum);
 u32 netmsgSvcPropDamageRead(struct netbuf *src, struct netclient *srccl);
-u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop);
+u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop, bool showmsg);
 u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPropUseWrite(struct netbuf *dst, struct prop *prop, struct netclient *usercl, const s32 tickop);
 u32 netmsgSvcPropUseRead(struct netbuf *src, struct netclient *srccl);

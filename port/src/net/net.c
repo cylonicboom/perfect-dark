@@ -1049,6 +1049,11 @@ u32 g_NetCoopObjStatuses[MAX_OBJECTIVES];
 // status includes them. Reset at stage start with g_NetCoopObjStatuses.
 u8 g_NetCoopClientObjDone[MAX_OBJECTIVES];
 
+// Client: while processing a wire-driven SVC_PROP_PICKUP, holds the host's show-toast
+// decision (0/1); -1 otherwise. propPickupByPlayer mirrors it instead of re-running
+// its local in_cutscene gate, so co-op pickup toasts match the host (see netmsg.c).
+s8 g_NetPickupWireShowMsg = -1;
+
 // Broadcast the host's objective status array to all clients (reliable). Called
 // from objectivesCheckAll when any objective status changes, in a co-op game.
 void netServerBroadcastObjectives(void)

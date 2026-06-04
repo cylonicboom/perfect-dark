@@ -1337,6 +1337,9 @@ struct attackanimgroup var80067e48 = { var80067d28, 0xffffffff };
 struct attackanimgroup *g_LieAttackAnims = &var80067e48;
 
 u32 g_StageFlags = 0;
+#ifndef PLATFORM_N64
+u32 g_NetCoopLocalStageFlags = 0; // co-op client: flags this client's scripts set locally (OR-merged over the host mirror)
+#endif
 
 struct chrdata *g_BgChrs = NULL;
 s16 *g_BgChrnums = NULL;
@@ -14020,23 +14023,24 @@ void chraTick(struct chrdata *chr)
 #endif
 
 #ifndef PLATFORM_N64
-		// Campaign co-op: NPC AND objective-script AI is host-authoritative. On
-		// clients, skip the AI bytecode for every chr in a co-op game:
-		//  - Visible NPCs are position/anim-driven by the host's chr-state broadcast
-		//    and forced to ACT_STAND, so running the ailist would make local
-		//    combat/navigation decisions that desync (client-side projectiles, drift).
-		//  - Invisible objective/trigger MONITOR chrs (the setup's beginloop scripts,
-		//    e.g. ame func100e_check_ecm_mines) must not run either. They have no
-		//    syncid, so the old `chr->prop->syncid` gate let them through — and their
-		//    loop guard is a stage flag (STAGEFLAG_SECURITYHUB_COMPLETE) the host owns
-		//    and re-mirrors via SVC_STAGE_FLAGS, which clears the client's local set
-		//    every tick. The monitor then re-enters its "placed correctly" branch
-		//    every frame, re-triggering show_hudmsg (the message spam) AND
-		//    set_object_sound_playing (the constant ECM sound). The host runs these
-		//    once; objective completion reaches the client through the flag mirror.
-		// Combat Sim sims are excluded by the coopplayernum gate (their local
-		// chraiExecute is harmlessly overwritten by the chr-state apply).
-		if (!(g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0))
+		// Campaign co-op: NPC AI is host-authoritative. On clients, skip the AI
+		// bytecode for synced NPCs — they're position/anim-driven by the host's
+		// chr-state broadcast and forced to ACT_STAND, so running the ailist here
+		// would make local combat/navigation decisions that desync (client-side
+		// projectiles, drift). Gated to co-op so Combat Sim sims (whose chraiExecute
+		// runs locally and is harmlessly overwritten by chr-state) are unaffected.
+		//
+		// NOTE: objective/trigger MONITOR chrs (the setup's beginloop scripts, e.g.
+		// ame func100e_check_ecm_mines) have no syncid and so DO run here — that is
+		// deliberate: those same scripts also hand out mission-start equipment via
+		// give_object_to_chr (the client equips itself locally; on Perfect Agent the
+		// ECM mines + data uplink). Their message/sound re-trigger spam (when a loop
+		// guard stage flag won't latch because the host's SVC_STAGE_FLAGS mirror keeps
+		// clearing the client's local set) is handled in netmsgSvcStageFlagsRead, which
+		// OR-merges flags the client set locally so the guard latches — instead of
+		// gating these scripts off and losing the equipment gives.
+		if (!(g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+				&& chr->prop && chr->prop->syncid))
 #endif
 		chraiExecute(chr, PROPTYPE_CHR);
 
@@ -15184,11 +15188,28 @@ bool chrHasFlagById(struct chrdata *ref, u32 chrnum, u32 flag, u32 bank)
 void chrSetStageFlag(struct chrdata *chr, u32 flag)
 {
 	g_StageFlags |= flag;
+
+#ifndef PLATFORM_N64
+	// Co-op client: remember flags our own scripts set so the host's SVC_STAGE_FLAGS
+	// mirror (which overwrites g_StageFlags) can't clear them out from under a script
+	// loop guard. Without this an objective monitor whose "complete" guard is a stage
+	// flag the host hasn't set yet re-enters its branch every mirror tick, re-firing
+	// show_hudmsg + set_object_sound_playing (the ECM-mine message + sound spam).
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
+		g_NetCoopLocalStageFlags |= flag;
+	}
+#endif
 }
 
 void chrUnsetStageFlag(struct chrdata *chr, u32 flag)
 {
 	g_StageFlags = g_StageFlags & ~flag;
+
+#ifndef PLATFORM_N64
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
+		g_NetCoopLocalStageFlags &= ~flag;
+	}
+#endif
 }
 
 bool chrHasStageFlag(struct chrdata *chr, u32 flag)

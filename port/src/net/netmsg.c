@@ -2725,7 +2725,7 @@ u32 netmsgSvcPropDamageRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
-u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop)
+u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct prop *prop, const s32 tickop, bool showmsg)
 {
 	netbufWriteU8(dst, SVC_PROP_PICKUP);
 	// 0xff = sim/AI pickup with no human attribution. The reader skips the
@@ -2734,6 +2734,11 @@ u32 netmsgSvcPropPickupWrite(struct netbuf *dst, struct netclient *actcl, struct
 	// server, which freed it via botPickupProp's objFree call.
 	netbufWriteU8(dst, actcl ? actcl->id : 0xff);
 	netbufWriteS8(dst, tickop);
+	// The host's effective show-toast decision (its in_cutscene / g_CoopGameplayStarted
+	// at the pickup moment). The client mirrors it instead of re-evaluating against its
+	// own cutscene state, so co-op pickup toasts (e.g. Cassandra's necklace) match the
+	// host exactly. (proto 54)
+	netbufWriteU8(dst, showmsg ? 1 : 0);
 	netbufWritePropPtr(dst, prop);
 	return dst->error;
 }
@@ -2742,6 +2747,7 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 clid = netbufReadU8(src);
 	const s8 tickop = netbufReadS8(src);
+	const u8 showmsg = netbufReadU8(src); // host's show-toast decision (proto 54)
 	struct prop *prop = netbufReadPropPtr(src);
 	if (src->error || !prop || srccl->state < CLSTATE_GAME) {
 		return src->error;
@@ -2777,7 +2783,11 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(actcl->playernum);
 
+	// Mirror the host's toast decision (it ran the gate against its own cutscene
+	// state at the pickup moment) rather than re-evaluating locally.
+	g_NetPickupWireShowMsg = (s8)(showmsg ? 1 : 0);
 	propPickupByPlayer(prop, true);
+	g_NetPickupWireShowMsg = -1;
 	if (tickop != TICKOP_NONE) {
 		propExecuteTickOperation(prop, tickop);
 	}

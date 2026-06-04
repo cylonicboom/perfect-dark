@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 53 // 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness
+#define NET_PROTOCOL_VER 54 // 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it
+// 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness
 // 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
@@ -617,6 +618,7 @@ void netServerKick(struct netclient *cl, const u32 reason);
 // constants.h. Indexed by objective index.
 extern u32 g_NetCoopObjStatuses[];
 extern u8 g_NetCoopClientObjDone[]; // host: objectives a client reported done via CLC_OBJECTIVE_DONE (latched into objectiveCheck)
+extern s8 g_NetPickupWireShowMsg;   // client: -1 = normal local gate; 0/1 = host's toast decision for a wire-driven SVC_PROP_PICKUP
 
 struct netclient *netClientForPlayerNum(s32 playernum);
 

@@ -15923,7 +15923,8 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 					// broadcast then drives its pose/anim/weapons/HP. Gated to an
 					// in-progress game so setup-time spawns (deterministic positional
 					// syncids, created identically on both sides) aren't re-sent.
-					if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0
+					if (g_NetMode == NETMODE_SERVER && g_NetCoopChrLifecycle
+							&& g_Vars.coopplayernum >= 0
 							&& prop->syncid && g_NetLocalClient
 							&& g_NetLocalClient->state == CLSTATE_GAME) {
 						netServerBroadcastChrSpawn(prop, angle, spawnflags);

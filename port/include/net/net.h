@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 47 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
+#define NET_PROTOCOL_VER 48 // 48: SVC_CUTSCENE — mirror host in-engine cutscene state to co-op clients (intro/mid-mission/outro start+end in lockstep)
+// 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
 // 44: SVC_OBJECTIVE — host-authoritative co-op objective status mirror
@@ -117,6 +118,7 @@ void netChrInterpolate(struct chrdata *chr);
 // Live toggle for the chr pose interpolation (console /chrinterp, default 1).
 // 0 reverts to the receive-time per-packet apply (for A/B comparison).
 extern s32 g_NetChrInterp;
+extern s32 g_NetCoopChrLifecycle;
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only

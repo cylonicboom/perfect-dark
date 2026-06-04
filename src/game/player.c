@@ -1848,6 +1848,29 @@ void playerEndCutscene(void)
 		playerSetTickMode(TICKMODE_NORMAL);
 		g_PlayerTriggerGeFadeIn = false;
 		bmoveSetModeForAllPlayers(MOVEMODE_WALK);
+
+#ifndef PLATFORM_N64
+		// Co-op: the cutscene animation re-centred both players on its start pad, so
+		// the stage-load spawn offset is gone by the time control returns here. Drop
+		// the partner a few units (80u on Defection) from the lead again now that the
+		// scene is over — this is where it actually sticks. Host-authoritative and
+		// force-snapped to the client; the client reaches playerEndCutscene via the
+		// SVC_CUTSCENE mirror but skips this (NETMODE_SERVER) and takes the snap.
+		if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0) {
+			struct player *lead = g_Vars.players[g_Vars.bondplayernum];
+			struct player *mate = g_Vars.players[g_Vars.coopplayernum];
+			if (lead && lead->prop && lead->prop->chr && mate && mate->prop
+					&& mate->prop->chr && mate->client) {
+				struct coord spawnpos = lead->prop->pos;
+				RoomNum spawnrooms[8];
+				roomsCopy(lead->prop->rooms, spawnrooms);
+				chrAdjustPosForSpawn(30, &spawnpos, spawnrooms, 0.0f, true, true, true);
+				chrSetPos(mate->prop->chr, &spawnpos, spawnrooms, lead->vv_theta, true);
+				mate->ucmd |= UCMD_FL_FORCEPOS | UCMD_FL_FORCEANGLE | UCMD_FL_FORCEGROUND;
+				mate->client->forcetick = g_NetTick;
+			}
+		}
+#endif
 	}
 }
 

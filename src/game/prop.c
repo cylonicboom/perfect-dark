@@ -219,7 +219,7 @@ void propFree(struct prop *prop)
 	// syncid.
 	if (g_NetMode == NETMODE_SERVER && prop->syncid
 			&& ((prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
-				|| (prop->type == PROPTYPE_CHR && g_Vars.coopplayernum >= 0))
+				|| (prop->type == PROPTYPE_CHR && g_Vars.coopplayernum >= 0 && g_NetCoopChrLifecycle))
 			&& g_NetLocalClient && g_NetLocalClient->state == CLSTATE_GAME) {
 		netmsgSvcPropFreeWrite(&g_NetMsgRel, prop);
 	}

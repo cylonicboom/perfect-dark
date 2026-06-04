@@ -57,6 +57,11 @@ s32 g_NetMode = NETMODE_NONE;
 // g_NetCoopObjStatuses, which has an extern in net.h covering its forward use.
 static u32 g_NetLastStageFlags;
 
+// Last co-op cutscene state broadcast (active + anim), so netEndFrame only sends
+// SVC_CUTSCENE on a transition. Reset at co-op stage entry.
+static s32 g_NetLastCutsceneActive;
+static s16 g_NetLastCutsceneAnim;
+
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
 
@@ -912,6 +917,8 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
+	g_NetLastCutsceneActive = 0;
+	g_NetLastCutsceneAnim = 0;
 
 	g_MissionConfig.iscoop = 1;
 	g_MissionConfig.isanti = 0;
@@ -1373,6 +1380,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
+			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1810,6 +1818,25 @@ void netEndFrame(void)
 						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
 				g_NetLastStageFlags = g_StageFlags;
 				netmsgSvcStageFlagsWrite(&g_NetMsgRel);
+			}
+
+			// Co-op cutscene state: in-engine cutscenes (intro, mid-mission, outro)
+			// all run through playerStartCutscene/EndCutscene via AI commands the
+			// client doesn't run, so mirror the tickmode==CUTSCENE state + anim. The
+			// client starts/ends in lockstep with the host (fixes the client stranded
+			// mid-scene until the host moves). Broadcast on transition (reliable, so a
+			// single send is enough). A heartbeat re-send while active heals a join
+			// that missed the start edge.
+			if (g_Vars.coopplayernum >= 0) {
+				const s32 active = (g_Vars.tickmode == TICKMODE_CUTSCENE) ? 1 : 0;
+				const s16 anim = g_CutsceneAnimNum;
+				if (active != g_NetLastCutsceneActive
+						|| (active && anim != g_NetLastCutsceneAnim)
+						|| (active && (g_NetTick % NET_HEARTBEAT_INTERVAL) == 40u)) {
+					g_NetLastCutsceneActive = active;
+					g_NetLastCutsceneAnim = anim;
+					netmsgSvcCutsceneWrite(&g_NetMsgRel, active, anim);
+				}
 			}
 
 			// King of the Hill: keep clients' hill state in sync. Broadcast
@@ -2456,6 +2483,7 @@ s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid)
 static f32 g_NetChrSnapInterval = 1.0f;
 
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
+s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {
@@ -3972,6 +4000,18 @@ s32 netConsoleCommand(const char *line)
 		}
 		sysLogPrintf(LOG_CHAT, "NET: chr pose interpolation = %s%s", g_NetChrInterp ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /chrinterp on|off)" : "");
+	} else if (strcmp(cmd, "coopchr") == 0) {
+		// /coopchr on|off — runtime co-op chr lifecycle replication (SVC_CHR_SPAWN
+		// for reinforcement/clone spawns + SVC_PROP_FREE for reaped corpses). Off
+		// disables both so a crash during e.g. an alarm reinforcement wave can be
+		// isolated to this path. Host-side gate; flip it on the host.
+		if (strcmp(arg, "on") == 0) {
+			g_NetCoopChrLifecycle = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetCoopChrLifecycle = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: co-op runtime chr lifecycle = %s%s", g_NetCoopChrLifecycle ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopchr on|off)" : "");
 	} else if (strcmp(cmd, "coop") == 0) {
 		// /coop [solostageindex] — HOST only. Start a campaign co-op session on a
 		// solo stage (default Defection, index 0). Clients already in the lobby load

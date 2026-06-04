@@ -1228,6 +1228,42 @@ u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgSvcCutsceneWrite(struct netbuf *dst, s32 active, s16 animnum)
+{
+	netbufWriteU8(dst, SVC_CUTSCENE);
+	netbufWriteU8(dst, (u8)(active != 0));
+	netbufWriteS16(dst, animnum);
+	return dst->error;
+}
+
+u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 active = netbufReadU8(src);
+	const s16 animnum = netbufReadS16(src);
+
+	if (src->error) {
+		return src->error;
+	}
+
+	if (active) {
+		// Start (or re-point to) the host's cutscene if we're not already playing it.
+		// The client may have started its own copy via the cutscene trigger chr's AI,
+		// so this is idempotent — only (re)start on a different anim or if not in one.
+		if (g_Vars.tickmode != TICKMODE_CUTSCENE || g_CutsceneAnimNum != animnum) {
+			playerStartCutscene(animnum);
+		}
+	} else {
+		// Host ended the scene — end ours too. The script-driven end (ai00dd ->
+		// playerEndCutscene) never runs on the client, so without this the client is
+		// stranded mid-cutscene until poked. This is the core fix.
+		if (g_Vars.tickmode == TICKMODE_CUTSCENE) {
+			playerEndCutscene();
+		}
+	}
+
+	return src->error;
+}
+
 u32 netmsgSvcChrTalkWrite(struct netbuf *dst, struct prop *prop, s32 audioid)
 {
 	netbufWriteU8(dst, SVC_CHR_TALK);
@@ -2875,13 +2911,16 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 	// positional syncid pool consistent. Guard prop->active against a double-free.
 	if (prop && prop->obj && prop->active) {
 		objFreePermanently(prop->obj, true);
-	} else if (prop && prop->chr && prop->active) {
+	} else if (prop && prop->chr && prop->active && prop->chr->model) {
 		// Co-op NPC corpse the host reaped. Don't tear it down by hand — set the
 		// engine's own delete flag and let the client's chrTick reap it through the
 		// normal path (chr.c: CHRHFLAG_DELETING -> chrRemove + TICKOP_FREE ->
 		// propFree), so the teardown (model, child weapons, room dereg, prop free,
 		// reference clearing) matches the host exactly. The client's NPC AI is gated
 		// off, so it would otherwise never set this flag and the corpse would linger.
+		// Require a loaded model: chrRemove dereferences chr->model (modelFreeVertices),
+		// so skip a not-yet-loaded shell rather than risk a NULL deref (it'll be
+		// caught by the next reconcile pass if it really is a ghost).
 		prop->chr->hidden |= CHRHFLAG_DELETING;
 	}
 

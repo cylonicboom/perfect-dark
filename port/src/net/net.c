@@ -748,8 +748,14 @@ struct netclient *netClientForPlayerNum(s32 playernum)
 	return NULL;
 }
 
+static void netApplyEggConfig(void);
+
 void netInit(void)
 {
+	// Auto-enable a vanity egg banner from the "Egg" ini key (config is already
+	// loaded by now). Done before the ENet check so it works even if net init fails.
+	netApplyEggConfig();
+
 	if (enet_initialize() < 0) {
 		sysLogPrintf(LOG_ERROR, "NET: could not init ENet, disabling networking");
 		return;
@@ -4120,6 +4126,20 @@ static s32 g_GrasluEgg = 0;
 // enabled alongside Graslu. Purely local (nothing goes on the wire).
 static s32 g_Redvox57Egg = 0;
 
+// Config "Egg" (pd.ini): leave "0" (default) for no banner, or set to a vanity
+// egg's command name ("graslu" / "redvox57") to auto-enable it on boot. Applied
+// once in netInit, after the config is loaded. Case-insensitive.
+static char g_EggConfig[16] = "0";
+
+static void netApplyEggConfig(void)
+{
+	if (strcasecmp(g_EggConfig, "graslu") == 0) {
+		g_GrasluEgg = 1;
+	} else if (strcasecmp(g_EggConfig, "redvox57") == 0) {
+		g_Redvox57Egg = 1;
+	}
+}
+
 s32 netConsoleCommand(const char *line)
 {
 	if (!line || line[0] != '/') {
@@ -5703,4 +5723,8 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterString("Server.Name", g_NetServerName, sizeof(g_NetServerName) - 1);
 	configRegisterString("Server.PlaylistPath", g_NetPlaylistPath, sizeof(g_NetPlaylistPath) - 1);
 	configRegisterString("Server.AdminPassword", g_NetAdminPassword, sizeof(g_NetAdminPassword) - 1);
+
+	// Vanity egg auto-enable: "0" (default) = off; "graslu" / "redvox57" turns that
+	// banner on at boot (same as typing the /graslu or /redvox57 console command).
+	configRegisterString("Egg", g_EggConfig, sizeof(g_EggConfig) - 1);
 }

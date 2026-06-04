@@ -190,6 +190,7 @@ Net.Master.Advertise       # server registers with the master (0/1, default 1)
 Server.Password            # host join password (empty = open server)
 Net.Debug.LogPath          # diagnostic log file path (empty = disabled)
 Net.Debug.LogRate          # ticks between per-client/sim pos dumps (default 6, 0 = disabled)
+Egg                        # vanity-egg auto-enable on boot: "0" (default) = off, "graslu" / "redvox57" = enable that banner (= the /graslu /redvox57 commands). Applied in netInit (netApplyEggConfig), case-insensitive.
 ```
 
 ### CLI Flags (port-net only)

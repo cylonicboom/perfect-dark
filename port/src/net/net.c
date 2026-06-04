@@ -2583,7 +2583,7 @@ static f32 g_NetChrSnapInterval = 1.0f;
 
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
 s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
-s32 g_NetCoopObjWireDriven = 0; // /coopobj toggle; OFF=current. ON makes networked OBJ props wire-driven on clients (skip local physics fight)
+s32 g_NetCoopObjWireDriven = 1; // /coopobj toggle; ON (default) makes networked OBJ props wire-driven on clients so they stick to the host pos instead of drifting/floating (/coopobj off reverts)
 s32 g_NetCoopBodyMode = COOPBODY_FEMININE; // F2 local player's choice; synced via CLC_SETTINGS
 u8 g_NetCoopBodyBits = 0;                  // F2 resolved per-player masculine bitmask (host-assembled in SVC_STAGE_START write)
 s32 g_NetCoopLivesMode = COOP_LIVES_OFF;    // F3 host setting, synced

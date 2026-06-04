@@ -29,6 +29,16 @@ u32 g_NextHudMessageId;
 
 u8 g_HudmsgsActive = 0;
 
+#ifndef PLATFORM_N64
+// Port: true on frames where the on-screen mission timer is actually being drawn
+// for the local player (HUD up, normal gameplay camera, its slot not taken by a
+// cutscene subtitle). The vanity-egg banners in net.c gate on this so they track
+// the visible timer — hidden through the intro / cutscenes (when the timer value
+// keeps ticking internally but isn't shown), appearing only once it's on screen.
+// Set each frame in hudmsgsRender.
+s32 g_HudMissionTimerOnScreen = 0;
+#endif
+
 u32 g_HudmsgColours[] = {
 	/* 0*/ 0x00ff0000, // green
 	/* 1*/ 0x9999ff00, // pastel blue
@@ -1399,6 +1409,9 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	s32 spdc = true;
 #ifndef PLATFORM_N64
 	const s32 playercount = LOCALPLAYERCOUNT();
+	// Default off; set true below only if the mission timer is actually drawn this
+	// frame (so a cutscene subtitle taking the slot, or a hidden HUD, reads as off).
+	g_HudMissionTimerOnScreen = false;
 #endif
 
 #if PAL
@@ -1662,6 +1675,16 @@ Gfx *hudmsgsRender(Gfx *gdl)
 	}
 
 	if (timerthing) {
+#ifndef PLATFORM_N64
+		// The egg banners track the timer's visible slot (independent of the
+		// player's numeric show-timer option). timerthing != 0 here means the slot
+		// isn't taken by a cutscene subtitle.
+		g_HudMissionTimerOnScreen = var80075d60 == 2
+				&& g_Vars.normmplayerisrunning == false
+				&& g_Vars.stagenum != STAGE_CITRAINING
+				&& g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY
+				&& g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON;
+#endif
 		if (optionsGetShowMissionTime(g_Vars.currentplayerstats->mpindex)
 				&& var80075d60 == 2
 				&& g_Vars.normmplayerisrunning == false

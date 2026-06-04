@@ -2808,6 +2808,15 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(actcl->playernum);
 
+	// DIAG (co-op notification hunt): records that the client received a pickup grant
+	// and the state propPickupByPlayer will see (isdead/lvupdate240 gate it early).
+	if (g_Vars.coopplayernum >= 0) {
+		netDiagLogf("pickup_recv", "clid=%d pnum=%d tickop=%d showmsg=%d objtype=%d isdead=%d lvup240=%d incut=%d",
+				(s32)clid, (s32)actcl->playernum, (s32)tickop, (s32)showmsg,
+				(prop->obj ? (s32)prop->obj->type : -1),
+				(s32)g_Vars.currentplayer->isdead, (s32)g_Vars.lvupdate240, (s32)g_Vars.in_cutscene);
+	}
+
 	// Mirror the host's toast decision (it ran the gate against its own cutscene
 	// state at the pickup moment) rather than re-evaluating locally.
 	g_NetPickupWireShowMsg = (s8)(showmsg ? 1 : 0);

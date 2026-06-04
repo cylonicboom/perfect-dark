@@ -4013,20 +4013,32 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "NET: co-op runtime chr lifecycle = %s%s", g_NetCoopChrLifecycle ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopchr on|off)" : "");
 	} else if (strcmp(cmd, "coop") == 0) {
-		// /coop [solostageindex] — HOST only. Start a campaign co-op session on a
-		// solo stage (default Defection, index 0). Clients already in the lobby load
-		// the same stage via SVC_STAGE_START's co-op branch. Phase 0 plumbing only:
-		// 2 players, players sync; NPC AI / objectives are later phases.
+		// /coop [solostageindex] [difficulty] — HOST only. Start a campaign co-op
+		// session on a solo stage (default Defection, index 0). Difficulty is
+		// 0=Agent (default), 1=Special Agent, 2=Perfect Agent, 3=Perfect Dark.
+		// Clients already in the lobby load the same stage + difficulty via
+		// SVC_STAGE_START's co-op branch.
 		if (g_NetMode != NETMODE_SERVER) {
 			sysLogPrintf(LOG_CHAT, "NET: /coop is host only");
 		} else {
-			s32 idx = (*arg) ? (s32)strtol(arg, NULL, 0) : SOLOSTAGEINDEX_DEFECTION;
-			if (idx < 0 || idx >= NUM_SOLOSTAGES) {
-				idx = SOLOSTAGEINDEX_DEFECTION;
+			s32 idx = SOLOSTAGEINDEX_DEFECTION;
+			s32 diff = DIFF_A;
+			if (*arg) {
+				char *end = NULL;
+				idx = (s32)strtol(arg, &end, 0);
+				if (idx < 0 || idx >= NUM_SOLOSTAGES) {
+					idx = SOLOSTAGEINDEX_DEFECTION;
+				}
+				while (*end == ' ' || *end == '\t') { end++; }
+				if (*end) {
+					diff = (s32)strtol(end, NULL, 0);
+					if (diff < DIFF_A) { diff = DIFF_A; }
+					if (diff > DIFF_PD) { diff = DIFF_PD; }
+				}
 			}
 			g_MissionConfig.stageindex = idx;
-			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage index %d)", idx);
-			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, DIFF_A);
+			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d)", idx, diff);
+			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff);
 		}
 	} else if (strcmp(cmd, "hitvalidate") == 0) {
 		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims

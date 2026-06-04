@@ -79,7 +79,8 @@ Co-Operative > Online        (g_NetCoopMenuDialog — hub)
     Mission                  (dropdown — g_SoloStages[0..NUM_SOLOSTAGES-1], name3)
     Difficulty               (dropdown — Agent / Special Agent / Perfect Agent / Perfect Dark)
     ---
-    Lives                    (dropdown — Off (Steal Health) / Per Player / Shared Pool)   [F3 stores; gameplay wiring later]
+    Lives                    (dropdown — Off (Steal Health) / Per Player / Shared Pool)   [F3a]
+    Lives Count              (dropdown — 1..9)                                            [F3a]
     Import Combat Sim Profile                                                             [F1 stub]
     ---
     Start Hosting            (netStartServer if not already hosting)
@@ -163,15 +164,32 @@ Implemented:
   hoist the host resolve to `netPlayersAllocate` (pre-body-choice, playernums
   valid).
 
-## F3 — lives mutator (later)
+## F3 — lives mutator — **F3a done (gameplay); F3b = HUD + counter sync**
 
-`Lives = Off` keeps the stock **steal-half-a-buddy's-health** revive
-(`player.c` co-op revive, widened for N in Bucket B). `Per Player` / `Shared Pool`
-**replace** it: each death decrements a life (own counter, or a shared pool), and
-at zero the player stays down (spectate) instead of being revivable. Host-
-authoritative: the host owns the counters and broadcasts them; the revive path is
-gated `if (livesmode == OFF)`. Needs a small co-op options block on the wire +
-a HUD readout of remaining lives.
+`Lives = Off` keeps the stock **steal-half-a-buddy's-health** revive (`player.c`
+co-op revive, widened for N in Bucket B). `Per Player` / `Shared Pool` **replace**
+it: each death spends a life (own counter, or a shared pool of `count * N`), and at
+zero the player stays down. Host-authoritative.
+
+**F3a (implemented):**
+- **Settings** (`net.h`): `g_NetCoopLivesMode` (`COOP_LIVES_OFF/PERPLAYER/SHARED`)
+  + `g_NetCoopLivesCount`, host settings, synced in `SVC_STAGE_START` (proto 50).
+  Lobby "Lives" + "Lives Count" dropdowns (host setup).
+- **Counters** (`net.c`): `g_NetCoopLives[MAX_PLAYERS]` + `g_NetCoopSharedLives`,
+  host-authoritative, seeded in `netCoopEnterStage` (`count` each / `count*N`
+  pool).
+- **Revive gate** (`player.c`): when a lives mode is active, the steal-health
+  revive `if` is gated off (`&& COOP_LIVES_OFF`) and a host-only lives branch runs
+  instead — on respawn input, if a life remains, decrement and respawn at **full
+  health** (no steal); else stay down. The client takes no action (host drives
+  respawn via force-position).
+- **All-out mission end** (`player.c`): a player with a life left isn't "out", so
+  the stage ends only when every co-op player is fully dead *and* out of lives;
+  host-gated (client follows `SVC_STAGE_END`).
+
+**F3b (next):** a `SVC_COOP_LIVES` broadcast of the live per-player/shared counts
++ a HUD readout of remaining lives (the counters are host-only in F3a, so clients
+can't display them yet).
 
 ## F4 — name tags (later, standalone)
 

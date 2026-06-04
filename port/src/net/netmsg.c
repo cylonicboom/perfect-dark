@@ -855,6 +855,9 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 		}
 		// F2: resolved per-player body-type bitmask (bit i = player i masculine). proto 49
 		netbufWriteU8(dst, g_NetCoopBodyBits);
+		// F3: lives mutator — mode + count (host setting). proto 50
+		netbufWriteU8(dst, (u8)g_NetCoopLivesMode);
+		netbufWriteU8(dst, (u8)g_NetCoopLivesCount);
 		return dst->error;
 	}
 #endif
@@ -986,6 +989,10 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		// netCoopEnterStage so it is set when the stage loads / chooses bodies;
 		// the client's netCoopEnterStage is gated not to re-resolve it.
 		g_NetCoopBodyBits = netbufReadU8(src);
+		// F3: lives mutator mode + count (proto 50). The client uses the mode to
+		// gate its revive path; the host drives the authoritative counters.
+		g_NetCoopLivesMode = netbufReadU8(src);
+		g_NetCoopLivesCount = netbufReadU8(src);
 		if (src->error) {
 			return src->error;
 		}

@@ -2261,7 +2261,8 @@ MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem *item, 
 // are stored/stubbed here now; their gameplay/render wiring lands in F1/F2/F3.
 static s32 g_NetCoopMenuStageIdx = SOLOSTAGEINDEX_DEFECTION;
 static s32 g_NetCoopMenuDiff = DIFF_A;
-static s32 g_NetCoopMenuLivesMode = 0; // 0=Off (steal-health revive), 1=Per Player, 2=Shared Pool
+// Lives mode + count live in net globals g_NetCoopLivesMode / g_NetCoopLivesCount
+// (net.h) so they sync to clients in SVC_STAGE_START (F3).
 // Body type lives in the net global g_NetCoopBodyMode (net.h) so it can be
 // resolved + synced at stage start (F2). COOPBODY_FEMININE/MASCULINE/RANDOM.
 
@@ -2304,8 +2305,8 @@ static MenuItemHandlerResult menuhandlerNetCoopDifficulty(s32 operation, struct 
 
 static MenuItemHandlerResult menuhandlerNetCoopLives(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	// F3: gameplay effect not yet wired — selection is stored for the upcoming
-	// lives mutator (enabling lives disables the steal-half-health revive).
+	// F3 host mutator. Off = stock steal-half-a-buddy's-health revive; Per Player /
+	// Shared Pool replace it with a respawn budget. Synced in SVC_STAGE_START.
 	static const char *const opts[] = { "Off (Steal Health)", "Per Player", "Shared Pool" };
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
@@ -2314,10 +2315,31 @@ static MenuItemHandlerResult menuhandlerNetCoopLives(s32 operation, struct menui
 	case MENUOP_GETOPTIONTEXT:
 		return (intptr_t)opts[data->dropdown.value];
 	case MENUOP_SET:
-		g_NetCoopMenuLivesMode = (s32)data->checkbox.value;
+		g_NetCoopLivesMode = (s32)data->checkbox.value;
 		break;
 	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = (g_NetCoopMenuLivesMode >= 0 && g_NetCoopMenuLivesMode <= 2) ? g_NetCoopMenuLivesMode : 0;
+		data->dropdown.value = (g_NetCoopLivesMode >= COOP_LIVES_OFF && g_NetCoopLivesMode <= COOP_LIVES_SHARED) ? g_NetCoopLivesMode : COOP_LIVES_OFF;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopLivesCount(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// F3: lives granted per player (Per Player) or, scaled by player count, the
+	// shared pool (Shared Pool). Options 1..9. Only meaningful when Lives != Off.
+	static const char *const opts[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_NetCoopLivesCount = (s32)data->checkbox.value + 1;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetCoopLivesCount >= 1 && g_NetCoopLivesCount <= 9) ? g_NetCoopLivesCount - 1 : 2;
 		break;
 	}
 	return 0;
@@ -2395,6 +2417,7 @@ static struct menuitem g_NetCoopHostMenuItems[] = {
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Difficulty", 0, menuhandlerNetCoopDifficulty },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives", 0, menuhandlerNetCoopLives },
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives Count", 0, menuhandlerNetCoopLivesCount },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Import Combat Sim Profile\n", 0, menuhandlerNetCoopImportProfile },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Start Hosting\n", 0, menuhandlerNetCoopStartHosting },

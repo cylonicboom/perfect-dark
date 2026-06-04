@@ -927,6 +927,17 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	// wire value in netmsgSvcStageStartRead before calling this, so nothing to do
 	// here.
 
+	// F3 lives: the HOST seeds the respawn budget. PER_PLAYER gives each player
+	// `count` lives; SHARED gives one pool of `count * N`. The client gets the
+	// mode + count from SVC_STAGE_START (read before this call) and follows the
+	// host's authoritative respawn / all-out decisions, so it doesn't seed here.
+	if (g_NetMode != NETMODE_CLIENT) {
+		for (s32 i = 0; i < MAX_PLAYERS; i++) {
+			g_NetCoopLives[i] = g_NetCoopLivesCount;
+		}
+		g_NetCoopSharedLives = g_NetCoopLivesCount * numplayers;
+	}
+
 	// Clear the host-authoritative objective mirror so a previous mission's
 	// completions can't leak into this one (the client overlays these onto its
 	// local objective evaluation; a stale COMPLETE would falsely mark an objective
@@ -2505,6 +2516,10 @@ s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN
 s32 g_NetCoopObjWireDriven = 0; // /coopobj toggle; OFF=current. ON makes networked OBJ props wire-driven on clients (skip local physics fight)
 s32 g_NetCoopBodyMode = COOPBODY_FEMININE; // F2 local player's choice; synced via CLC_SETTINGS
 u8 g_NetCoopBodyBits = 0;                  // F2 resolved per-player masculine bitmask (host-assembled in SVC_STAGE_START write)
+s32 g_NetCoopLivesMode = COOP_LIVES_OFF;    // F3 host setting, synced
+s32 g_NetCoopLivesCount = 3;                // F3 lives per player (host setting, synced)
+s32 g_NetCoopLives[MAX_PLAYERS] = {0};      // F3 per-player remaining (host-authoritative)
+s32 g_NetCoopSharedLives = 0;               // F3 shared pool remaining (host-authoritative)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {

@@ -4670,20 +4670,43 @@ void playerTick(bool arg0)
 				// fully dead here (checked above), so for 2 players this reduces to
 				// "the other player is also fully dead" — identical to the original
 				// bond+coop test — and is correct for N players.
-				bool coopallfullydead = true;
+				bool coopallout = true;
 				s32 coopdeadi;
 
 				for (coopdeadi = 0; coopdeadi < PLAYERCOUNT(); coopdeadi++) {
-					if (PLAYER_IS_NOT_ANTI(g_Vars.players[coopdeadi])
-							&& (!g_Vars.players[coopdeadi]->isdead
-								|| !g_Vars.players[coopdeadi]->redbloodfinished
-								|| !g_Vars.players[coopdeadi]->deathanimfinished)) {
-						coopallfullydead = false;
+					struct player *cp = g_Vars.players[coopdeadi];
+					bool fullydead;
+
+					if (!PLAYER_IS_NOT_ANTI(cp)) {
+						continue;
+					}
+
+					fullydead = cp->isdead && cp->redbloodfinished && cp->deathanimfinished;
+#ifndef PLATFORM_N64
+					// F3 lives: a player with a life left isn't out — they'll respawn.
+					if (g_NetCoopLivesMode != COOP_LIVES_OFF) {
+						s32 rem = (g_NetCoopLivesMode == COOP_LIVES_SHARED)
+							? g_NetCoopSharedLives
+							: g_NetCoopLives[coopdeadi];
+						if (rem > 0) {
+							fullydead = false;
+						}
+					}
+#endif
+					if (!fullydead) {
+						coopallout = false;
 						break;
 					}
 				}
 
-				if (coopallfullydead) {
+				if (coopallout) {
+#ifndef PLATFORM_N64
+					// F3 lives: the all-out test uses host-only counters, so only the
+					// host ends the stage; the client follows via SVC_STAGE_END.
+					if (g_NetCoopLivesMode != COOP_LIVES_OFF && g_NetMode == NETMODE_CLIENT) {
+						chrsClearRefsToPlayer(g_Vars.currentplayernum);
+					} else
+#endif
 					mainEndStage();
 				} else {
 					chrsClearRefsToPlayer(g_Vars.currentplayernum);
@@ -5202,6 +5225,38 @@ Gfx *playerRenderHud(Gfx *gdl)
 							// gate == "the other is alive" == "a buddy exists"); for N
 							// it picks any living buddy. The buddy's low-health case is
 							// still handled by the totalhealth check below.
+#ifndef PLATFORM_N64
+							// F3 lives: host-authoritative respawn budget. When a lives mode
+							// is active it REPLACES the steal-half-health revive below (whose
+							// guard now also requires COOP_LIVES_OFF). Respawn at full health
+							// (no steal) while this player has a life left; otherwise stay
+							// down. The client takes no action here — the host drives respawn
+							// (force-position) and the all-out mission end.
+							if (g_NetCoopLivesMode != COOP_LIVES_OFF && g_NetMode != NETMODE_CLIENT) {
+								bool restart;
+								s32 *lives = (g_NetCoopLivesMode == COOP_LIVES_SHARED)
+									? &g_NetCoopSharedLives
+									: &g_NetCoopLives[g_Vars.currentplayernum];
+
+								if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+									const struct netclient *cl_ = g_Vars.currentplayer->client;
+									restart = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
+								} else {
+									restart = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), 0xb000) && !mpIsPaused();
+								}
+
+								if (restart && *lives > 0) {
+									(*lives)--;
+									g_Vars.currentplayer->dostartnewlife = true;
+									g_Vars.currentplayer->oldhealth = 0;
+									g_Vars.currentplayer->oldarmour = 0;
+									g_Vars.currentplayer->apparenthealth = 0;
+									g_Vars.currentplayer->apparentarmour = 0;
+								}
+
+								g_Vars.currentplayer->coopcanrestart = (*lives > 0);
+							}
+#endif
 							s32 coopbuddynum = -1;
 							s32 coopbuddyi;
 
@@ -5214,7 +5269,11 @@ Gfx *playerRenderHud(Gfx *gdl)
 								}
 							}
 
-							if (g_Vars.coopplayernum >= 0 && coopbuddynum >= 0) {
+							if (g_Vars.coopplayernum >= 0 && coopbuddynum >= 0
+#ifndef PLATFORM_N64
+									&& g_NetCoopLivesMode == COOP_LIVES_OFF
+#endif
+									) {
 								f32 totalhealth;
 								u32 buddyplayernum = g_Vars.bondplayernum;
 								u32 prevplayernum = g_Vars.currentplayernum;

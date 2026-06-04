@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 49 // 49: F2 co-op body type — CLC_SETTINGS carries each player's choice; SVC_STAGE_START co-op branch carries the resolved per-player bitmask
+#define NET_PROTOCOL_VER 50 // 50: F3 co-op lives mutator — SVC_STAGE_START co-op branch carries lives mode + count
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -136,6 +136,20 @@ extern s32 g_NetCoopObjWireDriven;
 #define COOPBODY_RANDOM    2
 extern s32 g_NetCoopBodyMode; // COOPBODY_* — local player's choice (synced via CLC_SETTINGS)
 extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (host-assembled, synced)
+
+// Campaign co-op LIVES mutator (F3, docs/PORT_COOP_ONLINE.md). Host setting,
+// synced in SVC_STAGE_START. COOP_LIVES_OFF keeps the stock steal-half-a-buddy's-
+// health revive; PER_PLAYER / SHARED replace it with a respawn budget — each death
+// spends a life (own counter, or a shared pool of count*N), and at zero the player
+// stays down. Host-authoritative: the host owns the counters and the all-out
+// mission-end. (Per-player HUD readout + full counter sync is F3b.)
+#define COOP_LIVES_OFF       0
+#define COOP_LIVES_PERPLAYER 1
+#define COOP_LIVES_SHARED    2
+extern s32 g_NetCoopLivesMode;          // COOP_LIVES_* — host setting, synced
+extern s32 g_NetCoopLivesCount;         // lives granted per player (host setting, synced)
+extern s32 g_NetCoopLives[MAX_PLAYERS]; // per-player remaining (host-authoritative)
+extern s32 g_NetCoopSharedLives;        // shared pool remaining (host-authoritative)
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only

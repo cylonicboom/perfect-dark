@@ -2795,11 +2795,13 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	struct netclient *actcl = g_NetClients + clid;
 
-	// Co-op: we already picked up our OWN items locally (client-local pickup in
-	// objTestForPickup) — the host echoes the grant to everyone, but applying it
-	// again here would double-give / double-toast. Skip our own; other clients still
-	// apply it so the prop disappears from their world.
-	if (actcl == g_NetLocalClient) {
+	// Co-op: skip ONLY items WE proximity-picked-up locally (recorded in
+	// netClientRequestPickup) — the host echoes those back and applying them again
+	// would double-give / double-toast. Host-INITIATED gives (scripted
+	// aiGiveObjectToChr, e.g. Cassandra's necklace to CHR_COOP) were never recorded,
+	// so they still apply here — which is how the client actually receives them
+	// (the local script give mis-targets across the BOND/COOP playernum swap).
+	if (prop->syncid && netClientWasLocalPickup((u16)prop->syncid)) {
 		return src->error;
 	}
 

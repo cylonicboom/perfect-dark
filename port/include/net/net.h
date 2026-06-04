@@ -620,6 +620,7 @@ void netServerKick(struct netclient *cl, const u32 reason);
 // constants.h. Indexed by objective index.
 extern u32 g_NetCoopObjStatuses[];
 extern u8 g_NetCoopClientObjDone[]; // host: objectives a client reported done via CLC_OBJECTIVE_DONE (latched into objectiveCheck)
+extern u8 g_NetCoopObjToastShown[]; // co-op: per-objective completion-toast-shown latch (shows the toast once the HUD is up even if it completed during a cutscene)
 extern s8 g_NetPickupWireShowMsg;   // client: -1 = normal local gate; 0/1 = host's toast decision for a wire-driven SVC_PROP_PICKUP
 
 struct netclient *netClientForPlayerNum(s32 playernum);

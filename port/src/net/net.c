@@ -5089,130 +5089,136 @@ Gfx *netHitmarkerRender(Gfx *gdl)
 // green-bordered translucent box. Drawn on the HUD layer — called from
 // playerRenderHud right after hudmsgsRender so it shares the pickups' layer —
 // and stacked one row above them. Toggled by /graslu. Local-only: not networked.
-Gfx *netGrasluRender(Gfx *gdl)
+// ---- Vanity easter-egg banners (/graslu, /redvox57) ----
+// A boxed lower-left HUD banner mimicking a weapon/ammo pickup. It now has the
+// full notification lifecycle (like the kill feed / lives toast): animate IN when
+// the player HUD is drawn, HOLD (a bright highlight marching around the box), then
+// animate OUT when the HUD is removed. Fade-in/hold render from playerRenderHud
+// (HUD drawn, var80075d60==2); the fade-out renders from lv.c's HUD-removed path
+// via netCoopEggsRenderHidden, so the banner slides away instead of popping off.
+enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
+struct netegg { s32 phase; s32 phasestart; }; // phasestart = g_Vars.lvframe60 at phase entry
+static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0 };
+static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0 };
+
+static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol, u32 hicol, bool want, struct netegg *anim)
 {
-	if (!g_GrasluEgg) {
+	// Gate: only on the HUD layer, in a running level, with the pickup font loaded.
+	if (g_Vars.stagenum == STAGE_TITLE || !g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
+		want = false;
+	}
+
+	s32 lvf = g_Vars.lvframe60;
+	if (lvf < anim->phasestart) {
+		anim->phasestart = lvf; // lvframe60 was reset on stage load
+	}
+
+	// Edge transitions between the four phases.
+	if (want && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT)) {
+		anim->phase = EGG_FADEIN;
+		anim->phasestart = lvf;
+	} else if (!want && (anim->phase == EGG_FADEIN || anim->phase == EGG_HOLD)) {
+		anim->phase = EGG_FADEOUT;
+		anim->phasestart = lvf;
+	}
+
+	if (anim->phase == EGG_HIDDEN) {
 		return gdl;
 	}
 
-	// In-game only — suppress on the title / main menu.
-	if (g_Vars.stagenum == STAGE_TITLE) {
-		return gdl;
-	}
-
-	// Same font the pickup messages use; bail silently if assets aren't loaded.
-	if (!g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
-		return gdl;
-	}
-
-	const s32 screenw = viGetWidth();
-	const s32 screenh = viGetHeight();
-
-	// Box the text exactly like a one-line pickup. textMeasure only accrues
-	// height on a newline, and the pickup lang strings end in '\n', so a plain
-	// "Graslu" measures height 0 (a 5px sliver box). Measure "Graslu\n" for the
-	// real single-line height the ammo/weapon pickups use, and plain "Graslu"
-	// for the width we actually render. Pickups (hudmsgsRender,
-	// HUDMSGALIGN_LEFT/BOTTOM) bottom-anchor at y = viewheight - lineheight - 14
-	// in this same viGetWidth()/viGetHeight() space, indented
-	// x = xmarginextra(24) + 3 = 27; g_ScaleX is left set by the hudmsgsRender
-	// call that immediately precedes us in playerRenderHud.
+	// Measure: height from "<text>\n" (one pickup line), width from "<text>".
+	char nl[24];
 	s32 lineh = 0;
 	s32 tw = 0;
 	s32 discard = 0;
-	textMeasure(&lineh, &discard, "Graslu\n", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-	textMeasure(&discard, &tw, "Graslu", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+	snprintf(nl, sizeof(nl), "%s\n", text);
+	textMeasure(&lineh, &discard, nl, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+	textMeasure(&discard, &tw, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
 
-	// Lift two line-heights (plus a few px clearance) above the bottom so our box
-	// sits just above the pickup row's box without overlapping it.
+	const s32 screenw = viGetWidth();
+	const s32 screenh = viGetHeight();
 	s32 x = 27;
 	s32 y = screenh - 2 * lineh - 24;
-	// CHEAT_MIRROR: reflect the banner to the right side like the pickup boxes it
-	// mimics, so it matches the rest of the flipped HUD (account for its width so
-	// the whole box lands mirrored; the align flag below flips to match).
 	if (cheatIsActive(CHEAT_MIRROR)) {
 		x = screenw - x - tw;
 	}
-	const s32 boxr = x + tw + 3; // right edge: 1px wider than the text + pad
+	const s32 bx1 = x - 3;
+	const s32 by1 = y - 3;
+	const s32 bx2 = x + tw + 3;
+	const s32 by2 = y + lineh + 2;
 
-	// Driven off g_Vars.lvframe60 (60Hz ticks since stage start, reset in lvReset,
-	// so it restarts each mission/match):
-	//   * for the first ~fadeintime ticks, the exact weapon/ammo pickup fade-in
-	//     (box fill alpha ramps while the name wipes in along the diagonal blend);
-	//   * afterwards the box holds steady with solid text and a bright highlight
-	//     marching around its outline ("the line around the box").
-	const f32 fadeintime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
-	const s32 lvf = g_Vars.lvframe60;
+	// The pickup-style wipe duration (also the fade-in / fade-out length).
+	const f32 animtime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
+	const f32 dur = animtime > 30.0f ? 30.0f : animtime;
+	const s32 elapsed = lvf - anim->phasestart;
 
 	gdl = text0f153628(gdl);
-	// Anchor to the left edge so the banner hugs the HUD edge in widescreen,
-	// the same flag the kill feed and console message strip use. (CHEAT_MIRROR
-	// flips it to the right edge so the reflected banner hugs that side.)
 	gSPSetExtraGeometryModeEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? G_ASPECT_RIGHT_EXT : G_ASPECT_LEFT_EXT);
 
-	// Box like the pickup messages: green border (pickup textcolour | 0x40) over a
-	// dark translucent fill, then the green text (textcolour | 0xa0) on top via
-	// textRenderProjected — the same renderer boxed hud messages use.
-	if ((f32)lvf < fadeintime) {
-		// First draw of the mission — identical to a weapon/ammo pickup fade-in:
-		// box fill alpha (spc0) ramps while the text wipes in along the blend.
-		f32 dur = fadeintime > 30.0f ? 30.0f : fadeintime;
-		f32 spc0 = (f32)lvf / dur;
-		if (spc0 > 1.0f) {
-			spc0 = 1.0f;
-		}
-		if (spc0 < 0.0f) {
-			spc0 = 0.0f;
-		}
+	if (anim->phase == EGG_FADEIN) {
+		f32 a = (f32)elapsed / dur;
+		if (a > 1.0f) a = 1.0f;
+		if (a < 0.0f) a = 0.0f;
 
-		textSetDiagonalBlend(x, y, (f32)lvf * PALUPF(7.0f), DIAGMODE_FADEIN);
-		gdl = hudmsgRenderBox(gdl, x - 3, y - 3, boxr, y + lineh + 2, 1.0f, 0x00ff0040, spc0);
-		if (spc0 > 0.0f) {
-			gdl = textRenderProjected(gdl, &x, &y, "Graslu",
-					g_CharsHandelGothicSm, g_FontHandelGothicSm,
-					0x00ff00a0, screenw, screenh, 0, 0);
+		textSetDiagonalBlend(x, y, (f32)elapsed * PALUPF(7.0f), DIAGMODE_FADEIN);
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, bordercol, a);
+		if (a > 0.0f) {
+			gdl = textRenderProjected(gdl, &x, &y, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, textcol, screenw, screenh, 0, 0);
 		}
 		textResetBlends();
+
+		if ((f32)elapsed >= animtime) {
+			anim->phase = EGG_HOLD;
+			anim->phasestart = lvf;
+		}
+	} else if (anim->phase == EGG_FADEOUT) {
+		// Mirror of the hud-message fade-out (hudmsg.c): a diagonal wipe from the far
+		// corner with a counting-down timer, box alpha ramping to 0.
+		f32 a = (f32)elapsed / dur;
+		if (a > 1.0f) a = 1.0f;
+		if (a < 0.0f) a = 0.0f;
+
+		textSetDiagonalBlend(x + tw, y + lineh, (animtime - (f32)elapsed) * PALUPF(7.0f), DIAGMODE_FADEOUT);
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, bordercol, 1.0f - a);
+		if (a < 1.0f) {
+			gdl = textRenderProjected(gdl, &x, &y, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, textcol, screenw, screenh, 0, 0);
+		}
+		textResetBlends();
+
+		if ((f32)elapsed >= animtime) {
+			anim->phase = EGG_HIDDEN;
+		}
 	} else {
-		// Settled: solid box + solid text, with a bright highlight marching around
-		// the outline (top -> right -> bottom -> left, looping). The blend system
-		// can only tint text, so the moving line is drawn as a small filled rect.
-		const s32 bx1 = x - 3;
-		const s32 by1 = y - 3;
-		const s32 bx2 = boxr;
-		const s32 by2 = y + lineh + 2;
+		// EGG_HOLD: solid box + text, with a bright highlight marching around the
+		// outline (top -> right -> bottom -> left, looping ~2px/tick).
 		const s32 bw = bx2 - bx1;
 		const s32 bh = by2 - by1;
 		const s32 perim = 2 * (bw + bh);
-		const s32 seg = 10;                          // highlight length along the edge
-		const u32 hi = 0x80ff80ff;                   // bright green highlight
-		const s32 p = perim > 0 ? (lvf * 2) % perim : 0; // ~2px/tick around the border
+		const s32 seg = 10;
+		const s32 p = perim > 0 ? (lvf * 2) % perim : 0;
 		s32 sx1, sy1, sx2, sy2;
 
-		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, 0x00ff0040, 1.0f);
-		gdl = textRenderProjected(gdl, &x, &y, "Graslu",
-				g_CharsHandelGothicSm, g_FontHandelGothicSm,
-				0x00ff00a0, screenw, screenh, 0, 0);
+		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, bordercol, 1.0f);
+		gdl = textRenderProjected(gdl, &x, &y, (char *)text, g_CharsHandelGothicSm, g_FontHandelGothicSm, textcol, screenw, screenh, 0, 0);
 
-		// Map the perimeter position p to a short segment on the matching edge.
-		if (p < bw) {                   // top: left -> right
+		if (p < bw) {
 			sx1 = bx1 + p;       sy1 = by1;
 			sx2 = sx1 + seg;     sy2 = by1 + 2;
 			if (sx2 > bx2) sx2 = bx2;
-		} else if (p < bw + bh) {       // right: top -> bottom
+		} else if (p < bw + bh) {
 			sx1 = bx2 - 1;       sy1 = by1 + (p - bw);
 			sx2 = bx2 + 1;       sy2 = sy1 + seg;
 			if (sy2 > by2) sy2 = by2;
-		} else if (p < 2 * bw + bh) {   // bottom: right -> left
+		} else if (p < 2 * bw + bh) {
 			sx2 = bx2 - (p - bw - bh); sy1 = by2 - 1;
 			sx1 = sx2 - seg;     sy2 = by2 + 1;
 			if (sx1 < bx1) sx1 = bx1;
-		} else {                        // left: bottom -> top
+		} else {
 			sx1 = bx1;           sy2 = by2 - (p - 2 * bw - bh);
 			sx2 = bx1 + 2;       sy1 = sy2 - seg;
 			if (sy1 < by1) sy1 = by1;
 		}
-		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hi, hi);
+		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hicol, hicol);
 	}
 
 	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
@@ -5220,105 +5226,22 @@ Gfx *netGrasluRender(Gfx *gdl)
 	return gdl;
 }
 
-// Same boxed-pickup banner renderer as netGrasluRender, but in red (the in-game
-// "mission failed" / menu red) reading "Redvox57", in the same HUD slot.
+Gfx *netGrasluRender(Gfx *gdl)
+{
+	return netEggRender(gdl, "Graslu", 0x00ff0040, 0x00ff00a0, 0x80ff80ff, g_GrasluEgg != 0, &g_GrasluAnim);
+}
+
 Gfx *netRedvox57Render(Gfx *gdl)
 {
-	if (!g_Redvox57Egg) {
-		return gdl;
-	}
+	return netEggRender(gdl, "Redvox57", 0xff000040, 0xff0000a0, 0xff8080ff, g_Redvox57Egg != 0, &g_Redvox57Anim);
+}
 
-	if (g_Vars.stagenum == STAGE_TITLE) {
-		return gdl;
-	}
-
-	if (!g_CharsHandelGothicSm || !g_FontHandelGothicSm) {
-		return gdl;
-	}
-
-	const s32 screenw = viGetWidth();
-	const s32 screenh = viGetHeight();
-
-	// Measure "Redvox57\n" for the single-line height, "Redvox57" for the width.
-	s32 lineh = 0;
-	s32 tw = 0;
-	s32 discard = 0;
-	textMeasure(&lineh, &discard, "Redvox57\n", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-	textMeasure(&discard, &tw, "Redvox57", g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
-
-	// Exact same slot as the Graslu banner (the two are never enabled together).
-	s32 x = 27;
-	s32 y = screenh - 2 * lineh - 24;
-	if (cheatIsActive(CHEAT_MIRROR)) {
-		x = screenw - x - tw;
-	}
-	const s32 boxr = x + tw + 3;
-
-	const f32 fadeintime = (sqrtf((f32)(tw * tw + lineh * lineh)) + 132.0f) / PALUPF(7.0f);
-	const s32 lvf = g_Vars.lvframe60;
-
-	gdl = text0f153628(gdl);
-	gSPSetExtraGeometryModeEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? G_ASPECT_RIGHT_EXT : G_ASPECT_LEFT_EXT);
-
-	// Red border (0xff0000 | 0x40) over a dark fill, red text (| 0xa0) on top.
-	if ((f32)lvf < fadeintime) {
-		f32 dur = fadeintime > 30.0f ? 30.0f : fadeintime;
-		f32 spc0 = (f32)lvf / dur;
-		if (spc0 > 1.0f) {
-			spc0 = 1.0f;
-		}
-		if (spc0 < 0.0f) {
-			spc0 = 0.0f;
-		}
-
-		textSetDiagonalBlend(x, y, (f32)lvf * PALUPF(7.0f), DIAGMODE_FADEIN);
-		gdl = hudmsgRenderBox(gdl, x - 3, y - 3, boxr, y + lineh + 2, 1.0f, 0xff000040, spc0);
-		if (spc0 > 0.0f) {
-			gdl = textRenderProjected(gdl, &x, &y, "Redvox57",
-					g_CharsHandelGothicSm, g_FontHandelGothicSm,
-					0xff0000a0, screenw, screenh, 0, 0);
-		}
-		textResetBlends();
-	} else {
-		const s32 bx1 = x - 3;
-		const s32 by1 = y - 3;
-		const s32 bx2 = boxr;
-		const s32 by2 = y + lineh + 2;
-		const s32 bw = bx2 - bx1;
-		const s32 bh = by2 - by1;
-		const s32 perim = 2 * (bw + bh);
-		const s32 seg = 10;
-		const u32 hi = 0xff8080ff;                   // bright red highlight
-		const s32 p = perim > 0 ? (lvf * 2) % perim : 0;
-		s32 sx1, sy1, sx2, sy2;
-
-		gdl = hudmsgRenderBox(gdl, bx1, by1, bx2, by2, 1.0f, 0xff000040, 1.0f);
-		gdl = textRenderProjected(gdl, &x, &y, "Redvox57",
-				g_CharsHandelGothicSm, g_FontHandelGothicSm,
-				0xff0000a0, screenw, screenh, 0, 0);
-
-		if (p < bw) {                   // top: left -> right
-			sx1 = bx1 + p;       sy1 = by1;
-			sx2 = sx1 + seg;     sy2 = by1 + 2;
-			if (sx2 > bx2) sx2 = bx2;
-		} else if (p < bw + bh) {       // right: top -> bottom
-			sx1 = bx2 - 1;       sy1 = by1 + (p - bw);
-			sx2 = bx2 + 1;       sy2 = sy1 + seg;
-			if (sy2 > by2) sy2 = by2;
-		} else if (p < 2 * bw + bh) {   // bottom: right -> left
-			sx2 = bx2 - (p - bw - bh); sy1 = by2 - 1;
-			sx1 = sx2 - seg;     sy2 = by2 + 1;
-			if (sx1 < bx1) sx1 = bx1;
-		} else {                        // left: bottom -> top
-			sx1 = bx1;           sy2 = by2 - (p - 2 * bw - bh);
-			sx2 = bx1 + 2;       sy1 = sy2 - seg;
-			if (sy1 < by1) sy1 = by1;
-		}
-		gdl = menugfxDrawFilledRect(gdl, sx1, sy1, sx2, sy2, hi, hi);
-	}
-
-	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
-	gdl = text0f153780(gdl);
+// HUD-removed frames (lv.c var80075d60 != 2): drive both banners' fade-out
+// (want=false) so they animate away. No-op once each has finished fading.
+Gfx *netCoopEggsRenderHidden(Gfx *gdl)
+{
+	gdl = netEggRender(gdl, "Graslu", 0x00ff0040, 0x00ff00a0, 0x80ff80ff, false, &g_GrasluAnim);
+	gdl = netEggRender(gdl, "Redvox57", 0xff000040, 0xff0000a0, 0xff8080ff, false, &g_Redvox57Anim);
 	return gdl;
 }
 

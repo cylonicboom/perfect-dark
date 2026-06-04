@@ -669,6 +669,12 @@ Gfx *netGrasluRender(Gfx *gdl);
 // Companion red "Redvox57" vanity banner; same HUD slot/renderer as Graslu.
 Gfx *netRedvox57Render(Gfx *gdl);
 
+// Renders the egg banners' FADE-OUT only, for the frames where the player HUD is
+// removed (lv.c's `var80075d60 != 2` path). netGrasluRender/netRedvox57Render
+// drive the fade-in/hold while the HUD is drawn; this drives the animate-away when
+// it is removed, so the banner slides out instead of vanishing. No-op once gone.
+Gfx *netCoopEggsRenderHidden(Gfx *gdl);
+
 // Hidden test hitmarker: centred marker shown briefly after a confirmed local
 // hit (toggle /hitmarker). No-op unless enabled and within the flash window.
 Gfx *netHitmarkerRender(Gfx *gdl);

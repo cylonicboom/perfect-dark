@@ -2592,7 +2592,13 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 
 	xscale = 1;
 
-	if (env->numsuns <= 0 || !g_ZbufPtr1 || g_Vars.mplayerisrunning) {
+	// Sun discs are disabled in any MP mode (splitscreen can't afford the
+	// z-buffer-occluded sun render across viewports). Net co-op draws ONE local
+	// viewport per machine, so re-enable for SP + net co-op via the
+	// single-viewport gate. Byte-identical to `mplayerisrunning` on N64 (no
+	// single-viewport co-op there). Render-only, no gameplay RNG.
+	if (env->numsuns <= 0 || !g_ZbufPtr1
+			|| LOCALPLAYERCOUNT() != 1 || g_Vars.normmplayerisrunning) {
 		return gdl;
 	}
 
@@ -3074,7 +3080,11 @@ Gfx *skyRenderArtifacts(Gfx *gdl)
 		gdl = skyRenderTeleportFlares(gdl);
 	}
 
-	if (env->numsuns <= 0 || !g_ZbufPtr1 || g_Vars.mplayerisrunning) {
+	// Sun lens flares (the bright streak chain from the sun across the screen)
+	// are disabled in any MP mode. Re-enable for SP + net co-op (single local
+	// viewport). Byte-identical to `mplayerisrunning` on N64. Render-only.
+	if (env->numsuns <= 0 || !g_ZbufPtr1
+			|| LOCALPLAYERCOUNT() != 1 || g_Vars.normmplayerisrunning) {
 		return gdl;
 	}
 

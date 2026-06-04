@@ -476,8 +476,8 @@ u32 smokeTick(struct prop *prop)
 				part->alpha -= g_SmokeTypes[smoke->type].fgrotatespeed;
 				part->count++;
 				part->rot += part->deltarot;
-				part->offset1 += 0.02f + RANDOMFRAC() * 0.01f;
-				part->offset2 += 0.02f + RANDOMFRAC() * 0.01f;
+				part->offset1 += 0.02f + RANDOMFRACCOSMETIC() * 0.01f;
+				part->offset2 += 0.02f + RANDOMFRACCOSMETIC() * 0.01f;
 
 				if (part->alpha < 4.0f) {
 					part->size = 0.0f;
@@ -494,15 +494,15 @@ u32 smokeTick(struct prop *prop)
 				for (j = 0; j < ARRAYCOUNT(smoke->parts); j++) {
 					if (smoke->parts[j].size == 0.0f) {
 						if (g_SmokeTypes[smoke->type].size == 0) {
-							part->size = (RANDOMFRAC() * 0.5f + 1.0f) * 0.33f;
+							part->size = (RANDOMFRACCOSMETIC() * 0.5f + 1.0f) * 0.33f;
 						} else {
-							part->size = g_SmokeTypes[smoke->type].size * (RANDOMFRAC() * 0.5f + 1.0f);
+							part->size = g_SmokeTypes[smoke->type].size * (RANDOMFRACCOSMETIC() * 0.5f + 1.0f);
 						}
 
 						part->alpha = (rngCosmeticRandom() % 70) + 110.0f;
 						part->count = 0;
-						part->rot = RANDOMFRAC() * M_BADTAU;
-						part->deltarot = (0.5f - RANDOMFRAC()) * g_SmokeTypes[smoke->type].bgrotatespeed;
+						part->rot = RANDOMFRACCOSMETIC() * M_BADTAU;
+						part->deltarot = (0.5f - RANDOMFRACCOSMETIC()) * g_SmokeTypes[smoke->type].bgrotatespeed;
 
 						if (smoke->type >= SMOKETYPE_MUZZLE_PISTOL && smoke->type <= SMOKETYPE_MUZZLE_SHOTGUN) {
 							part->pos.x = g_Vars.currentplayer->hands[smoke->option].muzzlepos.x;
@@ -519,15 +519,15 @@ u32 smokeTick(struct prop *prop)
 						}
 
 						if (smoke->type == SMOKETYPE_WATER) {
-							part->pos.x += RANDOMFRAC() * 70.0f - 35.0f;
-							part->pos.y += RANDOMFRAC() * 40.0f - 25.0f;
-							part->pos.z += RANDOMFRAC() * 40.0f - 20.0f;
+							part->pos.x += RANDOMFRACCOSMETIC() * 70.0f - 35.0f;
+							part->pos.y += RANDOMFRACCOSMETIC() * 40.0f - 25.0f;
+							part->pos.z += RANDOMFRACCOSMETIC() * 40.0f - 20.0f;
 							part->alpha *= 0.23f;
-							part->size *= RANDOMFRAC() + 1.0f;
+							part->size *= RANDOMFRACCOSMETIC() + 1.0f;
 						}
 
-						part->offset1 = RANDOMFRAC() * 0.5f;
-						part->offset2 = RANDOMFRAC() * 0.5f;
+						part->offset1 = RANDOMFRACCOSMETIC() * 0.5f;
+						part->offset2 = RANDOMFRACCOSMETIC() * 0.5f;
 
 						if (smoke->age > g_SmokeTypes[smoke->type].duration - g_SmokeTypes[smoke->type].numclouds) {
 							part->alpha *= (g_SmokeTypes[smoke->type].duration - smoke->age) / (f32)g_SmokeTypes[smoke->type].numclouds;

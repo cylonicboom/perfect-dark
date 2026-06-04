@@ -5200,7 +5200,12 @@ bool chrCalculateAutoAim(struct prop *prop, struct coord *arg1, f32 *arg2, f32 *
 			&& (chr->chrflags & CHRCFLAG_NOAUTOAIM) == 0
 			&& ((chr->hidden & CHRHFLAG_CLOAKED) == 0 || USINGDEVICE(DEVICE_IRSCANNER))
 			&& !(prop->type == PROPTYPE_PLAYER && g_Vars.players[playermgrGetPlayerNumByProp(prop)]->isdead)
-			&& !(g_Vars.coopplayernum >= 0 && (prop == g_Vars.bond->prop || prop == g_Vars.coop->prop))) {
+			// 8-player co-op groundwork: don't autoaim at ANY co-op teammate, not
+			// just bond+coop. In co-op there are no anti players, so every player
+			// prop is a teammate — prop->type == PROPTYPE_PLAYER is identical to
+			// `prop == bond->prop || prop == coop->prop` for 2 players and correct
+			// for N.
+			&& !(g_Vars.coopplayernum >= 0 && prop->type == PROPTYPE_PLAYER)) {
 		struct model *model = chr->model;
 		Mtxf *mtx1;
 		Mtxf *mtx2;

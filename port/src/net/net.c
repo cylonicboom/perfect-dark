@@ -906,9 +906,38 @@ s32 netStartServer(u16 port, s32 maxclients)
 // both ends reach the same stage with the same co-op player model. The generic
 // stage-load hooks then fire: lv.c's netServerStageStart broadcasts the host's
 // SVC_STAGE_START, and playermgr's netPlayersAllocate seats remote clients.
-// Currently fixed at 2 players (coopplayernum=1); 4-player is Phase 5.
-void netCoopEnterStage(s32 stagenum, s32 difficulty)
+//
+// `numplayers` is the total co-op player count N (host + remote partners), up to
+// MAX_PLAYERS. The host derives it from g_NetNumClients (which already counts the
+// host as g_NetClients[0]); the client mirrors it from the SVC_STAGE_START co-op
+// manifest count. coopplayernum stays 1 (the single splitscreen-buddy pointer /
+// co-op gate); the N players live in g_Vars.players[0..N-1].
+void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 {
+	if (numplayers < 1) {
+		numplayers = 1;
+	}
+	if (numplayers > MAX_PLAYERS) {
+		numplayers = MAX_PLAYERS;
+	}
+
+	// F2 body type is per-player: each player's choice (g_NetCoopBodyMode) rides
+	// CLC_SETTINGS to the host, which assembles the resolved per-player bitmask
+	// (g_NetCoopBodyBits) in the SVC_STAGE_START write. The client applied that
+	// wire value in netmsgSvcStageStartRead before calling this, so nothing to do
+	// here.
+
+	// F3 lives: the HOST seeds the respawn budget. PER_PLAYER gives each player
+	// `count` lives; SHARED gives one pool of `count * N`. The client gets the
+	// mode + count from SVC_STAGE_START (read before this call) and follows the
+	// host's authoritative respawn / all-out decisions, so it doesn't seed here.
+	if (g_NetMode != NETMODE_CLIENT) {
+		for (s32 i = 0; i < MAX_PLAYERS; i++) {
+			g_NetCoopLives[i] = g_NetCoopLivesCount;
+		}
+		g_NetCoopSharedLives = g_NetCoopLivesCount * numplayers;
+	}
+
 	// Clear the host-authoritative objective mirror so a previous mission's
 	// completions can't leak into this one (the client overlays these onto its
 	// local objective evaluation; a stale COMPLETE would falsely mark an objective
@@ -931,7 +960,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	g_Vars.bondplayernum = 0;
 	g_Vars.coopplayernum = 1;
 	g_Vars.antiplayernum = -1;
-	setNumPlayers(2);
+	setNumPlayers(numplayers);
 	lvSetDifficulty(difficulty);
 	titleSetNextMode(TITLEMODE_SKIP);
 	mainChangeToStage(stagenum);
@@ -1006,6 +1035,72 @@ void netServerBroadcastObjectives(void)
 	netbufStartWrite(&g_NetMsgRel);
 	netmsgSvcObjectiveWrite(&g_NetMsgRel);
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+}
+
+// F3 lives: render "N lives remaining" to the CURRENT player as a bottom-left
+// notification, mirroring Combat Sim's "Killed by X" (hudmsgCreate / DEFAULT).
+static void netCoopShowLivesText(s32 count)
+{
+	char text[48];
+
+	if (count == 1) {
+		sprintf(text, "1 life remaining");
+	} else {
+		sprintf(text, "%d lives remaining", count);
+	}
+
+	hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+}
+
+// Show the lives notification to THIS machine's local player. The local player is
+// always slot g_NetLocalClient->playernum (0 on host and, after the
+// netPlayersAllocate swap, on clients too).
+void netCoopShowLivesMsg(s32 count)
+{
+	s32 prev = g_Vars.currentplayernum;
+	setCurrentPlayerNum((s32)g_NetLocalClient->playernum);
+	netCoopShowLivesText(count);
+	setCurrentPlayerNum(prev);
+}
+
+// Host-side: notify about a respawn. SHARED -> everyone (host-local + all clients);
+// per-player -> only the victim (host-local if it's the host, else unicast to that
+// client). Non-net (splitscreen) co-op shows directly to the victim's viewport.
+void netServerNotifyLives(s32 victimplayernum, s32 count, bool shared)
+{
+	if (g_NetMode == NETMODE_CLIENT) {
+		return;
+	}
+
+	if (g_NetMode == NETMODE_NONE) {
+		// splitscreen co-op (non-net): show to the victim's own viewport.
+		s32 prev = g_Vars.currentplayernum;
+		setCurrentPlayerNum(victimplayernum);
+		netCoopShowLivesText(count);
+		setCurrentPlayerNum(prev);
+		return;
+	}
+
+	if (shared) {
+		netCoopShowLivesMsg(count); // host's local player
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgSvcCoopLivesWrite(&g_NetMsgRel, count);
+		netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT); // every client
+	} else if (victimplayernum == (s32)g_NetLocalClient->playernum) {
+		netCoopShowLivesMsg(count); // the host is the victim
+	} else {
+		// unicast to the victim's client
+		for (s32 i = 0; i < g_NetMaxClients; i++) {
+			struct netclient *cl = &g_NetClients[i];
+			if (cl != g_NetLocalClient && !cl->is_spectator
+					&& cl->state >= CLSTATE_GAME && (s32)cl->playernum == victimplayernum) {
+				netbufStartWrite(&g_NetMsgRel);
+				netmsgSvcCoopLivesWrite(&g_NetMsgRel, count);
+				netSend(cl, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+				break;
+			}
+		}
+	}
 }
 
 // Replicate a host runtime chr spawn (reinforcement/clone) to clients so they
@@ -1381,6 +1476,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
+			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2484,6 +2580,13 @@ static f32 g_NetChrSnapInterval = 1.0f;
 
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
 s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
+s32 g_NetCoopObjWireDriven = 0; // /coopobj toggle; OFF=current. ON makes networked OBJ props wire-driven on clients (skip local physics fight)
+s32 g_NetCoopBodyMode = COOPBODY_FEMININE; // F2 local player's choice; synced via CLC_SETTINGS
+u8 g_NetCoopBodyBits = 0;                  // F2 resolved per-player masculine bitmask (host-assembled in SVC_STAGE_START write)
+s32 g_NetCoopLivesMode = COOP_LIVES_OFF;    // F3 host setting, synced
+s32 g_NetCoopLivesCount = 3;                // F3 lives per player (host setting, synced)
+s32 g_NetCoopLives[MAX_PLAYERS] = {0};      // F3 per-player remaining (host-authoritative)
+s32 g_NetCoopSharedLives = 0;               // F3 shared pool remaining (host-authoritative)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {
@@ -4012,6 +4115,20 @@ s32 netConsoleCommand(const char *line)
 		}
 		sysLogPrintf(LOG_CHAT, "NET: co-op runtime chr lifecycle = %s%s", g_NetCoopChrLifecycle ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopchr on|off)" : "");
+	} else if (strcmp(cmd, "coopobj") == 0) {
+		// /coopobj on|off (default off) — EXPERIMENTAL. On a CLIENT, make networked
+		// OBJ props fully wire-driven: after objTickPlayer runs, snap prop->pos back to
+		// the host's authoritative position, discarding the client's local physics
+		// integration (which otherwise drifts the model away from the wire-corrected
+		// hitbox at high ping, and lags items parented to a moving object). Pickups /
+		// interactions still run. Flip on each client to A/B the physics-object desync.
+		if (strcmp(arg, "on") == 0) {
+			g_NetCoopObjWireDriven = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetCoopObjWireDriven = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: co-op OBJ wire-driven = %s%s", g_NetCoopObjWireDriven ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopobj on|off)" : "");
 	} else if (strcmp(cmd, "coop") == 0) {
 		// /coop [solostageindex] [difficulty] — HOST only. Start a campaign co-op
 		// session on a solo stage (default Defection, index 0). Difficulty is
@@ -4037,8 +4154,12 @@ s32 netConsoleCommand(const char *line)
 				}
 			}
 			g_MissionConfig.stageindex = idx;
-			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d)", idx, diff);
-			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff);
+			// N = all players currently in the session: g_NetNumClients already
+			// counts the host (g_NetClients[0]) plus every connected remote client.
+			// The SVC_STAGE_START co-op manifest sends this same count so clients
+			// derive the identical N. (Late joins are rejected, so the set is fixed.)
+			sysLogPrintf(LOG_CHAT, "NET: starting co-op (solo stage %d, difficulty %d, %d players)", idx, diff, g_NetNumClients);
+			netCoopEnterStage((s32)g_SoloStages[idx].stagenum, diff, g_NetNumClients);
 		}
 	} else if (strcmp(cmd, "hitvalidate") == 0) {
 		// /hitvalidate <0|1|2> — server-side validation of client CLC_HIT claims

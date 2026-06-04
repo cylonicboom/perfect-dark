@@ -1295,6 +1295,28 @@ void playersTickAllChrBodies(void)
 	setCurrentPlayerNum(prevplayernum);
 }
 
+#ifndef PLATFORM_N64
+// F2 (docs/PORT_COOP_ONLINE.md): pick the masculine campaign BODY for a given
+// outfit. Jo's feminine body is outfit-driven per level (the outfit switch in
+// playerChooseBodyAndHead), so the masculine body is authored as a per-outfit
+// counterpart. Returns the masculine body model when art exists for that outfit,
+// or -1 otherwise (feminine fallback — the current behaviour for every outfit
+// until per-mission masculine art is supplied). The HEAD is NOT chosen here: co-op
+// always uses the player's Combat Sim profile head (see playerChooseBodyAndHead).
+static s32 coopGetMasculineBody(s32 outfit, s32 stagenum)
+{
+	(void)stagenum;
+
+	switch (outfit) {
+	// Per-outfit masculine BODY models drop in here as art is authored, e.g.:
+	//   case OUTFIT_DEFAULT: return BODY_<masculine combat>;
+	//   case OUTFIT_LEATHER: return BODY_<masculine leather>;
+	default:
+		return -1; // no masculine body authored for this outfit yet -> feminine fallback
+	}
+}
+#endif
+
 void playerChooseBodyAndHead(s32 *bodynum, s32 *headnum, s32 *arg2)
 {
 	s32 outfit;
@@ -1421,6 +1443,37 @@ void playerChooseBodyAndHead(s32 *bodynum, s32 *headnum, s32 *arg2)
 		*headnum = solo ? HEAD_MAIAN_S : HEAD_MAIAN_S;
 		break;
 	}
+
+#ifndef PLATFORM_N64
+	// Campaign co-op model assembly (port). Combat Sim / anti returned earlier, so
+	// this is campaign co-op only.
+	//  - HEAD: always the player's Combat Sim profile head (same source as the
+	//    Combat Sim path above) so each co-op player is recognisable as their CS
+	//    character, instead of the fixed Joanna/Velvet heads.
+	//  - BODY: the per-level outfit body chosen above, or its masculine counterpart
+	//    when this player's F2 body bit (g_NetCoopBodyBits, host-resolved + synced)
+	//    is set — falling back to feminine until per-outfit masculine art exists.
+	if (g_Vars.coopplayernum >= 0) {
+		s32 mpheadnum = g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.mpheadnum;
+
+		if (mpheadnum < mpGetNumHeads2()) {
+			*headnum = mpGetHeadId(mpheadnum);
+		} else {
+			*headnum = mpheadnum - mpGetNumHeads2();
+			if (arg2) {
+				*arg2 = true;
+			}
+		}
+
+		if (g_Vars.currentplayernum < MAX_PLAYERS
+				&& (g_NetCoopBodyBits & (1 << g_Vars.currentplayernum))) {
+			s32 mbody = coopGetMasculineBody(outfit, g_Vars.stagenum);
+			if (mbody >= 0) {
+				*bodynum = mbody;
+			}
+		}
+	}
+#endif
 }
 
 /**
@@ -1720,10 +1773,25 @@ void playerRemoveChrBody(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Co-op: true once the local player has reached normal gameplay this stage. Lets
+// pickup toasts show for MID-mission cutscene pickups (e.g. Cassandra's necklace)
+// while the start-of-mission loadout gives during the intro cutscene stay
+// suppressed. Reset on the mission-start GE fade-in, set when control is handed over.
+s32 g_CoopGameplayStarted = 0;
+#endif
+
 void playerSetTickMode(s32 tickmode)
 {
 	g_Vars.tickmode = tickmode;
 	g_Vars.in_cutscene = false;
+#ifndef PLATFORM_N64
+	if (tickmode == TICKMODE_GE_FADEIN) {
+		g_CoopGameplayStarted = false;
+	} else if (tickmode == TICKMODE_NORMAL) {
+		g_CoopGameplayStarted = true;
+	}
+#endif
 }
 
 void playerBeginGeFadeIn(void)
@@ -4597,10 +4665,48 @@ void playerTick(bool arg0)
 			if (g_Vars.mplayerisrunning == false) {
 				mainEndStage();
 			} else if (g_Vars.coopplayernum >= 0) {
-				if (g_Vars.currentplayer == g_Vars.bond
-						&& g_Vars.coop->isdead
-						&& g_Vars.coop->redbloodfinished
-						&& g_Vars.coop->deathanimfinished) {
+				// 8-player co-op groundwork: end the mission only when EVERY co-op
+				// player is fully dead, not just bond+coop. currentplayer is already
+				// fully dead here (checked above), so for 2 players this reduces to
+				// "the other player is also fully dead" — identical to the original
+				// bond+coop test — and is correct for N players.
+				bool coopallout = true;
+				s32 coopdeadi;
+
+				for (coopdeadi = 0; coopdeadi < PLAYERCOUNT(); coopdeadi++) {
+					struct player *cp = g_Vars.players[coopdeadi];
+					bool fullydead;
+
+					if (!PLAYER_IS_NOT_ANTI(cp)) {
+						continue;
+					}
+
+					fullydead = cp->isdead && cp->redbloodfinished && cp->deathanimfinished;
+#ifndef PLATFORM_N64
+					// F3 lives: a player with a life left isn't out — they'll respawn.
+					if (g_NetCoopLivesMode != COOP_LIVES_OFF) {
+						s32 rem = (g_NetCoopLivesMode == COOP_LIVES_SHARED)
+							? g_NetCoopSharedLives
+							: g_NetCoopLives[coopdeadi];
+						if (rem > 0) {
+							fullydead = false;
+						}
+					}
+#endif
+					if (!fullydead) {
+						coopallout = false;
+						break;
+					}
+				}
+
+				if (coopallout) {
+#ifndef PLATFORM_N64
+					// F3 lives: the all-out test uses host-only counters, so only the
+					// host ends the stage; the client follows via SVC_STAGE_END.
+					if (g_NetCoopLivesMode != COOP_LIVES_OFF && g_NetMode == NETMODE_CLIENT) {
+						chrsClearRefsToPlayer(g_Vars.currentplayernum);
+					} else
+#endif
 					mainEndStage();
 				} else {
 					chrsClearRefsToPlayer(g_Vars.currentplayernum);
@@ -5110,8 +5216,69 @@ Gfx *playerRenderHud(Gfx *gdl)
 							}
 						} else {
 							// Coop
-							if (g_Vars.coopplayernum >= 0 &&
-									(!g_Vars.bond->isdead || !g_Vars.coop->isdead)) {
+							// 8-player co-op groundwork: steal health from an ALIVE
+							// co-op buddy to respawn, rather than the fixed "other
+							// slot". Find the first living co-op teammate (!= the dead
+							// current player). For 2 players this is exactly the other
+							// player (behaviour identical, since current is already
+							// dead here so the old `!bond->isdead || !coop->isdead`
+							// gate == "the other is alive" == "a buddy exists"); for N
+							// it picks any living buddy. The buddy's low-health case is
+							// still handled by the totalhealth check below.
+#ifndef PLATFORM_N64
+							// F3 lives: host-authoritative respawn budget. When a lives mode
+							// is active it REPLACES the steal-half-health revive below (whose
+							// guard now also requires COOP_LIVES_OFF). Respawn at full health
+							// (no steal) while this player has a life left; otherwise stay
+							// down. The client takes no action here — the host drives respawn
+							// (force-position) and the all-out mission end.
+							if (g_NetCoopLivesMode != COOP_LIVES_OFF && g_NetMode != NETMODE_CLIENT) {
+								bool restart;
+								s32 *lives = (g_NetCoopLivesMode == COOP_LIVES_SHARED)
+									? &g_NetCoopSharedLives
+									: &g_NetCoopLives[g_Vars.currentplayernum];
+
+								if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+									const struct netclient *cl_ = g_Vars.currentplayer->client;
+									restart = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
+								} else {
+									restart = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), 0xb000) && !mpIsPaused();
+								}
+
+								if (restart && *lives > 0) {
+									(*lives)--;
+									g_Vars.currentplayer->dostartnewlife = true;
+									g_Vars.currentplayer->oldhealth = 0;
+									g_Vars.currentplayer->oldarmour = 0;
+									g_Vars.currentplayer->apparenthealth = 0;
+									g_Vars.currentplayer->apparentarmour = 0;
+
+									// F3: notify about the spent life. Shared pool -> tell everyone; per-player
+									// -> tell just this player. Host-authoritative (see netServerNotifyLives).
+									netServerNotifyLives((s32)g_Vars.currentplayernum, *lives,
+											g_NetCoopLivesMode == COOP_LIVES_SHARED);
+								}
+
+								g_Vars.currentplayer->coopcanrestart = (*lives > 0);
+							}
+#endif
+							s32 coopbuddynum = -1;
+							s32 coopbuddyi;
+
+							for (coopbuddyi = 0; coopbuddyi < PLAYERCOUNT(); coopbuddyi++) {
+								if (coopbuddyi != (s32)g_Vars.currentplayernum
+										&& PLAYER_IS_NOT_ANTI(g_Vars.players[coopbuddyi])
+										&& !g_Vars.players[coopbuddyi]->isdead) {
+									coopbuddynum = coopbuddyi;
+									break;
+								}
+							}
+
+							if (g_Vars.coopplayernum >= 0 && coopbuddynum >= 0
+#ifndef PLATFORM_N64
+									&& g_NetCoopLivesMode == COOP_LIVES_OFF
+#endif
+									) {
 								f32 totalhealth;
 								u32 buddyplayernum = g_Vars.bondplayernum;
 								u32 prevplayernum = g_Vars.currentplayernum;
@@ -5127,8 +5294,8 @@ Gfx *playerRenderHud(Gfx *gdl)
 								canrestart = joyGetButtons(optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex), 0xb000) && !mpIsPaused();
 
 								// Get ready to respawn.
-								// The other player's health will be halved.
-								buddyplayernum = g_Vars.currentplayer == g_Vars.coop ? g_Vars.bondplayernum : g_Vars.coopplayernum;
+								// The buddy's health will be halved.
+								buddyplayernum = coopbuddynum;
 
 								setCurrentPlayerNum(buddyplayernum);
 								shield = chrGetShield(g_Vars.currentplayer->prop->chr) * 0.125f;

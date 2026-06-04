@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 48 // 48: SVC_CUTSCENE — mirror host in-engine cutscene state to co-op clients (intro/mid-mission/outro start+end in lockstep)
+#define NET_PROTOCOL_VER 51 // 51: F3b co-op lives respawn notification (SVC_COOP_LIVES 0x52)
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -119,6 +119,37 @@ void netChrInterpolate(struct chrdata *chr);
 // 0 reverts to the receive-time per-packet apply (for A/B comparison).
 extern s32 g_NetChrInterp;
 extern s32 g_NetCoopChrLifecycle;
+extern s32 g_NetCoopObjWireDriven;
+
+// Campaign co-op body type (F2, docs/PORT_COOP_ONLINE.md). PER-PLAYER choice:
+// g_NetCoopBodyMode is THIS machine's local player's selection; it rides
+// CLC_SETTINGS to the host (settings.coopbodytype). At SVC_STAGE_START the host
+// resolves every player's choice into per-player bits in g_NetCoopBodyBits (bit i
+// = player i uses the masculine body) — COOPBODY_RANDOM is rolled host-side so all
+// machines agree — and ships the bitmask. Jo's body+head are outfit-driven per
+// level (playerChooseBodyAndHead); the "masculine" model is a per-outfit
+// counterpart, falling back to the feminine model until that art exists (so this
+// is currently a no-op visually). The HEAD is always the player's Combat Sim
+// profile head, independent of body type.
+#define COOPBODY_FEMININE  0
+#define COOPBODY_MASCULINE 1
+#define COOPBODY_RANDOM    2
+extern s32 g_NetCoopBodyMode; // COOPBODY_* — local player's choice (synced via CLC_SETTINGS)
+extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (host-assembled, synced)
+
+// Campaign co-op LIVES mutator (F3, docs/PORT_COOP_ONLINE.md). Host setting,
+// synced in SVC_STAGE_START. COOP_LIVES_OFF keeps the stock steal-half-a-buddy's-
+// health revive; PER_PLAYER / SHARED replace it with a respawn budget — each death
+// spends a life (own counter, or a shared pool of count*N), and at zero the player
+// stays down. Host-authoritative: the host owns the counters and the all-out
+// mission-end. (Per-player HUD readout + full counter sync is F3b.)
+#define COOP_LIVES_OFF       0
+#define COOP_LIVES_PERPLAYER 1
+#define COOP_LIVES_SHARED    2
+extern s32 g_NetCoopLivesMode;          // COOP_LIVES_* — host setting, synced
+extern s32 g_NetCoopLivesCount;         // lives granted per player (host setting, synced)
+extern s32 g_NetCoopLives[MAX_PLAYERS]; // per-player remaining (host-authoritative)
+extern s32 g_NetCoopSharedLives;        // shared pool remaining (host-authoritative)
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only
@@ -308,6 +339,7 @@ struct netclient {
 		u8 headnum;
 		u8 bodynum;
 		u8 team;
+		u8 coopbodytype; // F2: COOPBODY_* — this player's co-op body-type choice
 		f32 fovy;
 		f32 fovzoommult;
 	} settings;
@@ -517,9 +549,10 @@ s32 netDisconnect(void);
 void netStartFrame(void);
 void netEndFrame(void);
 
-// Campaign co-op: enter a solo stage in 2-player co-op (host trigger + client
-// SVC_STAGE_START handler both call this). Phase 0 of co-op session plumbing.
-void netCoopEnterStage(s32 stagenum, s32 difficulty);
+// Campaign co-op: enter a solo stage in N-player co-op (host trigger + client
+// SVC_STAGE_START handler both call this). numplayers = total co-op players N
+// (host + remote partners), up to MAX_PLAYERS.
+void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers);
 
 s32 netStartServer(u16 port, s32 maxclients);
 s32 netStartClient(const char *addr);
@@ -566,6 +599,12 @@ void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);
+// F3 lives: "N lives remaining" respawn notification. The host calls
+// netServerNotifyLives on a respawn (shared -> all players; individual -> just the
+// victim); it shows the message to host-local players and sends SVC_COOP_LIVES to
+// the relevant client(s), whose netCoopShowLivesMsg renders it for their local player.
+void netServerNotifyLives(s32 victimplayernum, s32 count, bool shared);
+void netCoopShowLivesMsg(s32 count);
 void netServerKick(struct netclient *cl, const u32 reason);
 
 // Co-op host-authoritative objective status, set by SVC_OBJECTIVE on the client

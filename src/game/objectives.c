@@ -248,7 +248,12 @@ s32 objectiveCheck(s32 index)
 							prevplayernum = g_Vars.currentplayernum;
 
 							for (i = 0; i < PLAYERCOUNT(); i++) {
-								if (g_Vars.players[i] == g_Vars.bond || g_Vars.players[i] == g_Vars.coop) {
+								// 8-player co-op groundwork: "is a co-op player" generalised.
+								// g_Vars.coop is the single splitscreen buddy; in net co-op there
+								// are N co-op players, all of which are non-anti. PLAYER_IS_NOT_ANTI
+								// is identical for SP / 2-player / anti, but catches all N co-op
+								// players instead of just bond+coop.
+								if (PLAYER_IS_NOT_ANTI(g_Vars.players[i])) {
 									setCurrentPlayerNum(i);
 
 									if (invHasProp(obj->prop)) {
@@ -275,7 +280,12 @@ s32 objectiveCheck(s32 index)
 							s32 prevplayernum = g_Vars.currentplayernum;
 
 							for (i = 0; i < PLAYERCOUNT(); i++) {
-								if (g_Vars.players[i] == g_Vars.bond || g_Vars.players[i] == g_Vars.coop) {
+								// 8-player co-op groundwork: "is a co-op player" generalised.
+								// g_Vars.coop is the single splitscreen buddy; in net co-op there
+								// are N co-op players, all of which are non-anti. PLAYER_IS_NOT_ANTI
+								// is identical for SP / 2-player / anti, but catches all N co-op
+								// players instead of just bond+coop.
+								if (PLAYER_IS_NOT_ANTI(g_Vars.players[i])) {
 									setCurrentPlayerNum(i);
 
 									if (invHasProp(obj->prop)) {
@@ -342,16 +352,21 @@ s32 objectiveCheck(s32 index)
 
 #ifndef PLATFORM_N64
 	// Campaign co-op: the host is authoritative for objective state. Overlay the
-	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) on top of the
-	// client's own local evaluation as a UNION — a wire COMPLETE/FAILED forces that
-	// result so the client reflects objectives the host's world finished (incl. the
-	// other player's actions the host runs), while never hiding one the client
-	// itself locally completed. Keeps the objective HUD and mission debrief
-	// consistent across machines. Host-side this is skipped (it computes the
-	// authoritative status it broadcasts). All-zero default = INCOMPLETE = no-op.
+	// host's broadcast status (SVC_OBJECTIVE -> g_NetCoopObjStatuses) onto the
+	// client's local evaluation as a UNION with a COMPLETE-LATCH: a wire COMPLETE
+	// (the host's world finished it, incl. the other player's actions the host runs)
+	// OR a previously-shown COMPLETE (the cached g_ObjectiveStatuses) forces COMPLETE.
+	// The latch stops the flicker seen when an unstable LOCAL eval — a position /
+	// inventory check on a boundary — drops back to incomplete before the host has
+	// confirmed it; objectives don't un-complete in practice, so latching is safe and
+	// also captures a client-local completion the host can't see (e.g. a HOLOGRAPH
+	// keyed on the client's own camera). FAILED still applies if not already complete.
+	// Host-side this whole block is skipped (it computes the authoritative status it
+	// broadcasts). All-zero default = INCOMPLETE = no-op before any broadcast.
 	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
 			&& index >= 0 && index < MAX_OBJECTIVES) {
-		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE) {
+		if (g_NetCoopObjStatuses[index] == OBJECTIVE_COMPLETE
+				|| g_ObjectiveStatuses[index] == OBJECTIVE_COMPLETE) {
 			objstatus = OBJECTIVE_COMPLETE;
 		} else if (g_NetCoopObjStatuses[index] == OBJECTIVE_FAILED
 				&& objstatus != OBJECTIVE_COMPLETE) {
@@ -393,7 +408,10 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		setCurrentPlayerNum(i);
 
-		if (g_Vars.currentplayer == g_Vars.bond || g_Vars.currentplayer == g_Vars.coop) {
+		// 8-player co-op groundwork: show the objective toast to every co-op
+		// player, not just bond+coop. PLAYER_IS_NOT_ANTI is identical for SP /
+		// 2-player / anti, but covers all N co-op players.
+		if (PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)) {
 			hudmsgCreateWithFlags(buffer, hudmsgtype, HUDMSGFLAG_DELAY | HUDMSGFLAG_ALLOWDUPES);
 		}
 	}

@@ -2252,6 +2252,217 @@ MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem *item, 
 	return 0;
 }
 
+// ---- Cooperative (campaign co-op) online lobby — F0 (docs/PORT_COOP_ONLINE.md) ----
+// Host-side front-end that replaces the /coop console command: pick mission +
+// difficulty + mutators, Start Hosting (server/lobby), then Launch Mission for
+// everyone via netCoopEnterStage. Clients join through the normal Join Game /
+// Server Browser; the host's SVC_STAGE_START (NETSTAGEMODE_COOP) pulls them into
+// the same stage. The mutator selections (Lives, Body Type) and the profile import
+// are stored/stubbed here now; their gameplay/render wiring lands in F1/F2/F3.
+static s32 g_NetCoopMenuStageIdx = SOLOSTAGEINDEX_DEFECTION;
+static s32 g_NetCoopMenuDiff = DIFF_A;
+// Lives mode + count live in net globals g_NetCoopLivesMode / g_NetCoopLivesCount
+// (net.h) so they sync to clients in SVC_STAGE_START (F3).
+// Body type lives in the net global g_NetCoopBodyMode (net.h) so it can be
+// resolved + synced at stage start (F2). COOPBODY_FEMININE/MASCULINE/RANDOM.
+
+static MenuItemHandlerResult menuhandlerNetCoopStage(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = NUM_SOLOSTAGES;
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)langGet(g_SoloStages[data->dropdown.value].name3);
+	case MENUOP_SET:
+		g_NetCoopMenuStageIdx = (s32)data->checkbox.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetCoopMenuStageIdx >= 0 && g_NetCoopMenuStageIdx < NUM_SOLOSTAGES) ? g_NetCoopMenuStageIdx : 0;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopDifficulty(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *const opts[] = { "Agent", "Special Agent", "Perfect Agent", "Perfect Dark" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_NetCoopMenuDiff = (s32)data->checkbox.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetCoopMenuDiff >= DIFF_A && g_NetCoopMenuDiff <= DIFF_PD) ? g_NetCoopMenuDiff : DIFF_A;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopLives(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// F3 host mutator. Off = stock steal-half-a-buddy's-health revive; Per Player /
+	// Shared Pool replace it with a respawn budget. Synced in SVC_STAGE_START.
+	static const char *const opts[] = { "Off (Steal Health)", "Per Player", "Shared Pool" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_NetCoopLivesMode = (s32)data->checkbox.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetCoopLivesMode >= COOP_LIVES_OFF && g_NetCoopLivesMode <= COOP_LIVES_SHARED) ? g_NetCoopLivesMode : COOP_LIVES_OFF;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopLivesCount(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// F3: lives granted per player (Per Player) or, scaled by player count, the
+	// shared pool (Shared Pool). Options 1..9. Only meaningful when Lives != Off.
+	static const char *const opts[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_NetCoopLivesCount = (s32)data->checkbox.value + 1;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetCoopLivesCount >= 1 && g_NetCoopLivesCount <= 9) ? g_NetCoopLivesCount - 1 : 2;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopBody(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// F2: PER-PLAYER body-type choice. Stored in g_NetCoopBodyMode and pushed to
+	// the host via CLC_SETTINGS (netClientSettingsChanged), where it is resolved
+	// into the synced per-player bitmask at stage start. "Masculine" falls back to
+	// the feminine model until per-outfit masculine art exists. The head is always
+	// the player's Combat Sim profile head regardless of this choice.
+	static const char *const opts[] = { "Feminine", "Masculine", "Random" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = sizeof(opts) / sizeof(opts[0]);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		g_NetCoopBodyMode = (s32)data->checkbox.value;
+		netClientSettingsChanged(); // push the choice to the host (no-op when hosting)
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = (g_NetCoopBodyMode >= COOPBODY_FEMININE && g_NetCoopBodyMode <= COOPBODY_RANDOM) ? g_NetCoopBodyMode : COOPBODY_FEMININE;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopImportProfile(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		// F1 (todo): copy the active Combat Sim profile's head/body/name into the
+		// local co-op identity and the SVC_STAGE_START co-op manifest.
+		sysLogPrintf(LOG_CHAT, "NET: co-op profile import not yet implemented");
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopStartHosting(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		if (g_NetMode == NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "NET: already hosting — configure, then Launch Mission");
+		} else if (netStartServer(g_NetServerPort, g_NetMaxClients) == 0) {
+			sysLogPrintf(LOG_CHAT, "NET: co-op server started — waiting for players, then Launch Mission");
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: failed to start co-op server");
+		}
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerNetCoopLaunch(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		if (g_NetMode != NETMODE_SERVER) {
+			sysLogPrintf(LOG_CHAT, "NET: Start Hosting first");
+			return 0;
+		}
+		s32 idx = (g_NetCoopMenuStageIdx >= 0 && g_NetCoopMenuStageIdx < NUM_SOLOSTAGES) ? g_NetCoopMenuStageIdx : SOLOSTAGEINDEX_DEFECTION;
+		g_MissionConfig.stageindex = idx;
+		// Same entry point as the /coop command; N = g_NetNumClients (host + all
+		// connected partners). See netCoopEnterStage / PORT_COOP_8P.md Bucket C.
+		sysLogPrintf(LOG_CHAT, "NET: launching co-op (stage %d, difficulty %d, %d players)", idx, g_NetCoopMenuDiff, g_NetNumClients);
+		netCoopEnterStage((s32)g_SoloStages[idx].stagenum, g_NetCoopMenuDiff, g_NetNumClients);
+	}
+	return 0;
+}
+
+// Host setup: mission + difficulty + mutators + Start Hosting / Launch Mission.
+static struct menuitem g_NetCoopHostMenuItems[] = {
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Mission", 0, menuhandlerNetCoopStage },
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Difficulty", 0, menuhandlerNetCoopDifficulty },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives", 0, menuhandlerNetCoopLives },
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives Count", 0, menuhandlerNetCoopLivesCount },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Import Combat Sim Profile\n", 0, menuhandlerNetCoopImportProfile },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Start Hosting\n", 0, menuhandlerNetCoopStartHosting },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Launch Mission\n", 0, menuhandlerNetCoopLaunch },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Back\n", 0, NULL },
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_NetCoopHostMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Host Co-op Game",
+	g_NetCoopHostMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+// Co-Operative -> Online hub: Host / Join / Server Browser, mirroring the Combat
+// Sim network menu (g_NetMenuItems) but kept SEPARATE from it. Join / Browser
+// reuse the mode-agnostic handlers (joining is identical; the host's
+// SVC_STAGE_START NETSTAGEMODE_COOP is what selects co-op). Non-static dialog:
+// referenced from the main-menu "Co-Operative -> Online" entry
+// (src/game/mainmenu.c g_CoopModeMenuItems).
+static struct menuitem g_NetCoopMenuItems[] = {
+	// Per-player customisation (applies whether you host or join).
+	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"My Body Type", 0, menuhandlerNetCoopBody },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Host Co-op Game\n", 0, (void *)&g_NetCoopHostMenuDialog },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Join Game\n", 0, menuhandlerJoinGame },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Server Browser\n", 0, menuhandlerServerBrowser },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Back\n", 0, NULL },
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_NetCoopMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Cooperative",
+	g_NetCoopMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
 struct menuitem g_NetMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,

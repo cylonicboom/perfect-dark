@@ -313,6 +313,40 @@ static bool enscreenAnyAntiAborted(void) {
 #define ANTI_ABORTED() (g_Vars.anti->aborted)
 #endif
 
+// 8-player co-op groundwork: aggregate "any co-op player aborted" / "all co-op
+// players dead" over N players. Mirrors the ANTI_ABORTED() pattern above: on the
+// port (MAX_COOPCHRS > 2) iterate every non-anti player; on N64 (==2) use the
+// original bond/coop expression so the build stays byte-identical.
+#if MAX_COOPCHRS > 2
+static bool endscreenAnyCoopAborted(void) {
+	size_t num;
+
+	for (num = 0; num < PLAYERCOUNT(); num++) {
+		if (g_Vars.players[num] && PLAYER_IS_NOT_ANTI(g_Vars.players[num]) && g_Vars.players[num]->aborted) {
+			return true;
+		}
+	}
+
+	return false;
+}
+static bool endscreenAllCoopDead(void) {
+	size_t num;
+
+	for (num = 0; num < PLAYERCOUNT(); num++) {
+		if (g_Vars.players[num] && PLAYER_IS_NOT_ANTI(g_Vars.players[num]) && !g_Vars.players[num]->isdead) {
+			return false;
+		}
+	}
+
+	return true;
+}
+#define COOP_ABORTED() (endscreenAnyCoopAborted())
+#define COOP_ALLDEAD() (endscreenAllCoopDead())
+#else
+#define COOP_ABORTED() (g_Vars.bond->aborted || g_Vars.coop->aborted)
+#define COOP_ALLDEAD() (g_Vars.bond->isdead && g_Vars.coop->isdead)
+#endif
+
 char *endscreenMenuTextMissionStatus(struct menuitem *item)
 {
 	if (g_CheatsActiveBank0 || g_CheatsActiveBank1) {
@@ -320,11 +354,11 @@ char *endscreenMenuTextMissionStatus(struct menuitem *item)
 	}
 
 	if (g_Vars.coopplayernum >= 0) {
-		if (g_Vars.bond->aborted || g_Vars.coop->aborted) {
+		if (COOP_ABORTED()) {
 			return langGet(L_OPTIONS_295); // "Aborted"
 		}
 
-		if (g_Vars.bond->isdead && g_Vars.coop->isdead) {
+		if (COOP_ALLDEAD()) {
 			return langGet(L_OPTIONS_293); // "Failed"
 		}
 	} else if (g_Vars.antiplayernum >= 0) {
@@ -1709,14 +1743,12 @@ void endscreenPushCoop(void)
 	g_Menus[g_MpPlayerNum].playernum = g_Vars.currentplayernum;
 
 #if VERSION >= VERSION_NTSC_1_0 && defined(DEBUG)
-	if (((g_Vars.bond->isdead && g_Vars.coop->isdead)
-			|| g_Vars.bond->aborted
-			|| g_Vars.coop->aborted
+	if ((COOP_ALLDEAD()
+			|| COOP_ABORTED()
 			|| !objectiveIsAllComplete()) && !debugIsSetCompleteEnabled())
 #else
-	if ((g_Vars.bond->isdead && g_Vars.coop->isdead)
-			|| g_Vars.bond->aborted
-			|| g_Vars.coop->aborted
+	if (COOP_ALLDEAD()
+			|| COOP_ABORTED()
 			|| !objectiveIsAllComplete())
 #endif
 	{
@@ -1767,14 +1799,12 @@ void endscreenPushSolo(void)
 	g_Menus[g_MpPlayerNum].playernum = 0;
 
 #if VERSION >= VERSION_NTSC_1_0 && defined(DEBUG)
-	if (((g_Vars.bond->isdead && g_Vars.coop->isdead)
-			|| g_Vars.bond->aborted
-			|| g_Vars.coop->aborted
+	if ((COOP_ALLDEAD()
+			|| COOP_ABORTED()
 			|| !objectiveIsAllComplete()) && !debugIsSetCompleteEnabled())
 #else
-	if ((g_Vars.bond->isdead && g_Vars.coop->isdead)
-			|| g_Vars.bond->aborted
-			|| g_Vars.coop->aborted
+	if (COOP_ALLDEAD()
+			|| COOP_ABORTED()
 			|| !objectiveIsAllComplete())
 #endif
 	{

@@ -43,6 +43,7 @@
 #define SVC_CHR_TALK     0x4f // co-op: an NPC spoke (quip/conversation line); client plays the positional voice line (NPC AI is gated off on clients)
 #define SVC_STAGE_FLAGS  0x50 // co-op: host-authoritative g_StageFlags mirror (scripts/objectives/triggers gate on it; set host-side)
 #define SVC_CUTSCENE     0x51 // co-op: host-authoritative in-engine cutscene state (active + anim); client starts/ends in lockstep
+#define SVC_COOP_LIVES   0x52 // co-op: "N lives remaining" respawn notification (F3 lives mutator); shown to the recipient's local player
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -131,6 +132,8 @@ u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl);
 // client would never start/end them in sync. Wire: { active:u8, animnum:s16 }.
 u32 netmsgSvcCutsceneWrite(struct netbuf *dst, s32 active, s16 animnum);
 u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcCoopLivesWrite(struct netbuf *dst, s32 count);
+u32 netmsgSvcCoopLivesRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

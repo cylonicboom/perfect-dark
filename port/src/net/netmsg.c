@@ -1299,6 +1299,27 @@ u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+// F3 lives: a respawn-notification carrying the recipient's remaining lives. The
+// host targets it (broadcast for a shared pool, unicast to the victim for
+// per-player); the recipient shows "N lives remaining" to its local player.
+u32 netmsgSvcCoopLivesWrite(struct netbuf *dst, s32 count)
+{
+	if (count < 0) { count = 0; }
+	if (count > 255) { count = 255; }
+	netbufWriteU8(dst, SVC_COOP_LIVES);
+	netbufWriteU8(dst, (u8)count);
+	return dst->error;
+}
+
+u32 netmsgSvcCoopLivesRead(struct netbuf *src, struct netclient *srccl)
+{
+	const s32 count = netbufReadU8(src);
+	if (!src->error) {
+		netCoopShowLivesMsg(count);
+	}
+	return src->error;
+}
+
 u32 netmsgSvcChrTalkWrite(struct netbuf *dst, struct prop *prop, s32 audioid)
 {
 	netbufWriteU8(dst, SVC_CHR_TALK);

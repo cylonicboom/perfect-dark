@@ -187,9 +187,45 @@ zero the player stays down. Host-authoritative.
   the stage ends only when every co-op player is fully dead *and* out of lives;
   host-gated (client follows `SVC_STAGE_END`).
 
-**F3b (next):** a `SVC_COOP_LIVES` broadcast of the live per-player/shared counts
-+ a HUD readout of remaining lives (the counters are host-only in F3a, so clients
-can't display them yet).
+**F3b (implemented) — respawn notification (no persistent HUD counter):** on each
+respawn the player is told their **remaining** lives as a bottom-left notification
+("`N lives remaining`" / "`1 life remaining`"), mirroring Combat Sim's "Killed by
+X" (`hudmsgCreate(text, HUDMSGTYPE_DEFAULT)`). Players track it mentally — there's
+no on-screen counter. Targeting matches the pool semantics:
+- **Shared Pool** → notify **all** players (everyone shares the pool, so everyone
+  sees it tick down): host shows locally + `SVC_COOP_LIVES` (0x52) broadcast.
+- **Per Player** → notify **only that player**: host shows locally if it's the
+  host, else unicasts `SVC_COOP_LIVES` to that one client.
+
+Flow: `player.c` (host) decrements, then `netServerNotifyLives(victimplayernum,
+remaining, shared)` (`net.c`) does the targeting; the recipient's
+`netCoopShowLivesMsg` → `netCoopShowLivesText` renders it for its local player
+(slot `g_NetLocalClient->playernum`). Non-net splitscreen co-op shows directly to
+the victim's viewport. `SVC_COOP_LIVES` (id `0x52`) carries just the `u8` count
+(proto 51).
+
+### Reusing the lives system in Combat Simulator (note)
+
+This lives system is intentionally mode-agnostic in its plumbing and is a good
+base for a **Combat Sim lives/stock mode** ("last team standing" / limited
+respawns). To port it:
+- **Counters/mode/count** (`g_NetCoopLives*` in `net.c`): the same per-player /
+  shared-pool model works; in Combat Sim, seed per-player (FFA) or per-team
+  (pool-per-team) instead of per co-op player. Reset on round start
+  (`mpStartMatch`) rather than `netCoopEnterStage`.
+- **Respawn gate**: Combat Sim respawn is the `else` branch in the same
+  `player.c` death handler (the anti/normal-MP path, ~the `UCMD_RESPAWN` /
+  `deadtimer` block) — gate it on "has a life left", denying respawn at zero
+  (the player becomes a spectator via the existing client-spectator / dead-cam).
+- **Round/match end**: end the round when a side is fully eliminated (all out of
+  lives), analogous to the co-op all-out check, via the existing
+  `g_NumReasonsToEndMpMatch` / round-end path.
+- **Notification**: `netServerNotifyLives` + `SVC_COOP_LIVES` are already generic
+  — reuse verbatim (the message has no co-op-specific fields). Optionally widen
+  "shared" to "per-team" targeting (notify the victim's team).
+- **Menu**: the "Lives"/"Lives Count" dropdowns mirror cleanly into the Combat Sim
+  setup (`g_NetAdminSetupMenuItems` / the Combat Sim options), syncing through the
+  existing `SVC_STAGE_START` / `CLC_ADMIN_SETUP` option plumbing.
 
 ## F4 — name tags (later, standalone)
 

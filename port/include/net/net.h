@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 50 // 50: F3 co-op lives mutator — SVC_STAGE_START co-op branch carries lives mode + count
+#define NET_PROTOCOL_VER 51 // 51: F3b co-op lives respawn notification (SVC_COOP_LIVES 0x52)
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -599,6 +599,12 @@ void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);
+// F3 lives: "N lives remaining" respawn notification. The host calls
+// netServerNotifyLives on a respawn (shared -> all players; individual -> just the
+// victim); it shows the message to host-local players and sends SVC_COOP_LIVES to
+// the relevant client(s), whose netCoopShowLivesMsg renders it for their local player.
+void netServerNotifyLives(s32 victimplayernum, s32 count, bool shared);
+void netCoopShowLivesMsg(s32 count);
 void netServerKick(struct netclient *cl, const u32 reason);
 
 // Co-op host-authoritative objective status, set by SVC_OBJECTIVE on the client

@@ -1037,6 +1037,72 @@ void netServerBroadcastObjectives(void)
 	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
 }
 
+// F3 lives: render "N lives remaining" to the CURRENT player as a bottom-left
+// notification, mirroring Combat Sim's "Killed by X" (hudmsgCreate / DEFAULT).
+static void netCoopShowLivesText(s32 count)
+{
+	char text[48];
+
+	if (count == 1) {
+		sprintf(text, "1 life remaining");
+	} else {
+		sprintf(text, "%d lives remaining", count);
+	}
+
+	hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+}
+
+// Show the lives notification to THIS machine's local player. The local player is
+// always slot g_NetLocalClient->playernum (0 on host and, after the
+// netPlayersAllocate swap, on clients too).
+void netCoopShowLivesMsg(s32 count)
+{
+	s32 prev = g_Vars.currentplayernum;
+	setCurrentPlayerNum((s32)g_NetLocalClient->playernum);
+	netCoopShowLivesText(count);
+	setCurrentPlayerNum(prev);
+}
+
+// Host-side: notify about a respawn. SHARED -> everyone (host-local + all clients);
+// per-player -> only the victim (host-local if it's the host, else unicast to that
+// client). Non-net (splitscreen) co-op shows directly to the victim's viewport.
+void netServerNotifyLives(s32 victimplayernum, s32 count, bool shared)
+{
+	if (g_NetMode == NETMODE_CLIENT) {
+		return;
+	}
+
+	if (g_NetMode == NETMODE_NONE) {
+		// splitscreen co-op (non-net): show to the victim's own viewport.
+		s32 prev = g_Vars.currentplayernum;
+		setCurrentPlayerNum(victimplayernum);
+		netCoopShowLivesText(count);
+		setCurrentPlayerNum(prev);
+		return;
+	}
+
+	if (shared) {
+		netCoopShowLivesMsg(count); // host's local player
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgSvcCoopLivesWrite(&g_NetMsgRel, count);
+		netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT); // every client
+	} else if (victimplayernum == (s32)g_NetLocalClient->playernum) {
+		netCoopShowLivesMsg(count); // the host is the victim
+	} else {
+		// unicast to the victim's client
+		for (s32 i = 0; i < g_NetMaxClients; i++) {
+			struct netclient *cl = &g_NetClients[i];
+			if (cl != g_NetLocalClient && !cl->is_spectator
+					&& cl->state >= CLSTATE_GAME && (s32)cl->playernum == victimplayernum) {
+				netbufStartWrite(&g_NetMsgRel);
+				netmsgSvcCoopLivesWrite(&g_NetMsgRel, count);
+				netSend(cl, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+				break;
+			}
+		}
+	}
+}
+
 // Replicate a host runtime chr spawn (reinforcement/clone) to clients so they
 // create a matching chr shell with the host's syncid. Reliable — sent once.
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags)
@@ -1410,6 +1476,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
+			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

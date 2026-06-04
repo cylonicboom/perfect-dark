@@ -5252,6 +5252,11 @@ Gfx *playerRenderHud(Gfx *gdl)
 									g_Vars.currentplayer->oldarmour = 0;
 									g_Vars.currentplayer->apparenthealth = 0;
 									g_Vars.currentplayer->apparentarmour = 0;
+
+									// F3: notify about the spent life. Shared pool -> tell everyone; per-player
+									// -> tell just this player. Host-authoritative (see netServerNotifyLives).
+									netServerNotifyLives((s32)g_Vars.currentplayernum, *lives,
+											g_NetCoopLivesMode == COOP_LIVES_SHARED);
 								}
 
 								g_Vars.currentplayer->coopcanrestart = (*lives > 0);

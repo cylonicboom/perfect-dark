@@ -836,18 +836,6 @@ Gfx *skyRender(Gfx *gdl)
 				}
 			}
 
-#ifndef PLATFORM_N64
-			// CHEAT_MIRROR: this solid water fill is a screen-space rect too; reflect
-			// its X bounds about the view centre (and swap so x1<x2) to match the
-			// mirrored world, like the sky/water triangles.
-			if (cheatIsActive(CHEAT_MIRROR)) {
-				const f32 mirrx = (camGetScreenLeft() * 2.0f + camGetScreenWidth()) * 4.0f;
-				const f32 nx1 = mirrx - x2;
-				x2 = mirrx - x1;
-				x1 = nx1;
-			}
-#endif
-
 			gDPPipeSync(gdl++);
 			gDPSetCycleType(gdl++, G_CYC_FILL);
 			gDPSetRenderMode(gdl++, G_RM_NOOP, G_RM_NOOP2);
@@ -1621,24 +1609,6 @@ Gfx *skyRenderTri(Gfx *gdl, struct skyvtx2d *vtx0, struct skyvtx2d *vtx1, struct
 		return gdl;
 	}
 
-#ifndef PLATFORM_N64
-	// CHEAT_MIRROR: the sky/water polygons feed the RDP edge-walker directly in screen
-	// space (gImmp1/G_RDPHALF below), bypassing the renderer's clip-space world mirror,
-	// so without this they don't flip with the world (hence the "sky moves strange"
-	// report). Reflect each vertex's screen X about the view centre into local copies
-	// so the whole polygon mirrors. Sky 2D coords are in 4x-subpixel space (clamped to
-	// camGetScreenLeft()*4 .. (camGetScreenLeft()+camGetScreenWidth())*4), so reflect
-	// in that space. Every edge/winding calc below derives from vtx->x, so it comes out
-	// correct for the flipped triangle.
-	struct skyvtx2d m0, m1, m2;
-	if (cheatIsActive(CHEAT_MIRROR)) {
-		const f32 mirrx = (camGetScreenLeft() * 2.0f + camGetScreenWidth()) * 4.0f;
-		m0 = *vtx0; m0.x = mirrx - m0.x; vtx0 = &m0;
-		m1 = *vtx1; m1.x = mirrx - m1.x; vtx1 = &m1;
-		m2 = *vtx2; m2.x = mirrx - m2.x; vtx2 = &m2;
-	}
-#endif
-
 	sp378 = arg4 / 65536.0f;
 
 	xdiff1 = vtx1->x - vtx0->x;
@@ -2155,20 +2125,6 @@ Gfx *skyRenderFull(Gfx *gdl, struct skyvtx2d *vtx0, struct skyvtx2d *vtx1, struc
 			|| skyVerticesAreSame(vtx3, vtx2)) {
 		return gdl;
 	}
-
-#ifndef PLATFORM_N64
-	// CHEAT_MIRROR: mirror the full-screen sky quad the same way as skyRenderTri —
-	// reflect each vertex's screen X about the view centre (4x-subpixel space) into
-	// local copies, since this also draws straight to the RDP edge-walker below.
-	struct skyvtx2d mf0, mf1, mf2, mf3;
-	if (cheatIsActive(CHEAT_MIRROR)) {
-		const f32 mirrx = (camGetScreenLeft() * 2.0f + camGetScreenWidth()) * 4.0f;
-		mf0 = *vtx0; mf0.x = mirrx - mf0.x; vtx0 = &mf0;
-		mf1 = *vtx1; mf1.x = mirrx - mf1.x; vtx1 = &mf1;
-		mf2 = *vtx2; mf2.x = mirrx - mf2.x; vtx2 = &mf2;
-		mf3 = *vtx3; mf3.x = mirrx - mf3.x; vtx3 = &mf3;
-	}
-#endif
 
 	sp3c0 = arg5 * (1.0f / 65536.0f);
 

@@ -192,15 +192,6 @@ quadrant.
   (`skyRenderArtifacts`→`skyRenderFlare`, `sky.c`) reflect their screen X about the view centre when
   `CHEAT_MIRROR` is active, so they track the mirrored world. The glares' *visibility* is a world-space
   LOS test, which is unaffected by the screen-space flip.
-- **Sky / horizon / water are mirrored game-side** (`sky.c`). The sky dome, clouds, horizon line and
-  water surface are NOT 3D geometry — they're computed in screen space and drawn straight to the RDP
-  edge-walker (`gImmp1`/`G_RDPHALF` in `skyRenderTri`/`skyRenderFull`), so they bypass the renderer's
-  clip-space flip and would otherwise scroll the wrong way against the mirrored world (the "sky moves
-  strange" symptom). Both helpers reflect each vertex's screen X about the view centre into local
-  copies when `CHEAT_MIRROR` is active; sky 2D coords are in 4x-subpixel space, so the reflection uses
-  `(camGetScreenLeft()*2 + camGetScreenWidth()) * 4 - x`. All the edge/winding math derives from
-  `vtx->x`, so the flipped triangle comes out correct (no winding fix needed). The solid water fill-rect
-  fallback (`env->water_enabled == 0`) reflects + swaps its X bounds the same way.
 - **GL backend only** (the renderer this port uses). Other rapi backends are untouched.
 
 ## Verification

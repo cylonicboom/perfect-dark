@@ -946,6 +946,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	// Explicit size: only the incomplete `extern u32[]` from net.h is in scope here
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
+	memset(g_NetCoopClientObjDone, 0, sizeof(u8) * MAX_OBJECTIVES); // host: clear client-reported completions
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
 	g_NetCoopLocalStageFlags = 0; // client: clear locally-set stage flags for the new stage
 	g_NetLastCutsceneActive = 0;
@@ -1021,10 +1022,32 @@ void netClientStageComplete(void)
 	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
+// Co-op client: report an objective WE completed that the host can't witness (a
+// scripted trigger room we entered, a mine we threw onto an object, a holograph our
+// camera saw). The host latches it (g_NetCoopClientObjDone) into objectiveCheck and
+// rebroadcasts the authoritative status. Reliable, so a single send is enough.
+void netClientSendObjectiveDone(s32 objindex)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient
+			|| objindex < 0 || objindex >= MAX_OBJECTIVES) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netbufWriteU8(&g_NetMsgRel, CLC_OBJECTIVE_DONE);
+	netbufWriteU8(&g_NetMsgRel, (u8)objindex);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
 // Co-op host-authoritative objective status. Set by SVC_OBJECTIVE on clients and
 // overlaid onto objectiveCheck() (see objectives.c). Zeroed (= OBJECTIVE_INCOMPLETE)
 // at boot and reset at stage start so a previous mission's completions can't leak.
 u32 g_NetCoopObjStatuses[MAX_OBJECTIVES];
+
+// Co-op host: objectives a client reported done (CLC_OBJECTIVE_DONE) that the host
+// couldn't witness itself. Latched into objectiveCheck() so the host's authoritative
+// status includes them. Reset at stage start with g_NetCoopObjStatuses.
+u8 g_NetCoopClientObjDone[MAX_OBJECTIVES];
 
 // Broadcast the host's objective status array to all clients (reliable). Called
 // from objectivesCheckAll when any objective status changes, in a co-op game.
@@ -1414,6 +1437,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_ADMIN_SETUP: rc = netmsgClcAdminSetupRead(&cl->in, cl); break;
 			case CLC_PROP_HIT: rc = netmsgClcPropHitRead(&cl->in, cl); break;
 			case CLC_STAGE_COMPLETE: rc = netmsgClcStageCompleteRead(&cl->in, cl); break;
+			case CLC_OBJECTIVE_DONE: rc = netmsgClcObjectiveDoneRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

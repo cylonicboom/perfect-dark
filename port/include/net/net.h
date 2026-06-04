@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 52 // 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
+#define NET_PROTOCOL_VER 53 // 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness
+// 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -599,6 +600,7 @@ void netServerStageStart(void);
 void netServerStageEnd(void);
 void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
+void netClientSendObjectiveDone(s32 objindex);
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);
 // F3 lives: "N lives remaining" respawn notification. The host calls
@@ -614,6 +616,7 @@ void netServerKick(struct netclient *cl, const u32 reason);
 // MAX_OBJECTIVES in net.c; declared incomplete here so net.h needn't pull in
 // constants.h. Indexed by objective index.
 extern u32 g_NetCoopObjStatuses[];
+extern u8 g_NetCoopClientObjDone[]; // host: objectives a client reported done via CLC_OBJECTIVE_DONE (latched into objectiveCheck)
 
 struct netclient *netClientForPlayerNum(s32 playernum);
 

@@ -190,7 +190,7 @@ Net.Master.Advertise       # server registers with the master (0/1, default 1)
 Server.Password            # host join password (empty = open server)
 Net.Debug.LogPath          # diagnostic log file path (empty = disabled)
 Net.Debug.LogRate          # ticks between per-client/sim pos dumps (default 6, 0 = disabled)
-Egg                        # vanity-egg auto-enable on boot: "0" (default) = off, "graslu" / "redvox57" = enable that banner (= the /graslu /redvox57 commands). Applied in netInit (netApplyEggConfig), case-insensitive.
+Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` under [Game]): "0" (default) = off, "graslu" / "redvox57" = enable that banner (= the /graslu /redvox57 commands). Applied in netInit (netApplyEggConfig), case-insensitive. NOTE: must be a sectioned key — the config system mangles section-less keys (drops the first char on save).
 ```
 
 ### CLI Flags (port-net only)

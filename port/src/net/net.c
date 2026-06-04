@@ -4126,9 +4126,10 @@ static s32 g_GrasluEgg = 0;
 // enabled alongside Graslu. Purely local (nothing goes on the wire).
 static s32 g_Redvox57Egg = 0;
 
-// Config "Egg" (pd.ini): leave "0" (default) for no banner, or set to a vanity
-// egg's command name ("graslu" / "redvox57") to auto-enable it on boot. Applied
-// once in netInit, after the config is loaded. Case-insensitive.
+// Config "Game.Egg" (pd.ini, under [Game] as `Egg=`): leave "0" (default) for no
+// banner, or set to a vanity egg's command name ("graslu" / "redvox57") to
+// auto-enable it on boot. Applied once in netInit, after the config is loaded.
+// Case-insensitive.
 static char g_EggConfig[16] = "0";
 
 static void netApplyEggConfig(void)
@@ -5726,5 +5727,7 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 
 	// Vanity egg auto-enable: "0" (default) = off; "graslu" / "redvox57" turns that
 	// banner on at boot (same as typing the /graslu or /redvox57 console command).
-	configRegisterString("Egg", g_EggConfig, sizeof(g_EggConfig) - 1);
+	// Must be a sectioned key ("Game.Egg" -> "[Game]" / "Egg=..."): the config
+	// system mangles section-less keys (seclen 0 drops the first char on save).
+	configRegisterString("Game.Egg", g_EggConfig, sizeof(g_EggConfig) - 1);
 }

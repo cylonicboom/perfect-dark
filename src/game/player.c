@@ -1499,6 +1499,32 @@ void playerTickChrBody(void)
 {
 	f32 turnangle = (360.0f - g_Vars.currentplayer->vv_theta) * M_BADTAU / 360.0f;
 
+#ifndef PLATFORM_N64
+	// F2 co-op body self-correct. The per-player masculine choice (g_NetCoopBodyBits)
+	// can be resolved/received a tick after a player's chrbody was first built — the
+	// host resolves it in netPlayersAllocate and clients receive it in SVC_STAGE_START,
+	// but an intro cutscene can build the third-person body a tick earlier. The
+	// first-person hands re-derive every frame (bgunTickMasterLoad) so they pick up
+	// the right body, but the chrbody is built once and cached, so it can get stuck on
+	// the wrong (feminine) body while the hands are masculine. If the cached body no
+	// longer matches what playerChooseBodyAndHead now returns, rebuild it once (a cheap
+	// no-op once they agree). Gated to the single-player chrbody path co-op actually
+	// uses (mplayerisrunning == false), since playerRemoveChrBody only frees that path.
+	if (g_Vars.coopplayernum >= 0
+			&& g_Vars.currentplayer->haschrbody
+			&& g_Vars.currentplayer->prop != NULL
+			&& g_Vars.currentplayer->prop->chr != NULL
+			&& (!g_Vars.mplayerisrunning || (IS4MB() && PLAYERCOUNT() == 1))) {
+		s32 wantbody = BODY_DARK_COMBAT;
+		s32 wanthead = HEAD_DARK_COMBAT;
+		bool wantsep = false;
+		playerChooseBodyAndHead(&wantbody, &wanthead, &wantsep);
+		if (g_Vars.currentplayer->prop->chr->bodynum != wantbody) {
+			playerRemoveChrBody();
+		}
+	}
+#endif
+
 	if (g_Vars.currentplayer->haschrbody == false) {
 		struct chrdata *chr;
 		struct texpool texpool;

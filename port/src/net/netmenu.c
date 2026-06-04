@@ -2460,6 +2460,7 @@ static MenuItemHandlerResult menuhandlerNetCoopLaunch(s32 operation, struct menu
 // Host setup: mission + difficulty + mutators + Start Hosting / Launch Mission.
 static struct menuitem g_NetCoopHostMenuItems[] = {
 	// Per-player customisation — enabled for everyone (host AND each client).
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Import Combat Sim Profile\n", 0, menuhandlerNetCoopImportProfile },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"My Body Type", 0, menuhandlerNetCoopBody },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	// Host-only match settings — greyed out for clients (the handlers return
@@ -2469,7 +2470,6 @@ static struct menuitem g_NetCoopHostMenuItems[] = {
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives", 0, menuhandlerNetCoopLives },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Lives Count", 0, menuhandlerNetCoopLivesCount },
-	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Import Combat Sim Profile\n", 0, menuhandlerNetCoopImportProfile },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Start Hosting\n", 0, menuhandlerNetCoopStartHosting },
 	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Launch Mission\n", 0, menuhandlerNetCoopLaunch },

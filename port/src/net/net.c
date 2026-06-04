@@ -1908,6 +1908,59 @@ void netEndFrame(void)
 				coopnpcstart = i; // resume here next tick
 			}
 
+			// Co-op movable OBJ position sync. An OBJ's position is otherwise only
+			// broadcast on impulse events (push / throw / drop) in propobj.c — never as
+			// it settles, nor while it quietly drifts. Clients run the obj's local
+			// physics and (with /coopobj, default on) wire-snap to the LAST received
+			// pos, so a pushed object freezes mid-arc and "floats", and a settled
+			// object that drifted from its host counterpart never re-syncs. Fix: the
+			// host re-broadcasts networked OBJ positions itself, in two parts:
+			//  - Pass 1, every tick: any OBJ in motion (OBJHFLAG_PROJECTILE = airborne
+			//    / sliding / falling) so the client follows the full arc and lands
+			//    exactly where the host does (the projectile block carries speed +
+			//    rotation so the motion matches). Usually 0-2 objs, so the full scan is
+			//    cheap.
+			//  - Pass 2, round-robin: refresh a few SETTLED objs each tick from a
+			//    rotating cursor, so every networked obj re-syncs within
+			//    ~maxprops/budget ticks — healing a settled-but-drifted obj, a missed
+			//    impulse packet, or a JIP client, without a once-a-second burst.
+			// Unreliable (g_NetMsg) like the sim/NPC moves above: latest-wins, and a
+			// dropped frame self-heals on the next tick / cursor sweep.
+			if (g_Vars.coopplayernum >= 0) {
+				const s32 maxprops = g_Vars.maxprops;
+				// Pass 1: moving objs, every tick.
+				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 64; i++) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
+							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+					}
+				}
+				// Pass 2: settled objs, round-robin (a few per tick from a cursor).
+				static s32 coopobjcursor = 0;
+				if (coopobjcursor >= maxprops) {
+					coopobjcursor = 0;
+				}
+				s32 scanned = 0;
+				s32 sent = 0;
+				s32 i = coopobjcursor;
+				while (scanned < maxprops && sent < 4 && g_NetMsg.wp < NET_BUFSIZE - 64) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
+							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE) == 0) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						sent++;
+					}
+					i = (i + 1) % maxprops;
+					scanned++;
+				}
+				coopobjcursor = i; // resume here next tick
+			}
+
 			// Co-op stage flags: scripts, objectives and triggered events gate on
 			// g_StageFlags, set host-side by action blocks / scripts the client
 			// doesn't run. Mirror it (reliable) so the client's flag-gated logic
@@ -2255,6 +2308,19 @@ void netPlayersAllocate(void)
 			const s32 svplayernum = g_NetLocalClient->playernum;
 			g_NetLocalClient->playernum = 0;
 			g_NetClients[0].playernum = svplayernum;
+
+			// F2 body bits arrive wire-indexed (by the host's dense playernums). The
+			// swap above moves the local client to slot 0 and the host to svplayernum,
+			// so mirror that swap in g_NetCoopBodyBits — playerChooseBodyAndHead indexes
+			// it by the LOCAL g_Vars.players[] slot, so without this the client reads the
+			// wrong player's masculine choice (its own body ends up keyed to the host's).
+			if (svplayernum > 0 && svplayernum < MAX_PLAYERS) {
+				const u8 bit0 = (u8)((g_NetCoopBodyBits >> 0) & 1);
+				const u8 bitsv = (u8)((g_NetCoopBodyBits >> svplayernum) & 1);
+				g_NetCoopBodyBits &= (u8)~((1 << 0) | (1 << svplayernum));
+				g_NetCoopBodyBits |= (u8)(bit0 << svplayernum);
+				g_NetCoopBodyBits |= (u8)(bitsv << 0);
+			}
 		}
 	}
 

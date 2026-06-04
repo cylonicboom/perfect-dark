@@ -400,6 +400,17 @@ s32 bgrabCalculateNewPosition(struct coord *delta, f32 angle, bool arg2)
 		if (g_Vars.currentplayer->grabbeddoextra) {
 			f32 f0 = -g_Vars.currentplayer->speedtheta * 0.017450513f * 3.5f;
 
+#ifndef PLATFORM_N64
+			// CHEAT_MIRROR: the world (and the grabbed object) renders left-right
+			// flipped, so the speedtheta-driven rotation of the held object tracks
+			// backwards vs the flipped view. Negate it (this also flips the
+			// rotation-induced lateral X in sp88; speedsideways is already inverted by
+			// bwalkUpdateSpeedSideways). Local player only.
+			if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+				f0 = -f0;
+			}
+#endif
+
 			if (f0 * 6.0f * 10.0f);
 
 			sp88.f[0] = f0 * 5.0f * 100.0f + g_Vars.currentplayer->speedsideways * 10.0f;
@@ -721,6 +732,13 @@ void bgrab0f0cdef0(void)
 {
 	if (g_Vars.lvupdate240 > 0) {
 		f32 angle = g_Vars.currentplayer->speedtheta * g_Vars.lvupdate60freal * 0.017450513318181f * 3.5f;
+
+#ifndef PLATFORM_N64
+		// CHEAT_MIRROR: invert the held-object rotation to match the flipped view.
+		if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+			angle = -angle;
+		}
+#endif
 
 		if (bgrab0f0cdb04(angle, true) == 0) {
 			bgrab0f0cdb68(angle);

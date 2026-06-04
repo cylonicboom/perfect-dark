@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/bondeyespy.h"
+#include "game/cheats.h"
 #include "game/chraction.h"
 #include "game/chr.h"
 #include "game/prop.h"
@@ -890,6 +891,17 @@ void eyespyProcessInput(bool allowbuttons)
 		sidespeed = c2stickx * 0.0125f;
 	}
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the eyespy view renders left-right flipped (same lvRender path as
+	// gameplay), but the walk-mode yaw/strafe negates (bwalkUpdateTheta /
+	// bwalkUpdateSpeedSideways) don't run in eyespy mode — so invert the eyespy's
+	// horizontal strafe here (the look/theta deltas are inverted at their apply sites
+	// below) so left/right match the mirrored view. Local player only.
+	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+		sidespeed = -sidespeed;
+	}
+#endif
+
 	g_EyespyPickup = false;
 
 #if VERSION >= VERSION_PAL_BETA
@@ -947,6 +959,11 @@ void eyespyProcessInput(bool allowbuttons)
 				if (g_Vars.currentplayerstats && !optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex)) {
 					mdy = -mdy;
 				}
+				// CHEAT_MIRROR: invert horizontal mouse-look so the eyespy turns to
+				// match the flipped view (vertical mdy is untouched).
+				if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+					mdx = -mdx;
+				}
 				g_Vars.currentplayer->eyespy->theta += mdx * 1.5f;
 				// hold aim to move up and down, release to look up and down
 				if (aimpressed) {
@@ -959,6 +976,13 @@ void eyespyProcessInput(bool allowbuttons)
 #endif
 
 		// Update theta
+#ifndef PLATFORM_N64
+		// CHEAT_MIRROR: invert horizontal stick-look so the eyespy turns to match the
+		// flipped view.
+		if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
+			c1stickx = -c1stickx;
+		}
+#endif
 		g_Vars.currentplayer->eyespy->theta += c1stickx * 0.0625f * g_Vars.lvupdate60freal;
 
 		while (g_Vars.currentplayer->eyespy->theta < 0.0f) {

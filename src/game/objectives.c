@@ -418,16 +418,6 @@ void objectivesShowHudmsg(char *buffer, s32 hudmsgtype)
 	s32 prevplayernum = g_Vars.currentplayernum;
 	s32 i;
 
-#ifndef PLATFORM_N64
-	// DIAG (co-op notification hunt): records every objective-toast attempt so we can
-	// see whether it fires on each machine and the cutscene/HUD state at the time.
-	if (g_Vars.coopplayernum >= 0) {
-		netDiagLogf("obj_toast", "type=%d netmode=%d incut=%d tick=%d pcount=%d text=%s",
-				hudmsgtype, g_NetMode, (s32)g_Vars.in_cutscene, (s32)g_Vars.tickmode,
-				(s32)PLAYERCOUNT(), buffer ? buffer : "(null)");
-	}
-#endif
-
 	for (i = 0; i < PLAYERCOUNT(); i++) {
 		setCurrentPlayerNum(i);
 
@@ -509,15 +499,6 @@ void objectivesCheckAll(void)
 			s32 status = objectiveCheck(i);
 
 #ifndef PLATFORM_N64
-			// DIAG (co-op notification hunt): log every status transition so we can see
-			// whether/when objectivesCheckAll detects the necklace objective completing
-			// and in what HUD/cutscene state.
-			if (g_Vars.coopplayernum >= 0 && g_ObjectiveStatuses[i] != status) {
-				netDiagLogf("obj_trans", "i=%d old=%d new=%d netmode=%d incut=%d tick=%d",
-						i, (s32)g_ObjectiveStatuses[i], status, g_NetMode,
-						(s32)g_Vars.in_cutscene, (s32)g_Vars.tickmode);
-			}
-
 			const bool objjusttransitioned = (g_ObjectiveStatuses[i] != status);
 #endif
 

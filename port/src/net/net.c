@@ -5350,14 +5350,21 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 	}
 	const bool show = want && anim->readyframe >= 0 && (lvf - anim->readyframe) >= EGG_STAGE_INTRO_DELAY;
 
-	// Edge transitions: fade in once shown, fade out as soon as it shouldn't be
-	// (toggle off, or the mission timer paused for a cutscene/auto-walk/end screen).
+	// Edge transitions: fade in once shown; when it should hide, fade OUT only if it
+	// was fully shown (HOLD). If it's interrupted while still fading IN — a cutscene
+	// triggering or the mission restarting before the fade-in finishes — snap it
+	// straight to HIDDEN instead of reversing into a fade-out, so we don't get the
+	// "fade out then fade back in" glitch; it just fades in once, cleanly, afterward.
 	if (show && (anim->phase == EGG_HIDDEN || anim->phase == EGG_FADEOUT)) {
 		anim->phase = EGG_FADEIN;
 		anim->phasestart = lvf;
-	} else if (!show && (anim->phase == EGG_FADEIN || anim->phase == EGG_HOLD)) {
-		anim->phase = EGG_FADEOUT;
-		anim->phasestart = lvf;
+	} else if (!show) {
+		if (anim->phase == EGG_HOLD) {
+			anim->phase = EGG_FADEOUT;
+			anim->phasestart = lvf;
+		} else if (anim->phase == EGG_FADEIN) {
+			anim->phase = EGG_HIDDEN; // interrupted mid-fade-in: snap, don't reverse-fade
+		}
 	}
 
 	if (anim->phase == EGG_HIDDEN) {

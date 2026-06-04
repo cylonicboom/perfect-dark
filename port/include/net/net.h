@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 54 // 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it
+#define NET_PROTOCOL_VER 55 // 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
+// 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it
 // 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness
 // 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
@@ -602,6 +603,7 @@ void netServerStageEnd(void);
 void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
 void netClientSendObjectiveDone(s32 objindex);
+void netClientRequestPickup(struct prop *prop);
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);
 // F3 lives: "N lives remaining" respawn notification. The host calls

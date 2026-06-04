@@ -17759,8 +17759,15 @@ s32 objTestForPickup(struct prop *prop)
 	}
 
 #ifndef PLATFORM_N64
-	// if we aren't the authority, don't do anything
-	if (g_NetMode == NETMODE_CLIENT) {
+	// Co-op: clients used to bail out here ("not the authority"), which meant a
+	// client could never collect an OBJ / key / objective item — only the host
+	// could, making any mission gated on a client-collected item unbeatable. Now
+	// the client runs the same (read-only) pickup checks and, when it would pick
+	// up, sends CLC_PICKUP_REQUEST to the host instead of taking it locally (see
+	// the pickup site below). The host re-validates against the client's synced
+	// position and grants authoritatively via SVC_PROP_PICKUP. Non-co-op clients
+	// (shouldn't exist) keep the old bail-out.
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum < 0) {
 		return TICKOP_NONE;
 	}
 #endif
@@ -17995,6 +18002,15 @@ s32 objTestForPickup(struct prop *prop)
 		}
 
 		if (pickup) {
+#ifndef PLATFORM_N64
+			// Co-op client: don't grab locally (pickups are host-authoritative).
+			// Ask the host to grant it; it re-validates and broadcasts SVC_PROP_PICKUP,
+			// which gives us the item + toast. Debounced inside netClientRequestPickup.
+			if (g_NetMode == NETMODE_CLIENT) {
+				netClientRequestPickup(prop);
+				return TICKOP_NONE;
+			}
+#endif
 			return propPickupByPlayer(prop, true);
 		}
 	}

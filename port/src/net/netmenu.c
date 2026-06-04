@@ -893,11 +893,25 @@ static char *menutextLobbyLine(struct menuitem *item)
 	return "";
 }
 
+// Defined later in this file; referenced here for the co-op join transition.
+static struct menudialogdef g_NetCoopHostMenuDialog;
+
 static MenuItemHandlerResult menuhandlerJoining(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (inputKeyPressed(VK_ESCAPE)) {
 		netDisconnect();
 		menuPopDialog();
+		return 0;
+	}
+
+	// #4: if the host's lobby state says this is a co-op game, swap the generic
+	// Combat-Sim "Joining Game..." window for the co-op Match Setup window (the
+	// player's own Body Type editable, host-only settings greyed). Happens once —
+	// once we pop this dialog, this handler stops running.
+	if (g_NetLobbyState.valid && g_NetLobbyState.iscoop
+			&& g_NetLocalClient && g_NetLocalClient->state >= CLSTATE_LOBBY) {
+		menuPopDialog();
+		menuPushDialog(&g_NetCoopHostMenuDialog);
 	}
 
 	return 0;
@@ -2409,8 +2423,10 @@ static MenuItemHandlerResult menuhandlerNetCoopStartHosting(s32 operation, struc
 
 	if (operation == MENUOP_SET) {
 		if (g_NetMode == NETMODE_SERVER) {
+			g_NetCoopHosting = 1; // mark co-op so joining clients show the co-op window
 			sysLogPrintf(LOG_CHAT, "NET: already hosting — configure, then Launch Mission");
 		} else if (netStartServer(g_NetServerPort, g_NetMaxClients) == 0) {
+			g_NetCoopHosting = 1; // advertised as netlobbystate.iscoop in SVC_LOBBY_STATE
 			sysLogPrintf(LOG_CHAT, "NET: co-op server started — waiting for players, then Launch Mission");
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: failed to start co-op server");

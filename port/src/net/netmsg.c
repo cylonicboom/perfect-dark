@@ -3705,6 +3705,10 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 
 	netbufWriteU8(dst, SVC_LOBBY_STATE);
 
+	// Co-op lobby flag (proto 52): the client shows the co-op window instead of the
+	// Combat Sim lobby. Set by the co-op menu's Start Hosting.
+	netbufWriteU8(dst, (u8)(g_NetCoopHosting ? 1 : 0));
+
 	netbufWriteU8(dst, g_MpSetup.scenario);
 	netbufWriteU8(dst, g_MpSetup.stagenum);
 	netbufWriteU64(dst, g_MpSetup.options);
@@ -3787,6 +3791,7 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 
 u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 {
+	const u8 iscoop          = netbufReadU8(src); // proto 52
 	const u8 scenario        = netbufReadU8(src);
 	const u8 stagenum        = netbufReadU8(src);
 	const u64 options        = netbufReadU64(src);
@@ -3850,6 +3855,7 @@ u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	g_NetLobbyState.valid          = 1;
+	g_NetLobbyState.iscoop         = iscoop;
 	g_NetLobbyState.scenario       = scenario;
 	g_NetLobbyState.stagenum       = stagenum;
 	g_NetLobbyState.options        = options;

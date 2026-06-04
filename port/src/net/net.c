@@ -5263,14 +5263,14 @@ Gfx *netHitmarkerRender(Gfx *gdl)
 // (HUD drawn, var80075d60==2); the fade-out renders from lv.c's HUD-removed path
 // via netCoopEggsRenderHidden, so the banner slides away instead of popping off.
 enum { EGG_HIDDEN, EGG_FADEIN, EGG_HOLD, EGG_FADEOUT };
-// Ticks (lvframe60) of actual gameplay after a cutscene ends before the banner
-// begins its fade-in, so it lands a handful of ticks into play rather than the
-// instant the cutscene/transition clears.
+// Ticks (lvframe60) after the player gains control before the banner begins its
+// fade-in, so it lands once the weapon-raise has finished rather than the instant
+// control is handed over.
 #define EGG_STAGE_INTRO_DELAY 30
 struct netegg {
 	s32 phase;       // EGG_* state
 	s32 phasestart;  // g_Vars.lvframe60 at phase entry
-	s32 readyframe;  // lvframe60 when non-cutscene gameplay began; -1 while a cutscene plays
+	s32 readyframe;  // lvframe60 when the player gained control (TICKMODE_NORMAL); -1 otherwise
 };
 static struct netegg g_GrasluAnim = { EGG_HIDDEN, 0, -1 };
 static struct netegg g_Redvox57Anim = { EGG_HIDDEN, 0, -1 };
@@ -5294,12 +5294,13 @@ static Gfx *netEggRender(Gfx *gdl, const char *text, u32 bordercol, u32 textcol,
 		anim->readyframe = -1;
 	}
 
-	// Animate in AFTER the (opening) cutscene, not at mission start: stay disarmed
-	// while a cutscene plays, then start a short settle once gameplay is running so
-	// the fade-in lands a handful of ticks into actual play. Re-arms after any later
-	// cutscene too. (The HUD-hidden render path runs every cutscene frame, so this
-	// is maintained throughout.)
-	if (g_Vars.in_cutscene) {
+	// Animate in once the player actually has control (weapon drawn / gameplay HUD
+	// up), not at mission start. TICKMODE_NORMAL means the level intro fade, opening
+	// cutscene, scripted auto-walk and warp modes are all finished and the weapon has
+	// been pulled out; stay disarmed until then, then a short settle
+	// (EGG_STAGE_INTRO_DELAY) lets the weapon-raise complete before the fade-in.
+	// Re-arms if control is later taken away (a mid-mission cutscene / warp).
+	if (g_Vars.tickmode != TICKMODE_NORMAL) {
 		anim->readyframe = -1;
 	} else if (anim->readyframe < 0) {
 		anim->readyframe = lvf;

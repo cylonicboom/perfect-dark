@@ -42,6 +42,7 @@
 #define SVC_CHR_SPAWN    0x4e // co-op: a chr spawned at runtime on the host (reinforcement/clone); client creates a matching shell driven by chr-state
 #define SVC_CHR_TALK     0x4f // co-op: an NPC spoke (quip/conversation line); client plays the positional voice line (NPC AI is gated off on clients)
 #define SVC_STAGE_FLAGS  0x50 // co-op: host-authoritative g_StageFlags mirror (scripts/objectives/triggers gate on it; set host-side)
+#define SVC_CUTSCENE     0x51 // co-op: host-authoritative in-engine cutscene state (active + anim); client starts/ends in lockstep
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -123,6 +124,13 @@ u32 netmsgSvcChrTalkRead(struct netbuf *src, struct netclient *srccl);
 // and scripts the client doesn't run. Wire: { flags:u32 }.
 u32 netmsgSvcStageFlagsWrite(struct netbuf *dst);
 u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl);
+
+// SVC_CUTSCENE (co-op): mirror the host's in-engine cutscene state. In-engine
+// cutscenes (intro, mid-mission, outro) all run through playerStartCutscene /
+// playerEndCutscene via AI commands, which are server-only on clients — so the
+// client would never start/end them in sync. Wire: { active:u8, animnum:s16 }.
+u32 netmsgSvcCutsceneWrite(struct netbuf *dst, s32 active, s16 animnum);
+u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

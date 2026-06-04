@@ -57,6 +57,11 @@ s32 g_NetMode = NETMODE_NONE;
 // g_NetCoopObjStatuses, which has an extern in net.h covering its forward use.
 static u32 g_NetLastStageFlags;
 
+// Last co-op cutscene state broadcast (active + anim), so netEndFrame only sends
+// SVC_CUTSCENE on a transition. Reset at co-op stage entry.
+static s32 g_NetLastCutsceneActive;
+static s16 g_NetLastCutsceneAnim;
+
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
 
@@ -912,6 +917,8 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty)
 	// (the sized definition is later in this file), so sizeof(array) won't compile.
 	memset(g_NetCoopObjStatuses, 0, sizeof(u32) * MAX_OBJECTIVES);
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
+	g_NetLastCutsceneActive = 0;
+	g_NetLastCutsceneAnim = 0;
 
 	g_MissionConfig.iscoop = 1;
 	g_MissionConfig.isanti = 0;
@@ -1373,6 +1380,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
+			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1810,6 +1818,25 @@ void netEndFrame(void)
 						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
 				g_NetLastStageFlags = g_StageFlags;
 				netmsgSvcStageFlagsWrite(&g_NetMsgRel);
+			}
+
+			// Co-op cutscene state: in-engine cutscenes (intro, mid-mission, outro)
+			// all run through playerStartCutscene/EndCutscene via AI commands the
+			// client doesn't run, so mirror the tickmode==CUTSCENE state + anim. The
+			// client starts/ends in lockstep with the host (fixes the client stranded
+			// mid-scene until the host moves). Broadcast on transition (reliable, so a
+			// single send is enough). A heartbeat re-send while active heals a join
+			// that missed the start edge.
+			if (g_Vars.coopplayernum >= 0) {
+				const s32 active = (g_Vars.tickmode == TICKMODE_CUTSCENE) ? 1 : 0;
+				const s16 anim = g_CutsceneAnimNum;
+				if (active != g_NetLastCutsceneActive
+						|| (active && anim != g_NetLastCutsceneAnim)
+						|| (active && (g_NetTick % NET_HEARTBEAT_INTERVAL) == 40u)) {
+					g_NetLastCutsceneActive = active;
+					g_NetLastCutsceneAnim = anim;
+					netmsgSvcCutsceneWrite(&g_NetMsgRel, active, anim);
+				}
 			}
 
 			// King of the Hill: keep clients' hill state in sync. Broadcast

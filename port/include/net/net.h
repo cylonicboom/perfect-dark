@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 47 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
+#define NET_PROTOCOL_VER 48 // 48: SVC_CUTSCENE — mirror host in-engine cutscene state to co-op clients (intro/mid-mission/outro start+end in lockstep)
+// 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
 // 44: SVC_OBJECTIVE — host-authoritative co-op objective status mirror

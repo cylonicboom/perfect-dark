@@ -135,6 +135,8 @@ including co-op; `normmplayerisrunning` is **false** in co-op / anti (set in
 | `bondgun.c` `bgunSwivel` (~5415) | laser-dot crosshair tracking | `!mplayerisrunning` → single-viewport gate |
 | `bondgun.c` `bgunRender` (~11468) | Falcon 2 laser **beam** render | `PLAYERCOUNT()==1` → `PLAYERCOUNT()==1 \|\| single-viewport` |
 | `bondgun.c` `bgun0f0a5550` (~8573) | Falcon 2 laser **sight** update | same; **plus `isremote` skip** — `g_LaserSights[]` is keyed by hand, not player, so a remote tick must not update/free the local slot |
+| `sky.c` `skyRenderSuns` (~2595) | **sun disc(s)** | `mplayerisrunning` early-return → `LOCALPLAYERCOUNT()!=1 \|\| normmplayerisrunning` |
+| `sky.c` `skyRenderArtifacts` (~3077) | **sun lens flare** (streak chain from the sun) | same single-viewport early-return gate |
 
 The glare and laser-sight paths were verified free of `rngRandom()`, so enabling
 them on a client/host that renders different things cannot drift the gameplay RNG.

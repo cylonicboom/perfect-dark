@@ -18,6 +18,7 @@
 #include "constants.h"
 #include "data.h"
 #include "bss.h"
+#include "lib/rng.h" // rngCosmeticRandom — F2 co-op body randomisation (unsynced)
 #include "game/hudmsg.h"
 #include "game/menugfx.h"
 #include "game/playermgr.h"
@@ -919,6 +920,25 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	}
 	if (numplayers > MAX_PLAYERS) {
 		numplayers = MAX_PLAYERS;
+	}
+
+	// F2 body type: the HOST resolves the lobby mode (g_NetCoopBodyMode) into the
+	// per-player masculine bitmask and ships it in SVC_STAGE_START. The CLIENT
+	// already applied the wire value in netmsgSvcStageStartRead (which runs before
+	// it calls this), so it must NOT re-resolve. COOPBODY_RANDOM uses the unsynced
+	// cosmetic RNG — the host sends the result, so determinism isn't required and
+	// the network-synced gameplay seed is left untouched.
+	if (g_NetMode != NETMODE_CLIENT) {
+		g_NetCoopBodyBits = 0;
+		if (g_NetCoopBodyMode == COOPBODY_MASCULINE) {
+			g_NetCoopBodyBits = (u8)((1 << numplayers) - 1);
+		} else if (g_NetCoopBodyMode == COOPBODY_RANDOM) {
+			for (s32 i = 0; i < numplayers; i++) {
+				if (rngCosmeticRandom() & 1) {
+					g_NetCoopBodyBits |= (u8)(1 << i);
+				}
+			}
+		}
 	}
 
 	// Clear the host-authoritative objective mirror so a previous mission's
@@ -2497,6 +2517,8 @@ static f32 g_NetChrSnapInterval = 1.0f;
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
 s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
 s32 g_NetCoopObjWireDriven = 0; // /coopobj toggle; OFF=current. ON makes networked OBJ props wire-driven on clients (skip local physics fight)
+s32 g_NetCoopBodyMode = COOPBODY_FEMININE; // F2 lobby choice (Feminine/Masculine/Random)
+u8 g_NetCoopBodyBits = 0;                  // F2 resolved per-player masculine bitmask (host resolves, synced via SVC_STAGE_START)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {

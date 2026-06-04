@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 48 // 48: SVC_CUTSCENE — mirror host in-engine cutscene state to co-op clients (intro/mid-mission/outro start+end in lockstep)
+#define NET_PROTOCOL_VER 49 // 49: SVC_STAGE_START co-op branch carries the per-player body-type bitmask (F2)
 // 47: SVC_STAGE_FLAGS — mirror host-authoritative g_StageFlags to co-op clients (scripted objective/gate completion)
 // 46: SVC_CHR_TALK — replicate NPC voice lines (quips/conversation) to co-op clients
 // 45: SVC_CHR_SPAWN — replicate host runtime chr spawns (reinforcements/clones) to co-op clients
@@ -120,6 +120,19 @@ void netChrInterpolate(struct chrdata *chr);
 extern s32 g_NetChrInterp;
 extern s32 g_NetCoopChrLifecycle;
 extern s32 g_NetCoopObjWireDriven;
+
+// Campaign co-op body type (F2, docs/PORT_COOP_ONLINE.md). g_NetCoopBodyMode is
+// the host's lobby selection; at stage start the host resolves it into per-player
+// bits in g_NetCoopBodyBits (bit i = player i uses the masculine body) and ships
+// them in SVC_STAGE_START so all machines agree (esp. for COOPBODY_RANDOM).
+// Jo's body+head are outfit-driven per level (playerChooseBodyAndHead), so the
+// "masculine" model is a per-outfit counterpart; until that art exists the hook
+// falls back to the feminine model, so this is currently a no-op visually.
+#define COOPBODY_FEMININE  0
+#define COOPBODY_MASCULINE 1
+#define COOPBODY_RANDOM    2
+extern s32 g_NetCoopBodyMode; // COOPBODY_* — host lobby choice
+extern u8 g_NetCoopBodyBits;  // resolved per-player masculine bitmask (synced)
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only

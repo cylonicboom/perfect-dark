@@ -2262,7 +2262,8 @@ MenuItemHandlerResult menuhandlerJoinGame(s32 operation, struct menuitem *item, 
 static s32 g_NetCoopMenuStageIdx = SOLOSTAGEINDEX_DEFECTION;
 static s32 g_NetCoopMenuDiff = DIFF_A;
 static s32 g_NetCoopMenuLivesMode = 0; // 0=Off (steal-health revive), 1=Per Player, 2=Shared Pool
-static s32 g_NetCoopMenuBodyType = 0;  // 0=Feminine, 1=Masculine, 2=Random (Masculine falls back to feminine until per-mission art exists)
+// Body type lives in the net global g_NetCoopBodyMode (net.h) so it can be
+// resolved + synced at stage start (F2). COOPBODY_FEMININE/MASCULINE/RANDOM.
 
 static MenuItemHandlerResult menuhandlerNetCoopStage(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -2334,10 +2335,10 @@ static MenuItemHandlerResult menuhandlerNetCoopBody(s32 operation, struct menuit
 	case MENUOP_GETOPTIONTEXT:
 		return (intptr_t)opts[data->dropdown.value];
 	case MENUOP_SET:
-		g_NetCoopMenuBodyType = (s32)data->checkbox.value;
+		g_NetCoopBodyMode = (s32)data->checkbox.value;
 		break;
 	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = (g_NetCoopMenuBodyType >= 0 && g_NetCoopMenuBodyType <= 2) ? g_NetCoopMenuBodyType : 0;
+		data->dropdown.value = (g_NetCoopBodyMode >= COOPBODY_FEMININE && g_NetCoopBodyMode <= COOPBODY_RANDOM) ? g_NetCoopBodyMode : COOPBODY_FEMININE;
 		break;
 	}
 	return 0;

@@ -112,13 +112,33 @@ into the **co-op manifest** (the `SVC_STAGE_START` co-op branch currently sends
 only `{id, playernum}` — see the `PORT_COOP_8P.md` "remote partner appearance"
 follow-up). This is where the deferred manifest-settings work lands.
 
-## F2 — body type (later, art-blocked)
+## F2 — body type — **plumbing done (feminine fallback)**
 
-Per-player body-type selection (Feminine / Masculine / Random-per-level), chosen
-in F0 and synced. Render side picks the body model accordingly; **Masculine falls
-back to the feminine model** until a per-mission masculine body is authored.
-"Random" rolls per stage start (must use a *synced* roll so all machines agree —
-the gameplay RNG or an explicit host broadcast, **not** the cosmetic stream).
+Session-wide body-type selection (Feminine / Masculine / Random), chosen in the
+F0 host lobby, with the **masculine model falling back to the feminine model
+until per-mission art exists** — so this is currently a no-op visually, by design.
+
+**Key architecture fact (from the user):** Jo's body *and* head are **outfit-driven
+per level** — `playerChooseBodyAndHead` resolves an `outfit` (combat suit, leather,
+wetsuit, lab coat, …) and the switch on it sets `*bodynum`/`*headnum`. So the
+masculine model is a **per-outfit counterpart**, not a single global body.
+
+Implemented:
+- **Menu → net global.** The lobby "Body Type" dropdown writes `g_NetCoopBodyMode`
+  (`COOPBODY_FEMININE` / `MASCULINE` / `RANDOM`, `net.h`).
+- **Host resolve + sync.** `netCoopEnterStage` (host only, `g_NetMode !=
+  NETMODE_CLIENT`) resolves the mode into a per-player bitmask `g_NetCoopBodyBits`
+  (bit *i* = player *i* uses the masculine body). `RANDOM` rolls each bit from the
+  **cosmetic** RNG (`rngCosmeticRandom`) — the host *broadcasts the result*, so
+  determinism isn't required and the network-synced gameplay seed is untouched.
+  The bitmask ships in the `SVC_STAGE_START` co-op branch (proto 49); the client
+  applies the wire value in `netmsgSvcStageStartRead` *before* its own
+  `netCoopEnterStage` (which is gated not to re-resolve).
+- **Render hook.** `playerChooseBodyAndHead`, after the outfit switch: if this
+  co-op player's bit is set, `coopGetMasculineModel(outfit, stagenum, solo, …)`
+  supplies the masculine body+head — currently a `switch (outfit) { default:
+  return false; }` stub, so every outfit falls back to feminine. **Authoring drops
+  in per-outfit `case`s here.** `#ifndef PLATFORM_N64`; N64 byte-identical.
 
 ## F3 — lives mutator (later)
 

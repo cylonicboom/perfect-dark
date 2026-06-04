@@ -1295,6 +1295,32 @@ void playersTickAllChrBodies(void)
 	setCurrentPlayerNum(prevplayernum);
 }
 
+#ifndef PLATFORM_N64
+// F2 (docs/PORT_COOP_ONLINE.md): pick the masculine campaign body+head for a given
+// outfit. Jo's feminine body+head are outfit-driven per level (the outfit switch
+// in playerChooseBodyAndHead), so the masculine model is authored as a per-outfit
+// counterpart. Returns true and fills *bodyout/*headout when masculine art exists
+// for that outfit; returns false otherwise, leaving the caller's feminine choice
+// in place — the current behaviour for every outfit until per-mission masculine
+// art is supplied. `solo` distinguishes the lead (Joanna) from co-op partners
+// (Velvet) for the head, matching the switch.
+static bool coopGetMasculineModel(s32 outfit, s32 stagenum, bool solo, s32 *bodyout, s32 *headout)
+{
+	(void)stagenum;
+	(void)solo;
+
+	switch (outfit) {
+	// Per-outfit masculine models drop in here as art is authored, e.g.:
+	//   case OUTFIT_DEFAULT:
+	//       *bodyout = BODY_<masculine combat>;
+	//       *headout = HEAD_<masculine>;
+	//       return true;
+	default:
+		return false; // no masculine art for this outfit yet -> feminine fallback
+	}
+}
+#endif
+
 void playerChooseBodyAndHead(s32 *bodynum, s32 *headnum, s32 *arg2)
 {
 	s32 outfit;
@@ -1421,6 +1447,27 @@ void playerChooseBodyAndHead(s32 *bodynum, s32 *headnum, s32 *arg2)
 		*headnum = solo ? HEAD_MAIAN_S : HEAD_MAIAN_S;
 		break;
 	}
+
+#ifndef PLATFORM_N64
+	// F2: if this co-op player is assigned the masculine body (g_NetCoopBodyBits,
+	// resolved on the host from the lobby choice and synced to clients), swap in
+	// the masculine counterpart of the outfit just selected. Falls back to the
+	// feminine model when none is authored, so this is currently a no-op visually.
+	// Campaign co-op only (Combat Sim / anti returned earlier).
+	if (g_Vars.coopplayernum >= 0
+			&& g_Vars.currentplayernum < MAX_PLAYERS
+			&& (g_NetCoopBodyBits & (1 << g_Vars.currentplayernum))) {
+		s32 mbody = -1;
+		s32 mhead = -1;
+
+		if (coopGetMasculineModel(outfit, g_Vars.stagenum, solo, &mbody, &mhead)) {
+			*bodynum = mbody;
+			if (mhead >= 0) {
+				*headnum = mhead;
+			}
+		}
+	}
+#endif
 }
 
 /**

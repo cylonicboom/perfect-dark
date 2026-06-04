@@ -833,6 +833,9 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 				ncl->state = CLSTATE_GAME;
 			}
 		}
+		// F2: per-player body-type bitmask (bit i = player i uses the masculine
+		// body). Host-resolved in netCoopEnterStage. (proto 49)
+		netbufWriteU8(dst, g_NetCoopBodyBits);
 		return dst->error;
 	}
 #endif
@@ -960,6 +963,10 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 				ncl->player = NULL;
 			}
 		}
+		// F2: per-player body-type bitmask (proto 49). Applied before
+		// netCoopEnterStage so it is set when the stage loads / chooses bodies;
+		// the client's netCoopEnterStage is gated not to re-resolve it.
+		g_NetCoopBodyBits = netbufReadU8(src);
 		if (src->error) {
 			return src->error;
 		}

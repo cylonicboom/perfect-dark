@@ -2875,13 +2875,16 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 	// positional syncid pool consistent. Guard prop->active against a double-free.
 	if (prop && prop->obj && prop->active) {
 		objFreePermanently(prop->obj, true);
-	} else if (prop && prop->chr && prop->active) {
+	} else if (prop && prop->chr && prop->active && prop->chr->model) {
 		// Co-op NPC corpse the host reaped. Don't tear it down by hand — set the
 		// engine's own delete flag and let the client's chrTick reap it through the
 		// normal path (chr.c: CHRHFLAG_DELETING -> chrRemove + TICKOP_FREE ->
 		// propFree), so the teardown (model, child weapons, room dereg, prop free,
 		// reference clearing) matches the host exactly. The client's NPC AI is gated
 		// off, so it would otherwise never set this flag and the corpse would linger.
+		// Require a loaded model: chrRemove dereferences chr->model (modelFreeVertices),
+		// so skip a not-yet-loaded shell rather than risk a NULL deref (it'll be
+		// caught by the next reconcile pass if it really is a ghost).
 		prop->chr->hidden |= CHRHFLAG_DELETING;
 	}
 

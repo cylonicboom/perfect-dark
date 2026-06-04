@@ -117,6 +117,7 @@ void netChrInterpolate(struct chrdata *chr);
 // Live toggle for the chr pose interpolation (console /chrinterp, default 1).
 // 0 reverts to the receive-time per-packet apply (for A/B comparison).
 extern s32 g_NetChrInterp;
+extern s32 g_NetCoopChrLifecycle;
 
 // Server-side CLC_HIT validation against the server's own lag-comp'd hit
 // detection. 0 = off (trust the client, current behaviour); 1 = log-only

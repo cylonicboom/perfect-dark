@@ -2456,6 +2456,7 @@ s32 netServerHitWasDetected(const struct netclient *shooter, u16 syncid)
 static f32 g_NetChrSnapInterval = 1.0f;
 
 s32 g_NetChrInterp = 1; // /chrinterp toggle; 0 = old receive-time per-packet apply
+s32 g_NetCoopChrLifecycle = 1; // /coopchr toggle; gates runtime co-op chr SPAWN + FREE replication (diagnostic isolation)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {
@@ -3972,6 +3973,18 @@ s32 netConsoleCommand(const char *line)
 		}
 		sysLogPrintf(LOG_CHAT, "NET: chr pose interpolation = %s%s", g_NetChrInterp ? "ON" : "OFF",
 				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /chrinterp on|off)" : "");
+	} else if (strcmp(cmd, "coopchr") == 0) {
+		// /coopchr on|off — runtime co-op chr lifecycle replication (SVC_CHR_SPAWN
+		// for reinforcement/clone spawns + SVC_PROP_FREE for reaped corpses). Off
+		// disables both so a crash during e.g. an alarm reinforcement wave can be
+		// isolated to this path. Host-side gate; flip it on the host.
+		if (strcmp(arg, "on") == 0) {
+			g_NetCoopChrLifecycle = 1;
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetCoopChrLifecycle = 0;
+		}
+		sysLogPrintf(LOG_CHAT, "NET: co-op runtime chr lifecycle = %s%s", g_NetCoopChrLifecycle ? "ON" : "OFF",
+				(*arg && strcmp(arg, "on") && strcmp(arg, "off")) ? " (usage: /coopchr on|off)" : "");
 	} else if (strcmp(cmd, "coop") == 0) {
 		// /coop [solostageindex] — HOST only. Start a campaign co-op session on a
 		// solo stage (default Defection, index 0). Clients already in the lobby load

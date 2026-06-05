@@ -189,7 +189,10 @@ void sysLogPrintf(s32 level, const char *fmt, ...)
 	if (logPath[0]) {
 		FILE *f = fopen(logPath, "ab");
 		if (f) {
-			fprintf(f, "%s%s\n", prefix[level], logmsg);
+			// mask off LOGFLAG_* bits like the console path below — indexing
+			// prefix[] with a flagged level (e.g. LOG_CHAT) read garbage
+			// pointers and wrote binary junk prefixes into the log file
+			fprintf(f, "%s%s\n", prefix[level & 0x0f], logmsg);
 			fclose(f);
 		}
 	}

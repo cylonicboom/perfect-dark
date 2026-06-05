@@ -495,6 +495,7 @@
 #define CHEAT_GOLDENEYE              45
 #define CHEAT_WIREFRAME              46
 #define CHEAT_MIRROR                 47
+#define CHEAT_TONALINVERSION         48
 
 #define CHEATFLAG_TIMED           0
 #define CHEATFLAG_ALWAYSON        1

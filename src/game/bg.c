@@ -161,6 +161,10 @@ extern unsigned char gfx_wireframe_mode;
 // flips the whole 3D scene left-right (horizontal reflection). Same 1-byte vs
 // game-side `bool`==s32 gotcha as gfx_wireframe_mode above.
 extern unsigned char gfx_mirror_mode;
+// Defined in src/lib/naudio/n_csplayer.c (u8). Set each frame in bgTickPortals
+// from CHEAT_TONALINVERSION so the sequence player reflects music note pitches
+// around middle C. Same 1-byte vs game-side `bool`==s32 gotcha as above.
+extern unsigned char g_SndTonalInversion;
 // Renderer flat-wire colour + line width (port/fast3d). Written by /wireframe and
 // by the vomit animation in bgTickPortals.
 extern int gfx_wireframe_wire_color_enabled;
@@ -6739,6 +6743,7 @@ void bgTickPortals(void)
 		                   || cheatIsActive(CHEAT_NODRAWLIMIT) || g_BgOctreeBigRoom;
 		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
 		gfx_mirror_mode = cheatIsActive(CHEAT_MIRROR) ? 1 : 0;
+		g_SndTonalInversion = cheatIsActive(CHEAT_TONALINVERSION) ? 1 : 0;
 
 		// /wireframe vomit|trip: while wireframe is on, scroll the sky colour
 		// through the hue wheel one way and the wire colour the other, and

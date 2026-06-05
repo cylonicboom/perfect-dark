@@ -16,7 +16,7 @@ Shared types, constants, BSS layout, and global data declarations for the origin
 
 These are new — not original N64 constants. Do not remove or renumber them:
 
-- `CHEAT_NOCULL 43`, `CHEAT_NODRAWLIMIT 44`, `CHEAT_GOLDENEYE 45`, `CHEAT_WIREFRAME 46` — appended after all original cheat indices
+- `CHEAT_NOCULL 43`, `CHEAT_NODRAWLIMIT 44`, `CHEAT_GOLDENEYE 45`, `CHEAT_WIREFRAME 46`, `CHEAT_MIRROR 47`, `CHEAT_TONALINVERSION 48` — appended after all original cheat indices
 - `CHEATFLAG_ALWAYSUNLOCKED 16` — new flag bit, absent from the original
 - `ROOMFLAG_EX_OCTREE 0x0002` — port-only bit in `struct room.extra_flags` (the overflow word), marks a room for octree frustum-culling (see `docs/PORT_OCTREE.md`)
 - `AIENVCMD_ROOM_SETOCTREE 0x10` — port-only AI env-command, appended after `STOPUFOHUM 0x0f`; sets `ROOMFLAG_EX_OCTREE` via `configure_environment` / `aiSetRoomOctree` (handled `#ifndef PLATFORM_N64` in `aiConfigureEnvironment`). Append-only — no N64 setup uses `0x10`

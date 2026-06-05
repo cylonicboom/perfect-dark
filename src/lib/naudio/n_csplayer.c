@@ -15,6 +15,41 @@ ALMicroTime __n_vsDelta(N_ALVoiceState *vs, ALMicroTime t);
 
 u32 var8009c350[16];
 
+#ifndef PLATFORM_N64
+// Tonal Inversion cheat (CHEAT_TONALINVERSION): when set, sequenced music
+// notes are melodically inverted — each channel mirrored about its own
+// FIRST note (classic "inversion about the first note"), which keeps every
+// instrument line in its original register instead of shoving low parts up
+// an octave. Percussion is excluded (single-key keymaps, see the note-on
+// hook). Synced once per frame from the cheat bank in bgTickPortals (the
+// gfx_wireframe_mode pattern). 1-byte on purpose: game code has
+// `#define bool s32` (types.h), so the game-side extern must also be
+// `unsigned char`, never `bool`. SFX are unaffected (they don't go through
+// the sequence player).
+u8 g_SndTonalInversion = 0;
+
+// Per-channel inversion axis, stored as key+1 (0 = unlatched). Latched from
+// the first melodic note-on per channel; reset on AL_SEQP_PLAY_EVT (new
+// song) and whenever the cheat is switched on.
+static u8 sndTonalAxis[16];
+
+// Active-note map, stored as remappedkey+1 (0 = not remapped): what each
+// sounding (channel, original key) note actually plays at. Note-off and
+// per-key aftertouch resolve through this REGARDLESS of the cheat's current
+// state, so releases always land on the voice that was allocated — across
+// axis changes, song changes and mid-note cheat toggles alike.
+static u8 sndTonalMap[16][128];
+
+static void sndTonalResetAxes(void)
+{
+	s32 i;
+
+	for (i = 0; i < 16; i++) {
+		sndTonalAxis[i] = 0;
+	}
+}
+#endif
+
 // 110000 occurs twice in this table...
 s32 var8005f150[] = {
 	0,         10000,     20000,     30000,
@@ -289,6 +324,21 @@ ALMicroTime __n_CSPVoiceHandler(void *node)
 		case (AL_SEQP_PLAY_EVT):
 			if (seqp->state != AL_PLAYING) {
 				seqp->state = AL_PLAYING;
+#ifndef PLATFORM_N64
+				// Tonal Inversion: a new song is starting — re-latch the
+				// per-channel inversion axes from its own first notes, and
+				// drop stale note mappings (no voices ride across a stop).
+				{
+					s32 tichan;
+					s32 tikey;
+					sndTonalResetAxes();
+					for (tichan = 0; tichan < 16; tichan++) {
+						for (tikey = 0; tikey < 128; tikey++) {
+							sndTonalMap[tichan][tikey] = 0;
+						}
+					}
+				}
+#endif
 				__n_CSPPostNextSeqEvent(seqp);
 				/* seqp must be AL_PLAYING before we call this routine. */
 			}
@@ -528,6 +578,76 @@ void __n_CSPHandleMIDIMsg(N_ALCSPlayer *seqp, N_ALEvent *event)
 	byte1 = key  = midi->byte1;
 	byte2 = vel  = midi->byte2;
 
+#ifndef PLATFORM_N64
+	// Tonal Inversion cheat. Only `key` is transformed — `byte1` keeps the
+	// ORIGINAL note: the self-posted AL_CSP_NOTEOFF_EVT events below are
+	// posted with byte1, re-enter this function as note-offs, and resolve
+	// through the active-note map here.
+	if (status == AL_MIDI_NoteOn && vel != 0) {
+		// detect the cheat being switched on and start fresh axes; the map
+		// is deliberately NOT cleared (in-flight notes still resolve)
+		static u8 sndTonalPrev = 0;
+		const u8 mapidx = byte1 & 0x7f;
+
+		if (g_SndTonalInversion != sndTonalPrev) {
+			sndTonalPrev = g_SndTonalInversion;
+			if (g_SndTonalInversion) {
+				sndTonalResetAxes();
+			}
+		}
+
+		// the state/chanMask/instrument guards mirror the player's own
+		// note-on path: __n_lookupSoundQuick dereferences the channel's
+		// instrument unguarded, and we run before the early-outs below
+		if (g_SndTonalInversion && seqp->state == AL_PLAYING
+				&& (seqp->chanMask & (1 << chan)) != 0
+				&& seqp->chanState[chan].instrument != NULL) {
+			// percussion exclusion: drum-kit instruments root one sample per
+			// key (keyMin == keyMax), melodic instruments span ranges. Look
+			// the ORIGINAL key up before deciding; unknown sounds are left
+			// alone too (conservative).
+			ALSound *origsound = __n_lookupSoundQuick((N_ALSeqPlayer*)seqp, key, vel, chan);
+
+			if (origsound && origsound->keyMap && origsound->keyMap->keyMin != origsound->keyMap->keyMax) {
+				s32 inv;
+
+				if (sndTonalAxis[chan] == 0) {
+					// inversion about the first note: the opening note of
+					// each channel maps to itself and anchors the register
+					sndTonalAxis[chan] = key + 1;
+				}
+
+				inv = 2 * (s32)(sndTonalAxis[chan] - 1) - (s32)key;
+				if (inv < 0) {
+					inv = 0;
+				} else if (inv > 127) {
+					inv = 127;
+				}
+
+				sndTonalMap[chan][mapidx] = (u8)inv + 1;
+				key = (u8)inv;
+			} else {
+				sndTonalMap[chan][mapidx] = 0; // identity (percussion/unknown)
+			}
+		} else {
+			sndTonalMap[chan][mapidx] = 0;
+		}
+	} else if (status == AL_MIDI_NoteOff || (status == AL_MIDI_NoteOn && vel == 0)
+			|| status == AL_MIDI_PolyKeyPressure) {
+		// resolve through the active-note map regardless of the cheat's
+		// current state so the release lands on the allocated voice
+		const u8 mapidx = byte1 & 0x7f;
+		const u8 mapped = sndTonalMap[chan][mapidx];
+
+		if (mapped) {
+			key = mapped - 1;
+			if (status != AL_MIDI_PolyKeyPressure) {
+				sndTonalMap[chan][mapidx] = 0; // note done, drop the mapping
+			}
+		}
+	}
+#endif
+
 	switch (status) {
 	case (AL_MIDI_NoteOn):
 
@@ -539,7 +659,12 @@ void __n_CSPHandleMIDIMsg(N_ALCSPlayer *seqp, N_ALEvent *event)
 				if (midi->duration) {
 					evt.type = AL_CSP_NOTEOFF_EVT;
 					evt.msg.midi.status = chan | 0x80;
+#ifndef PLATFORM_N64
+					// original key: re-inverted on re-entry (see entry hook)
+					evt.msg.midi.byte1 = byte1;
+#else
 					evt.msg.midi.byte1 = key;
+#endif
 					evt.msg.midi.byte2 = 0;
 
 					deltaTime = seqp->uspt * midi->duration;
@@ -717,7 +842,12 @@ void __n_CSPHandleMIDIMsg(N_ALCSPlayer *seqp, N_ALEvent *event)
 				 */
 				evt.type            = AL_CSP_NOTEOFF_EVT;
 				evt.msg.midi.status = chan | AL_MIDI_NoteOff;
+#ifndef PLATFORM_N64
+				// original key: re-inverted on re-entry (see entry hook)
+				evt.msg.midi.byte1  = byte1;
+#else
 				evt.msg.midi.byte1  = key;
+#endif
 				evt.msg.midi.byte2  = 0;   /* not needed ? */
 				deltaTime = seqp->uspt * midi->duration;
 				var8009c350[chan] = deltaTime;

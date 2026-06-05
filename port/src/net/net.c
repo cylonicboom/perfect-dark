@@ -4732,6 +4732,24 @@ s32 netConsoleCommand(const char *line)
 		// /gyro [on|off|sens X [Y]|status] — gyro aim (pad 1, SDL3 gamepad
 		// sensors; PORT_SDL3_EXTRAS.md). Body lives in input.c. Local-only.
 		inputGyroCommand(arg);
+	} else if (strcmp(cmd, "tonal") == 0) {
+		// /tonal [on|off]   toggle the Tonal Inversion cheat
+		// (CHEAT_TONALINVERSION) live: reflects every music note around middle
+		// C in the sequence player (strict melodic inversion; SFX unaffected).
+		// Cosmetic-only like Mirror: lives in the ENABLED bank only, never
+		// counts as an active cheat. See docs/PORT_TONAL_INVERSION.md.
+		extern u32 g_CheatsEnabledBank1;
+		const u32 bit = 1 << (CHEAT_TONALINVERSION - 32);
+		s32 on = !(g_CheatsEnabledBank1 & bit);
+		if (*arg) {
+			on = !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0);
+		}
+		if (on) {
+			g_CheatsEnabledBank1 |= bit;
+		} else {
+			g_CheatsEnabledBank1 &= ~bit;
+		}
+		sysLogPrintf(LOG_CHAT, "tonal inversion %s", on ? "ON" : "OFF");
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.

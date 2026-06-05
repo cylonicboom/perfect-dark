@@ -119,6 +119,7 @@ struct cheat g_Cheats[] = {
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // GoldenEye Style (CHEAT_GOLDENEYE)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Wireframe (CHEAT_WIREFRAME)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Mirror (CHEAT_MIRROR)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Tonal Inversion (CHEAT_TONALINVERSION)
 #endif
 };
 
@@ -131,6 +132,7 @@ static const char *const s_cheat_literal_names[] = {
 	[CHEAT_GOLDENEYE]   = "GoldenEye Style",
 	[CHEAT_WIREFRAME]   = "Wireframe",
 	[CHEAT_MIRROR]      = "Mirror",
+	[CHEAT_TONALINVERSION] = "Tonal Inversion",
 };
 
 /**
@@ -199,12 +201,12 @@ u32 cheatIsUnlocked(s32 cheat_id)
 bool cheatIsActive(s32 cheat_id)
 {
 #ifndef PLATFORM_N64
-	// Mirror is cosmetic-only: its live state is the ENABLED bit, and it is
-	// never copied into the active banks (see cheatsReset / cheatActivate),
-	// so having it on doesn't flag the game as cheated — mission completion,
-	// saving and challenges all still count.
-	if (cheat_id == CHEAT_MIRROR) {
-		return g_CheatsEnabledBank1 & (1 << (CHEAT_MIRROR - 32));
+	// Mirror and Tonal Inversion are cosmetic-only: their live state is the
+	// ENABLED bit, and they are never copied into the active banks (see
+	// cheatsReset / cheatActivate), so having them on doesn't flag the game
+	// as cheated — mission completion, saving and challenges all still count.
+	if (cheat_id == CHEAT_MIRROR || cheat_id == CHEAT_TONALINVERSION) {
+		return g_CheatsEnabledBank1 & (1 << (cheat_id - 32));
 	}
 #endif
 
@@ -221,8 +223,9 @@ void cheatActivate(s32 cheat_id)
 	s32 playernum;
 
 #ifndef PLATFORM_N64
-	// Mirror never enters the active banks (cosmetic-only; see cheatIsActive).
-	if (cheat_id == CHEAT_MIRROR) {
+	// Mirror and Tonal Inversion never enter the active banks (cosmetic-only;
+	// see cheatIsActive).
+	if (cheat_id == CHEAT_MIRROR || cheat_id == CHEAT_TONALINVERSION) {
 		return;
 	}
 #endif
@@ -335,9 +338,10 @@ void cheatsReset(void)
 		g_CheatsActiveBank1 = g_CheatsEnabledBank1;
 
 #ifndef PLATFORM_N64
-		// Mirror is cosmetic-only: keep it out of the active bank so it never
-		// counts as a cheat (cheatIsActive reads its enabled bit directly).
-		g_CheatsActiveBank1 &= ~(1 << (CHEAT_MIRROR - 32));
+		// Mirror and Tonal Inversion are cosmetic-only: keep them out of the
+		// active bank so they never count as cheats (cheatIsActive reads
+		// their enabled bits directly).
+		g_CheatsActiveBank1 &= ~((1 << (CHEAT_MIRROR - 32)) | (1 << (CHEAT_TONALINVERSION - 32)));
 #endif
 
 		if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 || g_Vars.normmplayerisrunning) {
@@ -1275,6 +1279,19 @@ struct menuitem g_CheatsGameplayMenuItems[] = {
 		// coordinates, so no wire/save impact.
 		MENUITEMTYPE_CHECKBOX,
 		CHEAT_MIRROR,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		// Tonal Inversion: reflects every music note's pitch around middle C
+		// (strict/real melodic inversion) in the sequence player, mirroring
+		// the musical contour while the soundtrack keeps playing "the same
+		// piece". SFX unaffected. Audio-cosmetic only; like Mirror it never
+		// counts as an active cheat. See docs/PORT_TONAL_INVERSION.md.
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_TONALINVERSION,
 		0,
 		(uintptr_t)&cheatGetNameIfUnlocked,
 		0,

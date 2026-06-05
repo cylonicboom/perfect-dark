@@ -155,12 +155,18 @@ MenuItemHandlerResult menuhandlerControlStyleImpl(s32 operation, struct menuitem
 
 MenuItemHandlerResult menuhandler001024dc(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	return menuhandlerControlStyleImpl(operation, item, data, 4);
+	// SP player-config slot. Must match gamefile.c's save/load slot
+	// (MAX_PLAYERS / MAX_PLAYERS + 1) and lv.c's solo mpindex — hardcoding 4
+	// only worked on N64 where MAX_PLAYERS == 4; on this fork (MAX_PLAYERS == 8)
+	// the menu wrote slot 4 while gameplay + the gamefile round-tripped slot 8,
+	// so a control-style change (e.g. 1.2) never took effect or persisted.
+	// Same class of bug as the "SP player options not persisting" fix.
+	return menuhandlerControlStyleImpl(operation, item, data, MAX_PLAYERS);
 }
 
 MenuItemHandlerResult menuhandler001024fc(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	return menuhandlerControlStyleImpl(operation, item, data, 5);
+	return menuhandlerControlStyleImpl(operation, item, data, MAX_PLAYERS + 1);
 }
 
 MenuItemHandlerResult menuhandlerReversePitch(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -5183,9 +5189,11 @@ char *mainMenuTextLabel(struct menuitem *item)
 	};
 
 #ifndef PLATFORM_N64
-	// Mirror is cosmetic-only (never counts as cheating) — ignore it when
-	// deciding whether to relabel the menus "Cheat Solo Missions" etc.
-	if (g_CheatsEnabledBank0 || (g_CheatsEnabledBank1 & ~(1 << (CHEAT_MIRROR - 32)))) {
+	// Mirror and Tonal Inversion are cosmetic-only (never count as cheating) —
+	// ignore them when deciding whether to relabel the menus "Cheat Solo
+	// Missions" etc.
+	if (g_CheatsEnabledBank0 ||
+			(g_CheatsEnabledBank1 & ~((1 << (CHEAT_MIRROR - 32)) | (1 << (CHEAT_TONALINVERSION - 32))))) {
 		return langGet(withcheats[item->param]);
 	}
 #else

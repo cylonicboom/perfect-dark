@@ -9,8 +9,8 @@
 | `main.c` | Entry point; initialises all subsystems in order |
 | `pdmain.c` | Game-side init (memory, stage selection) |
 | `pdsched.c` | Per-frame scheduler; calls `netStartFrame`/`netEndFrame` |
-| `video.c` | SDL2 + OpenGL window/render |
-| `input.c` | SDL2 input, key binds |
+| `video.c` | SDL3 + OpenGL window/render |
+| `input.c` | SDL3 input, key binds |
 | `audio.c` / `mixer.c` | Audio mixer |
 | `config.c` | INI config (`pd.ini`) |
 | `fs.c` | File system / mod support |

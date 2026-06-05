@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #ifndef _LANGUAGE_C
 #define _LANGUAGE_C
@@ -1280,7 +1280,8 @@ static void gfx_opengl_log_info(void) {
 }
 
 static void *gl_load_proc(const char *name) {
-    void *ret = SDL_GL_GetProcAddress(name);
+    // SDL3 returns SDL_FunctionPointer, glad wants void*
+    void *ret = reinterpret_cast<void *>(SDL_GL_GetProcAddress(name));
     if (ret) {
         return ret;
     }
@@ -1290,7 +1291,7 @@ static void *gl_load_proc(const char *name) {
     char tmp[256] = { 0 };
     for (size_t i = 0; i < sizeof(post) / sizeof(*post); ++i) {
         snprintf(tmp, sizeof(tmp), "%s%s", name, post[i]);
-        ret = SDL_GL_GetProcAddress(tmp);
+        ret = reinterpret_cast<void *>(SDL_GL_GetProcAddress(tmp));
         if (ret) {
             return ret;
         }

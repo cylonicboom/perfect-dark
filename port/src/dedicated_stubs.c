@@ -139,3 +139,5 @@ void inputClearClipboard(void) { }
 const char *inputGetClipboard(void) { return ""; }
 
 u32 inputGetKeyModState(void) { return 0; }
+
+void inputPadTest(const char *arg) { (void)arg; }

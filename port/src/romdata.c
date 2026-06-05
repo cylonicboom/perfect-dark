@@ -10,6 +10,7 @@
 #include "system.h"
 #include "preprocess.h"
 #include "platform.h"
+#include "video.h" // taskbar progress during boot preprocessing
 
 /**
  * asset files and ROM segments can be replaced by optional external files,
@@ -468,13 +469,25 @@ s32 romdataInit(void)
 
 	romdataLoadRom();
 
-	// set segments to point to the rom or load them externally
+	// boot preprocessing (animations, textures, audio banks) is the slow part
+	// of startup; mirror its progress onto the taskbar/dock icon
+	s32 totalSegs = 0;
 	for (struct romfile *seg = romSegs; seg->name; ++seg) {
+		++totalSegs;
+	}
+
+	// set segments to point to the rom or load them externally
+	s32 doneSegs = 0;
+	for (struct romfile *seg = romSegs; seg->name; ++seg) {
+		videoSetTaskbarProgress(VIDEO_TASKBAR_NORMAL, (f32)doneSegs / (f32)totalSegs);
 		romdataInitSegment(seg);
+		++doneSegs;
 	}
 
 	// load file table from the files segment
 	romdataInitFiles();
+
+	videoSetTaskbarProgress(VIDEO_TASKBAR_NONE, 0.f);
 
 	sysLogPrintf(LOG_NOTE, "romdataInit: loaded rom, size = %u", g_RomFileSize);
 

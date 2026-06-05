@@ -19,7 +19,7 @@ headless mode already present on `port-net-predict`.
 - **One codebase.** The server is the same source tree as the client, selected by
   a single CMake option. No fork, no copy.
 - **Lightest practical footprint**: the server binary should not even *link*
-  SDL2, OpenGL, or audio libraries.
+  SDL3, OpenGL, or audio libraries.
 - Managed as a **systemd service** an admin can `start`/`stop`/`enable`/`status`
   over SSH, with logs via `journalctl`.
 - **Do not regress** the existing Windows/Linux/macOS/Switch *client* builds.
@@ -90,7 +90,7 @@ almost entirely confined to a few files. To reach a binary that links only
 
 | Concern | Location | Action under `DEDICATED_SERVER` |
 |---|---|---|
-| SDL2 window backend | `port/fast3d/gfx_sdl2.cpp` | Exclude from build |
+| SDL3 window backend | `port/fast3d/gfx_sdl.cpp` (named `gfx_sdl2.cpp` pre-SDL3-migration) | Exclude from build |
 | OpenGL renderer | `port/fast3d/gfx_opengl.cpp` + `glad/` | Exclude from build |
 | Audio device | `port/src/audio.c` | `#ifdef` the SDL body out (already runtime-guarded) |
 | Input | `port/src/input.c` | `#ifdef` the SDL body out (already runtime-guarded) |
@@ -101,7 +101,7 @@ almost entirely confined to a few files. To reach a binary that links only
 
 Build wrinkle: sources are gathered by `GLOB_RECURSE port/*.c`/`*.cpp`, so the
 two fast3d files + `glad/` are removed from the list via `list(REMOVE_ITEM ...)`
-when `DEDICATED_SERVER` is ON, and `find_package(SDL2)` / GL are skipped and
+when `DEDICATED_SERVER` is ON, and `find_package(SDL3)` / GL are skipped and
 dropped from `LIBS`.
 
 ---
@@ -116,7 +116,8 @@ dropped from `LIBS`.
   (`pd-server.x86_64`) links only `libz/libstdc++/libm/libgcc_s/libc` — **no SDL,
   OpenGL, X11 or audio** (`ldd` confirmed); it boots headless, resolves paths via
   POSIX (no SDL), and reports fatal errors to stderr (no GUI dialog). The default
-  client build (`-DDEDICATED_SERVER=OFF`) is unchanged and still links SDL2/GL.
+  client build (`-DDEDICATED_SERVER=OFF`) is unchanged and still links SDL/GL
+  (SDL2 at the time; SDL3 since the migration).
 - **Phase 2 — Debian build & data.** apt deps, documented build recipe, ROM/asset
   placement, launch wrapper + sample `server_playlist.ini`.
 - **Phase 3 — systemd service.** Dedicated user, install layout, hardened unit,
@@ -132,14 +133,15 @@ dropped from `LIBS`.
 
 **Client (unchanged, for reference):**
 ```sh
-sudo apt install build-essential cmake libsdl2-dev zlib1g-dev   # + GL dev
+sudo apt install build-essential cmake zlib1g-dev   # + GL dev
+# SDL3: no Debian package yet — build from source (see README.md "Linux")
 cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
 ```
 
 **Server (new):**
 ```sh
-sudo apt install build-essential cmake zlib1g-dev   # NO SDL2 / GL / audio dev
+sudo apt install build-essential cmake zlib1g-dev   # NO SDL3 / GL / audio dev
 cmake -B build-server -DDEDICATED_SERVER=ON -DROMID=ntsc-final -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build-server -j
 # -> build-server/pd-server

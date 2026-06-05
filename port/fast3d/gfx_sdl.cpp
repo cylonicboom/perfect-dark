@@ -1,5 +1,7 @@
 #include <stdio.h>
-#include <SDL.h>
+#include <stdlib.h> // exit; SDL3's SDL_stdinc.h no longer includes it for us
+#include <string.h> // strstr
+#include <SDL3/SDL.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -11,13 +13,15 @@
 
 static SDL_Window* wnd;
 static SDL_GLContext ctx;
-static SDL_Renderer* renderer;
 static int sdl_to_lus_table[512];
 static bool vsync_enabled = true;
 // OTRTODO: These are redundant. Info can be queried from SDL.
 static int window_width = DESIRED_SCREEN_WIDTH;
 static int window_height = DESIRED_SCREEN_HEIGHT;
-static uint32_t fullscreen_flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
+// SDL3 has no SDL_WINDOW_FULLSCREEN_DESKTOP flag: borderless-desktop vs
+// exclusive fullscreen is picked via SDL_SetWindowFullscreenMode (NULL mode
+// means borderless desktop).
+static bool fullscreen_exclusive;
 static bool fullscreen_state;
 static bool maximized_state;
 static bool is_running = true;
@@ -39,23 +43,40 @@ static int32_t gfx_sdl_get_fullscreen_state(void) {
 }
 
 static int32_t gfx_sdl_get_fullscreen_flag_mode(void) {
-    return fullscreen_flag == SDL_WINDOW_FULLSCREEN_DESKTOP ? 0 : 1;
+    return fullscreen_exclusive ? 1 : 0;
 }
 
 static void gfx_sdl_set_fullscreen_flag(int32_t mode) {
     switch (mode) {
         case 0: {
-            fullscreen_flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
+            fullscreen_exclusive = false;
         } break;
         case 1: {
-            fullscreen_flag = SDL_WINDOW_FULLSCREEN;
+            fullscreen_exclusive = true;
         } break;
     }
 }
 
+// select borderless desktop (NULL) or the closest exclusive mode for the
+// current window size; only relevant while the window is fullscreen
+static void apply_fullscreen_mode(void) {
+    if (fullscreen_exclusive) {
+        SDL_DisplayMode closest;
+        if (SDL_GetClosestFullscreenDisplayMode(SDL_GetDisplayForWindow(wnd), window_width, window_height, 0.0f, false, &closest)) {
+            SDL_SetWindowFullscreenMode(wnd, &closest);
+            return;
+        }
+        // no exclusive mode matched, fall back to borderless desktop
+    }
+    SDL_SetWindowFullscreenMode(wnd, NULL);
+}
+
 static void set_fullscreen(bool on, bool call_callback) {
     fullscreen_state = on;
-    SDL_SetWindowFullscreen(wnd, on ? fullscreen_flag : 0);
+    if (on) {
+        apply_fullscreen_mode();
+    }
+    SDL_SetWindowFullscreen(wnd, on);
     if (call_callback && on_fullscreen_changed_callback) {
         on_fullscreen_changed_callback(on);
     }
@@ -71,29 +92,17 @@ static void set_maximize_window(bool on) {
 }
 
 static void gfx_sdl_get_active_window_refresh_rate(uint32_t* refresh_rate) {
-    int display_in_use = SDL_GetWindowDisplayIndex(wnd);
+    const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
 
-    SDL_DisplayMode mode;
-    SDL_GetCurrentDisplayMode(display_in_use, &mode);
-    *refresh_rate = mode.refresh_rate;
+    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(display_in_use);
+    *refresh_rate = mode ? (uint32_t)mode->refresh_rate : 60;
 }
 
 static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     window_width = set->width;
     window_height = set->height;
 
-#ifdef SDL_HINT_VIDEO_HIGHDPI_DISABLED
-    if (!set->allow_hidpi) {
-        // HiDPI control, if available
-        SDL_SetHint(SDL_HINT_VIDEO_HIGHDPI_DISABLED, "1");
-#if defined(PLATFORM_WIN32) && defined(SDL_HINT_WINDOWS_DPI_AWARENESS)
-        // if HiDPI is disabled, declare ourselves DPI aware to get 1:1 window size on Windows
-        SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitor");
-#endif
-    }
-#endif
-
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         sysFatalError("Could not init SDL:\n%s", SDL_GetError());
     }
 
@@ -104,31 +113,29 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
     }
 
-    int posX = set->x;
-    int posY = set->y;
-    int display_in_use = SDL_GetWindowDisplayIndex(wnd);
-    if (display_in_use < 0) { // Fallback to default if out of bounds
-        posX = SDL_WINDOWPOS_UNDEFINED;
-        posY = SDL_WINDOWPOS_UNDEFINED;
-    }
+    int posX = SDL_WINDOWPOS_UNDEFINED;
+    int posY = SDL_WINDOWPOS_UNDEFINED;
 
+    bool center_window = false;
     if (set->centered) {
-        SDL_DisplayMode mode = {};
-        SDL_GetCurrentDisplayMode(0, &mode);
-        posX = mode.w / 2 - window_width / 2;
-        posY = mode.h / 2 - window_height / 2;
+        const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        if (mode) {
+            posX = mode->w / 2 - window_width / 2;
+            posY = mode->h / 2 - window_height / 2;
+            center_window = true;
+        }
     }
 
     if (set->fullscreen_is_exclusive) {
-        fullscreen_flag = SDL_WINDOW_FULLSCREEN;
+        fullscreen_exclusive = true;
     }
 
     // we will unhide the window once the GL context is successfully created
-    Uint32 flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL;
+    SDL_WindowFlags flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL;
 
     // if fullscreen was requested, start the window in fullscreen right away
     if (set->fullscreen) {
-        flags |= fullscreen_flag;
+        flags |= SDL_WINDOW_FULLSCREEN;
         fullscreen_state = true;
     }
 
@@ -137,11 +144,9 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         maximized_state = true;
     }
 
-#ifdef SDL_WINDOW_ALLOW_HIGHDPI
     if (set->allow_hidpi) {
-        flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+        flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     }
-#endif
 
     // ideally we need 3.0 compat
     // if that doesn't work, try 3.2 core in case we're on mac, 2.1 compat as a last resort
@@ -182,7 +187,7 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, vmin);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, vprof);
 
-        wnd = SDL_CreateWindow(set->title, posX, posY, window_width, window_height, flags);
+        wnd = SDL_CreateWindow(set->title, window_width, window_height, flags);
         if (!wnd) {
             sysLogPrintf(LOG_WARNING, "SDL: could not open SDL window for GL%d.%d%s:\n%s", vmaj, vmin, vprofstr, SDL_GetError());
             continue;
@@ -200,6 +205,16 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         sysFatalError("Could not open SDL window with an OpenGL context of any supported version:\n%s", SDL_GetError());
     } else {
         sysLogPrintf(LOG_NOTE, "SDL: created GL%d.%d%s context", vmaj, vmin, vprofstr);
+    }
+
+    if (center_window) {
+        SDL_SetWindowPosition(wnd, posX, posY);
+    }
+
+    // window was created with the borderless-desktop default; switch to the
+    // closest exclusive mode now if that's what was requested
+    if (fullscreen_state && fullscreen_exclusive) {
+        apply_fullscreen_mode();
     }
 
     SDL_GL_MakeCurrent(wnd, ctx);
@@ -223,9 +238,8 @@ static void gfx_sdl_set_fullscreen(bool enable) {
 }
 
 static void gfx_sdl_set_fullscreen_exclusive(bool enable) {
-    const uint32_t newflag = enable ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_FULLSCREEN_DESKTOP;
-    if (fullscreen_flag != newflag) {
-        fullscreen_flag = newflag;
+    if (fullscreen_exclusive != enable) {
+        fullscreen_exclusive = enable;
         // reset fullscreen to take new value into account if it already is in fullscreen
         if (fullscreen_state) {
             fullscreen_state = false;
@@ -240,34 +254,40 @@ static void gfx_sdl_set_maximize_window(bool enable) {
 
 static void gfx_sdl_set_cursor_visibility(bool visible) {
     if (visible) {
-        SDL_ShowCursor(SDL_ENABLE);
+        SDL_ShowCursor();
     } else {
-        SDL_ShowCursor(SDL_DISABLE);
+        SDL_HideCursor();
     }
 }
 
 static void get_centered_positions_native(int32_t width, int32_t height, int32_t *posX, int32_t *posY) {
-    const int disp_idx = SDL_GetWindowDisplayIndex(wnd);
-    SDL_DisplayMode mode = {};
-    SDL_GetDesktopDisplayMode(disp_idx, &mode);
-    *posX = mode.w / 2 - width / 2;
-    *posY = mode.h / 2 - height / 2;
+    const SDL_DisplayID disp = SDL_GetDisplayForWindow(wnd);
+    const SDL_DisplayMode *mode = SDL_GetDesktopDisplayMode(disp);
+    const int mw = mode ? mode->w : 0;
+    const int mh = mode ? mode->h : 0;
+    *posX = mw / 2 - width / 2;
+    *posY = mh / 2 - height / 2;
 }
 
 static void gfx_sdl_get_centered_positions(int32_t width, int32_t height, int32_t *posX, int32_t *posY) {
-    const int disp_idx = SDL_GetWindowDisplayIndex(wnd);
-    SDL_DisplayMode mode = {};
-    SDL_GetCurrentDisplayMode(disp_idx, &mode);
-    *posX = mode.w / 2 - width / 2;
-    *posY = mode.h / 2 - height / 2;
+    const SDL_DisplayID disp = SDL_GetDisplayForWindow(wnd);
+    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(disp);
+    const int mw = mode ? mode->w : 0;
+    const int mh = mode ? mode->h : 0;
+    *posX = mw / 2 - width / 2;
+    *posY = mh / 2 - height / 2;
 }
 
 static void gfx_sdl_set_closest_resolution(int32_t width, int32_t height, bool should_center) {
-    const SDL_DisplayMode mode = {.w = width, .h = height};
-    const int disp_idx = SDL_GetWindowDisplayIndex(wnd);
-    SDL_DisplayMode closest = {};
-    if (SDL_GetClosestDisplayMode(disp_idx, &mode, &closest)) {
-        SDL_SetWindowDisplayMode(wnd, &closest);
+    const SDL_DisplayID disp = SDL_GetDisplayForWindow(wnd);
+    SDL_DisplayMode closest;
+    if (SDL_GetClosestFullscreenDisplayMode(disp, width, height, 0.0f, false, &closest)) {
+        if (fullscreen_exclusive) {
+            // only meaningful for exclusive fullscreen; in SDL3 setting a
+            // fullscreen mode on a borderless-desktop window would switch it
+            // to exclusive (SDL2's SetWindowDisplayMode did not)
+            SDL_SetWindowFullscreenMode(wnd, &closest);
+        }
         SDL_SetWindowSize(wnd, closest.w, closest.h);
         if (should_center) {
             int32_t posX = 0;
@@ -284,7 +304,7 @@ static void gfx_sdl_set_dimensions(uint32_t width, uint32_t height, int32_t posX
 }
 
 static void gfx_sdl_get_dimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
-    SDL_GL_GetDrawableSize(wnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
+    SDL_GetWindowSizeInPixels(wnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
     SDL_GetWindowPosition(wnd, static_cast<int*>(posX), static_cast<int*>(posY));
 }
 
@@ -292,26 +312,27 @@ static void gfx_sdl_handle_events(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
-            case SDL_KEYDOWN:
-                if (event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT)) {
+            case SDL_EVENT_KEY_DOWN:
+                if (event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)) {
                     // alt-enter received, switch fullscreen state
                     set_fullscreen(!fullscreen_state, true);
                 }
                 break;
-            case SDL_WINDOWEVENT:
-                if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                    SDL_GL_GetDrawableSize(wnd, &window_width, &window_height);
-                    if (!fullscreen_state) {
-                        maximized_state = SDL_GetWindowFlags(wnd) & SDL_WINDOW_MAXIMIZED ? true : false;
-                    }
-                } else if (event.window.event == SDL_WINDOWEVENT_CLOSE &&
-                           event.window.windowID == SDL_GetWindowID(wnd)) {
+            case SDL_EVENT_WINDOW_RESIZED:
+            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                SDL_GetWindowSizeInPixels(wnd, &window_width, &window_height);
+                if (!fullscreen_state) {
+                    maximized_state = (SDL_GetWindowFlags(wnd) & SDL_WINDOW_MAXIMIZED) ? true : false;
+                }
+                break;
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                if (event.window.windowID == SDL_GetWindowID(wnd)) {
                     // We listen specifically for main window close because closing main window
                     // on macOS does not trigger SDL_Quit.
                     exit(0);
                 }
                 break;
-            case SDL_QUIT:
+            case SDL_EVENT_QUIT:
                 exit(0);
                 break;
         }
@@ -389,11 +410,13 @@ static void gfx_sdl_set_window_title(const char *title) {
 }
 
 static int gfx_sdl_get_swap_interval(void) {
-    return SDL_GL_GetSwapInterval();
+    int interval = 0;
+    SDL_GL_GetSwapInterval(&interval);
+    return interval;
 }
 
 static bool gfx_sdl_set_swap_interval(int interval) {
-    const bool success = SDL_GL_SetSwapInterval(interval) >= 0;
+    const bool success = SDL_GL_SetSwapInterval(interval);
     vsync_enabled = success && (interval != 0);
     if (!success) {
         sysLogPrintf(LOG_WARNING, "SDL: failed to set vsync %d: %s", interval, SDL_GetError());
@@ -401,31 +424,64 @@ static bool gfx_sdl_set_swap_interval(int interval) {
     return success;
 }
 
-int gfx_sdl_get_display_mode(int modenum, int *out_w, int *out_h) {
-    const int display_in_use = SDL_GetWindowDisplayIndex(wnd);
-    SDL_DisplayMode sdlmode;
-    if (SDL_GetDisplayMode(display_in_use, modenum, &sdlmode) == 0) {
-        *out_w = sdlmode.w;
-        *out_h = sdlmode.h;
-        return 1;
+static void gfx_sdl_set_taskbar_progress(int state, float value) {
+// taskbar/dock progress landed in SDL 3.4.0; no-op on older SDL3
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+    if (!wnd) {
+        return;
     }
-    return 0;
+    switch (state) {
+        case 1:
+            SDL_SetWindowProgressState(wnd, SDL_PROGRESS_STATE_INDETERMINATE);
+            break;
+        case 2:
+            SDL_SetWindowProgressState(wnd, SDL_PROGRESS_STATE_NORMAL);
+            SDL_SetWindowProgressValue(wnd, value);
+            break;
+        case 0:
+        default:
+            SDL_SetWindowProgressState(wnd, SDL_PROGRESS_STATE_NONE);
+            break;
+    }
+#endif
+}
+
+int gfx_sdl_get_display_mode(int modenum, int *out_w, int *out_h) {
+    const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
+    int count = 0;
+    SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display_in_use, &count);
+    int ret = 0;
+    if (modes) {
+        if (modenum >= 0 && modenum < count) {
+            *out_w = modes[modenum]->w;
+            *out_h = modes[modenum]->h;
+            ret = 1;
+        }
+        SDL_free(modes);
+    }
+    return ret;
 }
 
 int gfx_sdl_get_current_display_mode(int *out_w, int *out_h) {
-    const int display_in_use = SDL_GetWindowDisplayIndex(wnd);
-    SDL_DisplayMode sdlmode;
-    if (SDL_GetCurrentDisplayMode(display_in_use, &sdlmode) == 0) {
-        *out_w = sdlmode.w;
-        *out_h = sdlmode.h;
+    const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
+    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(display_in_use);
+    if (mode) {
+        *out_w = mode->w;
+        *out_h = mode->h;
         return 1;
     }
     return 0;
 }
 
 int gfx_sdl_get_num_display_modes(void) {
-    const int display_in_use = SDL_GetWindowDisplayIndex(wnd);
-    return SDL_GetNumDisplayModes(display_in_use);
+    const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
+    int count = 0;
+    SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display_in_use, &count);
+    if (modes) {
+        SDL_free(modes);
+        return count;
+    }
+    return 0;
 }
 
 struct GfxWindowManagerAPI gfx_sdl = {
@@ -460,4 +516,5 @@ struct GfxWindowManagerAPI gfx_sdl = {
     gfx_sdl_set_window_title,
     gfx_sdl_get_swap_interval,
     gfx_sdl_set_swap_interval,
+    gfx_sdl_set_taskbar_progress,
 };

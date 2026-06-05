@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #ifndef DEDICATED_SERVER
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #endif
 #include <PR/ultratypes.h>
 #include "system.h"

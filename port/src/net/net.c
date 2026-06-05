@@ -50,6 +50,11 @@
 #include "romdata.h"
 #include "utils.h"
 
+// Forward-decl only: input.h can't be included here — windows.h (pulled in via
+// enet.h -> winsock2.h) #defines VK_RETURN/VK_ESCAPE/... which collide with
+// input.h's virtkey enum. Same pattern as audio.c's g_NetDedicatedMode.
+extern void inputPadTest(const char *arg); // /padtest debug command (input.c)
+
 s32 g_NetMode = NETMODE_NONE;
 
 // Last g_StageFlags value broadcast to co-op clients, so netEndFrame only sends
@@ -4712,6 +4717,11 @@ s32 netConsoleCommand(const char *line)
 		// (netRedvox57Render). Local-only; deliberately omitted from /help.
 		g_Redvox57Egg = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !g_Redvox57Egg;
 		sysLogPrintf(LOG_CHAT, "Redvox57: %s", g_Redvox57Egg ? "ON" : "OFF");
+	} else if (strcmp(cmd, "padtest") == 0) {
+		// /padtest caps|led R G B|rumble S MS|trig S MS|hp — debug aid for the
+		// SDL3 gamepad extras (LED colours / trigger rumble, PORT_SDL3_EXTRAS.md).
+		// Body lives in input.c (needs the SDL_Gamepad handles). Local-only.
+		inputPadTest(arg);
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.

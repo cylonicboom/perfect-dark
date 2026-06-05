@@ -23,7 +23,7 @@ jobs:
             git
             make
             mingw-w64-i686-toolchain
-            mingw-w64-i686-SDL2
+            mingw-w64-i686-sdl3
             mingw-w64-i686-zlib
             mingw-w64-i686-cmake
       - name: Checkout repository
@@ -40,7 +40,7 @@ jobs:
           cp build/pd.i686.exe bin/
           cp build_pal/pd.pal.i686.exe bin/
           cp build_jpn/pd.jpn.i686.exe bin/
-          cp /mingw32/bin/{SDL2.dll,zlib1.dll,libgcc_s_dw2-1.dll,libwinpthread-1.dll} bin/
+          cp /mingw32/bin/{SDL3.dll,zlib1.dll,libgcc_s_dw2-1.dll,libwinpthread-1.dll} bin/
           touch bin/data/put_your_rom_here.txt
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -52,11 +52,29 @@ jobs:
   build-i686-linux:
     runs-on: ubuntu-22.04
     steps:
+      # No libsdl3-dev in the Ubuntu archives yet: install SDL's build deps
+      # (:i386 variants) and build a 32-bit SDL3 from source below. Wayland is
+      # skipped for the 32-bit build (the :i386 wayland dev stack is fragile);
+      # X11 covers the runner and end users alike.
       - name: Install dependencies
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install git gcc g++ gcc-multilib g++-multilib make libsdl2-dev zlib1g-dev libsdl2-dev:i386 zlib1g-dev:i386 cmake
+          sudo apt-get install git gcc g++ gcc-multilib g++-multilib make cmake ninja-build \
+            zlib1g-dev zlib1g-dev:i386 \
+            libasound2-dev:i386 libpulse-dev:i386 libx11-dev:i386 libxext-dev:i386 \
+            libxrandr-dev:i386 libxcursor-dev:i386 libxfixes-dev:i386 libxi-dev:i386 \
+            libxss-dev:i386 libxkbcommon-dev:i386 libdbus-1-dev:i386 libudev-dev:i386 \
+            libgl1-mesa-dev:i386 libegl1-mesa-dev:i386 libdrm-dev:i386 libgbm-dev:i386
+      - name: Build and install SDL3 (32-bit)
+        run: |
+          git clone --depth 1 --branch release-3.4.2 https://github.com/libsdl-org/SDL sdl3-src
+          cmake -S sdl3-src -B sdl3-src/build -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 \
+            -DSDL_WAYLAND=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build sdl3-src/build
+          sudo cmake --install sdl3-src/build
+          sudo ldconfig
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Build pd.i686
@@ -71,6 +89,9 @@ jobs:
           cp build/pd.i686 bin/
           cp build_pal/pd.pal.i686 bin/
           cp build_jpn/pd.jpn.i686 bin/
+          # bundle the freshly built SDL3 (no distro package to rely on);
+          # run with LD_LIBRARY_PATH=. if it isn't installed system-wide
+          find /usr/local/lib* -maxdepth 2 -name 'libSDL3.so*' -exec cp -a {} bin/ \;
           touch bin/data/put_your_rom_here.txt
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -95,7 +116,7 @@ jobs:
             make
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-python
-            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-sdl3
             mingw-w64-x86_64-zlib
             mingw-w64-x86_64-cmake
       - name: Checkout repository
@@ -112,7 +133,7 @@ jobs:
           cp build/pd.x86_64.exe bin/
           cp build_pal/pd.pal.x86_64.exe bin/
           cp build_jpn/pd.jpn.x86_64.exe bin/
-          cp /mingw64/bin/{SDL2.dll,zlib1.dll,libwinpthread-1.dll,libgcc_s_seh-1.dll} bin/
+          cp /mingw64/bin/{SDL3.dll,zlib1.dll,libwinpthread-1.dll,libgcc_s_seh-1.dll} bin/
           touch bin/data/put_your_rom_here.txt
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -124,11 +145,24 @@ jobs:
   build-x86_64-linux:
     runs-on: ubuntu-latest
     steps:
+      # No libsdl3-dev in the Ubuntu archives yet: install SDL's build deps and
+      # build SDL3 from source below (pinned tag).
       - name: Install dependencies
         run: |
-          sudo dpkg --add-architecture amd64
           sudo apt-get update
-          sudo apt-get install git gcc g++ gcc-multilib g++-multilib make libsdl2-dev zlib1g-dev libsdl2-2.0-0 cmake
+          sudo apt-get install git gcc g++ make cmake ninja-build zlib1g-dev \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libwayland-dev \
+            libxkbcommon-dev libdbus-1-dev libudev-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdrm-dev libgbm-dev
+      - name: Build and install SDL3
+        run: |
+          git clone --depth 1 --branch release-3.4.2 https://github.com/libsdl-org/SDL sdl3-src
+          cmake -S sdl3-src -B sdl3-src/build -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build sdl3-src/build
+          sudo cmake --install sdl3-src/build
+          sudo ldconfig
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Build pd.x86_64
@@ -143,6 +177,9 @@ jobs:
           cp build/pd.x86_64 bin/
           cp build_pal/pd.pal.x86_64 bin/
           cp build_jpn/pd.jpn.x86_64 bin/
+          # bundle the freshly built SDL3 (no distro package to rely on);
+          # run with LD_LIBRARY_PATH=. if it isn't installed system-wide
+          find /usr/local/lib* -maxdepth 2 -name 'libSDL3.so*' -exec cp -a {} bin/ \;
           touch bin/data/put_your_rom_here.txt
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -157,9 +194,10 @@ jobs:
       - name: Install dependencies
         run: |
           brew install zlib
-          wget http://libsdl.org/release/SDL2-2.30.9.dmg -O SDL2.dmg
-          hdiutil mount SDL2.dmg
-          sudo cp -vr /Volumes/SDL2/SDL2.framework /Library/Frameworks
+          wget https://github.com/libsdl-org/SDL/releases/download/release-3.4.2/SDL3-3.4.2.dmg -O SDL3.dmg
+          hdiutil mount SDL3.dmg
+          # the SDL3 dmg ships an xcframework; install the macOS slice
+          sudo cp -vr /Volumes/SDL3/SDL3.xcframework/macos-arm64_x86_64/SDL3.framework /Library/Frameworks
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Build pd.x86_64
@@ -180,7 +218,7 @@ jobs:
           cp build/pd.x86_64 bin/
           cp build_pal/pd.pal.x86_64 bin/
           cp build_jpn/pd.jpn.x86_64 bin/
-          cp -vr /Library/Frameworks/SDL2.framework bin/
+          cp -vr /Library/Frameworks/SDL3.framework bin/
           touch bin/data/put_your_rom_here.txt
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -195,9 +233,10 @@ jobs:
       - name: Install dependencies
         run: |
           brew install zlib
-          wget http://libsdl.org/release/SDL2-2.30.9.dmg -O SDL2.dmg
-          hdiutil mount SDL2.dmg
-          sudo cp -vr /Volumes/SDL2/SDL2.framework /Library/Frameworks
+          wget https://github.com/libsdl-org/SDL/releases/download/release-3.4.2/SDL3-3.4.2.dmg -O SDL3.dmg
+          hdiutil mount SDL3.dmg
+          # the SDL3 dmg ships an xcframework; install the macOS slice
+          sudo cp -vr /Volumes/SDL3/SDL3.xcframework/macos-arm64_x86_64/SDL3.framework /Library/Frameworks
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Build pd.arm64
@@ -218,7 +257,7 @@ jobs:
           cp build/pd.arm64 bin/
           cp build_pal/pd.pal.arm64 bin/
           cp build_jpn/pd.jpn.arm64 bin/
-          cp -vr /Library/Frameworks/SDL2.framework bin/
+          cp -vr /Library/Frameworks/SDL3.framework bin/
           touch bin/data/put_your_rom_here.txt
       - name: Upload artifact
         uses: actions/upload-artifact@v4

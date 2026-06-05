@@ -15,7 +15,7 @@ on:
 
 jobs:
   # The server must build and link with NO SDL/OpenGL/X11/audio. We deliberately
-  # do NOT install libsdl2-dev here: if anything reintroduces an SDL/GL include
+  # do NOT install SDL3 here: if anything reintroduces an SDL/GL include
   # into the server build, this job fails to compile — exactly the signal we want.
   build-x86_64-linux-server:
     name: "Build dedicated server (x86_64 linux, headless)"
@@ -54,7 +54,7 @@ jobs:
           retention-days: 0
 
   # The dedicated server also builds for Windows (console app, no SDL/GL). We do
-  # NOT install SDL2 here, so any SDL/GL dependency creeping into the server
+  # NOT install SDL3 here, so any SDL/GL dependency creeping into the server
   # build fails to compile.
   build-x86_64-windows-server:
     name: "Build dedicated server (x86_64 windows, headless)"
@@ -63,7 +63,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - name: Install MSYS2 (no SDL2 on purpose)
+      - name: Install MSYS2 (no SDL3 on purpose)
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -84,7 +84,7 @@ jobs:
         run: |
           BIN=build-server/pd-server.x86_64.exe
           objdump -p "$BIN" | grep -i "Subsystem"
-          if objdump -p "$BIN" | grep -iE "SDL2|opengl"; then
+          if objdump -p "$BIN" | grep -iE "SDL3|SDL2|opengl"; then
             echo "::error::windows dedicated server imported SDL/GL"
             exit 1
           fi
@@ -104,24 +104,38 @@ jobs:
           retention-days: 0
 
   # Non-regression: the default build (DEDICATED_SERVER=OFF) must still build the
-  # full client with SDL2/GL, since the strip touches shared files.
+  # full client with SDL3/GL, since the strip touches shared files.
   build-x86_64-linux-client:
     name: "Build client (x86_64 linux, non-regression)"
     runs-on: ubuntu-latest
     steps:
+      # No libsdl3-dev in the Ubuntu archives yet: install SDL's build deps and
+      # build SDL3 from source (same pinned tag as c-cpp.yml).
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git gcc g++ make libsdl2-dev zlib1g-dev cmake
+          sudo apt-get install -y git gcc g++ make cmake ninja-build zlib1g-dev \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libwayland-dev \
+            libxkbcommon-dev libdbus-1-dev libudev-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libdrm-dev libgbm-dev
+      - name: Build and install SDL3
+        run: |
+          git clone --depth 1 --branch release-3.4.2 https://github.com/libsdl-org/SDL sdl3-src
+          cmake -S sdl3-src -B sdl3-src/build -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build sdl3-src/build
+          sudo cmake --install sdl3-src/build
+          sudo ldconfig
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Build pd.x86_64 (default = client)
         run: |
           cmake -G"Unix Makefiles" -Bbuild .
           cmake --build build -j
-      - name: Verify the client still links SDL2
+      - name: Verify the client still links SDL3
         run: |
           BIN=build/pd.x86_64
           ldd "$BIN"
-          ldd "$BIN" | grep -iq 'libSDL2' || { echo "::error::client no longer links SDL2"; exit 1; }
-          echo "OK: client links SDL2 as expected"
+          ldd "$BIN" | grep -iq 'libSDL3' || { echo "::error::client no longer links SDL3"; exit 1; }
+          echo "OK: client links SDL3 as expected"

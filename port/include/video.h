@@ -16,6 +16,13 @@ typedef struct {
 	s32 height;
 } displaymode;
 
+// taskbar/dock progress indicator states (videoSetTaskbarProgress)
+enum taskbarprogress {
+	VIDEO_TASKBAR_NONE = 0,
+	VIDEO_TASKBAR_INDETERMINATE = 1,
+	VIDEO_TASKBAR_NORMAL = 2,
+};
+
 s32 videoInit(void);
 void videoStartFrame(void);
 void videoSubmitCommands(Gfx *cmds);
@@ -23,6 +30,10 @@ void videoClearScreen(void);
 void videoEndFrame(void);
 
 void *videoGetWindowHandle(void);
+
+// taskbar/dock progress: state is a VIDEO_TASKBAR_* value, value is 0..1
+// (only used for VIDEO_TASKBAR_NORMAL); no-op when unsupported or headless
+void videoSetTaskbarProgress(s32 state, f32 value);
 
 void videoUpdateNativeResolution(s32 w, s32 h);
 s32 videoGetNativeWidth(void);

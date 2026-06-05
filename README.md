@@ -209,7 +209,7 @@ Controls can be rebound in `pd.ini`. Default control scheme is as follows:
 1. Install [MSYS2](https://www.msys2.org).
 2. Open the `MINGW64` prompt if building for x86_64, or the `MINGW32` prompt if building for i686. (**NOTE:** _do not_ use the `MSYS` prompt)
 3. Install dependencies:  
-   `pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-SDL2 mingw-w64-x86_64-zlib mingw-w64-x86_64-cmake mingw-w64-x86_64-python3 mingw-w64-i686-toolchain mingw-w64-i686-SDL2 mingw-w64-i686-zlib mingw-w64-i686-cmake mingw-w64-i686-python3 make git`
+   `pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl3 mingw-w64-x86_64-zlib mingw-w64-x86_64-cmake mingw-w64-x86_64-python3 mingw-w64-i686-toolchain mingw-w64-i686-sdl3 mingw-w64-i686-zlib mingw-w64-i686-cmake mingw-w64-i686-python3 make git`
 4. Get the source code:  
    `git clone -b port-net --recursive https://github.com/fgsfdsfgs/perfect_dark.git && cd perfect_dark`
 5. Run `cmake -G"Unix Makefiles" -Bbuild .`.
@@ -220,7 +220,8 @@ Controls can be rebound in `pd.ini`. Default control scheme is as follows:
 
 ### Linux
 
-1. Ensure you have gcc, g++ (version 10.0+), make, cmake, git, python3 and SDL2 (version 2.0.12+), libGL and ZLib installed on your system.
+1. Ensure you have gcc, g++ (version 10.0+), make, cmake, git, python3 and SDL3, libGL and ZLib installed on your system.
+   * If your distribution does not package SDL3 yet, build it from source: `git clone --depth 1 --branch release-3.4.2 https://github.com/libsdl-org/SDL && cmake -S SDL -B SDL/build -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF && cmake --build SDL/build -j && sudo cmake --install SDL/build`
    * If you wish to crosscompile, you will also need to have libraries and compilers for the target platform installed, e.g. `gcc-multilib` and `g++-multilib` for x86_64 -> i686 crosscompilation.
 2. Get the source code:  
    `git clone -b port-net --recursive https://github.com/fgsfdsfgs/perfect_dark.git && cd perfect_dark`
@@ -236,15 +237,15 @@ Controls can be rebound in `pd.ini`. Default control scheme is as follows:
 1. Set up Homebrew.
 2. Install dependencies:
    * Execute command: `brew install cmake gcc python3 zlib git`
-3. Install SDL2:
+3. Install SDL3:
    * Execute commands:
      ```
-     wget http://libsdl.org/release/SDL2-2.30.9.dmg -O SDL2.dmg
-     hdiutil mount SDL2.dmg
-     sudo cp -vr /Volumes/SDL2/SDL2.framework /Library/Frameworks
-     hdiutil detach /Volumes/SDL2
+     wget https://github.com/libsdl-org/SDL/releases/download/release-3.4.2/SDL3-3.4.2.dmg -O SDL3.dmg
+     hdiutil mount SDL3.dmg
+     sudo cp -vr /Volumes/SDL3/SDL3.xcframework/macos-arm64_x86_64/SDL3.framework /Library/Frameworks
+     hdiutil detach /Volumes/SDL3
      ```
-   * This installs SDL2 system-wide and this is how the automatic builds are done. The game will also look for it in the executable path, so you could
+   * This installs SDL3 system-wide and this is how the automatic builds are done. The game will also look for it in the executable path, so you could
      download it locally instead.
 4. Get the source code:  
    `git clone --recursive https://github.com/fgsfdsfgs/perfect_dark.git && cd perfect_dark`

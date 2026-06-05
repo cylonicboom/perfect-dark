@@ -14,6 +14,20 @@ finish-args:
   - --share=network
 
 modules:
+  # The freedesktop 23.08 runtime ships SDL2 only; the pd binaries link
+  # libSDL3.so.0, so build SDL3 into /app/lib. Pinned to the same release the
+  # CI jobs build against.
+  - name: sdl3
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DSDL_TESTS=OFF
+      - -DSDL_EXAMPLES=OFF
+    sources:
+      - type: git
+        url: https://github.com/libsdl-org/SDL.git
+        tag: release-3.4.2
+
   - name: perfect_dark
     buildsystem: simple
     sources:

@@ -1,7 +1,7 @@
 #include <PR/ultratypes.h>
 #include <stdio.h>
 #ifndef DEDICATED_SERVER
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #endif
 #include "platform.h"
 #include "config.h"
@@ -13,7 +13,7 @@
 extern s32 g_NetDedicatedMode;
 
 #ifndef DEDICATED_SERVER
-static SDL_AudioDeviceID dev;
+static SDL_AudioStream *stream;
 static const s16 *nextBuf;
 static u32 nextSize = 0;
 #endif
@@ -28,35 +28,39 @@ s32 audioInit(void)
 	return 0;
 #else
 	if (g_NetDedicatedMode == 1) {
-		// Headless dedicated: no audio device, no mixer output. dev stays 0;
-		// SDL_QueueAudio(0, ...) is a no-op so audioEndFrame won't crash if
-		// it somehow gets called past the g_SndDisabled gate.
+		// Headless dedicated: no audio device, no mixer output. stream stays
+		// NULL; audioEndFrame / audioGetBytesBuffered guard on it so nothing
+		// crashes if they somehow get called past the g_SndDisabled gate.
 		sysLogPrintf(LOG_NOTE, "audio: headless dedicated server, skipping init");
 		return 0;
 	}
 
-	if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
 		sysLogPrintf(LOG_ERROR, "SDL audio init error: %s", SDL_GetError());
 		return -1;
 	}
 
-	SDL_AudioSpec want, have;
-	SDL_zero(want);
-	want.freq = 22020; // TODO: this might cause trouble for some platforms
-	want.format = AUDIO_S16SYS;
-	want.channels = 2;
-	want.samples = bufferSize;
-	want.callback = NULL;
+	SDL_AudioSpec spec;
+	SDL_zero(spec);
+	spec.freq = 22020; // TODO: this might cause trouble for some platforms
+	spec.format = SDL_AUDIO_S16; // native byte order, like SDL2's AUDIO_S16SYS
+	spec.channels = 2;
+
+	// SDL3 has no SDL_AudioSpec.samples; the device buffer size is a hint
+	char sampleStr[16];
+	snprintf(sampleStr, sizeof(sampleStr), "%d", bufferSize);
+	SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, sampleStr);
 
 	nextBuf = NULL;
 
-	dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-	if (dev == 0) {
-		sysLogPrintf(LOG_ERROR, "SDL_OpenAudio error: %s", SDL_GetError());
+	stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+	if (!stream) {
+		sysLogPrintf(LOG_ERROR, "SDL_OpenAudioDeviceStream error: %s", SDL_GetError());
 		return -1;
 	}
 
-	SDL_PauseAudioDevice(dev, 0);
+	// the device starts paused (replaces SDL2's SDL_PauseAudioDevice(dev, 0))
+	SDL_ResumeAudioStreamDevice(stream);
 
 	return 0;
 #endif
@@ -67,7 +71,7 @@ s32 audioGetBytesBuffered(void)
 #ifdef DEDICATED_SERVER
 	return 0;
 #else
-	return SDL_GetQueuedAudioSize(dev);
+	return stream ? SDL_GetAudioStreamQueued(stream) : 0;
 #endif
 }
 
@@ -91,8 +95,8 @@ void audioEndFrame(void)
 {
 #ifndef DEDICATED_SERVER
 	if (nextBuf && nextSize) {
-		if (audioGetSamplesBuffered() < queueLimit) {
-			SDL_QueueAudio(dev, nextBuf, nextSize);
+		if (stream && audioGetSamplesBuffered() < queueLimit) {
+			SDL_PutAudioStreamData(stream, nextBuf, nextSize);
 		}
 		nextBuf = NULL;
 		nextSize = 0;

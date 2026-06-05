@@ -49,6 +49,9 @@ struct GfxWindowManagerAPI {
     void (*set_window_title)(const char *);
     int (*get_swap_interval)(void);
     bool (*set_swap_interval)(int);
+    // taskbar/dock progress indicator; state: 0 = none, 1 = indeterminate,
+    // 2 = normal (value 0..1 used). no-op where unsupported.
+    void (*set_taskbar_progress)(int state, float value);
 };
 
 #endif

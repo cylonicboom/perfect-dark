@@ -6,8 +6,8 @@ if(APPLE)
     # ARM Macs start at OS 11.
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum OS X deployment version")
   else()
-    # SDL2 requires at least this version for everything to work properly.
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9" CACHE STRING "Minimum OS X deployment version")
+    # SDL3 requires at least macOS 10.13.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum OS X deployment version")
   endif()
 endif()
 
@@ -224,18 +224,23 @@ endif()
 
 set(LIBS )
 
-# SDL2 — not needed by the dedicated server (no window/audio/input).
+# SDL3 — not needed by the dedicated server (no window/audio/input).
 if(NOT DEDICATED_SERVER)
-  find_package(SDL2 REQUIRED)
   if(NINTENDO_SWITCH)
-    if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR)
-      # sometimes FindSDL2 just wants us to suffer and does not set these
-      set(SDL2_LIBRARY "SDL2")
-      set(SDL2_INCLUDE_DIR "${DEVKITPRO}/portlibs/switch/include/SDL2")
+    # devkitPro portlibs fallback in case the SDL3 CMake config is missing
+    # (code includes <SDL3/SDL.h>, so point at the include root).
+    # NOTE: Switch + SDL3 is untested since the SDL3 migration.
+    find_package(SDL3 CONFIG)
+    if(TARGET SDL3::SDL3)
+      list(APPEND LIBS SDL3::SDL3)
+    else()
+      include_directories(SYSTEM "${DEVKITPRO}/portlibs/switch/include")
+      list(APPEND LIBS "SDL3")
     endif()
+  else()
+    find_package(SDL3 REQUIRED CONFIG)
+    list(APPEND LIBS SDL3::SDL3)
   endif()
-  include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
-  list(APPEND LIBS "${SDL2_LIBRARY}")
 endif()
 
 # ZLib
@@ -360,7 +365,7 @@ list(REMOVE_ITEM SRC "${CMAKE_SOURCE_DIR}/port/src/dedicated_stubs.c")
 # link without GL.
 if(DEDICATED_SERVER)
   list(REMOVE_ITEM SRC
-    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdl2.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdl.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_opengl.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/glad/glad.c"
     "${CMAKE_SOURCE_DIR}/port/src/input.c"
@@ -425,9 +430,10 @@ endif()
 target_link_libraries(pd ${LIBS} pd_lua)
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
 if(WIN32 AND NOT DEDICATED_SERVER)
-  # Client is a GUI-subsystem app (SDL provides WinMain via SDL2main). The
-  # dedicated server stays a console app: it has no SDL2main, uses plain main(),
-  # and needs a console for its log output + the Ctrl-C/close signal handler.
+  # Client is a GUI-subsystem app. WinMain comes from the MinGW runtime's
+  # fallback that forwards to plain main() (SDL3 has no SDL3main library). The
+  # dedicated server stays a console app: it needs a console for its log
+  # output + the Ctrl-C/close signal handler.
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 

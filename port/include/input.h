@@ -274,4 +274,7 @@ const char *inputGetClipboard(void);
 // returns keymod values
 u32 inputGetKeyModState(void);
 
+// /padtest console command body (SDL3 gamepad extras debug aid)
+void inputPadTest(const char *arg);
+
 #endif

@@ -10,7 +10,7 @@
 #include <time.h>
 #include <sys/time.h>
 #ifndef DEDICATED_SERVER
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #elif !defined(_WIN32)
 #include <unistd.h> // readlink for the POSIX dedicated-server exe-path resolver
 #endif
@@ -235,8 +235,8 @@ void sysFatalError(const char *fmt, ...)
 void sysGetExecutablePath(char *outPath, const u32 outLen)
 {
 #ifndef DEDICATED_SERVER
-	// try asking SDL
-	char *sdlPath = SDL_GetBasePath();
+	// try asking SDL; in SDL3 the returned string is owned by SDL - do not free
+	const char *sdlPath = SDL_GetBasePath();
 
 	if (sdlPath && *sdlPath) {
 		// -1 to trim trailing slash
@@ -263,8 +263,6 @@ void sysGetExecutablePath(char *outPath, const u32 outLen)
 		}
 	}
 #endif
-
-	SDL_free(sdlPath);
 #else
 	// Dedicated server build links no SDL: resolve the exe directory natively.
 	char buf[1024] = { 0 };

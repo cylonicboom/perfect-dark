@@ -206,6 +206,13 @@ void *videoGetWindowHandle(void)
 	return NULL;
 }
 
+void videoSetTaskbarProgress(s32 state, f32 value)
+{
+	if (initDone && wmAPI && wmAPI->set_taskbar_progress) {
+		wmAPI->set_taskbar_progress(state, value);
+	}
+}
+
 void videoUpdateNativeResolution(s32 w, s32 h)
 {
 	if (!wmAPI) return;

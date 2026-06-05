@@ -1,7 +1,7 @@
 # Perfect Dark headless dedicated server (Windows)
 
 The same `DEDICATED_SERVER` build as Debian, for Windows. It's a **console**
-application that links **no SDL2 or OpenGL** — just the C runtime, zlib and
+application that links **no SDL or OpenGL** — just the C runtime, zlib and
 Winsock — so it runs with no GUI and a tiny footprint.
 
 | File | Purpose |
@@ -11,7 +11,7 @@ Winsock — so it runs with no GUI and a tiny footprint.
 
 ## Build (MSYS2 / MinGW)
 
-In an **MSYS2 MINGW64** shell (no SDL2 needed for the server):
+In an **MSYS2 MINGW64** shell (no SDL3 needed for the server):
 
 ```sh
 pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-zlib mingw-w64-x86_64-cmake make

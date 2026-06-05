@@ -1,6 +1,8 @@
 #include <string.h>
 #include <ctype.h>
-#include <SDL.h>
+#include <stdio.h>  // snprintf/sscanf; SDL3's SDL_stdinc.h no longer includes it for us
+#include <stdlib.h> // abs/atoi; SDL3's SDL_stdinc.h no longer includes it for us
+#include <SDL3/SDL.h>
 #include <PR/ultratypes.h>
 #include <PR/os_thread.h>
 #include <PR/os_cont.h>
@@ -20,11 +22,6 @@
 #include "constants.h"
 #include "types.h"
 
-#if !SDL_VERSION_ATLEAST(2, 0, 14)
-// this was added in 2.0.14
-#define SDL_CONTROLLER_TYPE_VIRTUAL SDL_CONTROLLER_TYPE_UNKNOWN
-#endif
-
 #define CONTROLLERDB_FNAME "gamecontrollerdb.txt"
 
 #define MAX_BIND_STR 256
@@ -33,20 +30,20 @@
 #define DEFAULT_DEADZONE 4096
 #define DEFAULT_DEADZONE_RY 6144
 
-#define WHEEL_UP_MASK SDL_BUTTON(VK_MOUSE_WHEEL_UP - VK_MOUSE_BEGIN + 1)
-#define WHEEL_DN_MASK SDL_BUTTON(VK_MOUSE_WHEEL_DN - VK_MOUSE_BEGIN + 1)
+#define WHEEL_UP_MASK SDL_BUTTON_MASK(VK_MOUSE_WHEEL_UP - VK_MOUSE_BEGIN + 1)
+#define WHEEL_DN_MASK SDL_BUTTON_MASK(VK_MOUSE_WHEEL_DN - VK_MOUSE_BEGIN + 1)
 
 #define CURSOR_HIDE_THRESHOLD 1
 #define CURSOR_HIDE_TIME 3000000 // us
 
-static SDL_GameController *pads[INPUT_MAX_CONTROLLERS];
+static SDL_Gamepad *pads[INPUT_MAX_CONTROLLERS];
 
 #define CONTROLLERCFG_DEFAULT { \
 	.rumbleOn = 0, \
 	.rumbleScale = 0.5f, \
 	.axisMap = { \
-		{ SDL_CONTROLLER_AXIS_LEFTX,  SDL_CONTROLLER_AXIS_LEFTY  }, \
-		{ SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY }, \
+		{ SDL_GAMEPAD_AXIS_LEFTX,  SDL_GAMEPAD_AXIS_LEFTY  }, \
+		{ SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY }, \
 	}, \
 	.sens = { 1.f, 1.f, 1.f, 1.f }, \
 	.deadzone = { DEFAULT_DEADZONE, DEFAULT_DEADZONE, DEFAULT_DEADZONE, DEFAULT_DEADZONE_RY }, \
@@ -54,6 +51,7 @@ static SDL_GameController *pads[INPUT_MAX_CONTROLLERS];
 	.swapSticks = 1, \
 	.deviceIndex = -1, \
 	.cancelCButtons = 0, \
+	.trigRumble = 1, \
 }
 
 static struct controllercfg {
@@ -66,6 +64,9 @@ static struct controllercfg {
 	s32 swapSticks;
 	s32 deviceIndex;
 	s32 cancelCButtons;
+	s32 trigRumble;     // Input.PlayerN.TriggerRumble: mirror rumble onto impulse triggers
+	s32 hasTrigRumble;  // runtime capability, not config-bound
+	s32 hasLED;         // runtime capability, not config-bound
 } padsCfg[INPUT_MAX_CONTROLLERS] = {
 	CONTROLLERCFG_DEFAULT,
 	CONTROLLERCFG_DEFAULT,
@@ -80,10 +81,49 @@ static s32 fakeControllers = 0;
 static s32 firstController = 0;
 static s32 connectedMask = 0;
 
+// SDL3 removed all device-index APIs in favour of instance IDs; keep an
+// enumeration array so the rest of this file (and the persisted
+// Input.PlayerN.ControllerIndex config values) can keep using stable
+// positional indices. Refreshed on joystick add/remove events.
+static SDL_JoystickID *joyIds = NULL;
 static s32 numJoysticks = 0;
+
+static void inputRefreshJoyList(void)
+{
+	if (joyIds) {
+		SDL_free(joyIds);
+	}
+	int n = 0;
+	joyIds = SDL_GetJoysticks(&n);
+	numJoysticks = joyIds ? n : 0;
+}
 
 static s32 useHIDAPI = 1;
 static s32 useRawInput = 0;
+
+// Input.GamepadLED: tint RGB-LED pads (DualShock4/DualSense lightbar) with a
+// per-player colour and flash red on low health (SDL3 SDL_SetGamepadLED)
+static s32 padLEDEnabled = 1;
+
+// PlayStation-convention player colours
+static const u8 padLEDColours[INPUT_MAX_CONTROLLERS][3] = {
+	{ 0x00, 0x00, 0xff }, // player 1: blue
+	{ 0xff, 0x00, 0x00 }, // player 2: red
+	{ 0x00, 0xff, 0x00 }, // player 3: green
+	{ 0xff, 0x00, 0xff }, // player 4: pink
+};
+
+// last 0x00RRGGBB sent to each pad so we only push HID reports on change;
+// 0xffffffff = unknown/forced resend
+static u32 padLEDState[INPUT_MAX_CONTROLLERS] = { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff };
+
+// next time the LED tick is allowed to run; /padtest led pushes this out so a
+// manually set test colour isn't immediately repainted
+static u64 padLEDNextUpdate = 0;
+
+#define LED_UPDATE_INTERVAL_US 100000   // poll player state at 10Hz
+#define LED_FLASH_PERIOD_US    250000   // low-health flash half-period
+#define LED_LOW_HEALTH_FRAC    0.25f
 
 static s32 mouseEnabled = 1;
 static s32 mouseX, mouseY;
@@ -232,22 +272,22 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 	};
 
 	static const u32 pcjoybinds[][2] = {
-		{ CK_A,      SDL_CONTROLLER_BUTTON_A             },
-		{ CK_X,      SDL_CONTROLLER_BUTTON_X             },
-		{ CK_Y,      SDL_CONTROLLER_BUTTON_Y             },
-		{ CK_DPAD_L, SDL_CONTROLLER_BUTTON_B,            },
-		{ CK_DPAD_D, SDL_CONTROLLER_BUTTON_LEFTSHOULDER  },
-		{ CK_LTRIG,  SDL_CONTROLLER_BUTTON_RIGHTSHOULDER },
-		{ CK_RTRIG,  VK_JOY1_LTRIG - VK_JOY1_BEGIN       },
-		{ CK_ZTRIG,  VK_JOY1_RTRIG - VK_JOY1_BEGIN       },
-		{ CK_START,  SDL_CONTROLLER_BUTTON_START         },
-		{ CK_C_D,    SDL_CONTROLLER_BUTTON_DPAD_DOWN     },
-		{ CK_C_U,    SDL_CONTROLLER_BUTTON_DPAD_UP       },
-		{ CK_C_R,    SDL_CONTROLLER_BUTTON_DPAD_RIGHT    },
-		{ CK_C_L,    SDL_CONTROLLER_BUTTON_DPAD_LEFT     },
-		{ CK_ACCEPT, SDL_CONTROLLER_BUTTON_A             },
-		{ CK_CANCEL, SDL_CONTROLLER_BUTTON_B             },
-		{ CK_8000,   SDL_CONTROLLER_BUTTON_LEFTSTICK     },
+		{ CK_A,      SDL_GAMEPAD_BUTTON_SOUTH          },
+		{ CK_X,      SDL_GAMEPAD_BUTTON_WEST           },
+		{ CK_Y,      SDL_GAMEPAD_BUTTON_NORTH          },
+		{ CK_DPAD_L, SDL_GAMEPAD_BUTTON_EAST,          },
+		{ CK_DPAD_D, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER  },
+		{ CK_LTRIG,  SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER },
+		{ CK_RTRIG,  VK_JOY1_LTRIG - VK_JOY1_BEGIN     },
+		{ CK_ZTRIG,  VK_JOY1_RTRIG - VK_JOY1_BEGIN     },
+		{ CK_START,  SDL_GAMEPAD_BUTTON_START          },
+		{ CK_C_D,    SDL_GAMEPAD_BUTTON_DPAD_DOWN      },
+		{ CK_C_U,    SDL_GAMEPAD_BUTTON_DPAD_UP        },
+		{ CK_C_R,    SDL_GAMEPAD_BUTTON_DPAD_RIGHT     },
+		{ CK_C_L,    SDL_GAMEPAD_BUTTON_DPAD_LEFT      },
+		{ CK_ACCEPT, SDL_GAMEPAD_BUTTON_SOUTH          },
+		{ CK_CANCEL, SDL_GAMEPAD_BUTTON_EAST           },
+		{ CK_8000,   SDL_GAMEPAD_BUTTON_LEFT_STICK     },
 	};
 
 	static const u32 n64kbbinds[][3] = {
@@ -272,16 +312,16 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 	};
 
 	static const u32 n64joybinds[][2] = {
-		{ CK_A,      SDL_CONTROLLER_BUTTON_A             },
-		{ CK_B,      SDL_CONTROLLER_BUTTON_B             },
-		{ CK_LTRIG,  SDL_CONTROLLER_BUTTON_LEFTSHOULDER  },
-		{ CK_RTRIG,  SDL_CONTROLLER_BUTTON_RIGHTSHOULDER },
-		{ CK_ZTRIG,  VK_JOY1_RTRIG - VK_JOY1_BEGIN       },
-		{ CK_START,  SDL_CONTROLLER_BUTTON_START         },
-		{ CK_DPAD_D, SDL_CONTROLLER_BUTTON_DPAD_DOWN     },
-		{ CK_DPAD_U, SDL_CONTROLLER_BUTTON_DPAD_UP       },
-		{ CK_DPAD_L, SDL_CONTROLLER_BUTTON_DPAD_LEFT     },
-		{ CK_DPAD_R, SDL_CONTROLLER_BUTTON_DPAD_RIGHT    },
+		{ CK_A,      SDL_GAMEPAD_BUTTON_SOUTH          },
+		{ CK_B,      SDL_GAMEPAD_BUTTON_EAST           },
+		{ CK_LTRIG,  SDL_GAMEPAD_BUTTON_LEFT_SHOULDER  },
+		{ CK_RTRIG,  SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER },
+		{ CK_ZTRIG,  VK_JOY1_RTRIG - VK_JOY1_BEGIN     },
+		{ CK_START,  SDL_GAMEPAD_BUTTON_START          },
+		{ CK_DPAD_D, SDL_GAMEPAD_BUTTON_DPAD_DOWN      },
+		{ CK_DPAD_U, SDL_GAMEPAD_BUTTON_DPAD_UP        },
+		{ CK_DPAD_L, SDL_GAMEPAD_BUTTON_DPAD_LEFT      },
+		{ CK_DPAD_R, SDL_GAMEPAD_BUTTON_DPAD_RIGHT     },
 	};
 
 	memset(binds[cidx], 0, sizeof(binds[cidx]));
@@ -319,36 +359,42 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 
 static inline s32 inputDeviceIndexFromId(const SDL_JoystickID id) {
 	for (s32 jidx = 0; jidx < numJoysticks; ++jidx) {
-		if (SDL_JoystickGetDeviceInstanceID(jidx) == id) {
+		if (joyIds[jidx] == id) {
 			return jidx;
 		}
 	}
 	return -1;
 }
 
-static inline SDL_JoystickID inputControllerGetId(SDL_GameController *ctrl)
+static inline SDL_JoystickID inputControllerGetId(SDL_Gamepad *ctrl)
 {
-	return SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(ctrl));
+	return SDL_GetJoystickID(SDL_GetGamepadJoystick(ctrl));
 }
 
 static inline void inputInitController(const s32 cidx, const s32 jidx)
 {
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-	// SDL_GameControllerHasRumble() appeared in 2.0.18 even though SDL_GameControllerRumble() is in 2.0.9
-	padsCfg[cidx].rumbleOn = SDL_GameControllerHasRumble(pads[cidx]);
-#else
-	// assume that all joysticks with haptic feedback support will support rumble
-	padsCfg[cidx].rumbleOn = SDL_JoystickIsHaptic(SDL_GameControllerGetJoystick(pads[cidx]));
-	if (!padsCfg[cidx].rumbleOn) {
-		// at least on Windows some controllers will report no haptics, but rumble will still function
-		// just assume it's supported if the controller is of known type
-		const SDL_GameControllerType ctype = SDL_GameControllerGetType(pads[cidx]);
-		padsCfg[cidx].rumbleOn = ctype && (ctype != SDL_CONTROLLER_TYPE_VIRTUAL);
-	}
-#endif
+	// SDL3 replaced SDL_GameControllerHasRumble() with a gamepad property
+	const SDL_PropertiesID props = SDL_GetGamepadProperties(pads[cidx]);
+	padsCfg[cidx].rumbleOn = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+	padsCfg[cidx].hasTrigRumble = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false);
+	padsCfg[cidx].hasLED = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
+
+	sysLogPrintf(LOG_NOTE, "input: pad %d caps: rumble=%d trigrumble=%d rgbled=%d",
+		cidx, padsCfg[cidx].rumbleOn, padsCfg[cidx].hasTrigRumble, padsCfg[cidx].hasLED);
 
 	// make the LEDs on the controller indicate which player it's for
-	SDL_GameControllerSetPlayerIndex(pads[cidx], cidx);
+	SDL_SetGamepadPlayerIndex(pads[cidx], cidx);
+
+	// tint the RGB LED (lightbar) with the player colour right away
+	padLEDState[cidx] = 0xffffffff;
+	if (padsCfg[cidx].hasLED && padLEDEnabled) {
+		const u8 *c = padLEDColours[cidx];
+		if (SDL_SetGamepadLED(pads[cidx], c[0], c[1], c[2])) {
+			padLEDState[cidx] = ((u32)c[0] << 16) | ((u32)c[1] << 8) | c[2];
+		} else {
+			sysLogPrintf(LOG_NOTE, "input: SDL_SetGamepadLED failed for pad %d: %s", cidx, SDL_GetError());
+		}
+	}
 
 	// remember the joystick index
 	padsCfg[cidx].deviceIndex = jidx;
@@ -356,13 +402,13 @@ static inline void inputInitController(const s32 cidx, const s32 jidx)
 	connectedMask |= (1 << cidx);
 
 	sysLogPrintf(LOG_NOTE, "input: assigned controller '%d: (%s)' (id %d) to player %d",
-		jidx, SDL_GameControllerName(pads[cidx]), inputControllerGetId(pads[cidx]), cidx);
+		jidx, SDL_GetGamepadName(pads[cidx]), inputControllerGetId(pads[cidx]), cidx);
 
-	SDL_Joystick* joy = SDL_GameControllerGetJoystick(pads[cidx]);
+	SDL_Joystick* joy = SDL_GetGamepadJoystick(pads[cidx]);
 	if (joy) {
 		char guidStr[1024] = "";
-		SDL_JoystickGUID guid = SDL_JoystickGetGUID(joy);
-		SDL_JoystickGetGUIDString(guid, guidStr, sizeof(guidStr));
+		SDL_GUID guid = SDL_GetJoystickGUID(joy);
+		SDL_GUIDToString(guid, guidStr, sizeof(guidStr));
 		sysLogPrintf(LOG_NOTE, "input: GUID for controller %d: %s", jidx, guidStr);
 	}
 }
@@ -370,22 +416,25 @@ static inline void inputInitController(const s32 cidx, const s32 jidx)
 static inline void inputCloseController(const s32 cidx)
 {
 	sysLogPrintf(LOG_NOTE, "input: removed controller '%d: (%s)' (id %d) from player %d",
-		padsCfg[cidx].deviceIndex, SDL_GameControllerName(pads[cidx]), inputControllerGetId(pads[cidx]), cidx);
+		padsCfg[cidx].deviceIndex, SDL_GetGamepadName(pads[cidx]), inputControllerGetId(pads[cidx]), cidx);
 
 	// reset player LEDs
-	SDL_GameControllerSetPlayerIndex(pads[cidx], -1);
+	SDL_SetGamepadPlayerIndex(pads[cidx], -1);
 
-	SDL_GameControllerClose(pads[cidx]);
+	SDL_CloseGamepad(pads[cidx]);
 
 	pads[cidx] = NULL;
 	padsCfg[cidx].rumbleOn = 0;
+	padsCfg[cidx].hasTrigRumble = 0;
+	padsCfg[cidx].hasLED = 0;
+	padLEDState[cidx] = 0xffffffff;
 
 	if (cidx) {
 		connectedMask &= ~(1 << cidx);
 	}
 }
 
-static inline s32 inputControllerGetIndex(SDL_GameController *ctrl)
+static inline s32 inputControllerGetIndex(SDL_Gamepad *ctrl)
 {
 	if (ctrl) {
 		for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
@@ -434,7 +483,7 @@ static inline void inputCloseAllControllers(void)
 static inline s32 inputTryController(const s32 cidx, const s32 jidx)
 {
 	if (!pads[cidx]) {
-		pads[cidx] = SDL_GameControllerOpen(jidx);
+		pads[cidx] = SDL_OpenGamepad(joyIds[jidx]);
 		if (pads[cidx]) {
 			inputInitController(cidx, jidx);
 			return 1;
@@ -445,9 +494,9 @@ static inline s32 inputTryController(const s32 cidx, const s32 jidx)
 
 static inline void inputInitAllControllers(void)
 {
-	SDL_GameControllerUpdate();
+	SDL_UpdateGamepads();
 
-	numJoysticks = SDL_NumJoysticks();
+	inputRefreshJoyList();
 
 	connectedMask = 1; // always report first controller as connected
 
@@ -456,7 +505,7 @@ static inline void inputInitAllControllers(void)
 	for (s32 cidx = 0; cidx < INPUT_MAX_CONTROLLERS; ++cidx) {
 		const s32 jidx = padsCfg[cidx].deviceIndex;
 		if (jidx >= 0 && jidx < numJoysticks) {
-			if (SDL_IsGameController(jidx) && inputControllerGetIndexByDeviceIndex(jidx) < 0) {
+			if (SDL_IsGamepad(joyIds[jidx]) && inputControllerGetIndexByDeviceIndex(jidx) < 0) {
 				// using the full assign function in case user sets same index for several players
 				if (inputTryController(cidx, jidx)) {
 					// success
@@ -470,7 +519,7 @@ static inline void inputInitAllControllers(void)
 
 	// now try autofilling the rest, starting with firstController
 	for (s32 jidx = 0; jidx < numJoysticks; ++jidx) {
-		if (SDL_IsGameController(jidx) && inputControllerGetIndexByDeviceIndex(jidx) < 0) {
+		if (SDL_IsGamepad(joyIds[jidx]) && inputControllerGetIndexByDeviceIndex(jidx) < 0) {
 			for (s32 cidx = firstController; cidx < INPUT_MAX_CONTROLLERS; ++cidx) {
 				if (inputTryController(cidx, jidx)) {
 					break;
@@ -485,23 +534,27 @@ static inline void inputInitAllControllers(void)
 	}
 }
 
-static int inputEventFilter(void *data, SDL_Event *event)
+// NOTE: must return SDL3's real 1-byte bool, spelled _Bool here because
+// types.h #defines `bool` to s32 (which would mismatch SDL_EventFilter)
+static _Bool inputEventFilter(void *data, SDL_Event *event)
 {
 	switch (event->type) {
-		case SDL_CONTROLLERDEVICEADDED:
+		case SDL_EVENT_GAMEPAD_ADDED:
+			// NOTE: in SDL3 `which` is an instance ID, not a device index
+			inputRefreshJoyList();
 			for (s32 i = firstController; i < INPUT_MAX_CONTROLLERS; ++i) {
 				if (!pads[i]) {
-					pads[i] = SDL_GameControllerOpen(event->cdevice.which);
+					pads[i] = SDL_OpenGamepad(event->gdevice.which);
 					if (pads[i]) {
-						inputInitController(i, event->cdevice.which);
+						inputInitController(i, inputDeviceIndexFromId(event->gdevice.which));
 					}
 					break;
 				}
 			}
 			break;
 
-		case SDL_CONTROLLERDEVICEREMOVED: {
-			SDL_GameController *ctrl = SDL_GameControllerFromInstanceID(event->cdevice.which);
+		case SDL_EVENT_GAMEPAD_REMOVED: {
+			SDL_Gamepad *ctrl = SDL_GetGamepadFromID(event->gdevice.which);
 			const s32 idx = inputControllerGetIndex(ctrl);
 			if (idx >= 0) {
 				inputCloseController(idx);
@@ -510,34 +563,35 @@ static int inputEventFilter(void *data, SDL_Event *event)
 			break;
 		}
 
-		case SDL_JOYDEVICEADDED:
-		case SDL_JOYDEVICEREMOVED:
-			numJoysticks = SDL_NumJoysticks(); // joystick count has changed
+		case SDL_EVENT_JOYSTICK_ADDED:
+		case SDL_EVENT_JOYSTICK_REMOVED:
+			inputRefreshJoyList(); // joystick count has changed
 			break;
 
-		case SDL_MOUSEWHEEL:
-			mouseWheel = event->wheel.y;
+		case SDL_EVENT_MOUSE_WHEEL:
+			// wheel.y is a float in SDL3; consumers only test the sign
+			mouseWheel = (event->wheel.y > 0.f) - (event->wheel.y < 0.f);
 			if (!lastKey && mouseWheel) {
 				lastKey = (mouseWheel < 0) + VK_MOUSE_WHEEL_UP;
 			}
 			break;
 
-		case SDL_MOUSEBUTTONDOWN:
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 			if (!lastKey) {
 				lastKey = VK_MOUSE_BEGIN - 1 + event->button.button;
 			}
 			break;
 
-		case SDL_KEYDOWN:
+		case SDL_EVENT_KEY_DOWN:
 			if (!lastKey) {
-				lastKey = VK_KEYBOARD_BEGIN + event->key.keysym.scancode;
+				lastKey = VK_KEYBOARD_BEGIN + event->key.scancode;
 			}
 			break;
 
-		case SDL_CONTROLLERBUTTONDOWN:
+		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
 			if (!lastKey) {
-				lastKey = VK_JOY1_BEGIN + event->cbutton.button;
-				SDL_GameController *ctrl = SDL_GameControllerFromInstanceID(event->cdevice.which);
+				lastKey = VK_JOY1_BEGIN + event->gbutton.button;
+				SDL_Gamepad *ctrl = SDL_GetGamepadFromID(event->gbutton.which);
 				const s32 idx = inputControllerGetIndex(ctrl);
 				if (idx >= 0) {
 					lastKey += idx * INPUT_MAX_CONTROLLER_BUTTONS;
@@ -545,11 +599,11 @@ static int inputEventFilter(void *data, SDL_Event *event)
 			}
 			break;
 
-		case SDL_CONTROLLERAXISMOTION:
+		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
 			if (!lastKey) {
-				if (event->caxis.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT && event->caxis.value > TRIG_THRESHOLD) {
-					lastKey = VK_JOY1_LTRIG + (event->caxis.axis - SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-					SDL_GameController *ctrl = SDL_GameControllerFromInstanceID(event->cdevice.which);
+				if (event->gaxis.axis >= SDL_GAMEPAD_AXIS_LEFT_TRIGGER && event->gaxis.value > TRIG_THRESHOLD) {
+					lastKey = VK_JOY1_LTRIG + (event->gaxis.axis - SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+					SDL_Gamepad *ctrl = SDL_GetGamepadFromID(event->gaxis.which);
 					const s32 idx = inputControllerGetIndex(ctrl);
 					if (idx >= 0) {
 						lastKey += idx * INPUT_MAX_CONTROLLER_BUTTONS;
@@ -558,7 +612,7 @@ static int inputEventFilter(void *data, SDL_Event *event)
 			}
 			break;
 
-		case SDL_TEXTINPUT:
+		case SDL_EVENT_TEXT_INPUT:
 			if (!lastChar && event->text.text[0] && (u8)event->text.text[0] < 0x80) {
 				lastChar = event->text.text[0];
 			}
@@ -568,7 +622,7 @@ static int inputEventFilter(void *data, SDL_Event *event)
 			break;
 	}
 
-	return 0;
+	return true;
 }
 
 static inline void inputGetScancodeName(const SDL_Scancode sc, char *out, size_t len)
@@ -705,54 +759,42 @@ s32 inputInit(void)
 	}
 
 	// Set SDL hints before initializing the controller subsystem.
+	// SDL3 dropped all the version gates; hints that may not survive future
+	// SDL3 releases stay wrapped in #ifdef (they are just string macros).
 	if (useHIDAPI) {
-#if SDL_VERSION_ATLEAST(2, 0, 12)
-		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE, "1");
-#endif
-#if SDL_VERSION_ATLEAST(2, 0, 14)
-		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
-#endif
-#if SDL_VERSION_ATLEAST(2, 0, 22)
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_JOY_CONS, "1");
-		// the two hints below enable Rumble and Motion Sensor for PS4/5 pads connected via bluetooth
-		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
-		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
-#endif
-#if SDL_VERSION_ATLEAST(2, 23, 2)
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_COMBINE_JOY_CONS, "1");
-#endif
-#if SDL_VERSION_ATLEAST(2, 25, 1)
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
-#endif
-#if SDL_VERSION_ATLEAST(2, 26, 0)
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_WII, "1");
-#endif
-#if SDL_VERSION_ATLEAST(2, 30, 0)
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK, "1");
+#ifdef SDL_HINT_JOYSTICK_ENHANCED_REPORTS
+		// successor of the SDL2 PS4/PS5 _RUMBLE hints: enables rumble and
+		// motion sensors for PS4/5 pads connected via bluetooth
+		SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
 #endif
 	}
 	if (useRawInput) {
 		SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
 #ifdef SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT
 		SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT, "1");
-#elif defined(SDL_HINT_JOYSTICK_HIDAPI_CORRELATE_XINPUT)
-		// old name for SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT before SDL2.0.16
-		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_CORRELATE_XINPUT, "1");
 #endif
 	}
 
-	if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC)) {
-		SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC);
+	if (!SDL_WasInit(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC)) {
+		SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
 	}
 
 	// try to load controller db from an external file in the save folder
+	// NOTE: SDL3 expects SDL3-format mapping lines; SDL2-era db files may not apply
 	if (fsFileSize("$S/" CONTROLLERDB_FNAME)) {
 		const char *dbpath = fsFullPath("$S/" CONTROLLERDB_FNAME);
-		const s32 dbcount = SDL_GameControllerAddMappingsFromFile(dbpath);
+		const s32 dbcount = SDL_AddGamepadMappingsFromFile(dbpath);
 		if (dbcount >= 0) {
 			sysLogPrintf(LOG_NOTE, "input: added %d controller mappings from %s", dbcount, dbpath);
 		}
@@ -891,10 +933,10 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		return 0;
 	}
 
-	s32 leftX = SDL_GameControllerGetAxis(pads[idx], cfg->axisMap[0][0]);
-	s32 leftY = SDL_GameControllerGetAxis(pads[idx], cfg->axisMap[0][1]);
-	s32 rightX = SDL_GameControllerGetAxis(pads[idx], cfg->axisMap[1][0]);
-	s32 rightY = SDL_GameControllerGetAxis(pads[idx], cfg->axisMap[1][1]);
+	s32 leftX = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[0][0]);
+	s32 leftY = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[0][1]);
+	s32 rightX = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[1][0]);
+	s32 rightY = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[1][1]);
 
 	leftX = inputAxisScale(leftX, cfg->deadzone[cfg->axisMap[0][0]], cfg->sens[cfg->axisMap[0][0]]);
 	leftY = inputAxisScale(leftY, cfg->deadzone[cfg->axisMap[0][1]], cfg->sens[cfg->axisMap[0][1]]);
@@ -934,8 +976,15 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 
 static inline void inputUpdateMouse(void)
 {
-	s32 mx, my;
-	mouseButtons = SDL_GetMouseState(&mx, &my);
+	// SDL3 reports mouse state in floats; carry the fractional part of the
+	// relative deltas over to the next frame so slow movement isn't lost to
+	// truncation
+	static f32 mouseRemX, mouseRemY;
+
+	f32 fmx = 0.f, fmy = 0.f;
+	mouseButtons = SDL_GetMouseState(&fmx, &fmy);
+	const s32 mx = (s32)fmx;
+	const s32 my = (s32)fmy;
 
 	if (mouseWheel > 0) {
 		mouseButtons |= WHEEL_UP_MASK;
@@ -945,12 +994,15 @@ static inline void inputUpdateMouse(void)
 
 	mouseWheel = 0;
 
-	s32 mdx = 0;
-	s32 mdy = 0;
-	SDL_GetRelativeMouseState(&mdx, &mdy);
+	f32 fdx = 0.f, fdy = 0.f;
+	SDL_GetRelativeMouseState(&fdx, &fdy);
 	if (mouseLocked) {
-		mouseDX = mdx;
-		mouseDY = mdy;
+		mouseRemX += fdx;
+		mouseRemY += fdy;
+		mouseDX = (s32)mouseRemX;
+		mouseDY = (s32)mouseRemY;
+		mouseRemX -= mouseDX;
+		mouseRemY -= mouseDY;
 	} else {
 		mouseDX = mx - mouseX;
 		mouseDY = my - mouseY;
@@ -974,16 +1026,60 @@ static inline void inputUpdateMouse(void)
 	}
 }
 
+// Refresh pad RGB LEDs (lightbars): base = player slot colour, flashing red
+// while that local player is alive on low health. Rate-limited so we don't
+// spam HID output reports; sends only when the colour actually changes.
+// Reads g_Vars.players directly — same precedent as the
+// MPOPTION_CONTROLLERS_ONLY gate above (input.c already links game state).
+static inline void inputUpdatePadLEDs(void)
+{
+	const u64 now = sysGetMicroseconds();
+	if (now < padLEDNextUpdate) {
+		return;
+	}
+	padLEDNextUpdate = now + LED_UPDATE_INTERVAL_US;
+
+	for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
+		if (!pads[i] || !padsCfg[i].hasLED) {
+			continue;
+		}
+
+		u8 r = padLEDColours[i][0];
+		u8 g = padLEDColours[i][1];
+		u8 b = padLEDColours[i][2];
+
+		// local player i drives pad i; flash red while alive on low health
+		struct player *pl = g_Vars.players[i];
+		if (pl && !pl->isdead && pl->bondhealth < LED_LOW_HEALTH_FRAC) {
+			const s32 phase = (now / LED_FLASH_PERIOD_US) & 1;
+			r = phase ? 0xff : 0x20;
+			g = 0;
+			b = 0;
+		}
+
+		const u32 rgb = ((u32)r << 16) | ((u32)g << 8) | b;
+		if (rgb != padLEDState[i]) {
+			if (SDL_SetGamepadLED(pads[i], r, g, b)) {
+				padLEDState[i] = rgb;
+			}
+		}
+	}
+}
+
 void inputUpdate(void)
 {
 	if (g_NetDedicatedMode == 1) {
 		return;
 	}
 
-	SDL_GameControllerUpdate();
+	SDL_UpdateGamepads();
 
 	if (mouseEnabled) {
 		inputUpdateMouse();
+	}
+
+	if (padLEDEnabled) {
+		inputUpdatePadLEDs();
 	}
 }
 
@@ -1022,7 +1118,11 @@ void inputRumble(s32 idx, f32 strength, f32 time)
 			strength *= 65535.f;
 			time *= 1000.f;
 		}
-		SDL_GameControllerRumble(pads[idx], (u16)strength, (u16)strength, (u32)time);
+		SDL_RumbleGamepad(pads[idx], (u16)strength, (u16)strength, (u32)time);
+		// mirror onto the impulse triggers (Xbox One/Series pads) if present
+		if (padsCfg[idx].trigRumble && padsCfg[idx].hasTrigRumble) {
+			SDL_RumbleGamepadTriggers(pads[idx], (u16)strength, (u16)strength, (u32)time);
+		}
 	}
 }
 
@@ -1050,15 +1150,15 @@ void inputControllerSetSticksSwapped(s32 cidx, s32 swapped)
 {
 	padsCfg[cidx].swapSticks = swapped;
 	if (swapped) {
-		padsCfg[cidx].axisMap[0][0] = SDL_CONTROLLER_AXIS_RIGHTX;
-		padsCfg[cidx].axisMap[0][1] = SDL_CONTROLLER_AXIS_RIGHTY;
-		padsCfg[cidx].axisMap[1][0] = SDL_CONTROLLER_AXIS_LEFTX;
-		padsCfg[cidx].axisMap[1][1] = SDL_CONTROLLER_AXIS_LEFTY;
+		padsCfg[cidx].axisMap[0][0] = SDL_GAMEPAD_AXIS_RIGHTX;
+		padsCfg[cidx].axisMap[0][1] = SDL_GAMEPAD_AXIS_RIGHTY;
+		padsCfg[cidx].axisMap[1][0] = SDL_GAMEPAD_AXIS_LEFTX;
+		padsCfg[cidx].axisMap[1][1] = SDL_GAMEPAD_AXIS_LEFTY;
 	} else {
-		padsCfg[cidx].axisMap[0][0] = SDL_CONTROLLER_AXIS_LEFTX;
-		padsCfg[cidx].axisMap[0][1] = SDL_CONTROLLER_AXIS_LEFTY;
-		padsCfg[cidx].axisMap[1][0] = SDL_CONTROLLER_AXIS_RIGHTX;
-		padsCfg[cidx].axisMap[1][1] = SDL_CONTROLLER_AXIS_RIGHTY;
+		padsCfg[cidx].axisMap[0][0] = SDL_GAMEPAD_AXIS_LEFTX;
+		padsCfg[cidx].axisMap[0][1] = SDL_GAMEPAD_AXIS_LEFTY;
+		padsCfg[cidx].axisMap[1][0] = SDL_GAMEPAD_AXIS_RIGHTX;
+		padsCfg[cidx].axisMap[1][1] = SDL_GAMEPAD_AXIS_RIGHTY;
 	}
 }
 
@@ -1107,9 +1207,9 @@ s32 inputGetConnectedControllers(s32 *out)
 	s32 count = 0;
 
 	for (s32 jidx = 0; jidx < numJoysticks; ++jidx) {
-		if (SDL_IsGameController(jidx)) {
+		if (SDL_IsGamepad(joyIds[jidx])) {
 			if (out && count < INPUT_MAX_CONNECTED_CONTROLLERS) {
-				out[count] = SDL_JoystickGetDeviceInstanceID(jidx);
+				out[count] = joyIds[jidx];
 			}
 			++count;
 		}
@@ -1144,7 +1244,7 @@ const char *inputGetConnectedControllerName(s32 id)
 		return "Invalid";
 	}
 
-	const char *name = SDL_GameControllerNameForIndex(jidx);
+	const char *name = SDL_GetGamepadNameForID(joyIds[jidx]);
 	if (!name || !name[0]) {
 		name = "Unnamed Controller";
 	}
@@ -1177,7 +1277,7 @@ s32 inputAssignController(s32 cidx, s32 id)
 	}
 
 	const s32 jidx = inputDeviceIndexFromId(id);
-	if (jidx < 0 || jidx >= SDL_NumJoysticks() || !SDL_IsGameController(jidx)) {
+	if (jidx < 0 || jidx >= numJoysticks || !SDL_IsGamepad(joyIds[jidx])) {
 		return 0;
 	}
 
@@ -1190,7 +1290,7 @@ s32 inputAssignController(s32 cidx, s32 id)
 		}
 	}
 
-	SDL_GameController *newpad = SDL_GameControllerOpen(jidx);
+	SDL_Gamepad *newpad = SDL_OpenGamepad(joyIds[jidx]);
 	if (!newpad) {
 		return 0;
 	}
@@ -1237,12 +1337,14 @@ const u32 *inputKeyGetBinds(s32 idx, u32 ck)
 s32 inputKeyPressed(u32 vk)
 {
 	if (vk >= VK_KEYBOARD_BEGIN && vk < VK_MOUSE_BEGIN) {
-		const u8 *state = SDL_GetKeyboardState(NULL);
+		// SDL3 returns a 1-byte bool array; can't spell `bool` here because
+		// types.h #defines it to s32 (4-byte stride would read garbage)
+		const u8 *state = (const u8 *)SDL_GetKeyboardState(NULL);
 		return state[vk - VK_KEYBOARD_BEGIN];
 	}
 
 	if (vk >= VK_MOUSE_BEGIN && vk < VK_JOY_BEGIN) {
-		return (mouseButtons & SDL_BUTTON(vk - VK_MOUSE_BEGIN + 1)) != 0;
+		return (mouseButtons & SDL_BUTTON_MASK(vk - VK_MOUSE_BEGIN + 1)) != 0;
 	}
 
 	if (vk >= VK_JOY_BEGIN && vk < VK_TOTAL_COUNT) {
@@ -1254,10 +1356,10 @@ s32 inputKeyPressed(u32 vk)
 		vk = vk % INPUT_MAX_CONTROLLER_BUTTONS;
 		// triggers
 		if (vk == 30 || vk == 31) {
-			const s32 trig = SDL_CONTROLLER_AXIS_TRIGGERLEFT + vk - 30;
-			return SDL_GameControllerGetAxis(pads[idx], trig) > TRIG_THRESHOLD;
+			const s32 trig = SDL_GAMEPAD_AXIS_LEFT_TRIGGER + vk - 30;
+			return SDL_GetGamepadAxis(pads[idx], trig) > TRIG_THRESHOLD;
 		}
-		return SDL_GameControllerGetButton(pads[idx], vk);
+		return SDL_GetGamepadButton(pads[idx], vk);
 	}
 
 	return 0;
@@ -1292,7 +1394,11 @@ s32 inputButtonPressed(s32 idx, u32 contbtn)
 void inputLockMouse(s32 lock)
 {
 	mouseLocked = !!lock;
-	SDL_SetRelativeMouseMode(mouseLocked);
+	// relative mouse mode is per-window in SDL3; NULL when headless/early-init
+	SDL_Window *wnd = (SDL_Window *)videoGetWindowHandle();
+	if (wnd) {
+		SDL_SetWindowRelativeMouseMode(wnd, mouseLocked);
+	}
 }
 
 s32 inputMouseIsLocked(void)
@@ -1388,7 +1494,11 @@ s32 inputAutoLockMouse(s32 wantlock)
 void inputMouseShowCursor(s32 show)
 {
 	mouseShowCursor = !!show;
-	SDL_ShowCursor(mouseShowCursor);
+	if (mouseShowCursor) {
+		SDL_ShowCursor();
+	} else {
+		SDL_HideCursor();
+	}
 	if (show) {
 		mouseCursorTime = sysGetMicroseconds() + CURSOR_HIDE_TIME;
 	}
@@ -1488,7 +1598,11 @@ void inputStartTextInput(void)
 	lastChar = 0;
 	lastKey = 0;
 	textInput = 1;
-	SDL_StartTextInput();
+	// text input is per-window in SDL3
+	SDL_Window *wnd = (SDL_Window *)videoGetWindowHandle();
+	if (wnd) {
+		SDL_StartTextInput(wnd);
+	}
 }
 
 void inputClearLastTextChar(void)
@@ -1580,7 +1694,10 @@ const char *inputGetClipboard(void)
 
 void inputStopTextInput(void)
 {
-	SDL_StopTextInput();
+	SDL_Window *wnd = (SDL_Window *)videoGetWindowHandle();
+	if (wnd) {
+		SDL_StopTextInput(wnd);
+	}
 	textInput = 0;
 	// Mask one more frame so the held Enter (or any other key still down
 	// from typing) reads as 0->0 rather than 0->1 in the joystick edge
@@ -1600,6 +1717,74 @@ u32 inputGetKeyModState(void)
 	return SDL_GetModState();
 }
 
+// /padtest console command — debug aid for the SDL3 gamepad extras
+// (PORT_SDL3_EXTRAS.md). Subcommands:
+//   caps          log capability properties + connection for connected pads
+//   led R G B     set pad 1's LED directly (LED tick is held off for 5s)
+//   rumble S MS   raw body rumble on pad 1, S = 0..65535 (bypasses RumbleScale)
+//   trig S MS     raw trigger rumble on pad 1, S = 0..65535
+//   hp            log the health frac the LED low-health flash reads
+void inputPadTest(const char *arg)
+{
+	if (strncmp(arg, "caps", 4) == 0) {
+		s32 found = 0;
+		for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
+			if (!pads[i]) {
+				continue;
+			}
+			SDL_Joystick *joy = SDL_GetGamepadJoystick(pads[i]);
+			const s32 wireless = joy ?
+				(SDL_GetJoystickConnectionState(joy) == SDL_JOYSTICK_CONNECTION_WIRELESS) : -1;
+			sysLogPrintf(LOG_CHAT, "pad%d '%s' rumble=%d trig=%d rgbled=%d wireless=%d",
+				i + 1, SDL_GetGamepadName(pads[i]), padsCfg[i].rumbleOn,
+				padsCfg[i].hasTrigRumble, padsCfg[i].hasLED, wireless);
+			++found;
+		}
+		if (!found) {
+			sysLogPrintf(LOG_CHAT, "no pads connected");
+		}
+	} else if (strncmp(arg, "led", 3) == 0) {
+		s32 r = 255, g = 0, b = 0;
+		sscanf(arg + 3, "%d %d %d", &r, &g, &b);
+		if (pads[0]) {
+			const s32 ok = SDL_SetGamepadLED(pads[0], (u8)r, (u8)g, (u8)b);
+			padLEDState[0] = 0xffffffff;
+			padLEDNextUpdate = sysGetMicroseconds() + 5000000; // hold the test colour 5s
+			sysLogPrintf(LOG_CHAT, "pad1 LED(%d,%d,%d): %s", r, g, b, ok ? "OK" : SDL_GetError());
+		} else {
+			sysLogPrintf(LOG_CHAT, "no pad 1");
+		}
+	} else if (strncmp(arg, "rumble", 6) == 0) {
+		s32 s = 65535, ms = 1000;
+		sscanf(arg + 6, "%d %d", &s, &ms);
+		if (pads[0]) {
+			const s32 ok = SDL_RumbleGamepad(pads[0], (u16)s, (u16)s, (u32)ms);
+			sysLogPrintf(LOG_CHAT, "pad1 rumble(%d, %dms): %s", s, ms, ok ? "OK" : SDL_GetError());
+		} else {
+			sysLogPrintf(LOG_CHAT, "no pad 1");
+		}
+	} else if (strncmp(arg, "trig", 4) == 0) {
+		s32 s = 65535, ms = 1000;
+		sscanf(arg + 4, "%d %d", &s, &ms);
+		if (pads[0]) {
+			const s32 ok = SDL_RumbleGamepadTriggers(pads[0], (u16)s, (u16)s, (u32)ms);
+			sysLogPrintf(LOG_CHAT, "pad1 trig(%d, %dms): %s", s, ms, ok ? "OK" : SDL_GetError());
+		} else {
+			sysLogPrintf(LOG_CHAT, "no pad 1");
+		}
+	} else if (strncmp(arg, "hp", 2) == 0) {
+		struct player *pl = g_Vars.players[0];
+		if (pl) {
+			sysLogPrintf(LOG_CHAT, "p1 bondhealth=%.3f isdead=%d (LED flashes below %.2f)",
+				pl->bondhealth, (s32)pl->isdead, LED_LOW_HEALTH_FRAC);
+		} else {
+			sysLogPrintf(LOG_CHAT, "p1 player not present");
+		}
+	} else {
+		sysLogPrintf(LOG_CHAT, "usage: /padtest caps | led R G B | rumble S MS | trig S MS | hp");
+	}
+}
+
 PD_CONSTRUCTOR static void inputConfigInit(void)
 {
 	configRegisterInt("Input.MouseEnabled", &mouseEnabled, 0, 1);
@@ -1610,6 +1795,7 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 	configRegisterInt("Input.FirstGamepadNum", &firstController, 0, 3);
 	configRegisterInt("Input.UseHIDAPI", &useHIDAPI, 0, 1);
 	configRegisterInt("Input.UseRawInput", &useRawInput, 0, 1);
+	configRegisterInt("Input.GamepadLED", &padLEDEnabled, 0, 1);
 
 	char secname[] = "Input.Player1.Binds";
 	char keyname[256] = { 0 };
@@ -1617,6 +1803,7 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 		secname[12] = '1' + c;
 		secname[13] = '\0';
 		configRegisterFloat(strFmt("%s.RumbleScale", secname), &padsCfg[c].rumbleScale, 0.f, 1.f);
+		configRegisterInt(strFmt("%s.TriggerRumble", secname), &padsCfg[c].trigRumble, 0, 1);
 		configRegisterInt(strFmt("%s.LStickDeadzoneX", secname), &padsCfg[c].deadzone[0], 0, 32767);
 		configRegisterInt(strFmt("%s.LStickDeadzoneY", secname), &padsCfg[c].deadzone[1], 0, 32767);
 		configRegisterInt(strFmt("%s.RStickDeadzoneX", secname), &padsCfg[c].deadzone[2], 0, 32767);

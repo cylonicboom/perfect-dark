@@ -208,8 +208,12 @@ static inline void romdataWrongRomError(const char *fmt, ...)
 }
 
 // load and validate a PD ROM, inflating its compressed data segment. shared by
-// the base ROM and the chain-loaded --mod-rom; validation failures are fatal.
-static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 **outSeg, u32 *outSegSize)
+// the base ROM and the chain-loaded --mod-rom. requireHeader is true for the
+// base ROM (the stock NPDE/"Perfect Dark" header must match); it is relaxed to
+// a warning for the chain ROM, since a modded ROM / total conversion may carry
+// a changed title or cart id while keeping the 32MB stock layout. the size and
+// 1173-compression checks still apply to both (the loader assumes both).
+static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 **outSeg, u32 *outSegSize, bool requireHeader)
 {
 	sysLogPrintf(LOG_NOTE, "ROM file: %s", name);
 
@@ -230,7 +234,11 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 	}
 
 	if (memcmp(rom + 0x3b, ROMDATA_ROM_ID, 4) || memcmp(rom + 0x20, ROMDATA_ROM_TITLE, sizeof(ROMDATA_ROM_TITLE) - 1)) {
-		romdataWrongRomError("ROM header does not match.");
+		if (requireHeader) {
+			romdataWrongRomError("ROM header does not match.");
+		} else {
+			sysLogPrintf(LOG_WARNING, "chain ROM header does not match stock %s; loading anyway (mod/total conversion)", ROMDATA_ROM_DESC);
+		}
 	}
 
 	// inflate the compressed data segment since that's where some useful stuff is
@@ -264,7 +272,7 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 
 static inline void romdataLoadRom(void)
 {
-	romdataLoadRomFile(g_RomName, &g_RomFile, &g_RomFileSize, &romDataSeg, &romDataSegSize);
+	romdataLoadRomFile(g_RomName, &g_RomFile, &g_RomFileSize, &romDataSeg, &romDataSegSize, true);
 }
 
 static inline void romdataUpdateSegStartEnd(struct romfile* seg)
@@ -533,7 +541,7 @@ s32 romdataInit(void)
 	// are version-specific). the engine code stays this build.
 	const char *chainRomName = sysArgGetString("--mod-rom");
 	if (chainRomName) {
-		romdataLoadRomFile(chainRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize);
+		romdataLoadRomFile(chainRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false);
 		g_ChainRomActive = 1;
 		g_ModNum = MOD_CHAINROM;
 		sysLogPrintf(LOG_NOTE, "romdataInit: chain ROM active (MOD_CHAINROM): %s", chainRomName);

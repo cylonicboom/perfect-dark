@@ -35,6 +35,12 @@ void *videoGetWindowHandle(void);
 // (only used for VIDEO_TASKBAR_NORMAL); no-op when unsupported or headless
 void videoSetTaskbarProgress(s32 state, f32 value);
 
+// exclusive-fullscreen refresh rate; 0 = auto. videoGetRefreshRates fills out
+// with the distinct rates available for the currently selected resolution.
+s32 videoGetRefreshRates(f32 *out, s32 max);
+f32 videoGetRefreshRate(void);
+void videoSetRefreshRate(f32 hz);
+
 void videoUpdateNativeResolution(s32 w, s32 h);
 s32 videoGetNativeWidth(void);
 s32 videoGetNativeHeight(void);

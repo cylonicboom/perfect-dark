@@ -91,6 +91,25 @@ which also means it needs `Input.MouseEnabled=1` for the lock to engage;
 axis inversion is config/console-only (negative speed), the menu sliders
 clamp at 0.
 
+## Refresh-rate picker (`gfx_sdl.cpp` / `video.c` / `optionsmenu.c`)
+
+Extended → Video gains a **"Refresh Rate"** dropdown under Resolution: "Auto"
+plus the distinct rates the current display offers for the selected
+resolution (SDL3 display modes carry float Hz; near-duplicates within
+0.05Hz, e.g. 59.94 vs 59.95, are collapsed; shown as `%g Hz`).
+
+- Only meaningful for **exclusive** fullscreen — the dropdown greys out
+  (`MENUOP_CHECKDISABLED`) while Full Screen Mode is Borderless, same pattern
+  as the Resolution dropdown.
+- Two new `GfxWindowManagerAPI` entries (appended): `get_refresh_rates(w, h,
+  out, max)` and `set_refresh_rate(hz)`. The desired rate feeds the
+  `SDL_GetClosestFullscreenDisplayMode` calls in `apply_fullscreen_mode` and
+  `set_closest_resolution` (0 = auto); setting it while already in exclusive
+  fullscreen re-picks the mode immediately.
+- Config: `Video.RefreshRate` (float Hz, 0 = auto), applied at `videoInit`.
+- If the saved rate isn't available at a newly selected resolution, SDL's
+  closest-mode matching degrades gracefully (nearest rate wins).
+
 ## 3. Taskbar loading progress (`gfx_sdl.cpp` / `video.c` / `romdata.c`)
 
 The boot-time asset preprocessing (animations, textures list, audio banks —

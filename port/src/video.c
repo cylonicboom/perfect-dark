@@ -39,6 +39,7 @@ static s32 vidHeight = DEFAULT_VID_HEIGHT;
 static s32 vidFramebuffers = true;
 static s32 vidFullscreen = DEFAULT_VID_FULLSCREEN;
 static s32 vidFullscreenExclusive = DEFAULT_VID_FULLSCREEN_EXCLUSIVE;
+static f32 vidRefreshRate = 0.f; // exclusive-fullscreen refresh rate; 0 = auto
 static s32 vidMaximize = false;
 static s32 vidCenter = false;
 static s32 vidAllowHiDpi = false;
@@ -126,6 +127,12 @@ s32 videoInit(void)
 
 	gfx_init(&set);
 
+	// apply the configured exclusive-fullscreen refresh rate (0 = auto);
+	// re-picks the mode immediately if we booted into exclusive fullscreen
+	if (wmAPI->set_refresh_rate) {
+		wmAPI->set_refresh_rate(vidRefreshRate);
+	}
+
 	videoInitDisplayModes();
 	videoSetVsync(vidVsync);
 	videoSetFramerateLimit(vidFramerateLimit);
@@ -210,6 +217,28 @@ void videoSetTaskbarProgress(s32 state, f32 value)
 {
 	if (initDone && wmAPI && wmAPI->set_taskbar_progress) {
 		wmAPI->set_taskbar_progress(state, value);
+	}
+}
+
+s32 videoGetRefreshRates(f32 *out, s32 max)
+{
+	if (initDone && wmAPI && wmAPI->get_refresh_rates) {
+		// rates for the currently selected resolution
+		return wmAPI->get_refresh_rates(vidWidth, vidHeight, out, max);
+	}
+	return 0;
+}
+
+f32 videoGetRefreshRate(void)
+{
+	return vidRefreshRate;
+}
+
+void videoSetRefreshRate(f32 hz)
+{
+	vidRefreshRate = hz;
+	if (initDone && wmAPI && wmAPI->set_refresh_rate) {
+		wmAPI->set_refresh_rate(hz);
 	}
 }
 
@@ -650,6 +679,7 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.DefaultWidth", &vidWidth, 0, 32767);
 	configRegisterInt("Video.DefaultHeight", &vidHeight, 0, 32767);
 	configRegisterInt("Video.ExclusiveFullscreen", &vidFullscreenExclusive, 0, 1);
+	configRegisterFloat("Video.RefreshRate", &vidRefreshRate, 0.f, 1000.f);
 	configRegisterInt("Video.CenterWindow", &vidCenter, 0, 1);
 	configRegisterInt("Video.AllowHiDpi", &vidAllowHiDpi, 0, 1);
 	configRegisterInt("Video.VSync", &vidVsync, -1, 10);

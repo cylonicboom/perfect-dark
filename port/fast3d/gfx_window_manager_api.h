@@ -52,6 +52,10 @@ struct GfxWindowManagerAPI {
     // taskbar/dock progress indicator; state: 0 = none, 1 = indeterminate,
     // 2 = normal (value 0..1 used). no-op where unsupported.
     void (*set_taskbar_progress)(int state, float value);
+    // exclusive-fullscreen refresh rate: list the distinct rates available
+    // for a width x height mode on the current display; set 0 = auto.
+    int (*get_refresh_rates)(int width, int height, float *out, int max);
+    void (*set_refresh_rate)(float hz);
 };
 
 #endif

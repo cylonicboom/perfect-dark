@@ -22,6 +22,8 @@ static int window_height = DESIRED_SCREEN_HEIGHT;
 // exclusive fullscreen is picked via SDL_SetWindowFullscreenMode (NULL mode
 // means borderless desktop).
 static bool fullscreen_exclusive;
+// desired exclusive-fullscreen refresh rate; 0 = auto (closest-mode default)
+static float desired_refresh_rate = 0.0f;
 static bool fullscreen_state;
 static bool maximized_state;
 static bool is_running = true;
@@ -62,7 +64,7 @@ static void gfx_sdl_set_fullscreen_flag(int32_t mode) {
 static void apply_fullscreen_mode(void) {
     if (fullscreen_exclusive) {
         SDL_DisplayMode closest;
-        if (SDL_GetClosestFullscreenDisplayMode(SDL_GetDisplayForWindow(wnd), window_width, window_height, 0.0f, false, &closest)) {
+        if (SDL_GetClosestFullscreenDisplayMode(SDL_GetDisplayForWindow(wnd), window_width, window_height, desired_refresh_rate, false, &closest)) {
             SDL_SetWindowFullscreenMode(wnd, &closest);
             return;
         }
@@ -281,12 +283,18 @@ static void gfx_sdl_get_centered_positions(int32_t width, int32_t height, int32_
 static void gfx_sdl_set_closest_resolution(int32_t width, int32_t height, bool should_center) {
     const SDL_DisplayID disp = SDL_GetDisplayForWindow(wnd);
     SDL_DisplayMode closest;
-    if (SDL_GetClosestFullscreenDisplayMode(disp, width, height, 0.0f, false, &closest)) {
+    if (SDL_GetClosestFullscreenDisplayMode(disp, width, height, desired_refresh_rate, false, &closest)) {
         if (fullscreen_exclusive) {
             // only meaningful for exclusive fullscreen; in SDL3 setting a
             // fullscreen mode on a borderless-desktop window would switch it
             // to exclusive (SDL2's SetWindowDisplayMode did not)
             SDL_SetWindowFullscreenMode(wnd, &closest);
+            if (fullscreen_state) {
+                // already fullscreen: force the mode switch through (the new
+                // mode only latches on the next fullscreen request otherwise)
+                SDL_SetWindowFullscreen(wnd, true);
+                SDL_SyncWindow(wnd);
+            }
         }
         SDL_SetWindowSize(wnd, closest.w, closest.h);
         if (should_center) {
@@ -484,6 +492,51 @@ int gfx_sdl_get_num_display_modes(void) {
     return 0;
 }
 
+int gfx_sdl_get_refresh_rates(int width, int height, float *out, int max) {
+    const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
+    int count = 0;
+    SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display_in_use, &count);
+    int n = 0;
+    if (modes) {
+        for (int i = 0; i < count && n < max; ++i) {
+            if (modes[i]->w != width || modes[i]->h != height) {
+                continue;
+            }
+            // collapse near-duplicate rates (e.g. 59.94 vs 59.95)
+            bool dup = false;
+            for (int j = 0; j < n; ++j) {
+                float d = out[j] - modes[i]->refresh_rate;
+                if (d < 0.f) {
+                    d = -d;
+                }
+                if (d < 0.05f) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                out[n++] = modes[i]->refresh_rate;
+            }
+        }
+        SDL_free(modes);
+    }
+    return n;
+}
+
+static void gfx_sdl_set_refresh_rate(float hz) {
+    desired_refresh_rate = hz;
+    // if we're in exclusive fullscreen right now, re-pick the mode and force
+    // the switch through: SDL_SetWindowFullscreenMode alone doesn't reliably
+    // mode-switch a window that is already fullscreen (the new mode only
+    // latches on the next fullscreen request), so re-request fullscreen and
+    // wait for the (asynchronous) change to settle.
+    if (fullscreen_state && fullscreen_exclusive) {
+        apply_fullscreen_mode();
+        SDL_SetWindowFullscreen(wnd, true);
+        SDL_SyncWindow(wnd);
+    }
+}
+
 struct GfxWindowManagerAPI gfx_sdl = {
     gfx_sdl_init,
     gfx_sdl_close,
@@ -517,4 +570,6 @@ struct GfxWindowManagerAPI gfx_sdl = {
     gfx_sdl_get_swap_interval,
     gfx_sdl_set_swap_interval,
     gfx_sdl_set_taskbar_progress,
+    gfx_sdl_get_refresh_rates,
+    gfx_sdl_set_refresh_rate,
 };

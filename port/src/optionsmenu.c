@@ -982,6 +982,49 @@ static MenuItemHandlerResult menuhandlerResolution(s32 operation, struct menuite
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerRefreshRate(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static char ratestring[20];
+	f32 rates[16];
+	const s32 numrates = videoGetRefreshRates(rates, ARRAYCOUNT(rates));
+
+	switch (operation) {
+	case MENUOP_CHECKDISABLED:
+		// a fixed refresh rate only applies to exclusive fullscreen
+		if (videoGetFullscreenMode() == 0) {
+			return true;
+		}
+		break;
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = numrates + 1; // first option is "Auto"
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		if (data->dropdown.value == 0) {
+			return (intptr_t)"Auto";
+		}
+		snprintf(ratestring, sizeof(ratestring), "%g Hz", rates[data->dropdown.value - 1]);
+		return (intptr_t)ratestring;
+	case MENUOP_SET:
+		videoSetRefreshRate(data->dropdown.value ? rates[data->dropdown.value - 1] : 0.f);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = 0;
+		for (s32 i = 0; i < numrates; ++i) {
+			f32 d = rates[i] - videoGetRefreshRate();
+			if (d < 0.f) {
+				d = -d;
+			}
+			if (d < 0.05f) {
+				data->dropdown.value = i + 1;
+				break;
+			}
+		}
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerTexFilter(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static const char *opts[] = {
@@ -1185,6 +1228,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		(uintptr_t)"Resolution",
 		0,
 		menuhandlerResolution,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Refresh Rate",
+		0,
+		menuhandlerRefreshRate,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

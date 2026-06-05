@@ -164,7 +164,13 @@ static void crashAppendDwarf(char *msg, DWORD *msglenp, uintptr_t modofs)
 	char cmd[1024];
 	// -f function names, -p one-line pretty print, -i include inline chain.
 	// Redirect stderr so a missing tool / bad path doesn't pollute the dump.
-	snprintf(cmd, sizeof(cmd), "\"%s\" -e \"%s\" -f -p -i 0x%llx 2>NUL",
+	// The whole command is wrapped in an EXTRA pair of quotes: _popen runs
+	// `cmd /c <string>`, and when the string starts with a quote and contains
+	// more quotes (two quoted paths here), cmd strips the first and last quote
+	// characters — which splits a path with spaces ("F:\Games\Perfect Dark ...")
+	// at the first space and the whole resolution silently fails. The outer
+	// quotes are what cmd strips, leaving the real command intact.
+	snprintf(cmd, sizeof(cmd), "\"\"%s\" -e \"%s\" -f -p -i 0x%llx 2>NUL\"",
 		a2l, exe, dwarfAddr);
 
 	FILE *p = _popen(cmd, "r");

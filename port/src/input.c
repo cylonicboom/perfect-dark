@@ -67,6 +67,7 @@ static struct controllercfg {
 	s32 trigRumble;     // Input.PlayerN.TriggerRumble: mirror rumble onto impulse triggers
 	s32 hasTrigRumble;  // runtime capability, not config-bound
 	s32 hasLED;         // runtime capability, not config-bound
+	s32 hasGyro;        // runtime capability, not config-bound
 } padsCfg[INPUT_MAX_CONTROLLERS] = {
 	CONTROLLERCFG_DEFAULT,
 	CONTROLLERCFG_DEFAULT,
@@ -124,6 +125,26 @@ static u64 padLEDNextUpdate = 0;
 #define LED_UPDATE_INTERVAL_US 100000   // poll player state at 10Hz
 #define LED_FLASH_PERIOD_US    250000   // low-health flash half-period
 #define LED_LOW_HEALTH_FRAC    0.25f
+
+// Gyro aim (SDL3 gamepad sensors; pad 1 / player 1 only). The event watcher
+// integrates angular velocity (rad/s) against the sensor's own timestamps;
+// inputUpdateGyro converts the integral to a per-frame aim delta in the same
+// degree units inputMouseGetScaledDelta returns, where it is merged.
+static s32 gyroAimEnabled = 0;  // Input.GyroAim
+static f32 gyroSensX = 1.f;     // Input.GyroSpeedX (negative = inverted)
+static f32 gyroSensY = 1.f;     // Input.GyroSpeedY (negative = inverted)
+static f32 gyroAccX = 0.f;      // integrated pitch, radians (event watcher)
+static f32 gyroAccY = 0.f;      // integrated yaw, radians (event watcher)
+static u64 gyroLastTimestamp = 0; // last sensor event timestamp, ns (0 = none)
+static f32 gyroDX = 0.f;        // this frame's aim delta, degrees
+static f32 gyroDY = 0.f;
+
+// Conversion from integrated radians to mouse-delta units, empirically
+// calibrated (DualSense, real pad vs camera) so sens 1.0 = 1:1 between
+// physical pad rotation and camera rotation. The raw rad->deg conversion
+// (57.3) overshoots ~3.3x through the mouse-delta consumer scaling.
+#define GYRO_UNIT_SCALE (57.29578f * 0.3f)
+#define GYRO_MAX_EVENT_DT 0.5f  // ignore integration gaps longer than this (s)
 
 static s32 mouseEnabled = 1;
 static s32 mouseX, mouseY;
@@ -378,9 +399,17 @@ static inline void inputInitController(const s32 cidx, const s32 jidx)
 	padsCfg[cidx].rumbleOn = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
 	padsCfg[cidx].hasTrigRumble = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false);
 	padsCfg[cidx].hasLED = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
+	padsCfg[cidx].hasGyro = SDL_GamepadHasSensor(pads[cidx], SDL_SENSOR_GYRO);
 
-	sysLogPrintf(LOG_NOTE, "input: pad %d caps: rumble=%d trigrumble=%d rgbled=%d",
-		cidx, padsCfg[cidx].rumbleOn, padsCfg[cidx].hasTrigRumble, padsCfg[cidx].hasLED);
+	sysLogPrintf(LOG_NOTE, "input: pad %d caps: rumble=%d trigrumble=%d rgbled=%d gyro=%d",
+		cidx, padsCfg[cidx].rumbleOn, padsCfg[cidx].hasTrigRumble, padsCfg[cidx].hasLED, padsCfg[cidx].hasGyro);
+
+	// gyro aim reads player 1's pad only
+	if (cidx == 0 && padsCfg[cidx].hasGyro && gyroAimEnabled) {
+		SDL_SetGamepadSensorEnabled(pads[cidx], SDL_SENSOR_GYRO, true);
+		gyroAccX = gyroAccY = 0.f;
+		gyroLastTimestamp = 0;
+	}
 
 	// make the LEDs on the controller indicate which player it's for
 	SDL_SetGamepadPlayerIndex(pads[cidx], cidx);
@@ -427,7 +456,12 @@ static inline void inputCloseController(const s32 cidx)
 	padsCfg[cidx].rumbleOn = 0;
 	padsCfg[cidx].hasTrigRumble = 0;
 	padsCfg[cidx].hasLED = 0;
+	padsCfg[cidx].hasGyro = 0;
 	padLEDState[cidx] = 0xffffffff;
+	if (cidx == 0) {
+		gyroAccX = gyroAccY = gyroDX = gyroDY = 0.f;
+		gyroLastTimestamp = 0;
+	}
 
 	if (cidx) {
 		connectedMask &= ~(1 << cidx);
@@ -615,6 +649,23 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 		case SDL_EVENT_TEXT_INPUT:
 			if (!lastChar && event->text.text[0] && (u8)event->text.text[0] < 0x80) {
 				lastChar = event->text.text[0];
+			}
+			break;
+
+		case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+			// gyro aim: integrate angular velocity (rad/s) against the
+			// sensor's own timestamps for frame-rate-independent precision;
+			// consumed once per frame by inputUpdateGyro. Pad 1 only.
+			if (event->gsensor.sensor == SDL_SENSOR_GYRO && pads[0] &&
+					event->gsensor.which == inputControllerGetId(pads[0])) {
+				if (gyroLastTimestamp) {
+					const f32 dt = (f32)(event->gsensor.sensor_timestamp - gyroLastTimestamp) * 1e-9f;
+					if (dt > 0.f && dt < GYRO_MAX_EVENT_DT) {
+						gyroAccX += event->gsensor.data[0] * dt; // pitch
+						gyroAccY += event->gsensor.data[1] * dt; // yaw
+					}
+				}
+				gyroLastTimestamp = event->gsensor.sensor_timestamp;
 			}
 			break;
 
@@ -1066,6 +1117,20 @@ static inline void inputUpdatePadLEDs(void)
 	}
 }
 
+// Convert the radians the event watcher integrated since last frame into this
+// frame's aim delta, in the same degree units the mouse path produces.
+// Sensitivity is applied here so live /gyro sens changes take effect at once.
+// Signs: SDL gyro +Y = pad turning left, +X = pad pitching up; mouse +dx =
+// look right, +dy = look down — hence both negations. Negative GyroSpeed
+// values invert.
+static inline void inputUpdateGyro(void)
+{
+	gyroDX = -gyroAccY * GYRO_UNIT_SCALE * gyroSensX;
+	gyroDY = -gyroAccX * GYRO_UNIT_SCALE * gyroSensY;
+	gyroAccX = 0.f;
+	gyroAccY = 0.f;
+}
+
 void inputUpdate(void)
 {
 	if (g_NetDedicatedMode == 1) {
@@ -1080,6 +1145,10 @@ void inputUpdate(void)
 
 	if (padLEDEnabled) {
 		inputUpdatePadLEDs();
+	}
+
+	if (gyroAimEnabled) {
+		inputUpdateGyro();
 	}
 }
 
@@ -1441,6 +1510,13 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 				mdx = mouseSensX * ((f32)mouseDX / 3.5f) * 0.022f;
 				mdy = mouseSensY * ((f32)mouseDY / 3.5f) * 0.022f;
 		}
+		// Gyro aim rides the same gameplay gate (mouseLocked = in-game, not
+		// in menus/console) but is controller input, so it is deliberately
+		// NOT suppressed by MPOPTION_CONTROLLERS_ONLY.
+		if (mouseLocked && gyroAimEnabled) {
+				mdx += gyroDX;
+				mdy += gyroDY;
+		}
 		if (dx) *dx = mdx;
 		if (dy) *dy = mdy;
 }
@@ -1735,9 +1811,9 @@ void inputPadTest(const char *arg)
 			SDL_Joystick *joy = SDL_GetGamepadJoystick(pads[i]);
 			const s32 wireless = joy ?
 				(SDL_GetJoystickConnectionState(joy) == SDL_JOYSTICK_CONNECTION_WIRELESS) : -1;
-			sysLogPrintf(LOG_CHAT, "pad%d '%s' rumble=%d trig=%d rgbled=%d wireless=%d",
+			sysLogPrintf(LOG_CHAT, "pad%d '%s' rumble=%d trig=%d rgbled=%d gyro=%d wireless=%d",
 				i + 1, SDL_GetGamepadName(pads[i]), padsCfg[i].rumbleOn,
-				padsCfg[i].hasTrigRumble, padsCfg[i].hasLED, wireless);
+				padsCfg[i].hasTrigRumble, padsCfg[i].hasLED, padsCfg[i].hasGyro, wireless);
 			++found;
 		}
 		if (!found) {
@@ -1785,6 +1861,71 @@ void inputPadTest(const char *arg)
 	}
 }
 
+void inputGyroEnable(s32 enable)
+{
+	gyroAimEnabled = !!enable;
+	gyroAccX = gyroAccY = gyroDX = gyroDY = 0.f;
+	gyroLastTimestamp = 0;
+	if (pads[0] && padsCfg[0].hasGyro) {
+		SDL_SetGamepadSensorEnabled(pads[0], SDL_SENSOR_GYRO, gyroAimEnabled);
+	}
+}
+
+s32 inputGyroIsEnabled(void)
+{
+	return gyroAimEnabled;
+}
+
+s32 inputGyroSupported(s32 idx)
+{
+	// gyro aim is pad 1 / player 1 only for now
+	return idx == 0 && pads[0] && padsCfg[0].hasGyro;
+}
+
+void inputGyroGetSpeed(f32 *x, f32 *y)
+{
+	if (x) *x = gyroSensX;
+	if (y) *y = gyroSensY;
+}
+
+void inputGyroSetSpeed(f32 x, f32 y)
+{
+	gyroSensX = x;
+	gyroSensY = y;
+}
+
+// /gyro console command — gyro aim live control (pad 1 / player 1):
+//   /gyro              toggle
+//   /gyro on|off       set
+//   /gyro sens X [Y]   sensitivity multiplier(s); 1 = 1:1 with the real pad,
+//                      negative inverts; Y defaults to X
+//   /gyro status       print enable state, pad capability, sens, data rate
+void inputGyroCommand(const char *arg)
+{
+	if (strncmp(arg, "sens", 4) == 0) {
+		f32 x = gyroSensX, y = 0.f;
+		const s32 n = sscanf(arg + 4, "%f %f", &x, &y);
+		if (n >= 1) {
+			gyroSensX = x;
+			gyroSensY = (n >= 2) ? y : x;
+		}
+		sysLogPrintf(LOG_CHAT, "gyro sens %.2f %.2f", gyroSensX, gyroSensY);
+	} else if (strncmp(arg, "status", 6) == 0) {
+		const s32 hasgyro = pads[0] && padsCfg[0].hasGyro;
+		const f32 rate = hasgyro ? SDL_GetGamepadSensorDataRate(pads[0], SDL_SENSOR_GYRO) : 0.f;
+		sysLogPrintf(LOG_CHAT, "gyro aim %s; pad1 gyro=%d rate=%.0fHz sens=%.2f/%.2f",
+			gyroAimEnabled ? "ON" : "OFF", hasgyro, rate, gyroSensX, gyroSensY);
+	} else {
+		const s32 on = (*arg) ? !(strcmp(arg, "0") == 0 || strcmp(arg, "off") == 0) : !gyroAimEnabled;
+		inputGyroEnable(on);
+		if (on && (!pads[0] || !padsCfg[0].hasGyro)) {
+			sysLogPrintf(LOG_CHAT, "gyro aim ON (but pad 1 has no gyro!)");
+		} else {
+			sysLogPrintf(LOG_CHAT, "gyro aim %s", on ? "ON" : "OFF");
+		}
+	}
+}
+
 PD_CONSTRUCTOR static void inputConfigInit(void)
 {
 	configRegisterInt("Input.MouseEnabled", &mouseEnabled, 0, 1);
@@ -1796,6 +1937,9 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 	configRegisterInt("Input.UseHIDAPI", &useHIDAPI, 0, 1);
 	configRegisterInt("Input.UseRawInput", &useRawInput, 0, 1);
 	configRegisterInt("Input.GamepadLED", &padLEDEnabled, 0, 1);
+	configRegisterInt("Input.GyroAim", &gyroAimEnabled, 0, 1);
+	configRegisterFloat("Input.GyroSpeedX", &gyroSensX, -30.f, 30.f);
+	configRegisterFloat("Input.GyroSpeedY", &gyroSensY, -30.f, 30.f);
 
 	char secname[] = "Input.Player1.Binds";
 	char keyname[256] = { 0 };

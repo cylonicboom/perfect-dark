@@ -277,4 +277,14 @@ u32 inputGetKeyModState(void);
 // /padtest console command body (SDL3 gamepad extras debug aid)
 void inputPadTest(const char *arg);
 
+// /gyro console command body (gyro aim live control)
+void inputGyroCommand(const char *arg);
+
+// gyro aim (pad 1 / player 1 only): enable state, capability, sensitivity
+void inputGyroEnable(s32 enable);
+s32 inputGyroIsEnabled(void);
+s32 inputGyroSupported(s32 idx);
+void inputGyroGetSpeed(f32 *x, f32 *y);
+void inputGyroSetSpeed(f32 x, f32 y);
+
 #endif

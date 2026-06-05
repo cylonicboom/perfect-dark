@@ -546,6 +546,99 @@ static MenuItemHandlerResult menuhandlerVibration(s32 operation, struct menuitem
 	return 0;
 }
 
+// Gyro aim section (pad 1 / player 1 only for now): hidden entirely — rule
+// included — when the selected player's pad has no gyro, mirroring how
+// Vibration hides without rumble support.
+static MenuItemHandlerResult menuhandlerGyroSeparator(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_CHECKHIDDEN && !inputGyroSupported(g_ExtMenuPlayer)) {
+		return true;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerGyroAim(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return inputGyroIsEnabled();
+	case MENUOP_SET:
+		inputGyroEnable(data->checkbox.value);
+		break;
+	case MENUOP_CHECKHIDDEN:
+	case MENUOP_CHECKDISABLED:
+		if (!inputGyroSupported(g_ExtMenuPlayer)) {
+			return true;
+		}
+		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerGyroSpeedX(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	f32 x, y;
+
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		inputGyroGetSpeed(&x, &y);
+		if (x < 0.f) {
+			data->slider.value = 0;
+		} else {
+			data->slider.value = x * 100.f + 0.5f;
+		}
+		break;
+	case MENUOP_SET:
+		inputGyroGetSpeed(&x, &y);
+		inputGyroSetSpeed((f32)data->slider.value / 100.f, y);
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%.2f", (f32)data->slider.value / 100.f);
+		break;
+	case MENUOP_CHECKHIDDEN:
+	case MENUOP_CHECKDISABLED:
+		if (!inputGyroSupported(g_ExtMenuPlayer)) {
+			return true;
+		}
+		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerGyroSpeedY(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	f32 x, y;
+
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		inputGyroGetSpeed(&x, &y);
+		if (y < 0.f) {
+			data->slider.value = 0;
+		} else {
+			data->slider.value = y * 100.f + 0.5f;
+		}
+		break;
+	case MENUOP_SET:
+		inputGyroGetSpeed(&x, &y);
+		inputGyroSetSpeed(x, (f32)data->slider.value / 100.f);
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%.2f", (f32)data->slider.value / 100.f);
+		break;
+	case MENUOP_CHECKHIDDEN:
+	case MENUOP_CHECKDISABLED:
+		if (!inputGyroSupported(g_ExtMenuPlayer)) {
+			return true;
+		}
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerAnalogMovement(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -656,6 +749,38 @@ struct menuitem g_ExtendedControllerMenuItems[] = {
 		(uintptr_t)"Vibration",
 		10,
 		menuhandlerVibration,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		menuhandlerGyroSeparator,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Gyro Aim",
+		0,
+		menuhandlerGyroAim,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Gyro Speed X",
+		400,
+		menuhandlerGyroSpeedX,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Gyro Speed Y",
+		400,
+		menuhandlerGyroSpeedY,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

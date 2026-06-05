@@ -46,6 +46,51 @@ the same strength and duration via `SDL_RumbleGamepadTriggers`.
 - Strength inherits the existing `RumbleScale` scaling.
 - Config: `Input.PlayerN.TriggerRumble` (default `1`), per player.
 
+## Gyro aim (`port/src/input.c`) — MVP
+
+Motion aiming from pad 1's gyroscope (DualSense / DualShock 4 / Switch Pro),
+for player 1. **Default off** — enable with `/gyro on` or `Input.GyroAim=1`.
+
+How it works:
+
+- `SDL_SetGamepadSensorEnabled(.., SDL_SENSOR_GYRO, ..)` at assign (or on
+  `/gyro on`); the **event watcher** integrates each
+  `SDL_EVENT_GAMEPAD_SENSOR_UPDATE`'s angular velocity (rad/s) against the
+  sensor's own `sensor_timestamp` deltas — frame-rate-independent, no
+  sample-and-hold error (DualSense delivers ~250Hz). Gaps > 0.5s are
+  discarded (`GYRO_MAX_EVENT_DT`).
+- `inputUpdateGyro()` converts the integrated radians to a per-frame delta in
+  mouse-delta units, applying `Input.GyroSpeedX/Y` at conversion time so live
+  sens changes apply immediately. The conversion (`GYRO_UNIT_SCALE`) is
+  **empirically calibrated so sens 1.0 = 1:1** between physical pad rotation
+  and camera rotation (the raw rad→deg value overshoots ~3.3× through the
+  mouse-delta consumer scaling — measured on a DualSense). Default 1.0;
+  negative inverts an axis.
+- The delta is merged in `inputMouseGetScaledDelta` — one choke point feeding
+  bondmove freelook, aim-mode crosshair, eyespy, possess and spectator — so
+  gyro works everywhere mouse-look works. It rides the same `mouseLocked`
+  gameplay gate (no drift in menus/console) but is **deliberately not
+  suppressed by `MPOPTION_CONTROLLERS_ONLY`** (gyro is controller input).
+  The `Abs` variant (active-menu selection) deliberately gets no gyro.
+- `/gyro` console command: toggle / `on` / `off` / `sens X [Y]` / `status`
+  (status prints capability + sensor data rate).
+- **Menu**: Extended → Controller → Player 1, below Vibration behind a
+  separator rule — "Gyro Aim" checkbox + "Gyro Speed X/Y" sliders (0..4.00,
+  ×100 scale like the mouse-speed sliders). The whole section (rule included)
+  hides via `MENUOP_CHECKHIDDEN` when `inputGyroSupported(player)` is false —
+  i.e. on players 2-4 and on pads without a gyro — mirroring how Vibration
+  hides without rumble.
+- Config: `Input.GyroAim` (0/1, default 0), `Input.GyroSpeedX/Y`
+  (-30..30, default 1).
+
+Known MVP limits (build-out candidates): pad 1/player 1 only; no ratchet
+mode (e.g. gyro-only-while-aiming or touchpad-held-to-ratchet); no drift
+calibration (SDL's DualSense bias handling is decent; `/gyro status` +
+feel-testing will tell); gyro pauses whenever the mouse-lock gate is off,
+which also means it needs `Input.MouseEnabled=1` for the lock to engage;
+axis inversion is config/console-only (negative speed), the menu sliders
+clamp at 0.
+
 ## 3. Taskbar loading progress (`gfx_sdl.cpp` / `video.c` / `romdata.c`)
 
 The boot-time asset preprocessing (animations, textures list, audio banks —

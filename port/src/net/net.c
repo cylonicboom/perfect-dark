@@ -53,7 +53,8 @@
 // Forward-decl only: input.h can't be included here — windows.h (pulled in via
 // enet.h -> winsock2.h) #defines VK_RETURN/VK_ESCAPE/... which collide with
 // input.h's virtkey enum. Same pattern as audio.c's g_NetDedicatedMode.
-extern void inputPadTest(const char *arg); // /padtest debug command (input.c)
+extern void inputPadTest(const char *arg);     // /padtest debug command (input.c)
+extern void inputGyroCommand(const char *arg); // /gyro aim control (input.c)
 
 s32 g_NetMode = NETMODE_NONE;
 
@@ -4722,6 +4723,10 @@ s32 netConsoleCommand(const char *line)
 		// SDL3 gamepad extras (LED colours / trigger rumble, PORT_SDL3_EXTRAS.md).
 		// Body lives in input.c (needs the SDL_Gamepad handles). Local-only.
 		inputPadTest(arg);
+	} else if (strcmp(cmd, "gyro") == 0) {
+		// /gyro [on|off|sens X [Y]|status] — gyro aim (pad 1, SDL3 gamepad
+		// sensors; PORT_SDL3_EXTRAS.md). Body lives in input.c. Local-only.
+		inputGyroCommand(arg);
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.

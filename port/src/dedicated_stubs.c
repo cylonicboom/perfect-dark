@@ -141,3 +141,15 @@ const char *inputGetClipboard(void) { return ""; }
 u32 inputGetKeyModState(void) { return 0; }
 
 void inputPadTest(const char *arg) { (void)arg; }
+void inputGyroCommand(const char *arg) { (void)arg; }
+void inputGyroEnable(s32 enable) { (void)enable; }
+s32 inputGyroIsEnabled(void) { return 0; }
+s32 inputGyroSupported(s32 idx) { (void)idx; return 0; }
+
+void inputGyroGetSpeed(f32 *x, f32 *y)
+{
+	if (x) { *x = 0.0f; }
+	if (y) { *y = 0.0f; }
+}
+
+void inputGyroSetSpeed(f32 x, f32 y) { (void)x; (void)y; }

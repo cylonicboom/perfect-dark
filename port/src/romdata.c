@@ -58,8 +58,22 @@ u8 *g_RomFile;
 u32 g_RomFileSize;
 const char *g_RomName = ROMDATA_ROM_NAME;
 
+// chain-loaded second ROM (--mod-rom): a whole pre-modded PD ROM whose file
+// table and segments back the MOD_CHAINROM slot, while the engine code stays
+// this build. g_ChainRomActive locks g_ModNum to MOD_CHAINROM for the session.
+s32 g_ChainRomActive = 0;
+static u8 *chainRomFile;
+static u32 chainRomFileSize;
+static u8 *chainDataSeg;
+static u32 chainDataSegSize;
+
 static u8 *romDataSeg;
 static u32 romDataSegSize;
+
+// base pointer/size the segment loader resolves segment offsets against; set in
+// romdataInit to the base ROM, or the chain ROM when a --mod-rom is active
+static u8 *segRomBase;
+static u32 segRomBaseSize;
 
 enum loadsource {
 	SRC_UNLOADED = 0,
@@ -95,7 +109,7 @@ static const struct romfilepatch filePatches[] = {
 	{ 0x92b0, 1, "\x6c", "\x99" },
 };
 
-static struct romfile fileSlots[5][ROMDATA_MAX_FILES] = {
+static struct romfile fileSlots[MOD_COUNT][ROMDATA_MAX_FILES] = {
 	{ [FILE_USETUPLUE] = { .patches = &filePatches[0], .numpatches = 2 } },
 	{ [FILE_USETUPLUE] = { .patches = &filePatches[0], .numpatches = 2 } }, // GoldenEye X Mod
 	{ [FILE_USETUPLUE] = { .patches = &filePatches[0], .numpatches = 2 } }, // Kakariko Village Mod
@@ -193,32 +207,35 @@ static inline void romdataWrongRomError(const char *fmt, ...)
 	sysFatalError("Wrong ROM file.\n%s\nEnsure that you have the correct " ROMDATA_ROM_DESC " ROM in z64 format.", reason);
 }
 
-static inline void romdataLoadRom(void)
+// load and validate a PD ROM, inflating its compressed data segment. shared by
+// the base ROM and the chain-loaded --mod-rom; validation failures are fatal.
+static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 **outSeg, u32 *outSegSize)
 {
-	sysLogPrintf(LOG_NOTE, "ROM file: %s", g_RomName);
+	sysLogPrintf(LOG_NOTE, "ROM file: %s", name);
 
-	g_RomFile = fsFileLoad(g_RomName, &g_RomFileSize);
+	u32 romSize = 0;
+	u8 *rom = fsFileLoad(name, &romSize);
 
-	if (!g_RomFile) {
-		sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", g_RomName, fsFullPath(""));
+	if (!rom) {
+		sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", name, fsFullPath(""));
 	}
 
 	// zips are not guaranteed to start with PK, but might as well at least try
-	if (g_RomFileSize > 2 && (!memcmp(g_RomFile, "PK", 2) || !memcmp(g_RomFile, "Rar", 3) || !memcmp(g_RomFile, "7z", 2))) {
+	if (romSize > 2 && (!memcmp(rom, "PK", 2) || !memcmp(rom, "Rar", 3) || !memcmp(rom, "7z", 2))) {
 		romdataWrongRomError("Your ROM is in an archive file. Please extract it.");
 	}
 
-	if (g_RomFileSize != ROMDATA_ROM_SIZE) {
-		romdataWrongRomError("ROM size does not match: expected: %u, got: %u.", ROMDATA_ROM_SIZE, g_RomFileSize);
+	if (romSize != ROMDATA_ROM_SIZE) {
+		romdataWrongRomError("ROM size does not match: expected: %u, got: %u.", ROMDATA_ROM_SIZE, romSize);
 	}
 
-	if (memcmp(g_RomFile + 0x3b, ROMDATA_ROM_ID, 4) || memcmp(g_RomFile + 0x20, ROMDATA_ROM_TITLE, sizeof(ROMDATA_ROM_TITLE) - 1)) {
+	if (memcmp(rom + 0x3b, ROMDATA_ROM_ID, 4) || memcmp(rom + 0x20, ROMDATA_ROM_TITLE, sizeof(ROMDATA_ROM_TITLE) - 1)) {
 		romdataWrongRomError("ROM header does not match.");
 	}
 
 	// inflate the compressed data segment since that's where some useful stuff is
 
-	u8 *zipped = g_RomFile + ROMDATA_DATA_OFS;
+	u8 *zipped = rom + ROMDATA_DATA_OFS;
 	if (!rzipIs1173(zipped)) {
 		romdataWrongRomError("Data segment is not 1173-compressed.");
 	}
@@ -239,8 +256,15 @@ static inline void romdataLoadRom(void)
 		sysFatalError("Could not inflate data segment.");
 	}
 
-	romDataSeg = dataSeg;
-	romDataSegSize = dataSegLen;
+	*outRom = rom;
+	*outSize = romSize;
+	*outSeg = dataSeg;
+	*outSegSize = dataSegLen;
+}
+
+static inline void romdataLoadRom(void)
+{
+	romdataLoadRomFile(g_RomName, &g_RomFile, &g_RomFileSize, &romDataSeg, &romDataSegSize);
 }
 
 static inline void romdataUpdateSegStartEnd(struct romfile* seg)
@@ -269,7 +293,7 @@ static inline void romdataInitSegment(struct romfile *seg)
 			seg->size = seg[1].data - seg->data;
 		} else {
 			// this is the last segment, calculate based on rom size
-			seg->size = (uintptr_t)g_RomFileSize - (uintptr_t)seg->data;
+			seg->size = (uintptr_t)segRomBaseSize - (uintptr_t)seg->data;
 		}
 	}
 
@@ -284,8 +308,8 @@ static inline void romdataInitSegment(struct romfile *seg)
 
 	if (!newData) {
 		// no external data, just make it point to the rom
-		if (g_RomFile) {
-			newData = g_RomFile + (uintptr_t)seg->data;
+		if (segRomBase) {
+			newData = segRomBase + (uintptr_t)seg->data;
 			seg->source = SRC_ROM;
 			sysLogPrintf(LOG_NOTE, "loading segment %s from ROM (offset %08x pointer %p)", seg->name, (uintptr_t)seg->data, newData);
 		} else {
@@ -437,6 +461,40 @@ static inline void romdataInitFiles(void)
 	fileSlots[MOD_GOLDFINGER_64][FILE_GHAND_SKEDAR] = fileSlots[MOD_NORMAL][FILE_GHAND_SKEDAR];
 }
 
+// build the MOD_CHAINROM file table from the chain ROM's own offset and name
+// tables, so its assets and setup files (which carry the stage-specific action
+// blocks) resolve from the chain ROM rather than the base ROM
+static inline void romdataInitChainFiles(void)
+{
+	// the file offset table is in the chain ROM's data seg
+	const u32 *offsets = (u32 *)(chainDataSeg + ROMDATA_FILES_OFS);
+	u32 i;
+	for (i = 1; offsets[i]; ++i) {
+		if (offsets + i + 1 < (u32 *)(chainDataSeg + chainDataSegSize)) {
+			const u32 nextofs = PD_BE32(offsets[i + 1]);
+			const u32 ofs = PD_BE32(offsets[i]);
+			fileSlots[MOD_CHAINROM][i].data = chainRomFile + ofs;
+			fileSlots[MOD_CHAINROM][i].size = nextofs - ofs;
+			fileSlots[MOD_CHAINROM][i].source = SRC_UNLOADED;
+			fileSlots[MOD_CHAINROM][i].preprocessed = 0;
+		}
+	}
+
+	// last offset is to the name table
+	const u32 *nameOffsets = (u32 *)(chainRomFile + PD_BE32(offsets[i - 1]));
+	for (i = 1; nameOffsets[i]; ++i) {
+		const u32 ofs = PD_BE32(nameOffsets[i]);
+		fileSlots[MOD_CHAINROM][i].name = (const char *)nameOffsets + ofs; // ofs is relative to the start of the name table
+	}
+
+	// mirror the manually-added model-slot-expansion entries from the base table
+	// (loaded from loose files if present; absent from the stock ROM file table)
+	fileSlots[MOD_CHAINROM][FILE_CDRCARROLL2] = fileSlots[MOD_NORMAL][FILE_CDRCARROLL2];
+	fileSlots[MOD_CHAINROM][FILE_CSKEDAR2] = fileSlots[MOD_NORMAL][FILE_CSKEDAR2];
+	fileSlots[MOD_CHAINROM][FILE_GHAND_DRCARROLL] = fileSlots[MOD_NORMAL][FILE_GHAND_DRCARROLL];
+	fileSlots[MOD_CHAINROM][FILE_GHAND_SKEDAR] = fileSlots[MOD_NORMAL][FILE_GHAND_SKEDAR];
+}
+
 static inline void romdataResetFile(s32 fileNum)
 {
 	// the file offset table is in the data seg
@@ -469,6 +527,28 @@ s32 romdataInit(void)
 
 	romdataLoadRom();
 
+	// optional chain-loaded second ROM: a whole pre-modded PD ROM whose data
+	// (assets + setup files carrying action blocks) backs the MOD_CHAINROM slot.
+	// must be the same region as the base ROM (file table offsets and FILE_* ids
+	// are version-specific). the engine code stays this build.
+	const char *chainRomName = sysArgGetString("--mod-rom");
+	if (chainRomName) {
+		romdataLoadRomFile(chainRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize);
+		g_ChainRomActive = 1;
+		g_ModNum = MOD_CHAINROM;
+		sysLogPrintf(LOG_NOTE, "romdataInit: chain ROM active (MOD_CHAINROM): %s", chainRomName);
+	}
+
+	// resolve segments (and the slow boot preprocessing) against the chain ROM
+	// when active, otherwise the base ROM
+	if (g_ChainRomActive) {
+		segRomBase = chainRomFile;
+		segRomBaseSize = chainRomFileSize;
+	} else {
+		segRomBase = g_RomFile;
+		segRomBaseSize = g_RomFileSize;
+	}
+
 	// boot preprocessing (animations, textures, audio banks) is the slow part
 	// of startup; mirror its progress onto the taskbar/dock icon
 	s32 totalSegs = 0;
@@ -484,8 +564,13 @@ s32 romdataInit(void)
 		++doneSegs;
 	}
 
-	// load file table from the files segment
+	// load the base ROM file table into all the loose-file mod slots
 	romdataInitFiles();
+
+	// then build the MOD_CHAINROM table from the chain ROM's own file table
+	if (g_ChainRomActive) {
+		romdataInitChainFiles();
+	}
 
 	videoSetTaskbarProgress(VIDEO_TASKBAR_NONE, 0.f);
 
@@ -650,6 +735,12 @@ void romdataFileFree(s32 fileNum)
 
 void romdataFileFreeForSolo(void)
 {
+	// the chain ROM is a full data set bound to MOD_CHAINROM for the whole
+	// session; resetting its slots back to the base ROM would defeat the point
+	if (g_ChainRomActive) {
+		return;
+	}
+
 	// All Solos in Multi Mod: reset mod files for solo (bg, clipping, pads)
 	romdataResetFile(0x009); // bgdata/bg_azt.seg
 	romdataResetFile(0x00a); // bgdata/bg_pete.seg

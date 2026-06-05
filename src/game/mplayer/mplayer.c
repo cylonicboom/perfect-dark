@@ -295,7 +295,9 @@ void mpStartMatch(void)
 		stagenum = mpChooseRandomGexStage();
 	}
 
-	// Mod Switch (MP Start)
+	// Mod Switch (MP Start) - skipped while a chain-loaded ROM (--mod-rom) is
+	// active so it stays bound to MOD_CHAINROM for the whole session
+	if (!g_ChainRomActive)
 	switch (stagenum) {
 	case STAGE_TEST_SILO:
 	case STAGE_TEST_LAM:

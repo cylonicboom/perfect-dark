@@ -596,6 +596,8 @@ s32 playerGetLocalCount(void);
 // 1: GoldenEye X Mod
 // 2: Kakariko Village Mod
 extern s32 g_ModNum;
+// chain-loaded second ROM active (--mod-rom); locks g_ModNum to MOD_CHAINROM
+extern s32 g_ChainRomActive;
 // GoldenEye X Mod
 extern struct modelstate g_GexModelStates[NUM_MODELS];
 extern s8 g_GexPropExplosionTypes[];

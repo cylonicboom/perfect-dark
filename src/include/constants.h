@@ -4926,4 +4926,6 @@ enum weaponnum {
 #define MOD_KAKARIKO 2
 #define MOD_DARKNOON 3
 #define MOD_GOLDFINGER_64 4
+#define MOD_CHAINROM 5 // chain-loaded second ROM (--mod-rom)
+#define MOD_COUNT 6
 #endif

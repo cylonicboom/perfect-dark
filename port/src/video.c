@@ -42,7 +42,10 @@ static s32 vidFullscreenExclusive = DEFAULT_VID_FULLSCREEN_EXCLUSIVE;
 static f32 vidRefreshRate = 0.f; // exclusive-fullscreen refresh rate; 0 = auto
 static s32 vidMaximize = false;
 static s32 vidCenter = false;
-static s32 vidAllowHiDpi = false;
+// default ON since SDL3: renders at native pixel density on macOS/Wayland
+// (SDL_WINDOW_HIGH_PIXEL_DENSITY); no effect on Windows, where windows are
+// always pixel-sized and SDL3 is DPI-aware out of the box
+static s32 vidAllowHiDpi = true;
 static s32 vidVsync = 1;
 static s32 vidMSAA = 1;
 static s32 vidFramerateLimit = 0;
@@ -218,6 +221,17 @@ void videoSetTaskbarProgress(s32 state, f32 value)
 	if (initDone && wmAPI && wmAPI->set_taskbar_progress) {
 		wmAPI->set_taskbar_progress(state, value);
 	}
+}
+
+s32 videoGetAllowHiDpi(void)
+{
+	return vidAllowHiDpi;
+}
+
+void videoSetAllowHiDpi(s32 allow)
+{
+	// takes effect at the next window creation (restart)
+	vidAllowHiDpi = !!allow;
 }
 
 s32 videoGetRefreshRates(f32 *out, s32 max)

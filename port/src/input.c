@@ -1034,8 +1034,18 @@ static inline void inputUpdateMouse(void)
 
 	f32 fmx = 0.f, fmy = 0.f;
 	mouseButtons = SDL_GetMouseState(&fmx, &fmy);
-	const s32 mx = (s32)fmx;
-	const s32 my = (s32)fmy;
+
+	// window coords are in points on macOS/Wayland HiDPI windows; map them to
+	// pixel space so inputMouseGetPosition's mapping against videoGetWidth()
+	// (pixels) stays 1:1. Density is 1.0 on Windows, making this a no-op.
+	SDL_Window *vwnd = (SDL_Window *)videoGetWindowHandle();
+	f32 pd = vwnd ? SDL_GetWindowPixelDensity(vwnd) : 1.f;
+	if (pd <= 0.f) {
+		pd = 1.f;
+	}
+
+	const s32 mx = (s32)(fmx * pd);
+	const s32 my = (s32)(fmy * pd);
 
 	if (mouseWheel > 0) {
 		mouseButtons |= WHEEL_UP_MASK;

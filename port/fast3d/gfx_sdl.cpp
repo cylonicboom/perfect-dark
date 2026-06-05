@@ -108,6 +108,23 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         sysFatalError("Could not init SDL:\n%s", SDL_GetError());
     }
 
+#ifdef PLATFORM_WIN32
+    // Windows sizes windows in physical pixels, so on a scaled desktop
+    // (125%/150%/4K) the configured window size looks physically tiny.
+    // Grow the initial windowed size by the desktop content scale so the
+    // configured size means "logical size". Windowed boots only — fullscreen
+    // mode selection must keep using the configured pixel size.
+    if (!set->fullscreen) {
+        const float cscale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+        if (cscale > 1.0f) {
+            window_width = (int)((float)window_width * cscale + 0.5f);
+            window_height = (int)((float)window_height * cscale + 0.5f);
+            sysLogPrintf(LOG_NOTE, "SDL: desktop scale %.2f, scaling window to %dx%d",
+                cscale, window_width, window_height);
+        }
+    }
+#endif
+
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
@@ -328,6 +345,9 @@ static void gfx_sdl_handle_events(void) {
                 break;
             case SDL_EVENT_WINDOW_RESIZED:
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            // dragged to a monitor with a different scale factor: the pixel
+            // size of a high-pixel-density window changes with it
+            case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
                 SDL_GetWindowSizeInPixels(wnd, &window_width, &window_height);
                 if (!fullscreen_state) {
                     maximized_state = (SDL_GetWindowFlags(wnd) & SDL_WINDOW_MAXIMIZED) ? true : false;

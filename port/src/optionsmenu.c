@@ -982,6 +982,19 @@ static MenuItemHandlerResult menuhandlerResolution(s32 operation, struct menuite
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerHiDpi(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return videoGetAllowHiDpi();
+	case MENUOP_SET:
+		videoSetAllowHiDpi(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerRefreshRate(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static char ratestring[20];
@@ -1244,6 +1257,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		(uintptr_t)"Center Window",
 		0,
 		menuhandlerCenterWindow,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"HiDPI (restart)",
+		0,
+		menuhandlerHiDpi,
 	},
 	{
 		MENUITEMTYPE_DROPDOWN,

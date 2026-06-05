@@ -35,6 +35,10 @@ void *videoGetWindowHandle(void);
 // (only used for VIDEO_TASKBAR_NORMAL); no-op when unsupported or headless
 void videoSetTaskbarProgress(s32 state, f32 value);
 
+// HiDPI rendering (SDL_WINDOW_HIGH_PIXEL_DENSITY); set takes effect on restart
+s32 videoGetAllowHiDpi(void);
+void videoSetAllowHiDpi(s32 allow);
+
 // exclusive-fullscreen refresh rate; 0 = auto. videoGetRefreshRates fills out
 // with the distinct rates available for the currently selected resolution.
 s32 videoGetRefreshRates(f32 *out, s32 max);

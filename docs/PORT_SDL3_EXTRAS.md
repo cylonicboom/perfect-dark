@@ -91,6 +91,34 @@ which also means it needs `Input.MouseEnabled=1` for the lock to engage;
 axis inversion is config/console-only (negative speed), the menu sliders
 clamp at 0.
 
+## HiDPI pass (`gfx_sdl.cpp` / `video.c` / `input.c` / `optionsmenu.c`)
+
+**Verified on Windows at 4K; the macOS Retina / Wayland items (native-pixel
+rendering, mouse points→pixels) are implemented per SDL3 semantics but need
+community verification on those platforms.**
+
+- `Video.AllowHiDpi` now **defaults to 1**: the window gets
+  `SDL_WINDOW_HIGH_PIXEL_DENSITY`, rendering at native pixel density on
+  macOS Retina / Wayland. No effect on Windows (windows there are always
+  pixel-sized; SDL3 is DPI-aware out of the box, which already killed the
+  SDL2-era blurry-upscale problem). Menu: Extended → Video → "HiDPI
+  (restart)" checkbox (`videoGet/SetAllowHiDpi`; window-creation flag, needs
+  restart).
+- **Windows scaled-desktop window sizing** (`gfx_sdl_init`,
+  `#ifdef PLATFORM_WIN32`): windowed boots multiply the configured size by
+  `SDL_GetDisplayContentScale`, so the default window isn't physically tiny
+  at 125%/150%/4K scaling. Fullscreen boots are exempt — mode selection keeps
+  using the configured pixel size. No config feedback loop: the scale is
+  applied at window creation only and never written back to
+  `Video.DefaultWidth/Height`.
+- **Mouse points→pixels mapping** (`inputUpdateMouse`): absolute cursor
+  coords are multiplied by `SDL_GetWindowPixelDensity` so the menu-cursor
+  mapping against `videoGetWidth()` (pixels) stays 1:1 on macOS/Wayland
+  HiDPI windows. Density is 1.0 on Windows — a no-op there. Relative aim
+  deltas are deliberately untouched (sensitivity preference, not geometry).
+- `SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED` joins the resize cases in
+  `gfx_sdl_handle_events` (drag between monitors with different scaling).
+
 ## Refresh-rate picker (`gfx_sdl.cpp` / `video.c` / `optionsmenu.c`)
 
 Extended → Video gains a **"Refresh Rate"** dropdown under Resolution: "Auto"

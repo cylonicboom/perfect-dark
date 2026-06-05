@@ -92,6 +92,7 @@ Two ENet channels:
 | 0x0b | CLC_STAGE_COMPLETE | Co-op: client's local sim reached the exit / scripted mission-complete; host ends the stage for all (added on `port-net-predict`) |
 | 0x0c | CLC_OBJECTIVE_DONE | Co-op: client completed an objective the host can't witness (trigger room entered, throw-on-object, camera holograph); host latches it into `objectiveCheck` (`g_NetCoopClientObjDone`) and rebroadcasts `SVC_OBJECTIVE` (proto 53) |
 | 0x0d | CLC_PICKUP_REQUEST | Co-op: client wants to collect an OBJ/weapon/key prop (by syncid). Clients can't take pickups locally (`objTestForPickup` defers); the host re-validates against the client's synced position via `objTestForPickup` for that player slot and grants authoritatively through `SVC_PROP_PICKUP` (proto 55) |
+| 0x0e | CLC_BOT_CMD | Combat Sim: client orders an own-team simulant — `{botindex:u8, command:u8, targetindex:u8}` (`g_MpAllChrPtrs` indices, wire-stable; target 0xff = none). Server validates teams-enabled + team ownership + command range, then applies via `botApplyAttack` / `botcmdApply` run as the sender (`setCurrentPlayerNum`) so FOLLOW/PROTECT/DEFEND/HOLD anchor to the ordering player. Sent from the active menu (`activemenu.c`) — non-ATTACK slots send directly; ATTACK opens the local pick-target dialog and forwards the chosen target. Reliable control channel (proto 56). The client menu's current-order highlight reads the LOCAL `aibot->command`, which is mirrored back continuously via gunfire-byte bits 3-6 in the chr-state block — so the menu reflects the server's actual state (and confirms the order applied) |
 
 > **Co-op stage-completion handshake.** Mission-complete is detected per-machine on
 > the local player (`func0000e990` → `mainEndStage`). The host ending broadcasts
@@ -342,6 +343,38 @@ Net symptom: no shield-hit flash on the client and damage spilling into health e
 
 **Fix:** the chr-state block now carries the **authoritative** `cshield` (u8, 0..8, 1/32-unit precision) + `chr->damage` (raw f32 — an armoured chr's damage is negative, so not quantised). The client **overwrites** both every snapshot (`g_NetMode == NETMODE_CLIENT`); the `SVC_CHR_DAMAGE` replay is left running purely for effects (blood, shield flash, knockback, sound), no longer load-bearing for HP. **Death visuals are unaffected** — they're animnum-driven (the client force-sets `ACT_STAND` in the chr-state apply, so `chrIsDead`, which keys on `ACT_DIE/ACT_DEAD`, never trips client-side anyway), so no client-side `chrDie` is needed. Protocol bumped 38 → 39.
 
+### Cloak Sync — Players + Sims + NPCs (no proto bump)
+
+Cloaking (`chr->hidden & CHRHFLAG_CLOAKED`) was fully unsynced: the cloak
+DECISION inputs are owner-local (a sim's `aibot->cloakdeviceenabled` /
+`rcp120cloakenabled` come from server-only bot AI; a player's `devicesactive` +
+cloak ammo are never replicated), so remote machines not only never engaged a
+cloak — `chrUpdateCloak`'s decision branches read "nothing active" and would
+instantly *un*cloak any flag that got set. Three pieces fix it:
+
+- **Owner publishes state, never the decision.** Players: `UCMD_CLOAKED`
+  (bit 11) is set in the local ucmd composition (`bondmove.c`) from the own
+  chr's flag, riding every CLC_MOVE/SVC_PLAYER_MOVE (verbatim ucmd
+  pass-through). Sims/co-op NPCs: bit 2 of the existing **gunfire byte** in the
+  `SVC_PROP_MOVE` chr-state block (spare bit — wire size unchanged, no protocol
+  bump; covers script-cloaked NPCs too since the writer reads `chr->hidden`).
+  Gunfire-byte layout is now: bits 0-1 = per-hand muzzle flash, bit 2 = cloak,
+  bits 3-6 = current `aibot->command` (+1 biased, 0 = absent — drives the
+  client active menu's order highlight, see CLC_BOT_CMD), bit 7 spare.
+- **Remote machines mirror the flag, edge-detected** (so the on/off SFX plays
+  once per transition, positionally): players in `bmoveProcessRemoteInput`
+  (`bondmove.c`, the eyesshut/crouch pattern); sims/NPCs in the chr-state
+  cloak reconcile (`netmsgSvcPropMoveRead`, right after the muzzle-flash
+  reconcile). Continuous state — a dropped packet self-heals next snapshot.
+- **`chrUpdateCloak`'s decision region is skipped for wire-driven chrs**
+  (`chr.c`): remote players (`isremote`, any netmode — the server doesn't know
+  other players' devices either) and client-side synced chrs (`NETMODE_CLIENT`
+  + `syncid`). Only the flag-driven `cloakfadefrac` fade tail runs for them, so
+  the shimmer still animates locally.
+
+Transient divergence (e.g. `chrUncloakTemporarily` firing on a remote machine's
+replayed shot) converges within one move/snapshot via the continuous reconcile.
+
 ### Sim Position Speed Cap Removed (`netmsg.c`)
 
 The receive-time chr-state apply (`netmsgSvcPropMoveRead`) used to gate its 50% smoothing blend behind `dist_sq < 80*80` (80 units / server update, "above what AI movement can produce") and **hard-snap** above it — the same guard reused for the yrot, aim-shoulder and angleoffset blends. That assumption is false for high-speed (Dark) sims, which legitimately move >80 units/update, so the cap mis-fired and snapped them every update. **All four blends are now unconditional.** The blend always converges (each packet halves the remaining error), so a genuine respawn/teleport just slides over a few packets instead of getting stuck — and `prop->pos` is still committed every packet so it can't freeze (the original stuck-at-death-location concern). This is the `/chrinterp off` fallback path only; with `/chrinterp on` (default) `netChrInterpolate` already drove position from the raw, **un-capped** snapshot ring, so it never had a speed cap. No wire/protocol change.
@@ -382,6 +415,51 @@ truncated message sets `src->error` and the removal pass is skipped. Existence-o
 deterministic positional syncid pool kept consistent by symmetric spawn/free).
 See `docs/PORT_COOP_PREP.md` for the design rationale and the checksum optimization
 for scale.
+
+### The Uninitialised-netsnap Crash (root cause) + Wire Hardening (no proto bump)
+
+**Root cause of the "client leaves after a match ended" crash family** (`0xc0000005`
+in `netChrInterpolate` reading a garbage `netsnaphead`; `portal00018148`
+wild-writing off garbage `prop->rooms`): the port-appended `chrdata.netsnap[]` /
+`netsnaphead` were **never initialised** — `chrInit` sets fields one by one (no
+memset) and chr slots are recycled stage-pool memory. First sessions worked
+because fresh OS pages are zero; after a match, the next stage's chrs inherit the
+old pool bytes. While still connected (`NETMODE_CLIENT` — e.g. the front-end
+stage loading after `SVC_STAGE_END`, before the user disconnects), every chr runs
+`netChrInterpolate`, which trusts `netsnap[head].tick != 0`: garbage head = OOB
+read crash; in-range head with garbage tick = interpolating a garbage pose AND
+`roomsCopy`ing garbage snapshot rooms into `prop->rooms` → `propRegisterRooms` /
+`portal00018148` index with them (wild write, lib_17ce0.c:214). A host-side kick
+never crashed because `netDisconnect` clears `g_NetMode` *before* the front-end
+stage loads — the voluntary-leave path loads it while still connected. **Fix:
+`chrInit` (chr.c) clears `netsnaphead` + every `netsnap[].tick`** (same recycled
+chrslot lesson as the GE `lastdamagetick60` reset, PORT_GOLDENEYE.md gotchas).
+
+Defense-in-depth added during the same hunt (kept because they close real, if
+narrower, corruption paths):
+
+- **Type-confusion gate** (`netmsgSvcPropMoveRead`): `prop->chr` / `prop->obj` /
+  `prop->door` alias one union slot, so `prop->chr != NULL` is true for ANY prop.
+  The write side was already type-gated (`has_obj`, after a past crash); the read
+  side wasn't. With co-op runtime chr FREE replication recycling syncids, a stale
+  **unreliable** chr-state move (`flags` bit 4) arriving after its chr's syncid was
+  reused by a weapon/obj prop wrote a full chrdata of state (the `netsnap` ring at
+  `chr+0x3d4`+) over a much smaller objdata — trashing neighbouring stage-pool
+  allocations. Both the chr-state apply and the obj/projectile section are now
+  gated on `prop->type` (mirroring the writer); wire bytes are still consumed so
+  the stream stays aligned. Mismatches log "recycled syncid?" warnings (tick-throttled).
+  Reliable-channel chr messages (`SVC_CHR_DAMAGE`/`_FIRE`/…) don't need the gate —
+  they're ordered against the reliable chr FREE.
+- **Room sanitization** (`netbufReadRooms`): room numbers index `g_Rooms[]`, the
+  per-room prop lists (`propRegisterRooms`) and portal tables on **writes** as well
+  as reads, so garbage wire rooms = memory corruption. All five read sites now
+  truncate at the first invalid entry (valid = `1..roomcount-1`) and force `-1`
+  termination (an unterminated 8-entry array would make `roomsCopy` overrun).
+  This also covers the server side (`CLC_MOVE` rooms → `chrSetPos`).
+
+`netChrInterpolate` keeps a logged invariant check on `netsnaphead` (and
+`netChrRecordSnapshot` re-seats a corrupt head) so any *future* corruption logs
+and skips instead of crashing or silently freezing.
 
 ### Diagnostic Log (`net.c`)
 

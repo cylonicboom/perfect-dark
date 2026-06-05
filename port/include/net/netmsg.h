@@ -59,6 +59,7 @@
 #define CLC_STAGE_COMPLETE 0x0b // co-op client reached the exit / scripted mission-complete; host ends the stage for all
 #define CLC_OBJECTIVE_DONE 0x0c // co-op client completed an objective the host can't witness (room entered, throw-on-object, holograph); host latches + rebroadcasts
 #define CLC_PICKUP_REQUEST 0x0d // co-op client wants to pick up an OBJ/weapon prop (by syncid); host re-validates + grants via SVC_PROP_PICKUP
+#define CLC_BOT_CMD 0x0e // Combat Sim: client orders an own-team simulant (botindex, command, targetindex); server validates team + applies
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -101,6 +102,12 @@ u32 netmsgClcPropHitRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl);
+// CLC_BOT_CMD (Combat Sim): {u8 botindex, u8 command, u8 targetindex (0xff = none)}.
+// Indices into g_MpAllChrPtrs (wire-stable). Server validates: teams enabled,
+// botindex is a bot on the sender's team, command in range; AIBOTCMD_ATTACK
+// requires a valid target. FOLLOW/PROTECT/DEFEND/HOLD anchor to the SENDER's
+// player via setCurrentPlayerNum around botcmdApply.
+u32 netmsgClcBotCmdRead(struct netbuf *src, struct netclient *srccl);
 
 // SVC_OBJECTIVE (co-op): host-authoritative objective status mirror. Wire:
 // { count:u8, status[count]:u8 } — count = g_ObjectiveLastIndex+1, each status is

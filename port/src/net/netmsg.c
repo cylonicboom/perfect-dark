@@ -26,6 +26,8 @@
 #include "game/menu.h"
 #include "game/setup.h"
 #include "game/setuputils.h"
+#include "game/bot.h"
+#include "game/botcmd.h"
 #include "game/modelmgr.h"
 #include "game/propsnd.h"
 #include "system.h"
@@ -85,6 +87,23 @@ static inline u32 netbufReadRooms(struct netbuf *buf, s16 *rooms, const s32 num)
 		if (rooms[i] < 0) {
 			break;
 		}
+	}
+	// SANITIZE before these can reach prop->rooms: room numbers index g_Rooms[],
+	// the per-room prop lists (propRegisterRooms) and the portal tables
+	// (portal00018148) directly — on WRITES as well as reads — so a stale or
+	// desynced packet carrying garbage here is memory corruption, not just a
+	// visual glitch (seen in the wild as a portal00018148 wild write:
+	// g_Rooms[garbage].roomportallistoffset -> wild portalnum -> wild s1[0]
+	// store, lib_17ce0.c:214). Valid rooms are 1..roomcount-1 (room 0 is the
+	// outside placeholder — same bounds test as bg.c's bgRoomGetProps).
+	// Truncate at the first invalid entry and force -1 termination so
+	// roomsCopy / propRoomsEqual can never walk past an unterminated array.
+	{
+		s32 n = 0;
+		while (n < num - 1 && rooms[n] >= 1 && rooms[n] < g_Vars.roomcount) {
+			++n;
+		}
+		rooms[n] = -1;
 	}
 	return buf->error;
 }
@@ -1453,6 +1472,72 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcBotCmdRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 botindex = netbufReadU8(src);
+	const u8 command = netbufReadU8(src);
+	const u8 targetindex = netbufReadU8(src);
+
+	if (src->error) {
+		return src->error;
+	}
+
+	// The fixed-size body is fully consumed above, so validation failures just
+	// ignore the order (return 0) and the rest of the packet stays parseable.
+	if (srccl->state != CLSTATE_GAME || !srccl->player || !srccl->player->prop) {
+		return 0;
+	}
+	if (!g_Vars.normmplayerisrunning || !(g_MpSetup.options & MPOPTION_TEAMSENABLED)) {
+		return 0; // sims are only orderable in team games (the buddy-list gate)
+	}
+	// botindex must be a SIMULANT slot — players occupy 0..PLAYERCOUNT()-1 in
+	// g_MpAllChrPtrs, bots follow (see playermgrCalculateAiBuddyNums).
+	if (botindex < PLAYERCOUNT() || botindex >= g_MpNumChrs) {
+		return 0;
+	}
+	struct chrdata *botchr = g_MpAllChrPtrs[botindex];
+	if (!botchr || !botchr->aibot || !botchr->prop) {
+		return 0;
+	}
+	// Team ownership: the bot must be on the sender's team — the same test
+	// playermgrCalculateAiBuddyNums uses to build the client's order menu.
+	if (srccl->playernum >= PLAYERCOUNT()
+			|| g_MpAllChrConfigPtrs[botindex]->team != g_MpAllChrConfigPtrs[srccl->playernum]->team) {
+		sysLogPrintf(LOG_WARNING, "NET: client %u ordered bot %u not on their team", srccl->id, botindex);
+		return 0;
+	}
+	if (command > AIBOTCMD_PROTECT) {
+		return 0;
+	}
+
+	if (command == AIBOTCMD_ATTACK) {
+		// ATTACK arrives with the explicit target the client picked from its
+		// pick-target dialog (any player or bot except the bot itself).
+		if (targetindex >= g_MpNumChrs || targetindex == botindex) {
+			return 0;
+		}
+		struct chrdata *targetchr = g_MpAllChrPtrs[targetindex];
+		if (!targetchr || !targetchr->prop) {
+			return 0;
+		}
+		botApplyAttack(botchr, targetchr->prop);
+	} else {
+		// FOLLOW/PROTECT/DEFEND/HOLD anchor to the ORDERING player's prop —
+		// botcmdApply reads g_Vars.currentplayer — so run it as the sender
+		// (the netmsgClcPickupRequestRead pattern). ATTACK can't reach here,
+		// so botcmdApply's amOpenPickTarget UI branch is unreachable.
+		const s32 prevplayernum = g_Vars.currentplayernum;
+		setCurrentPlayerNum(srccl->playernum);
+		botcmdApply(botchr, command);
+		setCurrentPlayerNum(prevplayernum);
+	}
+
+	netDiagLogf("botcmd", "cl=%u bot=%u cmd=%u target=%u",
+			srccl->id, botindex, command, targetindex);
+
+	return 0;
+}
+
 u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 {
 	if (movecl->state < CLSTATE_GAME || !movecl->player || !movecl->player->prop) {
@@ -1932,6 +2017,27 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 				gunfire |= (1 << h);
 			}
 		}
+		// CLOAK (bit 2 — spare bit of the gunfire byte, so no wire-size change
+		// and no protocol bump; old peers ignore it). The cloak decision for a
+		// sim lives in server-only bot AI state (aibot->cloakdeviceenabled /
+		// rcp120cloakenabled) and for campaign NPCs in server-only AI scripts,
+		// so without this bit clients never see a sim/NPC cloak. Continuous
+		// state like the muzzle-flash bits: reconciled every snapshot, drops
+		// self-heal.
+		if (chr->hidden & CHRHFLAG_CLOAKED) {
+			gunfire |= (1 << 2);
+		}
+		// CURRENT BOT COMMAND (bits 3-6, biased +1 so 0 = "absent": old
+		// builds and non-aibot chrs leave the field zero and the client keeps
+		// its local default instead of decoding garbage as FOLLOW=0). The
+		// client's active menu reads aibot->command to highlight the sim's
+		// current order, but that field never updates client-side (botTick is
+		// server-only) — without this the menu always showed "Normal" even
+		// after a CLC_BOT_CMD applied. Also tracks scenario auto-switches
+		// (bot.c retasking) and doubles as order-applied confirmation.
+		if (chr->aibot) {
+			gunfire |= (u8)(((chr->aibot->command + 1) & 0xf) << 3);
+		}
 		netbufWriteU8(dst, gunfire);
 		// HEALTH + SHIELD (proto 39). The client reconstructs a sim's HP/shield
 		// purely by replaying SVC_CHR_DAMAGE through chrDamage, which desyncs the
@@ -2050,12 +2156,19 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 
 	// obj / projectile section — present only when bit 0 is set
 	if (flags & (1 << 0)) {
-		if (!prop || !prop->obj) {
+		// Type-gate mirrors the write side's union-aliasing guard (see
+		// netmsgSvcPropMoveWrite): prop->obj aliases prop->chr/door, so for a
+		// stale/recycled syncid that now resolves to a CHR prop, `prop->obj`
+		// would be non-NULL but point at chr data — the OBJHFLAG reads below
+		// would chase junk pointers. A type mismatch stops the packet exactly
+		// like the missing-obj case.
+		if (!prop || !prop->obj || (prop->type != PROPTYPE_OBJ
+				&& prop->type != PROPTYPE_WEAPON && prop->type != PROPTYPE_DOOR)) {
 			// Can't resolve the obj here, so we can't safely consume the
 			// flag-determined projectile body — stop the packet (logged as
 			// SVC_PROP_MOVE, not a garbage id). Rare: a projectile move normally
 			// arrives after its spawn. prop may be NULL (see header note).
-			sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't", prop ? prop->syncid : 0);
+			sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't (type %d)", prop ? prop->syncid : 0, prop ? prop->type : -1);
 			return 1;
 		}
 
@@ -2148,7 +2261,29 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// the buffer aligned even when prop/chr didn't resolve; applied below.
 		const u8 wireshield8 = netbufReadU8(src);
 		const f32 wirehealth = netbufReadF32(src);
-		if (prop && prop->chr) {
+		// TYPE-CONFUSION GUARD, mirroring the write side's union-aliasing fix
+		// (netmsgSvcPropMoveWrite's has_obj comment): prop->chr aliases
+		// prop->obj/door in the same union slot, so `prop->chr != NULL` is
+		// meaninglessly true for ANY resolved prop. With runtime chr lifecycle
+		// (co-op SPAWN/FREE replication) a freed chr's syncid can be recycled by
+		// a weapon/obj prop while a stale unreliable chr-state move for the old
+		// chr is still in flight; applying the block below then writes a full
+		// chrdata's worth of state — including the netsnap ring at chr+0x3d4
+		// onward (netChrRecordSnapshot) — far past the end of the much smaller
+		// objdata, trashing neighbouring stage-pool allocations. (The observed
+		// post-match crash family turned out to be the uninitialised netsnap
+		// ring, fixed in chrInit — but this union hazard is real and closed
+		// here.) All wire bytes were already consumed into locals above, so
+		// skipping the apply keeps the stream aligned.
+		if (prop && prop->chr && prop->type != PROPTYPE_CHR) {
+			static u32 s_typewarn_tick = 0xffffffffu;
+			if (g_NetTick != s_typewarn_tick) {
+				s_typewarn_tick = g_NetTick;
+				sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: chr-state for syncid %u skipped, prop type is %d (recycled syncid?)",
+						prop->syncid, prop->type);
+			}
+		}
+		if (prop && prop->type == PROPTYPE_CHR && prop->chr) {
 			struct chrdata *chr = prop->chr;
 			chr->actiontype = ACT_STAND;
 
@@ -2418,6 +2553,25 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				}
 			}
 
+			// AIBOT WEAPONNUM MIRROR: the active menu's bot screen shows the
+			// sim's equipped weapon by reading aibot->weaponnum (activemenu.c),
+			// which only server-side bot AI updates (botact weapon switching) —
+			// so on clients every sim read as unarmed ("No Weapon") even while
+			// visibly holding the synced weapon props from the loop above.
+			// Mirror the synced held-weapon state into it: right hand is the
+			// primary (single weapons ride HAND_RIGHT), fall back to the left
+			// for the left-only case. Display-only on clients — botTick, the
+			// other reader, never runs here.
+			if (chr->aibot) {
+				if (weapon_r >= 0) {
+					chr->aibot->weaponnum = weapon_r;
+				} else if (weapon_l >= 0) {
+					chr->aibot->weaponnum = weapon_l;
+				} else {
+					chr->aibot->weaponnum = WEAPON_UNARMED;
+				}
+			}
+
 			// MUZZLE FLASH RECONCILE (continuous). Force each hand's gunfire-visible
 			// flag to exactly match the server's authoritative state from this
 			// snapshot. This is what makes a stuck flash impossible: even if the
@@ -2433,6 +2587,38 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 					const bool visible = (gunfire & (1 << h)) != 0;
 					weaponSetGunfireVisible(weaponprop, visible,
 							chr->prop ? chr->prop->rooms[0] : -1);
+				}
+			}
+
+			// CLOAK RECONCILE (continuous, bit 2 of the gunfire byte). The cloak
+			// decision runs only on the owner (bot AI / AI scripts, both
+			// server-only) and chrUpdateCloak's decision region is skipped for
+			// wire-driven chrs, so this synced flag is authoritative here.
+			// Edge-detected so the cloak on/off sound plays once per transition,
+			// positionally at the chr. The fade (cloakfadefrac) still animates
+			// locally in chrUpdateCloak's flag-driven tail.
+			{
+				const bool wantcloak = (gunfire & (1 << 2)) != 0;
+				const bool iscloaked = (chr->hidden & CHRHFLAG_CLOAKED) != 0;
+				if (wantcloak != iscloaked) {
+					if (wantcloak) {
+						chrCloak(chr, true);
+					} else {
+						chrUncloak(chr, true);
+					}
+				}
+			}
+
+			// CURRENT BOT COMMAND (bits 3-6 of the gunfire byte, +1 biased;
+			// 0 = absent). Mirror the server's authoritative aibot->command
+			// into the local aibot so the active menu highlights the sim's
+			// REAL current order (it reads aibot->command, which is otherwise
+			// inert client-side — botTick doesn't run here, so this is
+			// display-state only).
+			if (chr->aibot) {
+				const u8 wirecmd = (gunfire >> 3) & 0xf;
+				if (wirecmd) {
+					chr->aibot->command = wirecmd - 1;
 				}
 			}
 

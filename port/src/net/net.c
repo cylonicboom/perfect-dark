@@ -1040,6 +1040,27 @@ void netClientStageComplete(void)
 	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
+// Combat Sim: forward a simulant order from the client's active menu to the
+// server (clients don't run bot AI, so a local botcmdApply would evaporate).
+// botindex/targetindex are g_MpAllChrPtrs indices; targetindex only matters for
+// AIBOTCMD_ATTACK (pass -1 otherwise). Server validates team ownership and
+// applies (netmsgClcBotCmdRead). Reliable control channel — orders are rare
+// and must not drop.
+void netClientSendBotCmd(s32 botindex, u32 command, s32 targetindex)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient
+			|| g_NetLocalClient->state != CLSTATE_GAME) {
+		return;
+	}
+
+	netbufStartWrite(&g_NetMsgRel);
+	netbufWriteU8(&g_NetMsgRel, CLC_BOT_CMD);
+	netbufWriteU8(&g_NetMsgRel, (u8)botindex);
+	netbufWriteU8(&g_NetMsgRel, (u8)command);
+	netbufWriteU8(&g_NetMsgRel, targetindex < 0 ? 0xffu : (u8)targetindex);
+	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+}
+
 // Co-op client: report an objective WE completed that the host can't witness (a
 // scripted trigger room we entered, a mine we threw onto an object, a holograph our
 // camera saw). The host latches it (g_NetCoopClientObjDone) into objectiveCheck and
@@ -1496,6 +1517,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_STAGE_COMPLETE: rc = netmsgClcStageCompleteRead(&cl->in, cl); break;
 			case CLC_OBJECTIVE_DONE: rc = netmsgClcObjectiveDoneRead(&cl->in, cl); break;
 			case CLC_PICKUP_REQUEST: rc = netmsgClcPickupRequestRead(&cl->in, cl); break;
+			case CLC_BOT_CMD: rc = netmsgClcBotCmdRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2798,6 +2820,12 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
 	if (!chr || !pose) {
 		return;
 	}
+	// Corrupt-head recovery (see the invariant check in netChrInterpolate):
+	// re-seat an out-of-range head so the `prev` read below can't index outside
+	// the struct and the ring rebuilds with fresh snapshots.
+	if (chr->netsnaphead >= NET_SNAPSHOT_COUNT) {
+		chr->netsnaphead = 0;
+	}
 	const u32 prev = chr->netsnap[chr->netsnaphead].tick;
 	if (prev && g_NetTick > prev) {
 		const f32 gap = (f32)(g_NetTick - prev);
@@ -2846,6 +2874,23 @@ void netChrInterpolate(struct chrdata *chr)
 	}
 
 	const u32 head = chr->netsnaphead;
+	// INVARIANT CHECK: netsnaphead is only ever advanced `% NET_SNAPSHOT_COUNT`
+	// (netChrRecordSnapshot), so out-of-range means this chr's ring was never
+	// initialised or its memory was trashed. The known source — the
+	// port-appended netsnap/netsnaphead fields never being cleared by chrInit
+	// over recycled stage-pool memory — is now fixed in chrInit (chr.c); this
+	// stays as a cheap guard so any future corruption logs and skips instead of
+	// indexing netsnap[garbage] (the original 0xc0000005 here) or silently
+	// freezing.
+	if (head >= NET_SNAPSHOT_COUNT) {
+		static u32 s_corrupt_tick = 0xffffffffu;
+		if (g_NetTick != s_corrupt_tick) {
+			s_corrupt_tick = g_NetTick;
+			sysLogPrintf(LOG_WARNING, "NET: netChrInterpolate: corrupt netsnaphead %u (chr syncid %u)",
+					head, chr->prop->syncid);
+		}
+		return;
+	}
 	if (!chr->netsnap[head].tick) {
 		return; // no snapshots yet — leave the receive-time pose in place
 	}

@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 55 // 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
+#define NET_PROTOCOL_VER 56 // 56: CLC_BOT_CMD — clients can order own-team simulants (server validates team ownership + applies)
+// 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
 // 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it
 // 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness
 // 52: SVC_LOBBY_STATE carries an iscoop flag so clients show the co-op lobby window
@@ -297,6 +298,14 @@ struct netlobbystate {
 #define UCMD_SELECT_DUAL (1 << 8)
 #define UCMD_EYESSHUT (1 << 9)
 #define UCMD_SECONDARY (1 << 10)
+// STATE bit, not an input: the owner's chr is currently cloaked (cloaking
+// device or RCP-120 cloak). The cloak DECISION (devicesactive / ammo drain /
+// cloakpause) runs only on the owning machine; remote machines mirror this bit
+// onto the chr's CHRHFLAG_CLOAKED (edge-detected in bmoveProcessRemoteInput so
+// the on/off sound plays once per transition). Carried in every move, so a
+// dropped packet self-heals on the next one. Old peers ignore the bit — no
+// protocol bump.
+#define UCMD_CLOAKED (1 << 11)
 #define UCMD_RESPAWN (1 << 27)
 #define UCMD_CHAT (1 << 28)
 #define UCMD_IMPORTANT_MASK (UCMD_FIRE | UCMD_ACTIVATE | UCMD_RELOAD | UCMD_AIMMODE | UCMD_SELECT | UCMD_SELECT_DUAL)
@@ -603,6 +612,12 @@ void netServerStageEnd(void);
 void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
 void netClientSendObjectiveDone(s32 objindex);
+// Combat Sim: forward a simulant order from the client's active menu to the
+// server (CLC_BOT_CMD). botindex/targetindex are g_MpAllChrPtrs indices (wire-
+// stable: players sit at their playernum, bots follow via the deterministic
+// allocation invariant). targetindex is only meaningful for AIBOTCMD_ATTACK;
+// pass -1 otherwise. The server validates team ownership before applying.
+void netClientSendBotCmd(s32 botindex, u32 command, s32 targetindex);
 void netClientRequestPickup(struct prop *prop);
 void netServerBroadcastChrSpawn(struct prop *prop, f32 angle, u32 spawnflags);
 void netServerBroadcastChrTalk(struct prop *prop, s32 audioid);

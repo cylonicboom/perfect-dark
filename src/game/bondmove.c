@@ -159,6 +159,24 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 
 	pl->eyesshut = (inmove->ucmd & UCMD_EYESSHUT) != 0;
 
+	// CLOAK: mirror the owner's synced cloak STATE bit onto this remote
+	// player's chr. The decision (devicesactive / ammo / cloakpause) runs only
+	// on the owning machine — chrUpdateCloak's decision region is skipped for
+	// remote players so it can't fight this. Edge-detected so the cloak on/off
+	// sound plays once per transition, positionally at this player's prop.
+	if (pl->prop && pl->prop->chr) {
+		struct chrdata *plchr = pl->prop->chr;
+		const bool wantcloak = (inmove->ucmd & UCMD_CLOAKED) != 0;
+		const bool iscloaked = (plchr->hidden & CHRHFLAG_CLOAKED) != 0;
+		if (wantcloak != iscloaked) {
+			if (wantcloak) {
+				chrCloak(plchr, true);
+			} else {
+				chrUncloak(plchr, true);
+			}
+		}
+	}
+
 	pl->speedtheta = 0.f; // TODO: figure out if anglespeed is even required
 	pl->speedverta = 0.f;
 	pl->crouchoffset = inmove->crouchofs;
@@ -580,6 +598,14 @@ void bmoveApplyMoveData(struct movedata *data)
 			}
 			if (data->weaponbackoffset || data->weaponforwardoffset) {
 				g_Vars.currentplayer->ucmd |= UCMD_SELECT;
+			}
+			// Cloak STATE (not an input): mirror our chr's cloak flag so remote
+			// machines can apply it (UCMD_CLOAKED in bmoveProcessRemoteInput).
+			// The decision itself (device/ammo/cloakpause) stays owner-local in
+			// chrUpdateCloak; this just publishes the result every move.
+			if (g_Vars.currentplayer->prop && g_Vars.currentplayer->prop->chr
+					&& (g_Vars.currentplayer->prop->chr->hidden & CHRHFLAG_CLOAKED)) {
+				g_Vars.currentplayer->ucmd |= UCMD_CLOAKED;
 			}
 		}
 	}

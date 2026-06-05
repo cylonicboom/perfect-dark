@@ -1122,6 +1122,26 @@ void chrInit(struct prop *prop, u8 *ailist)
 	// chrslot recycled from a previous chr) starts at the "never
 	// damaged" sentinel and the very first hit lands.
 	chr->lastdamagetick60 = 0;
+
+	// Clear the netplay pose-snapshot ring. chrInit initialises fields one by
+	// one (no memset), and chr slots are recycled stage-pool memory, so the
+	// port-appended netsnap/netsnaphead otherwise inherit whatever the pool
+	// previously held. While connected (g_NetMode == NETMODE_CLIENT — e.g. the
+	// post-match front-end stage loading while still in the lobby), every chr
+	// runs netChrInterpolate, which trusts netsnap[netsnaphead].tick != 0:
+	// garbage here meant an OOB netsnap[head] read (0xc0000005, net.c) or —
+	// with an in-range head and a garbage nonzero tick — "interpolating" a
+	// garbage pose, including roomsCopy'ing garbage snapshot rooms into
+	// prop->rooms, which propRegisterRooms / portal00018148 then index with
+	// (the wild-write crash at lib_17ce0.c:214). First sessions appeared fine
+	// because fresh OS pages are zero; the crash needed a recycled pool —
+	// hence "leave AFTER a match ended" reproducing it. tick == 0 marks a
+	// netsnap entry empty (see netChrRecordSnapshot), so clearing the stamps
+	// and the head is sufficient.
+	chr->netsnaphead = 0;
+	for (i = 0; i < ARRAYCOUNT(chr->netsnap); i++) {
+		chr->netsnap[i].tick = 0;
+	}
 #endif
 	chr->sumground = 0;
 	chr->manground = 0;
@@ -2103,7 +2123,33 @@ void chrUpdateCloak(struct chrdata *chr)
 	}
 
 	// Handle ammo decrease and determine if cloak is still enabled
+#ifndef PLATFORM_N64
+	// Netplay: the cloak DECISION below runs on the OWNER only. Its inputs are
+	// never replicated — a sim's aibot->cloakdeviceenabled/rcp120cloakenabled
+	// is set by server-only bot AI, and a player's devicesactive/ammo is local
+	// to the owning machine — so on a remote machine both branches read
+	// "nothing active" and would immediately chrUncloak a synced cloak flag.
+	// Wire-driven chrs instead get CHRHFLAG_CLOAKED applied from the net (the
+	// SVC_PROP_MOVE chr-state cloak bit for sims/NPCs; UCMD_CLOAKED in
+	// bmoveProcessRemoteInput for remote players); only the flag-driven fade
+	// tail below runs locally for them.
+	bool cloakwiredriven = false;
+	if (g_NetMode && chr->prop) {
+		if (chr->prop->type == PROPTYPE_PLAYER) {
+			s32 playernum = playermgrGetPlayerNumByProp(chr->prop);
+			cloakwiredriven = playernum >= 0 && playernum < PLAYERCOUNT()
+					&& g_Vars.players[playernum] && g_Vars.players[playernum]->isremote;
+		} else {
+			cloakwiredriven = g_NetMode == NETMODE_CLIENT && chr->prop->syncid != 0;
+		}
+	}
+
+	if (cloakwiredriven) {
+		// Cloak state owned by the wire — skip straight to the fade update.
+	} else if (chr->aibot) {
+#else
 	if (chr->aibot) {
+#endif
 		if (chr->aibot->cloakdeviceenabled) {
 			qty = chr->aibot->ammoheld[AMMOTYPE_CLOAK];
 

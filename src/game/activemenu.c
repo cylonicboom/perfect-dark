@@ -1,5 +1,6 @@
 #include <ultra64.h>
 #include "constants.h"
+#include "game/activemenu.h"
 #include "game/chraction.h"
 #include "game/game_006900.h"
 #include "game/bondgun.h"
@@ -25,6 +26,9 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#endif
 
 struct activemenu g_AmMenus[MAX_LOCAL_PLAYERS];
 struct fontchar *g_AmFont1;
@@ -107,7 +111,21 @@ MenuItemHandlerResult amPickTargetMenuList(s32 operation, struct menuitem *item,
 
 			chrindex = -1;
 			numremaining = data->list.value;
+#ifndef PLATFORM_N64
+			// Buddy screens start at AM_SCREEN_BUDDY0; clamp for the Command
+			// All screen (index would be -1 — botchr is only used by the
+			// single-bot paths, which prevallbots makes unreachable there, but
+			// the expression must not read out of bounds).
+			{
+				s32 buddyidx = g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0;
+				if (buddyidx < 0) {
+					buddyidx = 0;
+				}
+				botchr = g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[buddyidx]];
+			}
+#else
 			botchr = g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2]];
+#endif
 			playerchr = g_Vars.currentplayer->prop->chr;
 
 			do {
@@ -127,10 +145,23 @@ MenuItemHandlerResult amPickTargetMenuList(s32 operation, struct menuitem *item,
 
 				for (i = 0; i < g_Vars.currentplayer->numaibuddies; i++) {
 					if (g_Vars.currentplayer->aibuddynums[i] != chrindex) {
+#ifndef PLATFORM_N64
+						// Netplay client: forward the attack order (with the
+						// picked target) to the server instead of mutating
+						// the un-ticked local bot AI state.
+						if (g_NetMode == NETMODE_CLIENT) {
+							netClientSendBotCmd(g_Vars.currentplayer->aibuddynums[i], AIBOTCMD_ATTACK, chrindex);
+						} else
+#endif
 						botApplyAttack(g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[i]], g_MpAllChrPtrs[chrindex]->prop);
 					}
 				}
 			} else {
+#ifndef PLATFORM_N64
+				if (g_NetMode == NETMODE_CLIENT) {
+					netClientSendBotCmd(g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0], AIBOTCMD_ATTACK, chrindex);
+				} else
+#endif
 				botApplyAttack(botchr, g_MpAllChrPtrs[chrindex]->prop);
 			}
 
@@ -149,7 +180,19 @@ MenuItemHandlerResult amPickTargetMenuList(s32 operation, struct menuitem *item,
 			u32 colour;
 			s32 numremaining = (s32)data->type19.unk04;
 			s32 chrindex = -1;
+#ifndef PLATFORM_N64
+			// Same buddy-screen base shift + Command All clamp as MENUOP_SET above.
+			struct chrdata *botchr;
+			{
+				s32 buddyidx = g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0;
+				if (buddyidx < 0) {
+					buddyidx = 0;
+				}
+				botchr = g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[buddyidx]];
+			}
+#else
 			struct chrdata *botchr = g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2]];
+#endif
 			struct chrdata *playerchr = g_Vars.currentplayer->prop->chr;
 
 			do {
@@ -390,12 +433,29 @@ void amApply(s32 slot)
 				}
 			}
 		} else if (g_Vars.normmplayerisrunning) {
+#ifndef PLATFORM_N64
+			// Netplay client: bot AI runs on the server, so a local botcmdApply
+			// would evaporate. Forward the order instead (CLC_BOT_CMD; the
+			// server validates team ownership and anchors FOLLOW/DEFEND/HOLD/
+			// PROTECT to our player). ATTACK is excluded: it only opens the
+			// local pick-target dialog here — the chosen target is forwarded
+			// from amPickTargetMenuList's MENUOP_SET.
+			if (g_NetMode == NETMODE_CLIENT && g_AmBotCommands[slot] != AIBOTCMD_ATTACK) {
+				if (g_AmMenus[g_AmIndex].allbots) {
+					for (i = 0; i < g_Vars.currentplayer->numaibuddies; i++) {
+						netClientSendBotCmd(g_Vars.currentplayer->aibuddynums[i], g_AmBotCommands[slot], -1);
+					}
+				} else {
+					netClientSendBotCmd(g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0], g_AmBotCommands[slot], -1);
+				}
+			} else
+#endif
 			if (g_AmMenus[g_AmIndex].allbots) {
 				for (i = 0; i < g_Vars.currentplayer->numaibuddies; i++) {
 					botcmdApply(g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[i]], g_AmBotCommands[slot]);
 				}
 			} else {
-				botcmdApply(g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2]], g_AmBotCommands[slot]);
+				botcmdApply(g_MpAllChrPtrs[g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0]], g_AmBotCommands[slot]);
 			}
 		}
 	}
@@ -610,8 +670,16 @@ void amChangeScreen(s32 step)
 			// causing a crash.
 			maxscreenindex = 2;
 		} else {
+#ifndef PLATFORM_N64
+			// Weapon selection, second function, Command All (when any buddies
+			// exist), and one screen per AI buddy. No buddies = no sim screens
+			// at all (matching the N64 numaibuddies+1 == 1 behaviour).
+			maxscreenindex = g_Vars.currentplayer->numaibuddies
+					? g_Vars.currentplayer->numaibuddies + 2 : 1;
+#else
 			// Weapon selection, second function and one for each AI buddy
 			maxscreenindex = g_Vars.currentplayer->numaibuddies + 1;
+#endif
 		}
 	} else {
 		// Solo missions, or MP with no teams
@@ -992,6 +1060,14 @@ Gfx *amRenderAibotInfo(Gfx *gdl, s32 buddynum)
 	}
 
 	if (!g_AmMenus[g_AmIndex].allbots) {
+#ifndef PLATFORM_N64
+		// Safety: the Command All screen passes buddynum -1 (it normally takes
+		// the allbots branch below; this guards a one-frame race where the
+		// per-tick allbots reassert hasn't run yet).
+		if (buddynum < 0) {
+			buddynum = 0;
+		}
+#endif
 		buddynum = g_Vars.currentplayer->aibuddynums[buddynum];
 		aibotname = g_MpAllChrConfigPtrs[buddynum]->name;
 
@@ -1276,8 +1352,8 @@ Gfx *amRender(Gfx *gdl)
 		gdl = text0f153628(gdl);
 
 		if (g_Vars.normmplayerisrunning
-				&& g_AmMenus[g_AmIndex].screenindex >= 2) {
-			mpchrnum = g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - 2];
+				&& g_AmMenus[g_AmIndex].screenindex >= AM_SCREEN_BUDDY0) {
+			mpchrnum = g_Vars.currentplayer->aibuddynums[g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0];
 		}
 
 		if (g_AmMenus[g_AmIndex].dstx == -123) {
@@ -1422,9 +1498,13 @@ Gfx *amRender(Gfx *gdl)
 #endif
 					}
 				} else {
+					// (Port: gate is AM_SCREEN_BUDDY0 so the Command All screen
+					// shows no current-command highlight — its sims may each
+					// have a different order; mpchrnum is also only valid for
+					// per-buddy screens.)
 					if (g_Vars.normmplayerisrunning
 							&& mode == AMSLOTMODE_DEFAULT
-							&& g_AmMenus[g_AmIndex].screenindex >= 2) {
+							&& g_AmMenus[g_AmIndex].screenindex >= AM_SCREEN_BUDDY0) {
 						s32 slotcmd = g_AmBotCommands[var800719a0[row][column]];
 						s32 botcmd = g_MpAllChrPtrs[mpchrnum]->aibot->command;
 
@@ -1456,17 +1536,20 @@ Gfx *amRender(Gfx *gdl)
 		{
 			struct g_vars *vars = &g_Vars;
 
+// (Port: gate stays >= 2 so the Command All screen — index 2, allbots asserted —
+// still reaches amRenderAibotInfo, whose allbots branch renders the
+// "All Simulants" title and never reads the (then -1) buddy argument.)
 #if VERSION >= VERSION_JPN_FINAL
 			if (!(g_MissionConfig.iscoop && amGetFirstBuddyIndex() >= 0)
 					&& g_Vars.normmplayerisrunning
 					&& g_AmMenus[g_AmIndex].screenindex >= 2) {
-				gdl = amRenderAibotInfo(gdl, g_AmMenus[g_AmIndex].screenindex - 2);
+				gdl = amRenderAibotInfo(gdl, g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0);
 			}
 #else
 			if (!(g_MissionConfig.iscoop && amGetFirstBuddyIndex() >= 0)
 					&& vars->normmplayerisrunning
 					&& g_AmMenus[g_AmIndex].screenindex >= 2) {
-				gdl = amRenderAibotInfo(gdl, g_AmMenus[g_AmIndex].screenindex - 2);
+				gdl = amRenderAibotInfo(gdl, g_AmMenus[g_AmIndex].screenindex - AM_SCREEN_BUDDY0);
 			}
 #endif
 		}

@@ -89,6 +89,19 @@ void amTick(void)
 				toggle = false;
 
 				g_AmMenus[g_AmIndex].allbots = false;
+#ifndef PLATFORM_N64
+				// Port: the "Command All Simulants" screen (AM_SCREEN_ALL) IS the
+				// all-bots view — standing on it asserts the flag the hold-R
+				// modal uses, every tick (it's recomputed just above each frame).
+				// Gated like the buddy screens themselves: MP with teams and at
+				// least one buddy (co-op's screen 2 is unrelated and unaffected
+				// since iscoop implies !normmplayerisrunning).
+				if (g_AmMenus[g_AmIndex].screenindex == AM_SCREEN_ALL
+						&& g_Vars.normmplayerisrunning
+						&& g_Vars.currentplayer->numaibuddies > 0) {
+					g_AmMenus[g_AmIndex].allbots = true;
+				}
+#endif
 
 #ifndef PLATFORM_N64
 				s32 newstickx = (s32)cstickx;
@@ -149,6 +162,15 @@ void amTick(void)
 				}
 
 				// If entering allbots mode, save current screen
+#ifndef PLATFORM_N64
+				// Port: the screen-forcing modal is disabled — the dedicated
+				// Command All screen (AM_SCREEN_ALL) replaces it. If this block
+				// ran, standing on the All screen would latch origscreennum and
+				// the restore below would bounce every attempt to navigate away.
+				// Hold-R on a buddy screen still works as a "command all"
+				// modifier (allbots flips the apply paths + title) without the
+				// screen jump; origscreennum stays 0 so the restore is inert.
+#else
 				if (g_AmMenus[g_AmIndex].allbots
 						&& g_AmMenus[g_AmIndex].screenindex >= 2
 						&& g_AmMenus[g_AmIndex].origscreennum == 0) {
@@ -156,6 +178,7 @@ void amTick(void)
 					g_AmMenus[g_AmIndex].screenindex = 2;
 					amChangeScreen(0);
 				}
+#endif
 
 				// If exiting allbots mode, return to original screen
 				if (!g_AmMenus[g_AmIndex].allbots

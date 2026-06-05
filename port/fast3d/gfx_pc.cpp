@@ -220,6 +220,7 @@ bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 bool gfx_wireframe_mode = false;
 bool gfx_mirror_mode = false;
+float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
 float gfx_wireframe_line_width = 1.0f;
@@ -2666,7 +2667,11 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     gfx_flush();
 
     // uMVP = (aspect-X scale/offset, invert-Y) folded into the live room
-    // MP_matrix. GL desktop keeps z as-is (clip z_is_from_0_to_1 == false).
+    // MP_matrix. GL desktop keeps z as-is (clip z_is_from_0_to_1 == false);
+    // 0..1-clip backends (SDL_GPU) additionally fold the z = (z + w) / 2
+    // remap the immediate path applies CPU-side — without it cached depth
+    // lands in [-w, w], clamps to 0 for the near half, and rooms composite
+    // in draw order instead of by depth.
     float (*M)[4] = rsp.MP_matrix;
     const struct GfxClipParameters clip = gfx_rapi->get_clip_parameters();
     const float sy = clip.invert_y ? -1.0f : 1.0f;
@@ -2686,7 +2691,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     for (int k = 0; k < 4; k++) {
         mvp[k * 4 + 0] = mx * sx * (M[k][0] + ox * M[k][3]);
         mvp[k * 4 + 1] = sy * M[k][1];
-        mvp[k * 4 + 2] = M[k][2];
+        mvp[k * 4 + 2] = clip.z_is_from_0_to_1 ? 0.5f * (M[k][2] + M[k][3]) : M[k][2];
         mvp[k * 4 + 3] = M[k][3];
     }
     gfx_rapi->set_mvp(mvp);
@@ -3002,6 +3007,12 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_SETGRAYSCALE_EXT:
                 rdp.grayscale = cmd->words.w1;
                 break;
+            case G_SETDAZZLE_EXT:
+                // flush so the boost applies exactly to the draws issued
+                // while the weight is set (glares / overexposure flash)
+                gfx_flush();
+                gfx_hdr_dazzle = (float)(cmd->words.w1 & 0xff) / 255.0f;
+                break;
             case G_LOADBLOCK:
                 gfx_dp_load_block(C1(24, 3), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));
                 break;
@@ -3302,6 +3313,8 @@ uint32_t num_dls = 0;
 extern "C" void gfx_run(Gfx* commands) {
     ++num_dls;
     gfx_sp_reset();
+
+    gfx_hdr_dazzle = 0.0f; // defensive: never let a dazzle bracket leak across frames
 
     g_DlCacheFrameSegments = 0;
     g_DlCacheFrameTris = 0;

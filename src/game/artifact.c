@@ -496,11 +496,22 @@ Gfx *artifactsConfigureForGlares(Gfx *gdl)
 	gDPSetAlphaDither(gdl++, G_AD_PATTERN);
 	gDPSetTexturePersp(gdl++, G_TP_NONE);
 
+#ifndef PLATFORM_N64
+	// HDR dazzle: glares drawn until Unconfigure are emissive-boosted toward
+	// the HDR peak by the SDL_GPU backend, weighted by the existing Glare
+	// Brightness slider. No-op on GL / in SDR. See docs/PORT_SDLGPU.md.
+	gDPSetDazzleEXT(gdl++, (u32)(videoGetGlareBrightness() * 255.0f));
+#endif
+
 	return gdl;
 }
 
 Gfx *artifactsUnconfigureForGlares(Gfx *gdl)
 {
+#ifndef PLATFORM_N64
+	gDPSetDazzleEXT(gdl++, 0);
+#endif
+
 	gDPSetTexturePersp(gdl++, G_TP_PERSP);
 
 	return gdl;

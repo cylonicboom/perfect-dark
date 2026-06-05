@@ -105,6 +105,26 @@ void videoResetTextureCache(void);
 void videoFreeCachedTexture(const void *texptr);
 void videoFreeCachedTextures(const void *start, const void *end);
 
+// one-line active-renderer summary for the /gpu console command: backend name
+// plus (for SDL_GPU) driver / shader format / msaa / vsync / hdr / shader cache
+void videoGetRendererInfo(char *buf, u32 len);
+
+// renderer picker for the Extended > Video menu: 0 = OpenGL,
+// 1 = SDL GPU (Vulkan), 2 = SDL GPU (Direct3D 12 / Metal). Config-only;
+// applies on next startup.
+s32 videoGetRendererSetting(void);
+void videoSetRendererSetting(s32 idx);
+
+// HDR output (SDL_GPU only). The toggle applies on next startup; paper white
+// and peak (nits) apply live while HDR is active. Peak <= paper white
+// disables highlight expansion.
+s32 videoGetHDR(void);
+void videoSetHDR(s32 on);
+f32 videoGetHDRPaperWhite(void);
+void videoSetHDRPaperWhite(f32 nits);
+f32 videoGetHDRPeak(void);
+void videoSetHDRPeak(f32 nits);
+
 void videoShutdown(void);
 
 #endif

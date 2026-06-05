@@ -16,6 +16,7 @@ extern s32 g_NetDedicatedMode;
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
+#include "../fast3d/gfx_sdlgpu.h"
 
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
@@ -33,6 +34,18 @@ static struct GfxWindowManagerAPI *wmAPI;
 static struct GfxRenderingAPI *renderingAPI;
 
 static bool initDone = false;
+
+// rendering backend: "opengl" (default) or "sdlgpu" (SDL_GPU/Vulkan, only
+// when built with USE_SDLGPU); --renderer overrides the config value
+static char vidRenderer[16] = "opengl";
+// SDL_GPU driver: "" = platform default (vulkan on Windows), or "vulkan" /
+// "direct3d12" / "metal"; --gpu-driver overrides
+static char vidGpuDriver[16] = "";
+// HDR output (SDL_GPU only): scRGB/HDR10 swapchain + FP16 targets +
+// paper-white scaling; applied at startup when the display supports it
+static s32 vidHDR = 0;
+static f32 vidHDRPaperWhite = 200.0f; // nits; scRGB 1.0 = 80
+static f32 vidHDRPeak = 600.0f;       // highlight-expansion target, nits
 
 static s32 vidWidth = DEFAULT_VID_WIDTH;
 static s32 vidHeight = DEFAULT_VID_HEIGHT;
@@ -82,6 +95,8 @@ static f64 fpsTime = 0.0;
 static s32 fpsNumFrames = 0;
 
 static s32 videoInitDisplayModes(void);
+static s32 videoVRRCap(void);
+static s32 videoEffectiveLimit(s32 userlimit);
 void optionsMenuInit();
 
 s32 videoInit(void)
@@ -103,6 +118,30 @@ s32 videoInit(void)
 #else
 	wmAPI = &gfx_sdl;
 	renderingAPI = &gfx_opengl_api;
+
+#ifdef USE_SDLGPU
+	// Optional SDL_GPU (Vulkan) renderer. Probed before the window exists so
+	// a missing/broken Vulkan driver falls back to OpenGL cleanly.
+	{
+		const char *rend = sysArgGetString("--renderer");
+		if (!rend || !*rend) {
+			rend = vidRenderer;
+		}
+		if (strcmp(rend, "sdlgpu") == 0) {
+			gfx_sdlgpu_set_driver_default(vidGpuDriver);
+			gfx_sdlgpu_request_hdr(vidHDR, vidHDRPaperWhite, vidHDRPeak);
+			if (gfx_sdlgpu_probe()) {
+				renderingAPI = &gfx_sdlgpu_api;
+				gfx_sdl_set_backend(1);
+				sysLogPrintf(LOG_NOTE, "video: using SDL_GPU renderer");
+			} else {
+				sysLogPrintf(LOG_WARNING, "video: SDL_GPU renderer unavailable, falling back to OpenGL");
+			}
+		} else if (strcmp(rend, "opengl") != 0) {
+			sysLogPrintf(LOG_WARNING, "video: unknown renderer '%s', using OpenGL", rend);
+		}
+	}
+#endif
 
 	gfx_current_native_viewport.width = 320;
 	gfx_current_native_viewport.height = 220;
@@ -159,6 +198,16 @@ void videoStartFrame(void)
 		// initDone gate so headless dedicated (wmAPI == NULL) doesn't deref.
 		vidFullscreen = videoGetFullscreen();
 		vidMaximize = videoGetMaximizeWindow();
+
+		// VRR cap tracks the display refresh, which changes on mode switches /
+		// monitor moves; re-derive it every couple of seconds while VRR is on
+		if (vidVsync == -2) {
+			static u32 vrrRecheck = 0;
+			if (++vrrRecheck >= 120) {
+				vrrRecheck = 0;
+				wmAPI->set_target_fps(videoEffectiveLimit(vidFramerateLimit));
+			}
+		}
 	}
 }
 
@@ -333,17 +382,62 @@ s32 videoGetMSAA(void)
 	return vidMSAA;
 }
 
+// VRR (G-Sync/FreeSync) support, Video.VSync = -2: tearing-allowed
+// presentation (backend swap interval 0) plus an automatic framerate cap
+// just below the display refresh, so frame delivery stays inside the VRR
+// window and never bounces off the vsync ceiling. The cap follows the
+// Blur Busters rule (refresh - refresh^2/3600: 60->59, 120->116, 144->138).
+// Returns 0 when VRR is off or the refresh is unknown.
+static s32 videoVRRCap(void)
+{
+	u32 hz = 0;
+
+	if (vidVsync != -2 || !wmAPI) {
+		return 0;
+	}
+
+	wmAPI->get_active_window_refresh_rate(&hz);
+
+	if (hz < 30) {
+		return 0;
+	}
+
+	const s32 cap = (s32)hz - (s32)((hz * hz) / 3600);
+	return cap > 10 ? cap : 10;
+}
+
+// the frame cap actually applied to the window manager: the user's limit,
+// additionally bounded by the VRR cap when VRR mode is on (0 = unlimited)
+static s32 videoEffectiveLimit(s32 userlimit)
+{
+	const s32 vrr = videoVRRCap();
+
+	if (vrr > 0 && (userlimit == 0 || userlimit > vrr)) {
+		return vrr;
+	}
+
+	return userlimit;
+}
+
 s32 videoGetVsync(void)
 {
 	if (!wmAPI) return vidVsync;
-	vidVsync = wmAPI->get_swap_interval();
+	// in VRR mode the backend runs swap interval 0; reading that back would
+	// turn the stored -2 into a plain "off"
+	if (vidVsync != -2) {
+		vidVsync = wmAPI->get_swap_interval();
+	}
 	return vidVsync;
 }
 
 s32 videoGetFramerateLimit(void)
 {
 	if (!wmAPI) return vidFramerateLimit;
-	vidFramerateLimit = wmAPI->get_target_fps();
+	// in VRR mode the window manager holds the effective (VRR-capped) value,
+	// not the user's configured limit — don't clobber the setting with it
+	if (vidVsync != -2) {
+		vidFramerateLimit = wmAPI->get_target_fps();
+	}
 	return vidFramerateLimit;
 }
 
@@ -576,7 +670,7 @@ void videoCapFramerate(s32 limit)
 	if (vidFramerateLimit > 0 && vidFramerateLimit < limit) {
 		limit = vidFramerateLimit;
 	}
-	wmAPI->set_target_fps(limit ? limit : vidFramerateLimit);
+	wmAPI->set_target_fps(videoEffectiveLimit(limit ? limit : vidFramerateLimit));
 }
 
 void videoSetGlareBrightness(f32 bright)
@@ -604,7 +698,11 @@ void videoSetMSAA(const s32 msaa)
 void videoSetVsync(const s32 vsync)
 {
 	if (!wmAPI) return;
-	vidVsync = wmAPI->set_swap_interval(vsync) ? vsync : 0;
+	// -2 = VRR mode: vsync off at the backend (tearing-allowed presentation,
+	// which VRR displays sync to) + the automatic below-refresh cap applied
+	// via videoEffectiveLimit in the framerate-limit re-apply below
+	const s32 interval = (vsync == -2) ? 0 : vsync;
+	vidVsync = wmAPI->set_swap_interval(interval) ? vsync : 0;
 
 	// No auto-cap on vsync-off: a framerate limit of 0 now means TRULY unlimited
 	// (the SDL layer skips frame pacing when target_fps == 0). Re-apply the current
@@ -621,8 +719,11 @@ void videoSetFramerateLimit(const s32 limit)
 	// 0 == truly unlimited (no frame pacing). Previously 0 with vsync off was
 	// force-bumped to VIDEO_MAX_FPS as a safety; that prevented an intentional
 	// unlimited cap, so it's removed. set_target_fps(0) disables pacing entirely.
+	// In VRR mode the applied value is additionally bounded just below the
+	// display refresh (videoEffectiveLimit); vidFramerateLimit keeps the
+	// user's configured value.
 	vidFramerateLimit = limit;
-	wmAPI->set_target_fps(vidFramerateLimit);
+	wmAPI->set_target_fps(videoEffectiveLimit(vidFramerateLimit));
 }
 
 void videoSetDisplayFPS(const s32 displayfps)
@@ -677,6 +778,94 @@ void videoFreeCachedTextures(const void *start, const void *end)
 	gfx_texture_cache_delete_range(start, end);
 }
 
+// Renderer selection for the Extended > Video menu, flattened to one index:
+// 0 = OpenGL, 1 = SDL_GPU/Vulkan, 2 = SDL_GPU/Direct3D 12 (Windows) or
+// SDL_GPU/Metal (macOS). Pure config writes — applied on next startup.
+s32 videoGetRendererSetting(void)
+{
+#ifdef USE_SDLGPU
+	if (strcmp(vidRenderer, "sdlgpu") == 0) {
+		if (strcmp(vidGpuDriver, "direct3d12") == 0 || strcmp(vidGpuDriver, "metal") == 0) {
+			return 2;
+		}
+		return 1;
+	}
+#endif
+	return 0;
+}
+
+void videoSetRendererSetting(s32 idx)
+{
+	if (idx <= 0) {
+		strcpy(vidRenderer, "opengl");
+		vidGpuDriver[0] = '\0';
+		return;
+	}
+	strcpy(vidRenderer, "sdlgpu");
+	if (idx >= 2) {
+#if defined(__APPLE__)
+		strcpy(vidGpuDriver, "metal");
+#else
+		strcpy(vidGpuDriver, "direct3d12");
+#endif
+	} else {
+		strcpy(vidGpuDriver, "vulkan");
+	}
+}
+
+s32 videoGetHDR(void)
+{
+	return vidHDR;
+}
+
+void videoSetHDR(s32 on)
+{
+	vidHDR = on; // applied on next startup (swapchain + target formats)
+}
+
+f32 videoGetHDRPaperWhite(void)
+{
+	return vidHDRPaperWhite;
+}
+
+void videoSetHDRPaperWhite(f32 nits)
+{
+	vidHDRPaperWhite = nits;
+#ifdef USE_SDLGPU
+	gfx_sdlgpu_set_hdr_paperwhite(nits); // live when HDR is active
+#endif
+}
+
+f32 videoGetHDRPeak(void)
+{
+	return vidHDRPeak;
+}
+
+void videoSetHDRPeak(f32 nits)
+{
+	vidHDRPeak = nits;
+#ifdef USE_SDLGPU
+	gfx_sdlgpu_set_hdr_peak(nits); // live when HDR is active
+#endif
+}
+
+void videoGetRendererInfo(char *buf, u32 len)
+{
+	if (!wmAPI || !renderingAPI) {
+		snprintf(buf, len, "none (headless)");
+		return;
+	}
+#ifdef USE_SDLGPU
+	if (renderingAPI == &gfx_sdlgpu_api) {
+		char tmp[256];
+		gfx_sdlgpu_get_info(tmp, sizeof(tmp));
+		snprintf(buf, len, "SDL_GPU: %s", tmp);
+		return;
+	}
+#endif
+	snprintf(buf, len, "%s", renderingAPI->get_name());
+}
+
 void videoShutdown(void)
 {
 	// In headless dedicated, vidModes was never reassigned away from the
@@ -688,6 +877,11 @@ void videoShutdown(void)
 
 PD_CONSTRUCTOR static void videoConfigInit(void)
 {
+	configRegisterString("Video.Renderer", vidRenderer, sizeof(vidRenderer));
+	configRegisterString("Video.GpuDriver", vidGpuDriver, sizeof(vidGpuDriver));
+	configRegisterInt("Video.HDR", &vidHDR, 0, 1);
+	configRegisterFloat("Video.HDRPaperWhite", &vidHDRPaperWhite, 80.f, 1000.f);
+	configRegisterFloat("Video.HDRPeak", &vidHDRPeak, 80.f, 4000.f);
 	configRegisterInt("Video.DefaultFullscreen", &vidFullscreen, 0, 1);
 	configRegisterInt("Video.DefaultMaximize", &vidMaximize, 0, 1);
 	configRegisterInt("Video.DefaultWidth", &vidWidth, 0, 32767);
@@ -696,7 +890,7 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterFloat("Video.RefreshRate", &vidRefreshRate, 0.f, 1000.f);
 	configRegisterInt("Video.CenterWindow", &vidCenter, 0, 1);
 	configRegisterInt("Video.AllowHiDpi", &vidAllowHiDpi, 0, 1);
-	configRegisterInt("Video.VSync", &vidVsync, -1, 10);
+	configRegisterInt("Video.VSync", &vidVsync, -2, 10); // -2 = VRR mode
 	configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
 	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, 10000);
 	configRegisterInt("Video.NetplayFramerateLimit", &vidNetplayFramerateLimit, 0, 10000);

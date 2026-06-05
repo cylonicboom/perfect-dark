@@ -209,7 +209,8 @@ Controls can be rebound in `pd.ini`. Default control scheme is as follows:
 1. Install [MSYS2](https://www.msys2.org).
 2. Open the `MINGW64` prompt if building for x86_64, or the `MINGW32` prompt if building for i686. (**NOTE:** _do not_ use the `MSYS` prompt)
 3. Install dependencies:  
-   `pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl3 mingw-w64-x86_64-zlib mingw-w64-x86_64-cmake mingw-w64-x86_64-python3 mingw-w64-i686-toolchain mingw-w64-i686-sdl3 mingw-w64-i686-zlib mingw-w64-i686-cmake mingw-w64-i686-python3 make git`
+   `pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl3 mingw-w64-x86_64-zlib mingw-w64-x86_64-glslang mingw-w64-x86_64-spirv-cross mingw-w64-x86_64-cmake mingw-w64-x86_64-python3 mingw-w64-i686-toolchain mingw-w64-i686-sdl3 mingw-w64-i686-zlib mingw-w64-i686-glslang mingw-w64-i686-spirv-cross mingw-w64-i686-cmake mingw-w64-i686-python3 make git`
+   * glslang is only needed for the optional SDL_GPU renderer; if it is unavailable for your target, configure with `-DUSE_SDLGPU=OFF` instead. spirv-cross is optional on top of that (enables the D3D12 driver for SDL_GPU; without it the backend is Vulkan-only).
 4. Get the source code:  
    `git clone -b port-net --recursive https://github.com/fgsfdsfgs/perfect_dark.git && cd perfect_dark`
 5. Run `cmake -G"Unix Makefiles" -Bbuild .`.
@@ -220,7 +221,8 @@ Controls can be rebound in `pd.ini`. Default control scheme is as follows:
 
 ### Linux
 
-1. Ensure you have gcc, g++ (version 10.0+), make, cmake, git, python3 and SDL3, libGL and ZLib installed on your system.
+1. Ensure you have gcc, g++ (version 10.0+), make, cmake, git, python3 and SDL3, libGL, ZLib and glslang (dev package, e.g. `glslang-dev`/`glslang-devel`) installed on your system.
+   * glslang is only needed for the optional SDL_GPU (Vulkan) renderer; configure with `-DUSE_SDLGPU=OFF` to skip it.
    * If your distribution does not package SDL3 yet, build it from source: `git clone --depth 1 --branch release-3.4.2 https://github.com/libsdl-org/SDL && cmake -S SDL -B SDL/build -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF && cmake --build SDL/build -j && sudo cmake --install SDL/build`
    * If you wish to crosscompile, you will also need to have libraries and compilers for the target platform installed, e.g. `gcc-multilib` and `g++-multilib` for x86_64 -> i686 crosscompilation.
 2. Get the source code:  
@@ -236,7 +238,8 @@ Controls can be rebound in `pd.ini`. Default control scheme is as follows:
 
 1. Set up Homebrew.
 2. Install dependencies:
-   * Execute command: `brew install cmake gcc python3 zlib git`
+   * Execute command: `brew install cmake gcc python3 zlib git glslang`
+   * glslang is only needed for the optional SDL_GPU renderer; configure with `-DUSE_SDLGPU=OFF` to skip it.
 3. Install SDL3:
    * Execute commands:
      ```

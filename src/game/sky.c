@@ -3219,11 +3219,22 @@ Gfx *skyRenderOverexposure(Gfx *gdl)
 
 		gDPSetPrimColor(gdl++, 0, 0, (s32)r, (s32)g, (s32)b, (s32)a);
 
+#ifndef PLATFORM_N64
+		// HDR dazzle: the overexposure flash is emissive-boosted toward the
+		// HDR peak by the SDL_GPU backend, weighted by the existing
+		// Overexposure Scale slider. No-op on GL / in SDR (PORT_SDLGPU.md).
+		gDPSetDazzleEXT(gdl++, (u32)(videoGetOverexposureScale() * 255.0f));
+#endif
+
 		gDPFillRectangle(gdl++,
 				viGetViewLeft(),
 				viGetViewTop(),
 				viGetViewLeft() + viGetViewWidth(),
 				viGetViewTop() + viGetViewHeight());
+
+#ifndef PLATFORM_N64
+		gDPSetDazzleEXT(gdl++, 0);
+#endif
 
 		gDPPipeSync(gdl++);
 	}

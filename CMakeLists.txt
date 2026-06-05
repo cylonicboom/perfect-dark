@@ -35,6 +35,7 @@ endif()
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
 option(FORCE_CROSSCOMPILE "Force cross compiling" NO)
 option(DEDICATED_SERVER "Build a headless dedicated server (no SDL/OpenGL/audio/input; never a client)" OFF)
+option(USE_SDLGPU "Build the SDL_GPU (Vulkan) rendering backend in addition to OpenGL (desktop clients only; needs glslang)" ON)
 
 # Determine target arch
 
@@ -266,6 +267,61 @@ if(NOT DEDICATED_SERVER)
   list(APPEND LIBS "${GL_LIBRARY}")
 endif()
 
+# SDL_GPU (Vulkan) rendering backend — desktop client builds only. Needs
+# glslang for runtime GLSL -> SPIR-V shader translation (MSYS2:
+# mingw-w64-x86_64-glslang). Selected at runtime via Video.Renderer=sdlgpu
+# or --renderer sdlgpu; OpenGL stays the default either way.
+if(DEDICATED_SERVER OR NINTENDO_SWITCH)
+  set(USE_SDLGPU OFF)
+endif()
+if(USE_SDLGPU)
+  find_package(glslang CONFIG)
+  if(NOT TARGET glslang::glslang)
+    message(FATAL_ERROR "USE_SDLGPU requires glslang (MSYS2: pacman -S mingw-w64-x86_64-glslang); configure with -DUSE_SDLGPU=OFF to build without the SDL_GPU backend")
+  endif()
+  list(APPEND LIBS glslang::glslang)
+  if(TARGET glslang::SPIRV)
+    list(APPEND LIBS glslang::SPIRV)
+  endif()
+  if(TARGET glslang::glslang-default-resource-limits)
+    list(APPEND LIBS glslang::glslang-default-resource-limits)
+  endif()
+  add_compile_definitions(USE_SDLGPU)
+
+  # SPIRV-Cross (optional): enables the D3D12 (DXBC) and Metal (MSL) shader
+  # formats for the SDL_GPU backend (MSYS2: mingw-w64-x86_64-spirv-cross).
+  # Without it the backend is Vulkan/SPIR-V only.
+  find_package(spirv_cross_c_shared QUIET)
+  if(TARGET spirv-cross-c-shared)
+    list(APPEND LIBS spirv-cross-c-shared)
+    add_compile_definitions(GFX_SDLGPU_HAS_SPIRV_CROSS)
+    message(STATUS "SDL_GPU: spirv-cross found (shared), D3D12/Metal shader formats enabled")
+  else()
+    # static libs; order matters: c -> backends -> glsl -> core
+    find_library(SPIRV_CROSS_C_LIB spirv-cross-c)
+    find_library(SPIRV_CROSS_HLSL_LIB spirv-cross-hlsl)
+    find_library(SPIRV_CROSS_MSL_LIB spirv-cross-msl)
+    find_library(SPIRV_CROSS_CPP_LIB spirv-cross-cpp)
+    find_library(SPIRV_CROSS_REFLECT_LIB spirv-cross-reflect)
+    find_library(SPIRV_CROSS_GLSL_LIB spirv-cross-glsl)
+    find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core)
+    if(SPIRV_CROSS_C_LIB AND SPIRV_CROSS_HLSL_LIB AND SPIRV_CROSS_MSL_LIB AND SPIRV_CROSS_GLSL_LIB AND SPIRV_CROSS_CORE_LIB)
+      list(APPEND LIBS "${SPIRV_CROSS_C_LIB}" "${SPIRV_CROSS_HLSL_LIB}" "${SPIRV_CROSS_MSL_LIB}")
+      if(SPIRV_CROSS_CPP_LIB)
+        list(APPEND LIBS "${SPIRV_CROSS_CPP_LIB}")
+      endif()
+      if(SPIRV_CROSS_REFLECT_LIB)
+        list(APPEND LIBS "${SPIRV_CROSS_REFLECT_LIB}")
+      endif()
+      list(APPEND LIBS "${SPIRV_CROSS_GLSL_LIB}" "${SPIRV_CROSS_CORE_LIB}")
+      add_compile_definitions(GFX_SDLGPU_HAS_SPIRV_CROSS)
+      message(STATUS "SDL_GPU: spirv-cross found (static), D3D12/Metal shader formats enabled")
+    else()
+      message(STATUS "SDL_GPU: spirv-cross not found, backend is Vulkan/SPIR-V only")
+    endif()
+  endif()
+endif()
+
 # Platform-specific extra libs
 if(NOT EXTRA_LIBRARIES)
   if(WIN32)
@@ -358,6 +414,16 @@ endif()
 # unconditionally, so always drop it and re-add it only for the server build
 # (otherwise the client links it alongside input.c -> duplicate symbols).
 list(REMOVE_ITEM SRC "${CMAKE_SOURCE_DIR}/port/src/dedicated_stubs.c")
+
+# SDL_GPU backend sources are desktop-client-only; drop them when the backend
+# is disabled (dedicated server, Switch, or -DUSE_SDLGPU=OFF). Their bodies
+# are also #ifdef USE_SDLGPU as a belt-and-braces guard.
+if(NOT USE_SDLGPU)
+  list(REMOVE_ITEM SRC
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdlgpu.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdlgpu_shader.cpp"
+  )
+endif()
 
 # Dedicated server: drop the SDL window backend, the OpenGL renderer + glad
 # loader, and the SDL input layer; swap in no-op input stubs. The remaining

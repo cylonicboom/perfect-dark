@@ -203,6 +203,11 @@
 // the gSPDisplayList that immediately follows BEGIN.
 #define G_DLCACHE_BEGIN_EXT          0x46
 #define G_DLCACHE_END_EXT            0x47
+// Port-only HDR "dazzle" weight (see docs/PORT_SDLGPU.md): draws issued while
+// the weight is non-zero are emissive-boosted toward the HDR peak brightness
+// by the SDL_GPU backend (light glares, the overexposure flash). w1 = weight
+// 0-255 (0 resets). No-op on the GL backend and when HDR is inactive.
+#define G_SETDAZZLE_EXT              0x48
 
 /* G_EXTRAGEOMETRYMODE flags */
 
@@ -330,6 +335,15 @@
                                                         \
     _g->words.w0 = _SHIFTL(G_DLCACHE_END_EXT, 24, 8);   \
     _g->words.w1 = 0;                                   \
+}
+
+// HDR dazzle weight, 0-255 (see G_SETDAZZLE_EXT above)
+#define gDPSetDazzleEXT(pkt, w255)                      \
+{                                                       \
+    Gfx *_g = (Gfx*)(pkt);                              \
+                                                        \
+    _g->words.w0 = _SHIFTL(G_SETDAZZLE_EXT, 24, 8);     \
+    _g->words.w1 = (u32)(w255) & 0xff;                  \
 }
 
 #define gSPSetExtraGeometryModeEXT(pkt, word) gSPExtraGeometryModeEXT((pkt), 0, word)

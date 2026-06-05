@@ -833,11 +833,16 @@ void netInit(void)
 		g_NetAdminPassword[sizeof(g_NetAdminPassword) - 1] = '\0';
 	}
 
-	// --netdiag <path>: diagnostic CSV log path. Same target as the
-	// Net.Debug.LogPath config key, but as a CLI flag for dedicated servers
+	// --netdiag <path> (alias --diag): diagnostic CSV log path. Same target as
+	// the Net.Debug.LogPath config key, but as a CLI flag for dedicated servers
 	// (which have no console for /diag). Overrides the config value if both are
 	// set; the file is opened by netDiagOpen at netStartServer / netStartClient.
+	// NOTE: this is the NETPLAY diagnostic log — the system/boot log is a
+	// separate file (pd.log) enabled with --log.
 	const char *argnetdiag = sysArgGetString("--netdiag");
+	if (!argnetdiag || !argnetdiag[0]) {
+		argnetdiag = sysArgGetString("--diag");
+	}
 	if (argnetdiag && argnetdiag[0]) {
 		strncpy(g_NetDiagPath, argnetdiag, sizeof(g_NetDiagPath) - 1);
 		g_NetDiagPath[sizeof(g_NetDiagPath) - 1] = '\0';
@@ -5022,6 +5027,15 @@ s32 netConsoleCommand(const char *line)
 			}
 			sysLogPrintf(LOG_CHAT, "DLCACHE: %s", on ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "gpu") == 0 || strcmp(cmd, "renderer") == 0) {
+		// /gpu — show the active rendering backend; for SDL_GPU also the
+		// driver (vulkan/direct3d12/metal), shader format, msaa, vsync and
+		// shader-cache state. See docs/PORT_SDLGPU.md. Routed here like the
+		// other non-net debug commands (/wireframe, /padtest).
+		extern void videoGetRendererInfo(char *buf, u32 len);
+		char info[256];
+		videoGetRendererInfo(info, sizeof(info));
+		sysLogPrintf(LOG_CHAT, "GPU: %s", info);
 	} else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET commands:");
 		sysLogPrintf(LOG_CHAT, "  /lag <ms>        artificial outgoing latency (0 = off)");
@@ -5043,6 +5057,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /octree portal                   cull to room's doorway footprint vs viewport (default on)");
 		sysLogPrintf(LOG_CHAT, "  /dlcache [on|off|stats|clear|ff]  cache static room geometry on the GPU");
 		sysLogPrintf(LOG_CHAT, "  /dlcache cull [auto|off|back|front] cached backface-cull mode (debug missing rooms)");
+		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

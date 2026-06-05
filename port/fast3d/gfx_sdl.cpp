@@ -10,11 +10,20 @@
 
 #include "gfx_window_manager_api.h"
 #include "gfx_screen_config.h"
+#include "gfx_sdl.h"
+#ifdef USE_SDLGPU
+#include "gfx_sdlgpu.h"
+#endif
 
 static SDL_Window* wnd;
 static SDL_GLContext ctx;
 static int sdl_to_lus_table[512];
 static bool vsync_enabled = true;
+// SDL_GPU backend: the window is created without a GL context and the
+// renderer owns presentation/vsync. Set by video.c via gfx_sdl_set_backend
+// before gfx_init.
+static bool wm_use_gpu = false;
+static int gpu_swap_interval = 1;
 // OTRTODO: These are redundant. Info can be queried from SDL.
 static int window_width = DESIRED_SCREEN_WIDTH;
 static int window_height = DESIRED_SCREEN_HEIGHT;
@@ -35,6 +44,10 @@ static uint64_t qpc_freq;
 
 #define FRAME_INTERVAL_US_NUMERATOR 1000000
 #define FRAME_INTERVAL_US_DENOMINATOR (target_fps)
+
+void gfx_sdl_set_backend(int gpu) {
+    wm_use_gpu = gpu != 0;
+}
 
 static int32_t gfx_sdl_get_maximized_state(void) {
     return (int32_t)maximized_state;
@@ -125,11 +138,13 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     }
 #endif
 
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    if (sysArgCheck("--debug-gl")) {
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+    if (!wm_use_gpu) {
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        if (sysArgCheck("--debug-gl")) {
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+        }
     }
 
     int posX = SDL_WINDOWPOS_UNDEFINED;
@@ -150,7 +165,10 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     }
 
     // we will unhide the window once the GL context is successfully created
-    SDL_WindowFlags flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL;
+    SDL_WindowFlags flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE;
+    if (!wm_use_gpu) {
+        flags |= SDL_WINDOW_OPENGL;
+    }
 
     // if fullscreen was requested, start the window in fullscreen right away
     if (set->fullscreen) {
@@ -193,6 +211,15 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     }
 
     ctx = NULL;
+    if (wm_use_gpu) {
+        // SDL_GPU path: plain window, no GL context. The renderer creates the
+        // GPU device and claims the window in its rapi init (gfx_sdlgpu.cpp).
+        wnd = SDL_CreateWindow(set->title, window_width, window_height, flags);
+        if (!wnd) {
+            sysFatalError("Could not open SDL window for SDL_GPU:\n%s", SDL_GetError());
+        }
+        sysLogPrintf(LOG_NOTE, "SDL: created window for SDL_GPU");
+    } else {
     u32 vmin = 0, vmaj = 0, vprof = SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
     const char *vprofstr = "";
     for (u32 i = verstart; i < verend && !ctx; ++i) {
@@ -225,6 +252,7 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     } else {
         sysLogPrintf(LOG_NOTE, "SDL: created GL%d.%d%s context", vmaj, vmin, vprofstr);
     }
+    }
 
     if (center_window) {
         SDL_SetWindowPosition(wnd, posX, posY);
@@ -236,8 +264,10 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         apply_fullscreen_mode();
     }
 
-    SDL_GL_MakeCurrent(wnd, ctx);
-    SDL_GL_SetSwapInterval(1);
+    if (!wm_use_gpu) {
+        SDL_GL_MakeCurrent(wnd, ctx);
+        SDL_GL_SetSwapInterval(1);
+    }
 
     SDL_ShowWindow(wnd);
 
@@ -406,7 +436,11 @@ static void gfx_sdl_swap_buffers_begin(void) {
     if (target_fps) {
         sync_framerate_with_timer();
     }
-    SDL_GL_SwapWindow(wnd);
+    if (!wm_use_gpu) {
+        // SDL_GPU presents in the renderer's end_frame (command-buffer
+        // submit); only the frame-pacing sleep above is shared
+        SDL_GL_SwapWindow(wnd);
+    }
 }
 
 static void gfx_sdl_swap_buffers_end(void) {
@@ -438,12 +472,24 @@ static void gfx_sdl_set_window_title(const char *title) {
 }
 
 static int gfx_sdl_get_swap_interval(void) {
+    if (wm_use_gpu) {
+        return gpu_swap_interval;
+    }
     int interval = 0;
     SDL_GL_GetSwapInterval(&interval);
     return interval;
 }
 
 static bool gfx_sdl_set_swap_interval(int interval) {
+#ifdef USE_SDLGPU
+    if (wm_use_gpu) {
+        // the renderer owns the swapchain; forward the desired mode
+        gpu_swap_interval = interval;
+        gfx_sdlgpu_set_vsync(interval);
+        vsync_enabled = interval != 0;
+        return true;
+    }
+#endif
     const bool success = SDL_GL_SetSwapInterval(interval);
     vsync_enabled = success && (interval != 0);
     if (!success) {

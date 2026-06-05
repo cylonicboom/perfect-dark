@@ -862,8 +862,12 @@ static MenuItemHandlerResult menuhandlerCenterWindow(s32 operation, struct menui
 
 static MenuItemHandlerResult menuhandlerVsync(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	static const s32 numOpts = 10;
+	// index = vidVsync + 2: VRR (-2), Adaptive (-1), Off (0), On (1),
+	// On (N frames) (2..). VRR = vsync off + an automatic framerate cap just
+	// below the display refresh (for G-Sync/FreeSync displays).
+	static const s32 numOpts = 11;
 	static const char *constOpts[] = {
+		"VRR (G-Sync/FreeSync)",
 		"Adaptive",
 		"Off",
 		"On"
@@ -878,13 +882,13 @@ static MenuItemHandlerResult menuhandlerVsync(s32 operation, struct menuitem *it
 	case MENUOP_GETOPTIONTEXT:
 		if (data->dropdown.value < ARRAYCOUNT(constOpts))
 			return (intptr_t)constOpts[data->dropdown.value];
-		vblanks = (s32)data->dropdown.value - 1;
+		vblanks = (s32)data->dropdown.value - 2;
 		snprintf(dynOpt, sizeof(dynOpt), "On (%d frames)", vblanks);
 		return (intptr_t)dynOpt;
 	case MENUOP_SET:
-		videoSetVsync(data->dropdown.value - 1);
+		videoSetVsync(data->dropdown.value - 2);
 	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = videoGetVsync() + 1;
+		data->dropdown.value = videoGetVsync() + 2;
 	}
 
 	return 0;
@@ -910,6 +914,88 @@ static MenuItemHandlerResult menuhandlerFramerateLimit(s32 operation, struct men
 
 	return 0;
 }
+
+#ifdef USE_SDLGPU
+static MenuItemHandlerResult menuhandlerRenderer(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// pure config write; the backend is created at startup (see videoInit)
+	static const char *opts[] = {
+		"OpenGL",
+		"SDL GPU (Vulkan)",
+#if defined(__APPLE__)
+		"SDL GPU (Metal)",
+#else
+		"SDL GPU (Direct3D 12)",
+#endif
+	};
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		videoSetRendererSetting(data->dropdown.value);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = videoGetRendererSetting();
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerHDR(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return videoGetHDR();
+	case MENUOP_SET:
+		videoSetHDR(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerHDRBrightness(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// paper white in nits, 80 + 40 per step (80..1000); live while HDR is on
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = ((s32)videoGetHDRPaperWhite() - 80) / 40;
+		break;
+	case MENUOP_SET:
+		videoSetHDRPaperWhite(80.0f + (f32)data->slider.value * 40.0f);
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		// NOTE: data->slider.label length must not exceed 15.
+		sprintf(data->slider.label, "%d nits", 80 + (s32)data->slider.value * 40);
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerHDRPeak(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// highlight-expansion target in nits, 80 + 80 per step (80..2000); only
+	// near-white content (glares, flashes) ramps toward it. At or below the
+	// paper white = expansion off. Live while HDR is on.
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = ((s32)videoGetHDRPeak() - 80) / 80;
+		break;
+	case MENUOP_SET:
+		videoSetHDRPeak(80.0f + (f32)data->slider.value * 80.0f);
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		// NOTE: data->slider.label length must not exceed 15.
+		sprintf(data->slider.label, "%d nits", 80 + (s32)data->slider.value * 80);
+	}
+
+	return 0;
+}
+#endif // USE_SDLGPU
 
 static MenuItemHandlerResult menuhandlerMSAA(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -1218,6 +1304,16 @@ static MenuItemHandlerResult menuhandlerOverexposureScale(s32 operation, struct 
 }
 
 struct menuitem g_ExtendedVideoMenuItems[] = {
+#ifdef USE_SDLGPU
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Renderer (restart)",
+		0,
+		menuhandlerRenderer,
+	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -1274,6 +1370,32 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		0,
 		menuhandlerMSAA,
 	},
+#ifdef USE_SDLGPU
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"HDR (restart)",
+		0,
+		menuhandlerHDR,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"HDR Brightness",
+		23,
+		menuhandlerHDRBrightness,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"HDR Peak",
+		24,
+		menuhandlerHDRPeak,
+	},
+#endif
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,

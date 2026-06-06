@@ -19,6 +19,51 @@
 #define CRASH_MSG(...) \
 	if (msglen < CRASH_MAX_MSG) msglen += snprintf(msg + msglen, CRASH_MAX_MSG - msglen, __VA_ARGS__)
 
+#if defined(PLATFORM_WIN32) || defined(PLATFORM_LINUX)
+// Write the crash dump to pd.crash.log. Tried in order: next to the exe
+// (where users look for it), then the working directory (the old behaviour —
+// a double-clicked exe has CWD == exe dir, but shortcuts/launchers often
+// don't), then the home dir. Always written, even when a regular log is open
+// — the dump also reaches that log via sysFatalError, but the standalone
+// artifact is what bug reports ask for (the old handler skipped it whenever
+// --log was active: "I got the crash screen but there's no pd.crash.log").
+// Returns the path written (static storage) or NULL if every location failed.
+static const char *crashWriteLogFile(const char *msg)
+{
+	static char path[2048];
+	char dir[2048] = "";
+	FILE *f = NULL;
+
+	sysGetExecutablePath(dir, sizeof(dir) - 1);
+	if (dir[0]) {
+		snprintf(path, sizeof(path), "%s/%s", dir, CRASH_LOG_FNAME);
+		f = fopen(path, "wb");
+	}
+
+	if (!f) {
+		snprintf(path, sizeof(path), "./%s", CRASH_LOG_FNAME);
+		f = fopen(path, "wb");
+	}
+
+	if (!f) {
+		dir[0] = '\0';
+		sysGetHomePath(dir, sizeof(dir) - 1);
+		if (dir[0]) {
+			snprintf(path, sizeof(path), "%s/%s", dir, CRASH_LOG_FNAME);
+			f = fopen(path, "wb");
+		}
+	}
+
+	if (!f) {
+		return NULL;
+	}
+
+	fprintf(f, "Crash!\n\n%s", msg);
+	fclose(f);
+	return path;
+}
+#endif
+
 #if defined(PLATFORM_WIN32)
 
 #include <windows.h>
@@ -253,6 +298,14 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 		const uintptr_t pcOfs = (uintptr_t)exinfo->ExceptionRecord->ExceptionAddress - (uintptr_t)pcModBase;
 		crashAppendDwarf(msg, &msglen, pcOfs);
 	}
+
+	// Say WHY a dump has raw offsets only, so a pasted crash screen is
+	// diagnosable: without this, "no addr2line found" and "addr2line found
+	// but resolution failed" look identical (both just print no symbol lines).
+	if (!crashFindAddr2Line()) {
+		CRASH_MSG("\n(addr2line.exe not found - raw offsets only; ship addr2line.exe next to the exe to symbolise)\n");
+	}
+
 	CRASH_MSG("\nBACKTRACE:\n");
 
 	char symbuf[sizeof(SYMBOL_INFO) + CRASH_MAX_SYM * sizeof(TCHAR)];
@@ -319,12 +372,12 @@ static long __stdcall crashHandler(PEXCEPTION_POINTERS exinfo)
 
 	crashStackTrace(msg, exinfo);
 
-	// open log file for the crash dump if one hasn't been opened yet
-	if (!sysLogIsOpen()) {
-		FILE *f = fopen(CRASH_LOG_FNAME, "wb");
-		if (f) {
-			fprintf(f, "Crash!\n\n%s", msg);
-			fclose(f);
+	// Write the standalone crash artifact (exe dir -> cwd -> home) and note
+	// in the open log, if any, where it went.
+	{
+		const char *logged = crashWriteLogFile(msg);
+		if (logged) {
+			sysLogPrintf(LOG_ERROR, "FATAL: crash dump written to %s", logged);
 		}
 	}
 
@@ -473,6 +526,15 @@ static void crashHandler(s32 sig, siginfo_t *siginfo, void *ctx)
 	fflush(stdout);
 
 	crashStackTrace(msg, sig, pc);
+
+	// Linux/dedicated previously wrote no crash file at all — only the log
+	// line + fatal-error path. Same artifact cascade as Windows now.
+	{
+		const char *logged = crashWriteLogFile(msg);
+		if (logged) {
+			sysLogPrintf(LOG_ERROR, "FATAL: crash dump written to %s", logged);
+		}
+	}
 
 	sysFatalError("Crash!\n\n%s", msg);
 }

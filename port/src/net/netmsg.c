@@ -1914,21 +1914,15 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 #define NET_AIMQ_RANGE   3.14159265358979f // aim-joint clamp (radians); a half-turn
 #define NET_SPEEDQ_RANGE 16.0f             // anim-speed clamp; locomotion sits 0..~4
 
-static s16 netQuantRound(f32 x)
-{
-	// Round-to-nearest without lrintf (matches the cshield +0.5f style); correct
-	// for negatives too. Caller guarantees |x| <= 32767.
-	return (s16)(x >= 0.f ? x + 0.5f : x - 0.5f);
-}
-
 // Periodic facing angle (radians) -> s16 over [-pi, pi). Wrap, not clamp: a yaw is
-// modular so reducing it is lossless. Non-finite -> 0.
+// modular so reducing it is lossless. Non-finite -> 0. Reuses the file's existing
+// round+clamp helper netQuantRound(v, lo, hi).
 static void netbufWriteAngleQ(struct netbuf *dst, f32 rad)
 {
 	const f32 PI = NET_AIMQ_RANGE, TWO_PI = 6.28318530717959f;
 	f32 a = isfinite(rad) ? fmodf(rad, TWO_PI) : 0.f;
 	if (a >= PI) a -= TWO_PI; else if (a < -PI) a += TWO_PI;
-	netbufWriteS16(dst, netQuantRound(a * (32768.0f / PI)));
+	netbufWriteS16(dst, (s16)netQuantRound(a * (32768.0f / PI), -32768, 32767));
 }
 
 static f32 netbufReadAngleQ(struct netbuf *src)
@@ -1941,8 +1935,7 @@ static f32 netbufReadAngleQ(struct netbuf *src)
 static void netbufWriteBoundedQ(struct netbuf *dst, f32 v, f32 range)
 {
 	if (!isfinite(v)) v = 0.f;
-	if (v > range) v = range; else if (v < -range) v = -range;
-	netbufWriteS16(dst, netQuantRound(v * (32767.0f / range)));
+	netbufWriteS16(dst, (s16)netQuantRound(v * (32767.0f / range), -32767, 32767));
 }
 
 static f32 netbufReadBoundedQ(struct netbuf *src, f32 range)

@@ -3255,7 +3255,8 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	// because then frac < the wire value or the modes differ. Keep flags/hidden synced.
 	if (g_NetMode == NETMODE_CLIENT
 			&& (doormode == DOORMODE_OPENING || doormode == DOORMODE_WAITING)
-			&& (prop->door->mode == DOORMODE_OPENING || prop->door->mode == DOORMODE_IDLE)
+			&& (prop->door->mode == DOORMODE_OPENING
+				|| (prop->door->mode == DOORMODE_IDLE && prop->door->frac > 0.f))
 			&& prop->door->frac >= frac) {
 		prop->door->base.hidden = hidden;
 		prop->door->base.flags = flags;

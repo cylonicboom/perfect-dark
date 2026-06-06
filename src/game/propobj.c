@@ -19449,6 +19449,12 @@ void doorsCheckAutomatic(void)
 
 				if (canopen) {
 					doorsRequestMode(door, DOORMODE_OPENING);
+#ifndef PLATFORM_N64
+					if (g_NetMode == NETMODE_CLIENT) {
+						netDiagLogf("door_predict", "sid=%u frac=%.2f mode=%d",
+								(unsigned)doorprop->syncid, door->frac, (s32)door->mode);
+					}
+#endif
 				}
 			}
 		}

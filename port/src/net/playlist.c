@@ -114,6 +114,84 @@ static const struct namedoption s_options[] = {
 	{ NULL, 0 }
 };
 
+// Weapon tokens for the [server] `banned=` key → MPWEAPON_* indices (the
+// g_MpWeapons roster, NOT WEAPON_* nums — bans filter g_MpSetup.weapons[]
+// which holds these). First entry per id is the canonical name used when
+// logging; later entries are accepted aliases.
+static const struct namedid s_mpweapons[] = {
+	{ "FALCON2",          MPWEAPON_FALCON2 },
+	{ "FALCON2SILENCED",  MPWEAPON_FALCON2_SILENCER },
+	{ "FALCON2SCOPE",     MPWEAPON_FALCON2_SCOPE },
+	{ "MAGSEC4",          MPWEAPON_MAGSEC4 },
+	{ "MAULER",           MPWEAPON_MAULER },
+	{ "PHOENIX",          MPWEAPON_PHOENIX },
+	{ "DY357MAGNUM",      MPWEAPON_DY357MAGNUM },
+	{ "MAGNUM",           MPWEAPON_DY357MAGNUM },
+	{ "DY357LX",          MPWEAPON_DY357LX },
+	{ "CMP150",           MPWEAPON_CMP150 },
+	{ "CYCLONE",          MPWEAPON_CYCLONE },
+	{ "CALLISTO",         MPWEAPON_CALLISTO },
+	{ "RCP120",           MPWEAPON_RCP120 },
+	{ "LAPTOPGUN",        MPWEAPON_LAPTOPGUN },
+	{ "LAPTOP",           MPWEAPON_LAPTOPGUN },
+	{ "DRAGON",           MPWEAPON_DRAGON },
+	{ "K7AVENGER",        MPWEAPON_K7AVENGER },
+	{ "K7",               MPWEAPON_K7AVENGER },
+	{ "AR34",             MPWEAPON_AR34 },
+	{ "SUPERDRAGON",      MPWEAPON_SUPERDRAGON },
+	{ "SHOTGUN",          MPWEAPON_SHOTGUN },
+	{ "REAPER",           MPWEAPON_REAPER },
+	{ "SNIPERRIFLE",      MPWEAPON_SNIPERRIFLE },
+	{ "SNIPER",           MPWEAPON_SNIPERRIFLE },
+	{ "FARSIGHT",         MPWEAPON_FARSIGHT },
+	{ "DEVASTATOR",       MPWEAPON_DEVASTATOR },
+	{ "ROCKETLAUNCHER",   MPWEAPON_ROCKETLAUNCHER },
+	{ "ROCKET",           MPWEAPON_ROCKETLAUNCHER },
+	{ "SLAYER",           MPWEAPON_SLAYER },
+	{ "COMBATKNIFE",      MPWEAPON_COMBATKNIFE },
+	{ "KNIFE",            MPWEAPON_COMBATKNIFE },
+	{ "CROSSBOW",         MPWEAPON_CROSSBOW },
+	{ "TRANQUILIZER",     MPWEAPON_TRANQUILIZER },
+	{ "TRANQ",            MPWEAPON_TRANQUILIZER },
+	{ "GRENADE",          MPWEAPON_GRENADE },
+	{ "NBOMB",            MPWEAPON_NBOMB },
+	{ "TIMEDMINE",        MPWEAPON_TIMEDMINE },
+	{ "PROXIMITYMINE",    MPWEAPON_PROXIMITYMINE },
+	{ "PROXYMINE",        MPWEAPON_PROXIMITYMINE },
+	{ "REMOTEMINE",       MPWEAPON_REMOTEMINE },
+	{ "LASER",            MPWEAPON_LASER },
+	{ "XRAYSCANNER",      MPWEAPON_XRAYSCANNER },
+	{ "XRAY",             MPWEAPON_XRAYSCANNER },
+	{ "NIGHTVISION",      MPWEAPON_NIGHTVISION },
+	{ "IRSCANNER",        MPWEAPON_IRSCANNER },
+	{ "CLOAKINGDEVICE",   MPWEAPON_CLOAKINGDEVICE },
+	{ "CLOAK",            MPWEAPON_CLOAKINGDEVICE },
+	{ "COMBATBOOST",      MPWEAPON_COMBATBOOST },
+	{ "BOOST",            MPWEAPON_COMBATBOOST },
+	{ "SPEEDPILL",        MPWEAPON_COMBATBOOST },
+	{ "PP9I",             MPWEAPON_PP9I },
+	{ "CC13",             MPWEAPON_CC13 },
+	{ "KL01313",          MPWEAPON_KL01313 },
+	{ "KF7SPECIAL",       MPWEAPON_KF7SPECIAL },
+	{ "KF7",              MPWEAPON_KF7SPECIAL },
+	{ "ZZT",              MPWEAPON_ZZT },
+	{ "DMC",              MPWEAPON_DMC },
+	{ "AR53",             MPWEAPON_AR53 },
+	{ "RCP45",            MPWEAPON_RCP45 },
+	{ "SHIELD",           MPWEAPON_SHIELD },
+	{ NULL, 0 }
+};
+
+// Convenience groups for `banned=` — expand to several MPWEAPON_* ids with
+// the same suffix applied to every member.
+static const s32 s_banGroupGadgets[] = {
+	MPWEAPON_XRAYSCANNER, MPWEAPON_NIGHTVISION, MPWEAPON_IRSCANNER,
+	MPWEAPON_CLOAKINGDEVICE, -1
+};
+static const s32 s_banGroupMines[] = {
+	MPWEAPON_TIMEDMINE, MPWEAPON_PROXIMITYMINE, MPWEAPON_REMOTEMINE, -1
+};
+
 // Case-insensitive string compare. The disk format accepts mixed case.
 static int ieq(const char *a, const char *b)
 {
@@ -279,6 +357,95 @@ static u8 parseBotDiff(const char *tok)
 	return BOTDIFF_NORMAL;
 }
 
+// Canonical (first-listed) name for an MPWEAPON_* id, for logging.
+static const char *mpweaponBanName(s32 id)
+{
+	for (const struct namedid *p = s_mpweapons; p->name; ++p) {
+		if (p->id == id) return p->name;
+	}
+	return "?";
+}
+
+static void banApplyBits(struct playlist *pl, s32 id, u8 bits)
+{
+	if (id >= 0 && id < (s32)sizeof(pl->weapon_bans)) {
+		pl->weapon_bans[id] |= bits;
+	}
+}
+
+// Render the ban table as "NAME, NAME:pri, NAME:sec, ..." into buf. Returns
+// the number of banned weapons (0 = no bans, buf untouched).
+static s32 playlistFormatBans(const struct playlist *pl, char *buf, size_t bufsize)
+{
+	s32 count = 0;
+	size_t len = 0;
+
+	buf[0] = '\0';
+
+	for (s32 id = 0; id < (s32)sizeof(pl->weapon_bans); ++id) {
+		const u8 b = pl->weapon_bans[id];
+		if (!b) continue;
+		// both functions banned == whole ban (matches the apply logic)
+		const char *suffix = ((b & PLAYLIST_BAN_WEAPON)
+				|| (b & (PLAYLIST_BAN_PRI | PLAYLIST_BAN_SEC)) == (PLAYLIST_BAN_PRI | PLAYLIST_BAN_SEC)) ? ""
+				: (b & PLAYLIST_BAN_PRI) ? ":pri" : ":sec";
+		const int n = snprintf(buf + len, bufsize - len, "%s%s%s",
+				count ? ", " : "", mpweaponBanName(id), suffix);
+		if (n < 0 || (size_t)n >= bufsize - len) break; // truncated, stop
+		len += (size_t)n;
+		++count;
+	}
+
+	return count;
+}
+
+// Parse one [server] `banned=` value: comma-separated weapon tokens, each
+// with an optional :pri / :sec function suffix (no suffix = whole-weapon
+// ban). GADGETS / MINES group tokens expand to their members. Multiple
+// banned= lines OR together. Modifies `val` in place (strtok-style).
+static void parseBannedList(struct playlist *pl, char *val)
+{
+	char *tok = val;
+
+	while (tok && *tok) {
+		char *next = strchr(tok, ',');
+		if (next) *next++ = '\0';
+		tok = trim(tok);
+		if (!*tok) { tok = next; continue; }
+
+		// optional :pri / :sec suffix
+		u8 bits = PLAYLIST_BAN_WEAPON;
+		char *colon = strchr(tok, ':');
+		if (colon) {
+			*colon = '\0';
+			char *suffix = trim(colon + 1);
+			if (ieq(suffix, "PRI") || ieq(suffix, "PRIMARY")) {
+				bits = PLAYLIST_BAN_PRI;
+			} else if (ieq(suffix, "SEC") || ieq(suffix, "SECONDARY")) {
+				bits = PLAYLIST_BAN_SEC;
+			} else {
+				sysLogPrintf(LOG_WARNING, "playlist: unknown ban suffix `:%s` on `%s`, banning whole weapon", suffix, tok);
+			}
+			tok = trim(tok);
+		}
+
+		if (ieq(tok, "GADGETS")) {
+			for (const s32 *id = s_banGroupGadgets; *id >= 0; ++id) banApplyBits(pl, *id, bits);
+		} else if (ieq(tok, "MINES")) {
+			for (const s32 *id = s_banGroupMines; *id >= 0; ++id) banApplyBits(pl, *id, bits);
+		} else {
+			const s32 id = lookupNamedId(s_mpweapons, tok, -1);
+			if (id < 0) {
+				sysLogPrintf(LOG_WARNING, "playlist: unknown weapon `%s` in banned=", tok);
+			} else {
+				banApplyBits(pl, id, bits);
+			}
+		}
+
+		tok = next;
+	}
+}
+
 // ---------- top-level parser ----------
 
 static void resetEntry(struct playlistentry *e)
@@ -427,6 +594,8 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 			} else if (ieq(key, "min_humans_to_start")) {
 				const s32 v = (s32)strtol(val, NULL, 0);
 				pl->min_humans_to_start = (u8)(v < 0 ? 0 : v > NET_MAX_CLIENTS ? NET_MAX_CLIENTS : v);
+			} else if (ieq(key, "banned")) {
+				parseBannedList(pl, val);
 			} else {
 				sysLogPrintf(LOG_WARNING, "playlist: unknown server key `%s`", key);
 			}
@@ -492,6 +661,13 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 				e->stagenum == PLAYLIST_RANDOM_STAGE ? "RANDOM" : stageName(e->stagenum),
 				e->scenario == PLAYLIST_RANDOM_SCENARIO ? "RANDOM" : scenarioName(e->scenario),
 				(s32)e->bot_count, "?", (s32)e->weight);
+	}
+
+	{
+		char bansbuf[256];
+		if (playlistFormatBans(pl, bansbuf, sizeof(bansbuf))) {
+			sysLogPrintf(LOG_NOTE, "playlist: banned: %s", bansbuf);
+		}
 	}
 
 	return pl->count > 0;
@@ -646,6 +822,48 @@ void playlistApply(const struct playlistentry *resolved)
 	g_BotCount = resolved->bot_count;
 }
 
+void playlistApplyWeaponBans(void)
+{
+	const struct playlist *pl = &g_NetPlaylist;
+
+	// Bans are a host/server policy: never run on a client (its slots are
+	// wire-authoritative from SVC_STAGE_START) and never offline.
+	if (g_NetMode != NETMODE_SERVER) {
+		return;
+	}
+
+	for (s32 i = 0; i < NUM_MPWEAPONSLOTS; ++i) {
+		const u8 mw = g_MpSetup.weapons[i];
+		u8 b;
+
+		if (mw >= sizeof(pl->weapon_bans)) {
+			continue;
+		}
+		b = pl->weapon_bans[mw];
+		if (!b) {
+			continue;
+		}
+
+		// Both functions banned leaves the weapon unusable — promote to a
+		// whole ban (the engine's fn-flag hooks assume never-both, see
+		// PORT_WEAPON_PRESETS.md).
+		if ((b & PLAYLIST_BAN_WEAPON)
+				|| (b & (PLAYLIST_BAN_PRI | PLAYLIST_BAN_SEC)) == (PLAYLIST_BAN_PRI | PLAYLIST_BAN_SEC)) {
+			sysLogPrintf(LOG_NOTE, "playlist: banned weapon %s removed from slot %d",
+					mpweaponBanName(mw), i);
+			g_MpSetup.weapons[i] = MPWEAPON_NONE;
+			g_MpSlotFnFlags[i] = 0;
+		} else {
+			// Function ban: rides the preset fn-flag system. The low ban bits
+			// equal FNFLAG_PRIMARY/SECONDARY_DISABLED by definition.
+			g_MpSlotFnFlags[i] |= (u8)(b & (PLAYLIST_BAN_PRI | PLAYLIST_BAN_SEC));
+			sysLogPrintf(LOG_NOTE, "playlist: banned %s function on %s (slot %d)",
+					(b & PLAYLIST_BAN_PRI) ? "primary" : "secondary",
+					mpweaponBanName(mw), i);
+		}
+	}
+}
+
 // ---------- serialize (admin saverotation) ----------
 
 s32 playlistAppendEntryToFile(const struct playlistentry *e)
@@ -733,6 +951,17 @@ void playlistDumpToChat(void)
 		} else {
 			sysLogPrintf(LOG_NOTE, "  [%d] %s: %s/%s bots=%d wt=%d",
 					i, e->name, stage, scen, (s32)e->bot_count, (s32)e->weight);
+		}
+	}
+
+	{
+		char bansbuf[256];
+		if (playlistFormatBans(&g_NetPlaylist, bansbuf, sizeof(bansbuf))) {
+			if (g_NetMode) {
+				netChatPrintf(NULL, "banned: %s", bansbuf);
+			} else {
+				sysLogPrintf(LOG_NOTE, "  banned: %s", bansbuf);
+			}
 		}
 	}
 }

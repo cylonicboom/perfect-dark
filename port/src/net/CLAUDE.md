@@ -463,6 +463,19 @@ narrower, corruption paths):
 `netChrRecordSnapshot` re-seats a corrupt head) so any *future* corruption logs
 and skips instead of crashing or silently freezing.
 
+### Server Weapon / Function Bans + fn-flag sync (proto 58)
+
+Playlist `[server]` `banned=` key: whole-weapon bans (slot → `MPWEAPON_NONE`,
+the pad never spawns) and `:pri`/`:sec` function bans (OR'd into
+`g_MpSlotFnFlags[]`, the weapon-preset FNFLAG system). Enforced once per match
+by `playlistApplyWeaponBans()` (playlist.c), called from `mpStartMatch` after
+the option strips / weapon re-roll — so preset picks, admin pushes and lobby
+changes are all filtered before pads spawn and before `SVC_STAGE_START` ships
+the slots. **Proto 58 also syncs `g_MpSlotFnFlags[6]` right after the weapons
+block in `SVC_STAGE_START`** (closing the documented preset fn-flag client
+gap — clients now enforce the same `bgun*FunctionDisabled` gates locally).
+`/playlist list` prints the active bans. See `docs/PORT_SERVER_WEAPON_BANS.md`.
+
 ### Slow Motion / Combat Boost Sync (`SVC_TIMESCALE`, proto 57)
 
 PD's slow motion (the Combat Sim option and the Combat Boost pickup) works by

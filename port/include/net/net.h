@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 57 // 57: SVC_TIMESCALE — slow motion / combat boost: server mirrors the sim-step halving flag (+ boost timer) so clients tick in lockstep
+#define NET_PROTOCOL_VER 58 // 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients
+// 57: SVC_TIMESCALE — slow motion / combat boost: server mirrors the sim-step halving flag (+ boost timer) so clients tick in lockstep
 // 56: CLC_BOT_CMD — clients can order own-team simulants (server validates team ownership + applies)
 // 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
 // 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it

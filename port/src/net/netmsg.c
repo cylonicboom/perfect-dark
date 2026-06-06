@@ -35,6 +35,7 @@
 #include "romdata.h"
 #include "fs.h"
 #include "console.h"
+#include "mpsetups.h" // g_MpSlotFnFlags — synced in SVC_STAGE_START
 #include "net/net.h"
 #include "net/netbuf.h"
 #include "net/netmsg.h"
@@ -877,6 +878,12 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU16(dst, g_MpSetup.chrslots);
 	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
+	// Per-slot weapon function flags (FNFLAG_*) — preset fn restrictions and
+	// playlist weapon-function bans (NET_PROTOCOL_VER >= 58). Clients apply
+	// these to their local g_MpSlotFnFlags so the bgun*FunctionDisabled gates
+	// fire identically on both ends; previously clients evaluated all-zero
+	// flags (the documented PORT_WEAPON_PRESETS.md wire gap).
+	netbufWriteData(dst, g_MpSlotFnFlags, sizeof(g_MpSlotFnFlags));
 	// KotH static-hill index (NET_PROTOCOL_VER >= 28). 0 = Random; 1..N = hillpads[index-1].
 	// Both sides need the same value before kohInitProps runs to keep g_RngSeed in sync
 	// (the static-pick path skips rngRandom).
@@ -1019,6 +1026,10 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.chrslots = netbufReadU16(src);
 	g_MpSetup.options = netbufReadU64(src);
 	netbufReadData(src, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
+	// Per-slot fn-flags (proto 58): wire-authoritative, same lifecycle as the
+	// weapons block above. mpStartMatch on the client doesn't call
+	// mpApplyWeaponSet (the reset path), so these survive until match start.
+	netbufReadData(src, g_MpSlotFnFlags, sizeof(g_MpSlotFnFlags));
 	g_MpSetup.kohstatichill = netbufReadU8(src);
 	for (s32 i = 0; i < 4; ++i) {
 		g_MpSetup.ctcteambase[i] = netbufReadU8(src);

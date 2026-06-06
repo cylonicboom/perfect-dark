@@ -16,6 +16,17 @@
 #define PLAYLIST_RANDOM_SCENARIO  ((s8)-1)
 #define PLAYLIST_RANDOM_PRESET    ((s8)-1)
 
+// Per-weapon ban bits for the [server] `banned=` key, indexed by MPWEAPON_*.
+// The low two bits intentionally equal FNFLAG_PRIMARY_DISABLED /
+// FNFLAG_SECONDARY_DISABLED so they OR straight into g_MpSlotFnFlags[].
+#define PLAYLIST_BAN_PRI    0x01 // weapon's primary function disabled
+#define PLAYLIST_BAN_SEC    0x02 // weapon's secondary function disabled
+#define PLAYLIST_BAN_WEAPON 0x80 // weapon removed from the loadout entirely
+
+// Sized to cover NUM_MPWEAPONS (0x31 on the port) with headroom; playlist.c
+// bounds-checks ids against this at parse time.
+#define PLAYLIST_WEAPONBAN_SLOTS 64
+
 // One match in the rotation. mp_options applies only the bits listed in
 // mp_options_mask — a 1 bit in the mask means "force this MPOPTION to whatever
 // mp_options says"; a 0 bit in the mask means "leave the existing g_MpSetup
@@ -53,6 +64,12 @@ struct playlist {
 	// the server idles in the Combat Sim lobby. 0 means "never wait" (the
 	// pre-existing behavior); default 1.
 	u8 min_humans_to_start;
+
+	// Server-wide weapon / weapon-function ban list, indexed by MPWEAPON_*
+	// (PLAYLIST_BAN_* bits). Read from the [server] `banned=` key; applied to
+	// the final g_MpSetup.weapons / g_MpSlotFnFlags at match start by
+	// playlistApplyWeaponBans. All-zero = no bans.
+	u8 weapon_bans[PLAYLIST_WEAPONBAN_SLOTS];
 };
 
 // Load from disk. Returns 1 on success, 0 if the file is missing or empty.
@@ -111,5 +128,13 @@ u64 playlistAllOptionBits(void);
 // can't be written. The in-memory g_NetPlaylist is updated separately by the
 // caller; this only persists to disk so the entry survives a restart.
 s32 playlistAppendEntryToFile(const struct playlistentry *e);
+
+// Enforce g_NetPlaylist.weapon_bans on the active setup: banned weapons in
+// g_MpSetup.weapons[] become MPWEAPON_NONE ("Nothing" — the pad never spawns),
+// function bans OR FNFLAG_* bits into g_MpSlotFnFlags[]. Server-only no-op
+// otherwise; idempotent. Called from mpStartMatch right before the loadout is
+// locked in (after preset picks / re-rolls / admin pushes), so the filtered
+// slots + fn-flags are what SVC_STAGE_START broadcasts.
+void playlistApplyWeaponBans(void);
 
 #endif

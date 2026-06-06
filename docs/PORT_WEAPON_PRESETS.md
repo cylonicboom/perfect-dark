@@ -199,14 +199,14 @@ static char g_MpWeaponPresetNameBuf[MPWEAPONPRESET_MAXNAME + 1];
 
 ---
 
-## Wire (none)
+## Wire (synced as of proto 58)
 
-Custom presets are entirely host-side. Once a Custom loadout is applied, the result lives in `g_MpSetup.weapons` and the host's local `g_MpSlotFnFlags`. The wire fields that need to be synced to clients are:
+Custom presets are host-side; the applied result lives in `g_MpSetup.weapons` and `g_MpSlotFnFlags`. Both are now synced to clients in `SVC_STAGE_START`:
 
-- `g_MpSetup.weapons[]` — already synced in `SVC_STAGE_START`.
-- `g_MpSlotFnFlags[]` — **not currently synced**. Clients evaluate their own `mpSlotFlagsForWeapon` against their local `g_MpSlotFnFlags` which is all-zero on the client. This is a known gap: the host's fn-flag restrictions only apply to host-side firing logic; clients see no restrictions. If you need full sync, append 6 bytes to `SVC_STAGE_START` after the existing weapons block and bump `NET_PROTOCOL_VER`.
+- `g_MpSetup.weapons[]` — synced since the original netplay work.
+- `g_MpSlotFnFlags[]` — **synced since `NET_PROTOCOL_VER` 58** (6 bytes appended right after the weapons block; added together with the playlist server weapon-ban feature, see `PORT_SERVER_WEAPON_BANS.md`). Clients read them straight into their local `g_MpSlotFnFlags`, so `mpSlotFlagsForWeapon` and the `bgun*FunctionDisabled` gates fire identically on both ends — pure fn-flag presets now restrict client firing too.
 
-The current state is acceptable because the dominant use case (GoldenEye Style preset) drives its restrictions through `goldeneyeStyleActive()` which **is** wire-synced via `MPOPTION_GOLDENEYE` in `g_MpSetup.options`. Pure fn-flag-only presets (no MPOPTION_GOLDENEYE) won't restrict client firing.
+Historical note: before proto 58 the flags were host-local (clients evaluated all-zero), which was tolerable only because the dominant use case (GoldenEye Style) drives its restrictions through `goldeneyeStyleActive()` / `MPOPTION_GOLDENEYE` which rides `g_MpSetup.options`.
 
 ---
 
@@ -220,6 +220,6 @@ The current state is acceptable because the dominant use case (GoldenEye Style p
 6. Add the menu dialogs + Set=Custom auto-push to `setup.c`.
 7. Add the three `bgun*FunctionDisabled` helpers + their three gate sites in `bondgun.c`. Add prototypes to `bondgun.h`.
 8. Add the `funcnum`-clamp in `botinv.c`'s `botinvSwitchToWeapon`.
-9. (Optional) If you need fn-flag restrictions on remote clients too, sync `g_MpSlotFnFlags[]` in `SVC_STAGE_START` and bump `NET_PROTOCOL_VER`.
+9. (Optional) If you need fn-flag restrictions on remote clients too, sync `g_MpSlotFnFlags[]` in `SVC_STAGE_START` and bump `NET_PROTOCOL_VER`. (Done on `port-net-predict` at proto 58.)
 
 If your branch doesn't have netplay, skip step 9 entirely. If your branch doesn't have the GoldenEye Style feature, drop the `if (goldeneyeStyleActive())` line from `bgunSecondaryFunctionDisabled` and the helpers still work — they just respond only to the FNFLAG bits.

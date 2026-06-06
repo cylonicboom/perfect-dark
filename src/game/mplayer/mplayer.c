@@ -30,6 +30,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "net/playlist.h"
 #include "fs.h"
 #include "system.h"
 #include "mpsetups.h"
@@ -273,6 +274,16 @@ void mpStartMatch(void)
 		if (!challengeIsFeatureUnlocked(MPFEATURE_SLOWMOTION)) {
 			g_MpSetup.options &= ~(MPOPTION_SLOWMOTION_ON | MPOPTION_SLOWMOTION_SMART);
 		}
+
+#ifndef PLATFORM_N64
+		// Server weapon bans (playlist [server] `banned=`): filter the final
+		// loadout right before the match locks it in — after the random/preset
+		// re-roll above, so it covers preset picks, admin setup pushes and
+		// menu changes alike. The filtered weapons[] + g_MpSlotFnFlags[] are
+		// what SVC_STAGE_START broadcasts to clients. No-op unless hosting
+		// with a loaded playlist that has bans.
+		playlistApplyWeaponBans();
+#endif
 	}
 
 	for (i = 0; i < MAX_PLAYERS; i++) {

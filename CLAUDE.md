@@ -2,7 +2,17 @@
 
 ## Environment Rules (READ FIRST)
 
-**Do not build.** This repo only compiles inside an MSYS2 MinGW x64 shell, which isn't reachable from this Claude environment. Never run `make`, `cmake --build`, `ninja`, or any other compile invocation — the user builds externally and reports back. Reading CMake files, headers, and verifying code by inspection is fine.
+**Building is allowed — use the MSYS2 MinGW x64 shell at `C:\msys64`.** The repo only compiles inside that shell; invoke it from PowerShell like this:
+
+```powershell
+$env:MSYSTEM='MINGW64'; $env:CHERE_INVOKING='1'
+& C:\msys64\usr\bin\bash.exe -lc 'cd "/c/Users/tidbu/source/repos/_remote/perfect_dark_netplay/build_debug_sdl3" && cmake --build . -j 2>&1 | tail -40'
+```
+
+- `MSYSTEM=MINGW64` selects the MinGW x64 toolchain (`/mingw64/bin`); `CHERE_INVOKING=1` keeps the login shell from cd-ing to home. Use MSYS path form (`/c/Users/...`) inside the bash command string.
+- `build_debug_sdl3/` is the primary configured build dir (SDL3 + SDL_GPU). Configure fresh dirs with `cmake -G "Unix Makefiles" [options] ..` from the same shell.
+- Builds can take minutes — use a long timeout or run in the background and tail the output.
+- **Do not run the built game** (`pd.*.exe`): it needs a ROM and opens a window. The user runs and reports back.
 
 ## Code Writing Guidelines
 

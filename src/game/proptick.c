@@ -44,6 +44,11 @@
 #include "data.h"
 #include "types.h"
 
+#ifndef PLATFORM_N64
+#include "system.h"
+#include "net/net.h"
+#endif
+
 void propsTick(void)
 {
 	s32 i;
@@ -64,7 +69,39 @@ void propsTick(void)
 
 	prop = g_Vars.activeprops;
 
+#ifndef PLATFORM_N64
+	// Walk guard (crash diagnostic): the loop below is only safe against frees
+	// that go through the TICKOP protocol. If a tick (or propExecuteTickOperation,
+	// which runs AFTER the next2 re-read) delists/frees the prop the cursor is
+	// about to step onto, propDelist has NULLed its ->next (and propFree relinks
+	// it into the freelist), so the walk runs off the end into a NULL deref —
+	// observed as an 0xc0000005 at the next = prop->next read. Detect a NULL or
+	// delisted cursor, log who we last ticked (the culprit's tick is what broke
+	// the list), and abort this frame's walk instead of crashing. One frame of
+	// missed prop ticks is invisible; the log line is the evidence we need.
+	struct prop *guardprev = NULL;
+	s32 guardprevop = TICKOP_NONE;
+#endif
+
 	do {
+#ifndef PLATFORM_N64
+		if (!prop || (!prop->active && prop != g_Vars.pausedprops)) {
+			const s32 previdx = (guardprev && guardprev >= g_Vars.props && guardprev < g_Vars.props + g_Vars.maxprops)
+					? (s32)(guardprev - g_Vars.props) : -1;
+			const s32 curidx = (prop && prop >= g_Vars.props && prop < g_Vars.props + g_Vars.maxprops)
+					? (s32)(prop - g_Vars.props) : -1;
+			sysLogPrintf(LOG_WARNING,
+					"propsTick: %s cursor mid-walk (cur=%p idx=%d type=%d active=%d) after prop idx=%d type=%d tickop=%d - aborting walk",
+					prop ? "delisted" : "NULL", prop, curidx,
+					prop ? prop->type : -1, prop ? prop->active : -1,
+					previdx, guardprev ? guardprev->type : -1, guardprevop);
+			netDiagLogf("proptick_guard", "cur=%d type=%d prev=%d prevtype=%d prevop=%d",
+					curidx, prop ? prop->type : -1, previdx,
+					guardprev ? guardprev->type : -1, guardprevop);
+			break;
+		}
+		guardprev = prop;
+#endif
 		next = prop->next;
 		done = next == g_Vars.pausedprops;
 		tickop = TICKOP_NONE;
@@ -100,6 +137,9 @@ void propsTick(void)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		guardprevop = tickop;
+#endif
 		prop = next2;
 	} while (!done);
 }

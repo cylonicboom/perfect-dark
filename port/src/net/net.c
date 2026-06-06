@@ -2174,6 +2174,43 @@ void netStartFrame(void)
 
 	++g_NetTick;
 
+	// R4 (docs/netplay-perf-review-2026.md): g_NetTick advances once per
+	// netStartFrame call (once per diffframe60>0 frame), NOT once per logical 1/60
+	// sim step. On a machine that sustains <60fps the net clock drifts slower than
+	// wall-clock while the sim runs multiple steps per frame, skewing tick-stamped
+	// moves and CSP/interp timing. DIAGNOSTIC ONLY (no behaviour change): compare
+	// the net tick against the microsecond wall clock and warn (throttled) on
+	// sustained divergence so the condition is visible instead of silent. Re-bases
+	// on session start, a backward jump, or an implausibly large step (a client
+	// adopting the server's tick value), none of which are frame-rate drift.
+	{
+		static u64 s_base_us = 0;
+		static u32 s_base_tick = 0;
+		static u32 s_last_warn_tick = 0;
+		const u64 now_us = sysGetMicroseconds();
+		const s64 dtick = (s64)g_NetTick - (s64)s_base_tick;
+		if (s_base_us == 0u || dtick < 0) {
+			s_base_us = now_us;
+			s_base_tick = g_NetTick;
+		} else {
+			const s64 elapsed_ticks = (s64)((now_us - s_base_us) * 60ULL / 1000000ULL);
+			const s64 drift = dtick - elapsed_ticks; // < 0 => net clock behind wall clock
+			if (drift > 600 || drift < -600) {
+				// >10s implied drift can't accrue from frame pacing this fast — it's a
+				// clock discontinuity (e.g. server-tick adoption). Re-base silently.
+				s_base_us = now_us;
+				s_base_tick = g_NetTick;
+			} else if ((drift > 30 || drift < -30) && (g_NetTick - s_last_warn_tick) >= 60u) {
+				s_last_warn_tick = g_NetTick;
+				netDiagLogf("tickdrift", "net=%lld wall=%lld drift=%lld",
+						(long long)dtick, (long long)elapsed_ticks, (long long)drift);
+				sysLogPrintf(LOG_WARNING | LOGFLAG_NOCON,
+						"NET: tick clock drift %lld ticks vs wall clock (sustained <60fps?)",
+						(long long)drift);
+			}
+		}
+	}
+
 	// Heartbeat for crash hunts. Logs every 6 ticks (~100ms at 60Hz) so the
 	// diag file shows progress through gameplay with fine enough granularity
 	// to bracket a crash to ≤6 frames. Pairs with the existing pos_cl /
@@ -2647,7 +2684,24 @@ void netEndFrame(void)
 			}
 #endif
 			if (g_NetNextUpdate <= g_NetTick) {
-				g_NetNextUpdate = g_NetTick + g_NetServerUpdateRate;
+				// P3 (docs/netplay-perf-review-2026.md): adaptive player-move send
+				// cadence. The gate that throttles SVC_PLAYER_MOVE sends is global,
+				// so its interval scales the per-tick player-move bandwidth directly.
+				// Keep every-tick (rate 1) for the common 2-4 combatant case — no
+				// feel change — and only stretch to every-other-tick once the match
+				// is large enough that 60Hz of full moves for everyone is wasteful;
+				// interpolation (g_NetInterpTicks, default 3 ticks) easily hides the
+				// 30Hz cadence. An operator override (/svcrate or Net.Server.Update-
+				// Frames > 1) still wins via max().
+				s32 combatants = 0;
+				for (s32 ci = 0; ci < g_NetMaxClients; ++ci) {
+					if (g_NetClients[ci].state >= CLSTATE_GAME && g_NetClients[ci].player) {
+						++combatants;
+					}
+				}
+				const u32 adaptive = (combatants > 4) ? 2u : 1u;
+				const u32 rate = (g_NetServerUpdateRate > adaptive) ? g_NetServerUpdateRate : adaptive;
+				g_NetNextUpdate = g_NetTick + rate;
 			}
 		}
 	}

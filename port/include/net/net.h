@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 63 // 63: netplayermove carries renderbehind (u8) — the client's g_NetInterpTicks render offset, so server lag-comp rewinds targets to the EXACT server-tick the shooter was displaying (inmovetick - renderbehind) instead of an RTT/2 + interp_lag symmetric-latency estimate. See docs/netplay-perf-review-2026.md lag-comp item
+#define NET_PROTOCOL_VER 64 // 64: CLC_DOOR_ACTIVATE — client predicts a door and sends the host the exact door syncid, so high-ping door activation no longer depends on the host re-deriving the door from a lagged position + a momentary UCMD_ACTIVATE. See docs/netplay-perf-review-2026.md
+// 63: netplayermove carries renderbehind (u8) — the client's g_NetInterpTicks render offset, so server lag-comp rewinds targets to the EXACT server-tick the shooter was displaying (inmovetick - renderbehind) instead of an RTT/2 + interp_lag symmetric-latency estimate. See docs/netplay-perf-review-2026.md lag-comp item
 // 62: SVC_PROP_MOVE chr-state pose bandwidth cut — body yaw, the four aim joints, angleoffset and anim speed now ride as s16 (quantized) instead of f32 (-14 bytes/chr/tick; pos + chr->damage stay full-precision). See docs/netplay-perf-review-2026.md P1
 // 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
 // 60: co-op SVC_STAGE_START manifest carries a spectator byte — mid-mission JIP joiners ride flagged spectator (sentinel playernum) instead of colliding with the host's slot 0

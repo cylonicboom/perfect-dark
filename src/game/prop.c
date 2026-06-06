@@ -1765,7 +1765,23 @@ bool currentPlayerInteract(bool eyespy)
 			op = propobjInteract(prop);
 			break;
 		case PROPTYPE_DOOR:
+#ifndef PLATFORM_N64
+			if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+				// Remote clients drive their own doors via CLC_DOOR_ACTIVATE (exact
+				// syncid), so the host doesn't re-derive the door from a lagged
+				// position + a momentary UCMD_ACTIVATE. Skip here to avoid a double
+				// toggle — the door comes through netmsgClcDoorActivateRead instead.
+				break;
+			}
+#endif
 			op = propdoorInteract(prop);
+#ifndef PLATFORM_N64
+			if (g_NetMode == NETMODE_CLIENT) {
+				// Predicted the door locally; tell the host the EXACT door so it opens
+				// the same one reliably, with no position/timing guessing.
+				netmsgClcDoorActivateWrite(&g_NetMsgRel, prop);
+			}
+#endif
 			break;
 		case PROPTYPE_CHR:
 		case PROPTYPE_EYESPY:

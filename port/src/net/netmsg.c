@@ -1518,6 +1518,44 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcDoorActivateWrite(struct netbuf *dst, struct prop *prop)
+{
+	netbufWriteU8(dst, CLC_DOOR_ACTIVATE);
+	netbufWriteU16(dst, prop->syncid);
+	return dst->error;
+}
+
+u32 netmsgClcDoorActivateRead(struct netbuf *src, struct netclient *srccl)
+{
+	// Client door prediction (high-ping doors): the client opened a door locally and
+	// tells the host the EXACT door it used (by syncid), so the host doesn't have to
+	// re-derive which door from a lagged/ambiguous position plus a momentary
+	// UCMD_ACTIVATE flag — the reason the position-swap and activate-scan fixes were
+	// only "sometimes" reliable. Run propdoorInteract as the requesting client: it
+	// checks doorIsUnlocked (a client still can't open a locked door without the key),
+	// picks the swing direction, toggles the door, and broadcasts SVC_PROP_DOOR to all
+	// (doorSetMode on the server). The requesting client already predicted it; its
+	// reconcile skips the echoed keyframe.
+	const u16 syncid = netbufReadU16(src);
+	if (src->error || g_NetMode != NETMODE_SERVER || srccl->state < CLSTATE_GAME
+			|| srccl->is_spectator || !srccl->player || !srccl->player->prop
+			|| srccl->playernum >= MAX_PLAYERS) {
+		return src->error;
+	}
+
+	struct prop *prop = netSyncIdToProp(syncid);
+	if (!prop || !prop->door || prop->type != PROPTYPE_DOOR) {
+		return src->error;
+	}
+
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	setCurrentPlayerNum(srccl->playernum);
+	propdoorInteract(prop);
+	setCurrentPlayerNum(prevplayernum);
+
+	return src->error;
+}
+
 u32 netmsgClcBotCmdRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 botindex = netbufReadU8(src);

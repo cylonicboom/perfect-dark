@@ -2007,6 +2007,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_PICKUP_REQUEST: rc = netmsgClcPickupRequestRead(&cl->in, cl); break;
 			case CLC_BOT_CMD: rc = netmsgClcBotCmdRead(&cl->in, cl); break;
 			case CLC_STAGE_READY: rc = netmsgClcStageReadyRead(&cl->in, cl); break;
+			case CLC_DOOR_ACTIVATE: rc = netmsgClcDoorActivateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

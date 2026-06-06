@@ -143,6 +143,8 @@ u32 g_NetServerUpdateRate = 1;
 s32 g_NetLagCompExact = 1; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. /lagcomp toggles for live A/B
 s32 g_NetRelevancy = 1; // P2: per-client relevancy cull of sim/NPC chr-state (default on; /relevancy off = identical broadcast to all)
 f32 g_NetRelevancyDist = 9000.0f; // a sim NOT sharing a room with the client's pawn is culled beyond this (world units). Conservative default — well past LV_SMART_SLOMO_RANGE (1500). /relevancy dist N to tune
+s32 g_NetPosQuant = 0; // P2: quantize SVC_PROP_MOVE positions to s16 (proto 65). Default OFF — wire-format/lossy, opt-in. /posquant on
+f32 g_NetPosQuantScale = 1.0f; // world units per s16 step. 1.0 = ~1-unit precision over +/-32767; raise for bigger maps (coarser), lower for finer. /posquant scale N
 static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *cl); // defined below (near netChrRoomsEqual); used by netEndFrame above it
 u32 g_NetServerInRate = 128 * 1024;
 u32 g_NetServerOutRate = 128 * 1024;
@@ -5276,6 +5278,31 @@ s32 netConsoleCommand(const char *line)
 			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = %s, dist %.0f (usage: /relevancy on|off|dist N)",
 				g_NetRelevancy ? "on" : "off", g_NetRelevancyDist);
 		}
+	} else if (strcmp(cmd, "posquant") == 0) {
+		// /posquant [on|off|scale N] — quantize SVC_PROP_MOVE positions to s16
+		// (proto 65, ~6B vs 12B per chr per tick). on is lossy to ~scale units;
+		// raise scale for very large maps (coarser, wider range), lower for finer.
+		// Wire-format change — both ends must be on this build (proto 65) regardless.
+		if (strcmp(arg, "on") == 0) {
+			g_NetPosQuant = 1;
+			sysLogPrintf(LOG_CHAT, "NET: position quant = on (scale %.2f, ~%.2f unit precision)",
+				g_NetPosQuantScale, g_NetPosQuantScale);
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetPosQuant = 0;
+			sysLogPrintf(LOG_CHAT, "NET: position quant = off (full coord)");
+		} else if (strncmp(arg, "scale", 5) == 0) {
+			const char *n = arg + 5;
+			while (*n == ' ') n++;
+			if (*n) {
+				const f32 s = (f32)atof(n);
+				g_NetPosQuantScale = (s < 0.01f) ? 0.01f : (s > 64.0f ? 64.0f : s);
+			}
+			sysLogPrintf(LOG_CHAT, "NET: position quant scale = %.2f (range +/-%.0f)",
+				g_NetPosQuantScale, 32767.0f * g_NetPosQuantScale);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: position quant = %s, scale %.2f (usage: /posquant on|off|scale N)",
+				g_NetPosQuant ? "on" : "off", g_NetPosQuantScale);
+		}
 	} else if (strcmp(cmd, "cspframes") == 0) {
 		// /cspframes <N> — ticks the smooth CSP correction spreads error
 		// over. Smaller = snappier; larger = smoother but slower. Default 10.
@@ -5977,6 +6004,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /clcrate <n>     client update interval, ticks (default 1)");
 		sysLogPrintf(LOG_CHAT, "  /lagcomp x        hit-rewind mode: exact|legacy (default exact)");
 		sysLogPrintf(LOG_CHAT, "  /relevancy x      per-client chr cull: on|off|dist N (default on)");
+		sysLogPrintf(LOG_CHAT, "  /posquant x       quantize prop positions: on|off|scale N (default off)");
 		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
 		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
 		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");
@@ -6659,6 +6687,8 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
 	configRegisterInt("Net.Server.Relevancy", &g_NetRelevancy, 0, 1);
 	configRegisterFloat("Net.Server.RelevancyDist", &g_NetRelevancyDist, 500.0f, 1000000.0f);
+	configRegisterInt("Net.Server.PosQuant", &g_NetPosQuant, 0, 1);
+	configRegisterFloat("Net.Server.PosQuantScale", &g_NetPosQuantScale, 0.01f, 64.0f);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
 	configRegisterInt("Net.Server.HitValidate", &g_NetHitValidate, 0, 2);
 

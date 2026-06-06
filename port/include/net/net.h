@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 64 // 64: CLC_DOOR_ACTIVATE — client predicts a door and sends the host the exact door syncid, so high-ping door activation no longer depends on the host re-deriving the door from a lagged position + a momentary UCMD_ACTIVATE. See docs/netplay-perf-review-2026.md
+#define NET_PROTOCOL_VER 65 // 65: SVC_PROP_MOVE position quantization — when Net.Server.PosQuant is on, the per-chr coord rides as 3x s16 (6B) instead of 3x f32 (flags bit 5; out-of-range positions stay full coord). See docs/netplay-perf-review-2026.md P2
+// 64: CLC_DOOR_ACTIVATE — client predicts a door and sends the host the exact door syncid, so high-ping door activation no longer depends on the host re-deriving the door from a lagged position + a momentary UCMD_ACTIVATE. See docs/netplay-perf-review-2026.md
 // 63: netplayermove carries renderbehind (u8) — the client's g_NetInterpTicks render offset, so server lag-comp rewinds targets to the EXACT server-tick the shooter was displaying (inmovetick - renderbehind) instead of an RTT/2 + interp_lag symmetric-latency estimate. See docs/netplay-perf-review-2026.md lag-comp item
 // 62: SVC_PROP_MOVE chr-state pose bandwidth cut — body yaw, the four aim joints, angleoffset and anim speed now ride as s16 (quantized) instead of f32 (-14 bytes/chr/tick; pos + chr->damage stay full-precision). See docs/netplay-perf-review-2026.md P1
 // 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
@@ -494,6 +495,8 @@ extern u32 g_NetInterpTicks;
 extern s32 g_NetLagCompExact; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. Live A/B via /lagcomp
 extern s32 g_NetRelevancy; // P2: 1 = per-client relevancy-culled sim/NPC chr-state (default); 0 = identical broadcast to all. /relevancy
 extern f32 g_NetRelevancyDist; // cull distance for a sim not sharing the client pawn's room (world units). /relevancy dist N
+extern s32 g_NetPosQuant; // P2: 1 = quantize SVC_PROP_MOVE positions to s16 (proto 65, ~6B vs 12B); 0 = full coord (default). /posquant
+extern f32 g_NetPosQuantScale; // world units per s16 step (default 1.0 = ~1-unit precision, +/-32767 range). /posquant scale N
 extern u32 g_NetServerPort;
 // Actual bound listen port of the running server (set in netStartServer). The
 // master heartbeat advertises this so the tracker pairs it with the source IP.

@@ -1324,6 +1324,20 @@ void handInflictMeleeDamage(s32 handnum, struct gset *gset, bool arg2)
 	ptr = g_Vars.endonscreenprops - 1;
 	skipthething = false;
 
+#ifndef PLATFORM_N64
+	// Melee hit detection here is hardcoded to the LOCAL player's view
+	// (g_Vars.onscreenprops / crosshair / camera). When we tick a REMOTE player's
+	// bgunTick from their inputs, running this tests OUR view, not theirs — so a
+	// remote player's punch hit-tests against whatever WE are looking at and plays
+	// bgunPlayPropHitSound right in front of us (first-person), and would damage the
+	// wrong target. Each machine processes only its own local player's melee (with
+	// the correct view); the attacker's melee is handled on their own machine. The
+	// remote player's swing still plays positionally via the gun animation.
+	if (g_Vars.currentplayer->isremote) {
+		return;
+	}
+#endif
+
 	// Iterate onscreen props near to far
 	while (ptr >= g_Vars.onscreenprops) {
 		struct prop *prop = *ptr;

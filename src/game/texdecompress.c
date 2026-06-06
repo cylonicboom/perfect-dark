@@ -2246,6 +2246,13 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 
 		if (tex == NULL) {
 			if (g_TexNumToLoad >= MAX_TEXTURES) {
+#ifndef PLATFORM_N64
+				// returning without updating the word leaves a raw texture ID
+				// behind, which later gets dereferenced as a pointer and
+				// crashes on PC (it's a harmless garbage read on N64); apply
+				// the same pool-start fallback as the pool-full case below
+				*updateword = osVirtualToPhysical(pool->start);
+#endif
 				return;
 			}
 
@@ -2262,6 +2269,10 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 
 			if (thisoffset == nextoffset && g_TexNumToLoad < NUM_TEXTURES) {
 				// The texture has no data
+#ifndef PLATFORM_N64
+				// see above: never leave a raw texture ID behind on PC
+				*updateword = osVirtualToPhysical(pool->start);
+#endif
 				return;
 			}
 

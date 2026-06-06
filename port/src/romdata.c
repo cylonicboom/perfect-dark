@@ -11,6 +11,7 @@
 #include "preprocess.h"
 #include "platform.h"
 #include "video.h" // taskbar progress during boot preprocessing
+#include "data.h" // g_Stages, for the chain ROM stage table import
 
 /**
  * asset files and ROM segments can be replaced by optional external files,
@@ -526,6 +527,329 @@ static inline struct romfile *romdataGetSeg(const char *name)
 	return seg;
 }
 
+// read the 24-bit big-endian dataoffset of textureslist entry n
+static inline u32 romdataTexListDofs(const u8 *rom, u32 listOfs, u32 n)
+{
+	const u8 *e = rom + listOfs + n * 8;
+	return ((u32)e[1] << 16) | ((u32)e[2] << 8) | e[3];
+}
+
+// total conversions commonly grow the texture data, which shifts the trailing
+// texturesdata/textureslist/copyright segments away from their stock offsets
+// while everything before them (fonts, animations, audio banks) stays in place.
+// locate the chain ROM's real textureslist by signature: 8-byte entries with a
+// non-decreasing 24-bit big-endian dataoffset in bytes 1-3 and zeroes in bytes
+// 4-7, first entry at dataoffset 0; the final (terminator) entry holds the
+// total texturesdata size. texturesdata itself is NOT reliably adjacent to the
+// list (GoldenEye X has an extra build-tool structure between them), so its
+// base is found by correlation against the base ROM: PD-derived mods keep many
+// stock textures byte-identical, so sample entries across the list, take each
+// texture's first bytes from the base ROM and search for them in the chain
+// ROM; every hit votes for an implied base offset, majority wins. on an
+// unmodified ROM all of this reproduces the stock offsets exactly.
+static void romdataChainRelocateTexSegments(void)
+{
+	const u8 *rom = chainRomFile;
+	u32 bestOfs = 0, bestCount = 0, bestTerm = 0;
+	u32 runOfs = 0, runCount = 0, runRises = 0, prevDofs = 0;
+
+	for (u32 o = 0; o + 8 <= chainRomFileSize; o += 8) {
+		const u32 dofs = ((u32)rom[o + 1] << 16) | ((u32)rom[o + 2] << 8) | rom[o + 3];
+		const s32 entryok = rom[o + 4] == 0 && rom[o + 5] == 0 && rom[o + 6] == 0 && rom[o + 7] == 0
+			&& (runCount == 0 ? dofs == 0 : dofs >= prevDofs);
+
+		if (entryok) {
+			if (runCount == 0) {
+				runOfs = o;
+				runRises = 0;
+			} else if (dofs > prevDofs) {
+				++runRises;
+			}
+			prevDofs = dofs;
+			++runCount;
+			continue;
+		}
+
+		if (runCount) {
+			// trim fake leading entries: zero padding right before the real
+			// list can parse as extra zero-dataoffset entries. the real first
+			// entry is the only zero-dataoffset entry whose successor has a
+			// nonzero dataoffset (texture 0 is never empty in a PD-derived ROM)
+			while (runCount > 1) {
+				const u32 second = ((u32)rom[runOfs + 9] << 16) | ((u32)rom[runOfs + 10] << 8) | rom[runOfs + 11];
+				if (second != 0) {
+					break;
+				}
+				runOfs += 8;
+				--runCount;
+			}
+
+			// run ended; viable candidates are 16-aligned (segments are) with
+			// plenty of entries, mostly increasing offsets (rejects zero-filled
+			// regions), a plausible texturesdata size, and that data must fit
+			// right before the list
+			const u32 dataSize = (prevDofs + 15) & ~15u;
+			if ((runOfs & 15) == 0 && runCount >= 1024 && runRises >= runCount / 2
+					&& prevDofs >= 0x10000 && dataSize < runOfs && runCount > bestCount) {
+				bestOfs = runOfs;
+				bestCount = runCount;
+				bestTerm = prevDofs;
+			}
+			runCount = 0;
+			o -= 8; // the entry that broke the run may start a new one
+		}
+	}
+
+	if (!bestCount) {
+		sysLogPrintf(LOG_WARNING, "chain ROM: could not locate a textureslist; chain ROM textures may be broken");
+		return;
+	}
+
+	struct romfile *segData = romdataGetSeg("texturesdata");
+	struct romfile *segList = romdataGetSeg("textureslist");
+	struct romfile *segCopy = romdataGetSeg("copyright");
+	const u32 stockListOfs = (u32)(uintptr_t)segList->data;
+	const u32 stockDataOfs = (u32)(uintptr_t)segData->data;
+	const u32 stockCount = ((u32)(uintptr_t)segCopy->data - stockListOfs) / 8;
+
+	// vote for the texturesdata base by correlating texture bytes with the base ROM
+	enum { CORR_SAMPLES = 24, CORR_PATLEN = 16, CORR_MAXCAND = 32, CORR_MAXHITS = 16, CORR_MINVOTES = 3 };
+	struct { u32 base; u32 votes; } cand[CORR_MAXCAND];
+	u32 numCand = 0;
+
+	const u32 maxn = (bestCount < stockCount ? bestCount : stockCount) - 1;
+	for (u32 s = 0; s < CORR_SAMPLES; ++s) {
+		const u32 n = 8 + (u32)((u64)(maxn - 8) * s / CORR_SAMPLES);
+		const u32 sThis = romdataTexListDofs(g_RomFile, stockListOfs, n);
+		const u32 sNext = romdataTexListDofs(g_RomFile, stockListOfs, n + 1);
+		const u32 cThis = romdataTexListDofs(rom, bestOfs, n);
+		const u32 cNext = romdataTexListDofs(rom, bestOfs, n + 1);
+		if (sThis >= sNext || cThis >= cNext) {
+			continue; // no data for this texture in one of the ROMs
+		}
+
+		const u8 *pat = g_RomFile + stockDataOfs + sThis;
+		const u8 *p = rom;
+		const u8 *end = rom + chainRomFileSize - CORR_PATLEN;
+		u32 hits = 0;
+
+		while (p <= end && hits < CORR_MAXHITS) {
+			p = memchr(p, pat[0], end - p + 1);
+			if (!p) {
+				break;
+			}
+			if (memcmp(p, pat, CORR_PATLEN) == 0) {
+				++hits;
+				const u32 pos = (u32)(p - rom);
+				if (pos >= cThis) {
+					const u32 base = pos - cThis;
+					u32 c;
+					for (c = 0; c < numCand && cand[c].base != base; ++c);
+					if (c < numCand) {
+						++cand[c].votes;
+					} else if (numCand < CORR_MAXCAND) {
+						cand[numCand].base = base;
+						cand[numCand].votes = 1;
+						++numCand;
+					}
+				}
+			}
+			++p;
+		}
+	}
+
+	u32 dataOfs = 0, dataVotes = 0;
+	for (u32 c = 0; c < numCand; ++c) {
+		if (cand[c].votes > dataVotes) {
+			dataOfs = cand[c].base;
+			dataVotes = cand[c].votes;
+		}
+	}
+
+	if (dataVotes < CORR_MINVOTES || (u64)dataOfs + bestTerm > chainRomFileSize) {
+		sysLogPrintf(LOG_WARNING, "chain ROM: could not locate texturesdata (list at 0x%x, best base 0x%x with %u votes); chain ROM textures may be broken",
+			bestOfs, dataOfs, dataVotes);
+		return;
+	}
+
+	sysLogPrintf(LOG_NOTE, "chain ROM: textureslist at 0x%x (%u entries), texturesdata at 0x%x size 0x%x (%u votes; stock 0x%x/0x%x)",
+		bestOfs, bestCount, dataOfs, bestTerm, dataVotes, stockListOfs, stockDataOfs);
+
+	segData->data = (u8 *)(uintptr_t)dataOfs;
+	segData->size = bestTerm;
+	segList->data = (u8 *)(uintptr_t)bestOfs;
+	segList->size = bestCount * 8;
+	segCopy->data = (u8 *)(uintptr_t)(bestOfs + bestCount * 8); // keeps its stock size; only the start moves
+}
+
+// import the chain ROM's own stage table from its inflated data segment.
+// mods edit per-stage parameters there: GoldenEye X remaps several stages'
+// bg/tiles/pads/setup file assignments and tunes per-stage lighting, which
+// the compiled-in g_Stages of this build would otherwise override with stock
+// values. the table is located by matching this build's stage-id sequence at
+// a self-calibrated stride, since the N64 entry (0x38 bytes) is smaller than
+// the port's struct stagetableentry, which has fields appended at the end.
+// the id is the match key; all N64 fields are imported, while port-appended
+// fields (alarm, extragunmem) and port-added stage entries past the N64
+// table keep their compiled-in values. file ids are only taken when they
+// resolve to a file actually present in the chain ROM's file table.
+static void romdataChainImportStageTable(void)
+{
+	const u32 numStages = sizeof(g_Stages) / sizeof(g_Stages[0]);
+	const u8 *seg = chainDataSeg;
+	u32 tabOfs = 0, tabStride = 0, tabCount = 0;
+
+	for (u32 stride = 0x30; stride <= 0x48 && !tabCount; stride += 2) {
+		for (u32 o = 0; o + stride * 32 <= chainDataSegSize; o += 2) {
+			u32 k = 0;
+			while (k < numStages && o + (k + 1) * stride <= chainDataSegSize
+					&& PD_BE16(*(u16 *)(seg + o + k * stride)) == (u16)g_Stages[k].id) {
+				++k;
+			}
+			if (k >= 32) {
+				tabOfs = o;
+				tabStride = stride;
+				tabCount = k;
+				break;
+			}
+		}
+	}
+
+	if (!tabCount) {
+		sysLogPrintf(LOG_WARNING, "chain ROM: stage table not found in the data segment; keeping stock stage parameters");
+		return;
+	}
+
+	u32 filesKept = 0;
+
+	for (u32 k = 0; k < tabCount; ++k) {
+		const u8 *e = seg + tabOfs + k * tabStride;
+		struct stagetableentry *dst = &g_Stages[k];
+		u32 u;
+
+		dst->light_type = e[0x02];
+		dst->light_alpha = e[0x03];
+		dst->light_width = e[0x04];
+		dst->light_height = e[0x05];
+		dst->unk06 = PD_BE16(*(u16 *)(e + 0x06));
+
+		// file assignments
+		const u32 fileFieldOfs[5] = { 0x08, 0x0a, 0x0c, 0x0e, 0x10 };
+		u16 *const dstFiles[5] = { &dst->bgfileid, &dst->tilefileid, &dst->padsfileid, &dst->setupfileid, &dst->mpsetupfileid };
+		for (u32 f = 0; f < 5; ++f) {
+			const u16 v = PD_BE16(*(u16 *)(e + fileFieldOfs[f]));
+			if (v > 0 && v < ROMDATA_MAX_FILES && fileSlots[MOD_CHAINROM][v].data) {
+				*dstFiles[f] = v;
+			} else if (v != *dstFiles[f]) {
+				++filesKept;
+			}
+		}
+
+		u = PD_BE32(*(u32 *)(e + 0x14)); memcpy(&dst->unk14, &u, 4);
+		u = PD_BE32(*(u32 *)(e + 0x18)); memcpy(&dst->unk18, &u, 4);
+		u = PD_BE32(*(u32 *)(e + 0x1c)); memcpy(&dst->unk1c, &u, 4);
+		dst->unk20 = PD_BE16(*(u16 *)(e + 0x20));
+		dst->unk22 = e[0x22];
+		dst->unk23 = (s8)e[0x23];
+		dst->unk24 = PD_BE32(*(u32 *)(e + 0x24));
+		dst->unk28 = PD_BE32(*(u32 *)(e + 0x28));
+		dst->unk2c = (s16)PD_BE16(*(u16 *)(e + 0x2c));
+		dst->eraserpropdist = (s16)PD_BE16(*(u16 *)(e + 0x2e));
+		dst->unk30 = (s16)PD_BE16(*(u16 *)(e + 0x30));
+
+		if (tabStride >= 0x38) {
+			u = PD_BE32(*(u32 *)(e + 0x34)); memcpy(&dst->unk34, &u, 4);
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "chain ROM: imported stage table from data segment (offset 0x%x, stride 0x%x, %u entries, %u file refs kept stock)",
+		tabOfs, tabStride, tabCount, filesKept);
+}
+
+// import the chain ROM's character model table (g_HeadsAndBodies) from its
+// inflated data segment. mods repoint bodies/heads to their own model files
+// and retune per-body scale/animscale/height there (GoldenEye X changes the
+// file of 67 of the 152 entries), which the compiled-in table would otherwise
+// override with stock values. the N64 entry is 0x14 bytes: u16 packed
+// bitfield (ismale/unk/canvaryheight/type/height), u16 filenum, f32 scale,
+// f32 animscale, a runtime modeldef cache pointer that is always zero in the
+// ROM (which doubles as the locator signature, since the filenum column is
+// exactly what mods edit), and u16 handfilenum. the bitfield is decoded by
+// big-endian bit position and assigned by name, since host bitfield layout
+// differs from MIPS. file ids are only taken when they resolve in the chain
+// ROM's file table; the modeldef cache stays NULL.
+static void romdataChainImportHeadsAndBodies(void)
+{
+	const u32 numBodies = sizeof(g_HeadsAndBodies) / sizeof(g_HeadsAndBodies[0]);
+	const u32 entSize = 0x14;
+	const u8 *seg = chainDataSeg;
+	u32 tabOfs = 0, tabMatches = 0;
+
+	for (u32 o = 0; o + numBodies * entSize <= chainDataSegSize; o += 4) {
+		// the modeldef cache column must be zero in every entry
+		u32 k = 0;
+		while (k < numBodies && !*(u32 *)(seg + o + k * entSize + 0x0c)) {
+			++k;
+		}
+		if (k < numBodies) {
+			continue;
+		}
+
+		// count entries whose filenum matches ours; mods edit some, not most
+		u32 matches = 0;
+		for (k = 0; k < numBodies; ++k) {
+			if (PD_BE16(*(u16 *)(seg + o + k * entSize + 0x02)) == g_HeadsAndBodies[k].filenum) {
+				++matches;
+			}
+		}
+		if (matches > tabMatches) {
+			tabOfs = o;
+			tabMatches = matches;
+		}
+	}
+
+	if (tabMatches < numBodies / 3) {
+		sysLogPrintf(LOG_WARNING, "chain ROM: character model table not found in the data segment (best %u/%u matches); keeping stock models",
+			tabMatches, numBodies);
+		return;
+	}
+
+	u32 filesKept = 0;
+
+	for (u32 k = 0; k < numBodies; ++k) {
+		const u8 *e = seg + tabOfs + k * entSize;
+		struct headorbody *dst = &g_HeadsAndBodies[k];
+		const u16 bits = PD_BE16(*(u16 *)(e + 0x00));
+		u32 u;
+
+		dst->ismale = (bits >> 15) & 1;
+		dst->unk00_01 = (bits >> 14) & 1;
+		dst->canvaryheight = (bits >> 13) & 1;
+		dst->type = (bits >> 10) & 7;
+		dst->height = (bits >> 2) & 0xff;
+
+		const u16 fn = PD_BE16(*(u16 *)(e + 0x02));
+		if (fn > 0 && fn < ROMDATA_MAX_FILES && fileSlots[MOD_CHAINROM][fn].data) {
+			dst->filenum = fn;
+		} else if (fn != dst->filenum) {
+			++filesKept;
+		}
+
+		u = PD_BE32(*(u32 *)(e + 0x04)); memcpy(&dst->scale, &u, 4);
+		u = PD_BE32(*(u32 *)(e + 0x08)); memcpy(&dst->animscale, &u, 4);
+
+		const u16 hfn = PD_BE16(*(u16 *)(e + 0x10));
+		if (hfn == 0 || (hfn < ROMDATA_MAX_FILES && fileSlots[MOD_CHAINROM][hfn].data)) {
+			dst->handfilenum = hfn;
+		} else if (hfn != dst->handfilenum) {
+			++filesKept;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "chain ROM: imported character model table from data segment (offset 0x%x, %u entries, %u stock filenum matches, %u file refs kept stock)",
+		tabOfs, numBodies, tabMatches, filesKept);
+}
+
 s32 romdataInit(void)
 {
 	const char *altRomName = sysArgGetString("--rom-file");
@@ -552,6 +876,7 @@ s32 romdataInit(void)
 	if (g_ChainRomActive) {
 		segRomBase = chainRomFile;
 		segRomBaseSize = chainRomFileSize;
+		romdataChainRelocateTexSegments();
 	} else {
 		segRomBase = g_RomFile;
 		segRomBaseSize = g_RomFileSize;
@@ -575,9 +900,13 @@ s32 romdataInit(void)
 	// load the base ROM file table into all the loose-file mod slots
 	romdataInitFiles();
 
-	// then build the MOD_CHAINROM table from the chain ROM's own file table
+	// then build the MOD_CHAINROM table from the chain ROM's own file table,
+	// and import its stage table (file assignments, lighting, scales) and
+	// character model table (body/head model files, scales, heights)
 	if (g_ChainRomActive) {
 		romdataInitChainFiles();
+		romdataChainImportStageTable();
+		romdataChainImportHeadsAndBodies();
 	}
 
 	videoSetTaskbarProgress(VIDEO_TASKBAR_NONE, 0.f);

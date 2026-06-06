@@ -206,41 +206,84 @@ static void crashAppendDwarf(char *msg, DWORD *msglenp, uintptr_t modofs)
 	const ULONGLONG imageBase = crashGetPreferredImageBase();
 	const unsigned long long dwarfAddr = (unsigned long long)imageBase + (unsigned long long)modofs;
 
-	char cmd[1024];
 	// -f function names, -p one-line pretty print, -i include inline chain.
-	// Redirect stderr so a missing tool / bad path doesn't pollute the dump.
-	// The whole command is wrapped in an EXTRA pair of quotes: _popen runs
-	// `cmd /c <string>`, and when the string starts with a quote and contains
-	// more quotes (two quoted paths here), cmd strips the first and last quote
-	// characters — which splits a path with spaces ("F:\Games\Perfect Dark ...")
-	// at the first space and the whole resolution silently fails. The outer
-	// quotes are what cmd strips, leaving the real command intact.
-	snprintf(cmd, sizeof(cmd), "\"\"%s\" -e \"%s\" -f -p -i 0x%llx 2>NUL\"",
-		a2l, exe, dwarfAddr);
+	// Run addr2line directly via CreateProcess + an anonymous pipe. _popen
+	// CANNOT be used here: it spawns cmd.exe, which needs a console — and the
+	// client has been a GUI-subsystem app since the SDL3 migration
+	// (WIN32_EXECUTABLE), so _popen fails silently and every crash dump from
+	// the windowed build regressed to raw offsets while the exact same
+	// command line worked from any shell. Going direct also removes the
+	// cmd.exe quote-stripping rules entirely — CreateProcess parses the two
+	// quoted paths (which may contain spaces) sanely.
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd), "\"%s\" -e \"%s\" -f -p -i 0x%llx", a2l, exe, dwarfAddr);
 
-	FILE *p = _popen(cmd, "r");
-	if (!p) {
+	SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+	HANDLE rd = NULL;
+	HANDLE wr = NULL;
+	if (!CreatePipe(&rd, &wr, &sa, 0)) {
+		return;
+	}
+	SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+	STARTUPINFOA si;
+	memset(&si, 0, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdOutput = wr;
+	si.hStdError = wr; // tool errors get the "??"/name filter below
+
+	PROCESS_INFORMATION pi;
+	memset(&pi, 0, sizeof(pi));
+
+	const BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+	// Close OUR write end now: the child holds its own copy, and keeping
+	// ours open would stop ReadFile from ever seeing EOF.
+	CloseHandle(wr);
+	if (!ok) {
+		CloseHandle(rd);
 		return;
 	}
 
-	char line[512];
-	while (fgets(line, sizeof(line), p)) {
-		size_t len = strlen(line);
-		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-			line[--len] = '\0';
+	char out[2048];
+	DWORD total = 0;
+	for (;;) {
+		DWORD got = 0;
+		if (!ReadFile(rd, out + total, (DWORD)(sizeof(out) - 1 - total), &got, NULL) || got == 0) {
+			break;
 		}
-		// addr2line emits "?? at ??:0" for unresolvable addresses — skip those.
-		if (len == 0 || strncmp(line, "??", 2) == 0) {
-			continue;
-		}
-		DWORD msglen = *msglenp;
-		if (msglen < CRASH_MAX_MSG) {
-			msglen += snprintf(msg + msglen, CRASH_MAX_MSG - msglen, "      %s\n", line);
-			*msglenp = msglen;
+		total += got;
+		if (total >= sizeof(out) - 1) {
+			break;
 		}
 	}
+	out[total] = '\0';
+	CloseHandle(rd);
+	WaitForSingleObject(pi.hProcess, 5000);
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
 
-	_pclose(p);
+	char *line = out;
+	while (line && *line) {
+		char *nl = strchr(line, '\n');
+		if (nl) {
+			*nl = '\0';
+		}
+		size_t len = strlen(line);
+		while (len > 0 && line[len - 1] == '\r') {
+			line[--len] = '\0';
+		}
+		// addr2line emits "?? at ??:0" for unresolvable addresses, and its
+		// own error messages start with the tool name — skip both.
+		if (len > 0 && strncmp(line, "??", 2) != 0 && strncmp(line, "addr2line", 9) != 0) {
+			DWORD msglen = *msglenp;
+			if (msglen < CRASH_MAX_MSG) {
+				msglen += snprintf(msg + msglen, CRASH_MAX_MSG - msglen, "      %s\n", line);
+				*msglenp = msglen;
+			}
+		}
+		line = nl ? nl + 1 : NULL;
+	}
 }
 
 static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)

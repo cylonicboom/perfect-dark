@@ -1,4 +1,7 @@
 #include <ultra64.h>
+#ifndef PLATFORM_N64
+#include <string.h> // memset for the prop-pool zeroing below
+#endif
 #include "constants.h"
 #include "game/prop.h"
 #include "bss.h"
@@ -15,6 +18,20 @@ void varsReset(void)
 
 	g_Vars.props = mempAlloc(ALIGN64(g_Vars.maxprops * sizeof(struct prop)), MEMPOOL_STAGE);
 	g_Vars.onscreenprops = mempAlloc(ALIGN64(MAX_ONSCREEN_PROPS * sizeof(void *)), MEMPOOL_STAGE);
+
+#ifndef PLATFORM_N64
+	// The stage pool reuses the same arena every load, so virgin (never
+	// propAllocate'd) slots contain the PREVIOUS stage's prop bytes — stale
+	// syncid + type + obj pointers into the old heap layout. The netplay
+	// walkers that scan the pool BY INDEX (the co-op NPC/obj round-robins and
+	// prop-reconcile in netEndFrame, the JIP catch-up snapshot) trusted
+	// `syncid != 0` as "live prop" and dereferenced a stale prop->obj from a
+	// virgin slot — an intermittent 0xc0000005 that only appears after a
+	// previous stage seeded the arena (first boot reads zeros and is safe).
+	// Zeroing the pool makes `syncid != 0` a sound liveness test (and
+	// incidentally fixes the vanilla uninitialised freelist-tail @bug below).
+	memset(g_Vars.props, 0, g_Vars.maxprops * sizeof(struct prop));
+#endif
 
 	g_AutoAimScale = 1;
 

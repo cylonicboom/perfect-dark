@@ -858,6 +858,14 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 			if (ncl->state) {
 				netbufWriteU8(dst, ncl->id);
 				netbufWriteU8(dst, ncl->playernum);
+				// Spectator byte (proto 60): a mid-mission joiner rides the
+				// manifest flagged spectator (sentinel playernum, set at
+				// connect) so clients don't seat it as a combatant — co-op
+				// has no round boundary, so unlike Combat Sim it stays a
+				// spectator for the rest of the mission (until the drop-in
+				// claim work lands). Still promoted to CLSTATE_GAME so the
+				// per-tick broadcasts include it.
+				netbufWriteU8(dst, (ncl->is_spectator || ncl->jip_pending_unspectate) ? 1 : 0);
 				ncl->state = CLSTATE_GAME;
 			}
 		}
@@ -988,17 +996,27 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		// playernum and promote to CLSTATE_GAME so the per-tick player-move sync
 		// includes them. netPlayersAllocate (playermgr.c) then binds cl->player by
 		// playernum during the stage load below.
+		// Spectator entries (proto 60) are mid-mission JIP joiners: they get
+		// the sentinel playernum (never a combatant slot — the old forced
+		// is_spectator=0 plus the joiner's memset playernum 0 made the joiner
+		// seat itself on a local copy of the HOST's pawn that nothing drove)
+		// and don't count toward the co-op player allocation below.
 		const u8 numplayers = netbufReadU8(src);
+		u8 numcombatants = 0;
 		for (u8 p = 0; p < numplayers; ++p) {
 			const u8 id = netbufReadU8(src);
 			const u8 pn = netbufReadU8(src);
+			const u8 spec = netbufReadU8(src);
 			struct netclient *ncl = netResolveWireClient(id);
 			if (ncl) {
 				ncl->id = id;
-				ncl->playernum = pn;
-				ncl->is_spectator = 0;
+				ncl->is_spectator = spec;
+				ncl->playernum = spec ? NET_PLAYERNUM_SPECTATOR : pn;
 				ncl->state = CLSTATE_GAME;
 				ncl->player = NULL;
+			}
+			if (!spec) {
+				++numcombatants;
 			}
 		}
 		// F2: per-player body-type bitmask (proto 49). Applied before
@@ -1014,9 +1032,11 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		}
 		g_NetLocalClient->state = CLSTATE_GAME;
 		g_MissionConfig.stageindex = 0; // TODO: sync index for briefing/HUD
-		// numplayers is the host's manifest count = total co-op players N (host +
-		// all remote clients), so the client allocates the same N player slots.
-		netCoopEnterStage((s32)stagenum, (s32)difficulty, (s32)numplayers);
+		// numcombatants is the manifest count MINUS spectators (mid-mission
+		// JIP joiners), so every machine allocates the same N co-op player
+		// slots as the host did at mission start — a joiner counting itself
+		// would shift the allocation and desync player binding.
+		netCoopEnterStage((s32)stagenum, (s32)difficulty, (s32)numcombatants);
 		return src->error;
 	}
 #endif

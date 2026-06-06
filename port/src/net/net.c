@@ -1527,6 +1527,12 @@ static void netServerEvConnect(ENetPeer *peer, const u32 data)
 	if (jip) {
 		cl->is_spectator = 1;
 		cl->jip_pending_unspectate = 1;
+		// Never let a JIP joiner carry a combatant playernum before it's
+		// seated — netClientReset's memset default of 0 collided with the
+		// host's slot 0 in the co-op manifest, making the joiner drive a
+		// local copy of the host's pawn that nothing updated (the
+		// "intangible ghost walker"). The sentinel blows up loudly instead.
+		cl->playernum = NET_PLAYERNUM_SPECTATOR;
 		sysLogPrintf(LOG_NOTE, "NET: %s joining in progress as spectator (will spawn next round)", addrstr);
 	}
 	enet_peer_set_data(peer, cl);
@@ -3806,7 +3812,11 @@ void netSpectateAutoUpdate(void)
 		// target so the wait is a proper first-person spectate instead of an
 		// undefined view. Pre-check targets so an empty match (bots only /
 		// everyone dead) doesn't log "no valid targets" every frame.
-		if (g_NetLocalClient->is_spectator && !g_NetSpectateChr) {
+		// Combat Sim only (normmplayerisrunning): in co-op the g_MpAllChrPtrs
+		// list the target gather walks is stale (mpStartMatch never ran), so
+		// a co-op JIP spectator must not dereference it.
+		if (g_NetLocalClient->is_spectator && !g_NetSpectateChr
+				&& g_Vars.normmplayerisrunning) {
 			struct chrdata *targets[MAX_MPCHRS];
 			if (netSpectateGatherTargets(targets, ARRAYCOUNT(targets)) > 0) {
 				netSpectateCycle(+1);

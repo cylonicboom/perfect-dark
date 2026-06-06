@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 59 // 59: CLC_STAGE_READY (client world built) + JIP catch-up snapshot (replayed dynamic prop spawns, door/lift state to mid-match joiners)
+#define NET_PROTOCOL_VER 60 // 60: co-op SVC_STAGE_START manifest carries a spectator byte — mid-mission JIP joiners ride flagged spectator (sentinel playernum) instead of colliding with the host's slot 0
+// 59: CLC_STAGE_READY (client world built) + JIP catch-up snapshot (replayed dynamic prop spawns, door/lift state to mid-match joiners)
 // 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients
 // 57: SVC_TIMESCALE — slow motion / combat boost: server mirrors the sim-step halving flag (+ boost timer) so clients tick in lockstep
 // 56: CLC_BOT_CMD — clients can order own-team simulants (server validates team ownership + applies)

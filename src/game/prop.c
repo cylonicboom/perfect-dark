@@ -1723,8 +1723,16 @@ bool currentPlayerInteract(bool eyespy)
 
 	if (prop) {
 #ifndef PLATFORM_N64
-		// if we aren't the authority, don't do anything
-		if (g_NetMode == NETMODE_CLIENT) {
+		// Client door prediction: a manually-activated door opens locally the moment
+		// the local player interacts with it, instead of waiting a full RTT for the
+		// host's SVC_PROP_DOOR. This whole handler was gated off on clients, so a
+		// manual door took ~RTT and several button presses at high ping. The client
+		// still sends UCMD_ACTIVATE, so the host runs the same interact
+		// authoritatively and broadcasts SVC_PROP_DOOR, which reconciles on the
+		// client (its stale OPEN keyframe is skipped; SVC_PROP_USE skips doors). Only
+		// unlocked doors actually toggle (propdoorInteract checks doorIsUnlocked).
+		// All OTHER interactables (weapons / obj / switches) stay host-authoritative.
+		if (g_NetMode == NETMODE_CLIENT && prop->type != PROPTYPE_DOOR) {
 			return false;
 		}
 #endif

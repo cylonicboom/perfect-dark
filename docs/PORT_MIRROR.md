@@ -89,6 +89,23 @@ width subtracted (`x = (2*viGetViewLeft() + viGetViewWidth())/g_ScaleX - x - tex
 `bgunHudMirrorX(x) - textwidth` convention), and its widescreen edge anchor swaps
 `g_HudAlignModeL`→`g_HudAlignModeR`, so the clock sits flush in the bottom **right**. N64 byte-identical.
 
+## Radar mirror (`radar.c`)
+
+Two halves, both gated `cheatIsActive(CHEAT_MIRROR)` under `#ifndef PLATFORM_N64`:
+
+- **Dot bearings** — the rendered world is flipped left-right, so an enemy seen on the
+  screen's left must appear on the radar's left. `radarDrawDot` reflects the dot's lateral
+  offset about the radar centre (`x = 2*g_RadarX - x`) after the original sin/cos placement.
+  Every dot goes through `radarDrawDot` (players, coop buddies, MP bots, r-tracked props, and
+  all scenario markers in `*.inc`), so this one site covers them all.
+- **Widget position** — the radar moves from top-right to top-left like the ammo HUD:
+  `g_RadarX` (the widget centre) is reflected about the view centre with the `bgunHudMirrorX`
+  formula after the splitscreen nudges (so those mirror too), the widescreen anchor swaps via
+  `radarMirrorAlign()` (`g_HudAlignModeR`→`L`), and the background texture's x subpixel nudge
+  flips sign (`-2`→`2`).
+
+N64 byte-identical (original statements untouched; additions are guarded).
+
 ## Audio channel swap (`mixer.c` `aInterleaveImpl`)
 
 When the world is mirrored, the output **stereo channels are swapped** so a sound from the
@@ -189,6 +206,22 @@ quadrant.
   (gated on `cheatIsActive(CHEAT_MIRROR)`), so all menu/HUD line geometry stays put while the world (and
   the left-hand viewmodel) keep their flip. (menugfx panels that allocate vertices directly — gradients,
   carousel chevrons — aren't tagged yet; extend the same way if any show up mirrored.)
+- **Non-standard weapon aimers (Skedar + Maian sights) — same `G_NOMIRROR_EXT` fix.** The Mauler/Reaper
+  aimer (`sightDrawSkedarTriangle`) and the Phoenix/Callisto/FarSight aimer's converging triangles
+  (`sightDrawMaian`, `gSPTri4`) in `sight.c` are screen-space UI drawn as real 3D triangles, so the
+  renderer was reflecting them about the view centre — splitting them off the un-mirrored crosshair
+  position their placement logic uses (and, for Maian, off its own 2D `gDPHudRectangle` inner border).
+  Both emission sites are tagged `G_NOMIRROR_EXT` (gated `cheatIsActive(CHEAT_MIRROR)`); the other
+  sights (default/classic/zoom brackets) are pure 2D, so the renderer never moved them.
+- **Lock-on target box (CMP150 follow lock, threat targets) — reflected game-side.** The opposite
+  failure mode of the aimers above: `sightDrawTargetBox` is pure 2D (`gDPHudRectangle`) drawn at the
+  tracked prop's **un-mirrored** screen bounds (`trackedprop->x1/x2`), while the prop itself renders
+  reflected — so the box sat on the wrong side of the visible character (lock-on *acquisition* was
+  already correct via the auto-aim X inversion). Fixed by reflecting `boxleft/boxright` about the view
+  centre (`viewleft + viewright - x`, swapped to keep `boxleft < boxright`) right after
+  `sightCalculateBoxBound`; the inclusive reflection maps the view range onto itself so the fly-in
+  interpolation from the view edges mirrors cleanly. The numeric/text label keeps its `boxright + 3`
+  anchor, staying readable to the right of the (now correctly-placed) box.
 - **HUD message boxes (pickup notifications + `/graslu`) are mirrored to the opposite side** (by user
   choice). They normally sit on the left; `hudmsgsRender` (hudmsg.c) and `netGrasluRender` (net.c)
   reflect the box's left anchor `x` about the view centre (`viGetWidth()/screenw - x - width`,

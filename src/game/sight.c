@@ -438,6 +438,20 @@ Gfx *sightDrawTargetBox(Gfx *gdl, struct trackedprop *trackedprop, s32 textid, s
 	boxright = sightCalculateBoxBound(trackedprop->x2 / g_ScaleX, viewright, time, TICKS(80));
 	boxbottom = sightCalculateBoxBound(trackedprop->y2, viewbottom, time, TICKS(80));
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the lock-on box (CMP150 follow lock, threat targets) is 2D,
+	// drawn at the tracked prop's un-mirrored screen bounds — but the prop is
+	// rendered reflected, so reflect the box's x-bounds about the view centre
+	// (swapping left/right to keep boxleft < boxright). The inclusive
+	// viewleft+viewright reflection maps the view range onto itself, so the
+	// fly-in interpolation from the view edges mirrors cleanly too.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		s32 tmp = boxleft;
+		boxleft = viewleft + viewright - boxright;
+		boxright = viewleft + viewright - tmp;
+	}
+#endif
+
 	if (trackedprop->prop) {
 		colour = sightIsPropFriendly(trackedprop->prop) ? 0x000ff60 : 0xff000060;
 
@@ -1062,9 +1076,24 @@ Gfx *sightDrawSkedarTriangle(Gfx *gdl, s32 x, s32 y, s32 dir, u32 colour)
 	vertices[1].colour = 4;
 	vertices[2].colour = 4;
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the Skedar aimer (Mauler/Reaper) is screen-space UI drawn
+	// as real 3D triangles, so the renderer's world flip would reflect it
+	// about the view centre — away from the (un-mirrored) crosshair position
+	// its placement logic uses. Tag it G_NOMIRROR_EXT like the menugfx
+	// borders. See docs/PORT_MIRROR.md.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		gSPSetExtraGeometryModeEXT(gdl++, G_NOMIRROR_EXT);
+	}
+#endif
 	gSPColor(gdl++, colours, 2);
 	gSPVertex(gdl++, vertices, 3, 0);
 	gSPTri1(gdl++, 0, 1, 2);
+#ifndef PLATFORM_N64
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		gSPClearExtraGeometryModeEXT(gdl++, G_NOMIRROR_EXT);
+	}
+#endif
 
 	return gdl;
 }
@@ -1519,9 +1548,24 @@ Gfx *sightDrawMaian(Gfx *gdl, bool sighton, f32 crossx, f32 crossy)
 	vertices[7].colour = 4;
 
 	// Draw the main 4 triangles
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the Maian aimer triangles (Phoenix/Callisto/FarSight) are
+	// screen-space UI drawn as real 3D geometry — without this tag the
+	// renderer's world flip reflects them about the view centre, splitting
+	// them off the 2D HudRectangle border drawn below at the un-mirrored
+	// crosshair position. See docs/PORT_MIRROR.md.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		gSPSetExtraGeometryModeEXT(gdl++, G_NOMIRROR_EXT);
+	}
+#endif
 	gSPColor(gdl++, colours, 2);
 	gSPVertex(gdl++, vertices, 8, 0);
 	gSPTri4(gdl++, 0, 4, 5, 5, 3, 6, 7, 6, 1, 4, 7, 2);
+#ifndef PLATFORM_N64
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		gSPClearExtraGeometryModeEXT(gdl++, G_NOMIRROR_EXT);
+	}
+#endif
 
 	gdl = func0f0d49c8(gdl);
 	gdl = textSetPrimColour(gdl, SIGHT_COLOUR);

@@ -142,6 +142,16 @@ Gfx *radarDrawDot(Gfx *gdl, struct prop *prop, struct coord *dist, u32 colour1, 
 	x = g_RadarX + (s32)(sinf(spcc * 0.017453292384744f) * sqdist);
 	y = g_RadarY + (s32)PALUPF(cosf(spcc * 0.017453292384744f) * sqdist);
 
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: the world renders flipped left-right, so reflect the dot's
+	// lateral offset about the radar centre to match what the player sees.
+	// Covers every dot (players, buddies, bots, r-tracked props, scenario
+	// markers) — all call sites come through here.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		x = 2 * (s32)g_RadarX - x;
+	}
+#endif
+
 	if (swapcolours) {
 		if (prop == g_Vars.currentplayer->prop) {
 			// Box
@@ -239,6 +249,16 @@ Gfx *radarDrawDot(Gfx *gdl, struct prop *prop, struct coord *dist, u32 colour1, 
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+// CHEAT_MIRROR: the radar widget is mirrored to the opposite (left) side of
+// the view like the ammo HUD, so the widescreen anchor swaps R -> L to match.
+// Dot bearings are flipped in radarDrawDot.
+static u32 radarMirrorAlign(void)
+{
+	return cheatIsActive(CHEAT_MIRROR) ? g_HudAlignModeL : g_HudAlignModeR;
+}
+#endif
+
 Gfx *radarRender(Gfx *gdl)
 {
 	s32 stack;
@@ -314,7 +334,7 @@ Gfx *radarRender(Gfx *gdl)
 		}
 #ifndef PLATFORM_N64
 		if (optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL) {
-			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, radarMirrorAlign());
 		}
 #endif
 	} else if (playercount >= 3) {
@@ -328,10 +348,19 @@ Gfx *radarRender(Gfx *gdl)
 			g_RadarY -= 6;
 		}
 #ifndef PLATFORM_N64
-		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
-		gDPSetSubpixelOffsetEXT(gdl++, -2, 2);
+		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, radarMirrorAlign());
+		gDPSetSubpixelOffsetEXT(gdl++, cheatIsActive(CHEAT_MIRROR) ? 2 : -2, 2);
 #endif
 	}
+
+#ifndef PLATFORM_N64
+	// CHEAT_MIRROR: reflect the widget centre about the view centre (the
+	// bgunHudMirrorX formula) so the radar sits top-left instead of top-right;
+	// the splitscreen nudges above mirror along with it.
+	if (cheatIsActive(CHEAT_MIRROR)) {
+		g_RadarX = (2 * viGetViewLeft() + viGetViewWidth()) / g_ScaleX - g_RadarX;
+	}
+#endif
 
 	gdl = radarRenderBackground(gdl, tconfig, g_RadarX, g_RadarY, 0x10);
 	gdl = func0f153134(gdl);

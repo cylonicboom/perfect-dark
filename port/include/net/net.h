@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 58 // 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients
+#define NET_PROTOCOL_VER 59 // 59: CLC_STAGE_READY (client world built) + JIP catch-up snapshot (replayed dynamic prop spawns, door/lift state to mid-match joiners)
+// 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients
 // 57: SVC_TIMESCALE — slow motion / combat boost: server mirrors the sim-step halving flag (+ boost timer) so clients tick in lockstep
 // 56: CLC_BOT_CMD — clients can order own-team simulants (server validates team ownership + applies)
 // 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
@@ -376,6 +377,10 @@ struct netclient {
 	// and is_spectator for any client with this set, so they spawn cleanly
 	// into the new round. Not sent over the wire — local server state only.
 	u8 jip_pending_unspectate;
+	// Server-side one-shot: the JIP catch-up snapshot was sent to this client
+	// (in response to its CLC_STAGE_READY). Guards a misbehaving client from
+	// requesting repeated snapshots.
+	u8 jip_snapshot_sent;
 
 	// Server-side only: set when this client has authenticated as an admin via
 	// the CLC_ADMIN `login` command (password matches g_NetAdminPassword).
@@ -467,6 +472,7 @@ extern u32 g_NetAdminController;
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;
 extern u32 g_NetNextSyncId;
+extern u32 g_NetFirstDynamicSyncId;
 
 extern u64 g_NetRngSeeds[2];
 extern u32 g_NetRngLatch;
@@ -611,6 +617,15 @@ void netAdminConfigure(void);
 
 void netServerStageStart(void);
 void netServerStageEnd(void);
+
+// JIP catch-up snapshot: replay to ONE freshly-authed mid-match joiner the
+// world state its fresh stage load can't reproduce — runtime-spawned
+// weapon/obj props (dropped guns, projectiles, mines; syncid >=
+// g_NetFirstDynamicSyncId) plus current door modes and lift state. Called
+// right after the JIP SVC_STAGE_START is shipped (netmsgClcAuthRead).
+// Everything else heals via the existing heartbeats (score, stats,
+// prop-reconcile, KoH, timescale) within ~1s. Server-only no-op otherwise.
+void netServerSendJipSnapshot(struct netclient *cl);
 void netClientStageComplete(void);
 void netServerBroadcastObjectives(void);
 void netClientSendObjectiveDone(s32 objindex);

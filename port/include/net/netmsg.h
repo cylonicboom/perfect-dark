@@ -61,6 +61,7 @@
 #define CLC_OBJECTIVE_DONE 0x0c // co-op client completed an objective the host can't witness (room entered, throw-on-object, holograph); host latches + rebroadcasts
 #define CLC_PICKUP_REQUEST 0x0d // co-op client wants to pick up an OBJ/weapon prop (by syncid); host re-validates + grants via SVC_PROP_PICKUP
 #define CLC_BOT_CMD 0x0e // Combat Sim: client orders an own-team simulant (botindex, command, targetindex); server validates team + applies
+#define CLC_STAGE_READY 0x0f // client's stage world is built (sent from netSyncIdsAllocate); triggers the JIP catch-up snapshot for mid-match joiners
 
 // Server status query (port-only server browser + master server). The "flags"
 // byte is shared by the direct PDQM query summary and the master HEARTBEAT.
@@ -109,6 +110,11 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl);
 // requires a valid target. FOLLOW/PROTECT/DEFEND/HOLD anchor to the SENDER's
 // player via setCurrentPlayerNum around botcmdApply.
 u32 netmsgClcBotCmdRead(struct netbuf *src, struct netclient *srccl);
+// CLC_STAGE_READY: empty body. Client sends once per stage load, from
+// netSyncIdsAllocate, when its world (props + syncids) exists and targeted
+// state can be applied. Server uses it to ship the JIP catch-up snapshot to
+// mid-match joiners (one-shot per join, jip_snapshot_sent).
+u32 netmsgClcStageReadyRead(struct netbuf *src, struct netclient *srccl);
 
 // SVC_OBJECTIVE (co-op): host-authoritative objective status mirror. Wire:
 // { count:u8, status[count]:u8 } — count = g_ObjectiveLastIndex+1, each status is

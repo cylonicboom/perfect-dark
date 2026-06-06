@@ -93,6 +93,7 @@ Two ENet channels:
 | 0x0b | CLC_STAGE_COMPLETE | Co-op: client's local sim reached the exit / scripted mission-complete; host ends the stage for all (added on `port-net-predict`) |
 | 0x0c | CLC_OBJECTIVE_DONE | Co-op: client completed an objective the host can't witness (trigger room entered, throw-on-object, camera holograph); host latches it into `objectiveCheck` (`g_NetCoopClientObjDone`) and rebroadcasts `SVC_OBJECTIVE` (proto 53) |
 | 0x0d | CLC_PICKUP_REQUEST | Co-op: client wants to collect an OBJ/weapon/key prop (by syncid). Clients can't take pickups locally (`objTestForPickup` defers); the host re-validates against the client's synced position via `objTestForPickup` for that player slot and grants authoritatively through `SVC_PROP_PICKUP` (proto 55) |
+| 0x0f | CLC_STAGE_READY | Empty body, sent once per stage load from `netSyncIdsAllocate` when the client's world (props + syncids) exists. The server uses it to ship the **JIP catch-up snapshot** to a mid-match joiner (`netServerSendJipSnapshot`, one-shot via `jip_snapshot_sent`) — sending the snapshot back-to-back with the JIP `SVC_STAGE_START` would race the client's deferred stage load and get dropped against the un-loaded world (proto 59) |
 | 0x0e | CLC_BOT_CMD | Combat Sim: client orders an own-team simulant — `{botindex:u8, command:u8, targetindex:u8}` (`g_MpAllChrPtrs` indices, wire-stable; target 0xff = none). Server validates teams-enabled + team ownership + command range, then applies via `botApplyAttack` / `botcmdApply` run as the sender (`setCurrentPlayerNum`) so FOLLOW/PROTECT/DEFEND/HOLD anchor to the ordering player. Sent from the active menu (`activemenu.c`) — non-ATTACK slots send directly; ATTACK opens the local pick-target dialog and forwards the chosen target. Reliable control channel (proto 56). The client menu's current-order highlight reads the LOCAL `aibot->command`, which is mirrored back continuously via gunfire-byte bits 3-6 in the chr-state block — so the menu reflects the server's actual state (and confirms the order applied) |
 
 > **Co-op stage-completion handshake.** Mission-complete is detected per-machine on
@@ -462,6 +463,33 @@ narrower, corruption paths):
 `netChrInterpolate` keeps a logged invariant check on `netsnaphead` (and
 `netChrRecordSnapshot` re-seats a corrupt head) so any *future* corruption logs
 and skips instead of crashing or silently freezing.
+
+### JIP v2 — Combat Sim catch-up + spectate-while-waiting (proto 59)
+
+A mid-match joiner (JIP) is seated as a spectator and spawns at the next round
+boundary (`mpStartMatch` clears `jip_pending_unspectate`). v2 makes the wait
+correct and watchable:
+
+- **Catch-up snapshot** (`netServerSendJipSnapshot`, net.c): when the joiner's
+  world exists (it sends `CLC_STAGE_READY` from `netSyncIdsAllocate`), the
+  server replays, to that client only: runtime-spawned weapon/obj props
+  (`syncid >= g_NetFirstDynamicSyncId`, recorded by `netSyncIdsAllocate`) via
+  `SVC_PROP_SPAWN`; doors off their default state via `SVC_PROP_DOOR` (which
+  now carries `frac` — an open-and-idle door is mode IDLE + frac=maxfrac, so
+  mode alone can't reproduce it); and full lift state via `SVC_PROP_LIFT`.
+  Everything else heals via the existing 1s heartbeats (score, player stats,
+  prop-reconcile, KoH, timescale). Log line: `NET: JIP snapshot to client …`.
+- **Auto-spectate**: a playerless JIP client auto-engages the client-spectator
+  redirect on the first live PLAYER target (`netSpectateAutoUpdate` playerless
+  branch; sims are excluded — the sim camera path needs a local player). The
+  lvRender redirect gained a `jipspec` variant that substitutes on the LAST
+  render order (no own viewport iteration exists) and forces the full-screen
+  viewport via `playerGetViewport*`.
+- **Leaver pawn**: a Combat Sim client disconnecting mid-match has its pawn
+  killed through `playerDie(true)` (the kill-plane path) in
+  `netServerEvDisconnect`, so it corpses + drops weapons instead of standing
+  as an orphan statue. Co-op leavers are excluded (pawn kept for future
+  reclaim-on-rejoin).
 
 ### Server Weapon / Function Bans + fn-flag sync (proto 58)
 

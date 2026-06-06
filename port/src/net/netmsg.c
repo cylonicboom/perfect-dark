@@ -328,9 +328,12 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 	// jip_pending_unspectate. Ship the current SVC_STAGE_START to them now
 	// so they enter the running match as a spectator (is_spectator = 1).
 	// mpStartMatch at the next round boundary clears their JIP flags so they
-	// spawn cleanly. No prop-spawn snapshot is sent — they'll see whatever
-	// is on the wire from this point forward; dropped weapons / tokens
-	// already on the ground won't be reconstructed (deferred to v2).
+	// spawn cleanly. The catch-up snapshot (runtime-spawned props, door/lift
+	// state) is NOT sent here — the client's stage load is deferred to its
+	// main loop, so prop messages sent now would be read against the
+	// un-loaded world and dropped. The client reports CLC_STAGE_READY from
+	// netSyncIdsAllocate once its world exists; netmsgClcStageReadyRead then
+	// ships netServerSendJipSnapshot. Per-second heartbeats heal the rest.
 	if (srccl->jip_pending_unspectate) {
 		netbufStartWrite(&srccl->out);
 		netmsgSvcStageStartWrite(&srccl->out);
@@ -1546,6 +1549,28 @@ u32 netmsgClcBotCmdRead(struct netbuf *src, struct netclient *srccl)
 
 	netDiagLogf("botcmd", "cl=%u bot=%u cmd=%u target=%u",
 			srccl->id, botindex, command, targetindex);
+
+	return 0;
+}
+
+// CLC_STAGE_READY: the client's stage world is built (sent from its
+// netSyncIdsAllocate), so targeted state can now be applied on its end. For a
+// mid-match joiner this is the trigger for the JIP catch-up snapshot — sending
+// it back-to-back with the JIP SVC_STAGE_START wouldn't work, because the
+// client's stage load is deferred to the main loop and any prop messages read
+// before the world exists resolve to NULL and are dropped.
+u32 netmsgClcStageReadyRead(struct netbuf *src, struct netclient *srccl)
+{
+	// Empty body. Ignore anything from a client that isn't at least in the
+	// lobby; one-shot per join so a misbehaving client can't request repeats.
+	if (srccl->state < CLSTATE_LOBBY) {
+		return 0;
+	}
+
+	if (srccl->jip_pending_unspectate && !srccl->jip_snapshot_sent) {
+		srccl->jip_snapshot_sent = 1;
+		netServerSendJipSnapshot(srccl);
+	}
 
 	return 0;
 }
@@ -3100,6 +3125,11 @@ u32 netmsgSvcPropDoorWrite(struct netbuf *dst, struct prop *prop, struct netclie
 	netbufWriteS8(dst, door->mode);
 	netbufWriteU32(dst, door->base.flags);
 	netbufWriteU32(dst, door->base.hidden);
+	// Door position (0 = closed .. maxfrac = open), proto 59. Live events
+	// carry it as a drift correction; the JIP catch-up snapshot NEEDS it — a
+	// door that finished opening is mode IDLE + frac=maxfrac, and without
+	// frac the replay would leave the joiner's door closed.
+	netbufWriteF32(dst, door->frac);
 
 	return dst->error;
 }
@@ -3111,6 +3141,7 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	const s8 doormode = netbufReadS8(src);
 	const u32 flags = netbufReadU32(src);
 	const u32 hidden = netbufReadHidden(src);
+	const f32 frac = netbufReadF32(src);
 
 	struct netclient *actcl = (clid == NET_NULL_CLIENT) ? NULL : netResolveWireClient(clid);
 	if (actcl && actcl->is_spectator) {
@@ -3137,6 +3168,10 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	doorSetMode(prop->door, doormode);
 	prop->door->base.hidden = hidden;
 	prop->door->base.flags = flags;
+	// Snap to the server's door position (doorTick integrates from frac, so
+	// this is the single source of truth for where the door sits). Applied
+	// after doorSetMode — doorStartOpen/Close inside it may touch frac.
+	prop->door->frac = frac;
 
 	if (actcl) {
 		setCurrentPlayerNum(prevplayernum);

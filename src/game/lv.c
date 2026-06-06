@@ -1271,9 +1271,18 @@ Gfx *lvRender(Gfx *gdl)
 				// tnum stays -1 and we render our own viewport. The ->client test
 				// drops orphan slots (disconnected client whose chr lingers until
 				// the next stage) — those crash the per-player gameplay below.
-				if (g_NetMode && g_NetSpectateChr
-						&& g_NetLocalClient && g_NetLocalClient->player
-						&& g_Vars.currentplayernum == g_NetLocalClient->playernum) {
+				// JIP spectator variant: a mid-match joiner has NO own pawn
+				// (player == NULL until the round boundary), so there's no
+				// "own viewport iteration" — substitute on the LAST render
+				// order instead, whose viewport paints on top. Every other
+				// slot still renders beneath it, keeping the per-iteration
+				// once-per-frame bookkeeping (propsTickPlayer etc.) intact.
+				const bool jipspec = g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+						&& !g_NetLocalClient->player && g_NetLocalClient->is_spectator;
+				if (g_NetMode && g_NetSpectateChr && g_NetLocalClient
+						&& ((g_NetLocalClient->player
+								&& g_Vars.currentplayernum == g_NetLocalClient->playernum)
+							|| (jipspec && islastplayer))) {
 					s32 tnum = -1;
 					for (s32 pn = 0; pn < MAX_PLAYERS; ++pn) {
 						if (g_Vars.players[pn] && g_Vars.players[pn]->client
@@ -1283,15 +1292,26 @@ Gfx *lvRender(Gfx *gdl)
 							break;
 						}
 					}
-					if (tnum >= 0 && tnum != g_NetLocalClient->playernum) {
-						struct player *src = g_NetLocalClient->player;
+					if (tnum >= 0 && (jipspec || tnum != g_NetLocalClient->playernum)) {
 						struct player *dst = g_Vars.players[tnum];
-						dst->viewleft = src->viewleft;
-						dst->viewtop = src->viewtop;
-						dst->viewwidth = src->viewwidth;
-						dst->viewheight = src->viewheight;
-						dst->fovy = src->fovy;
-						dst->aspect = src->aspect;
+						if (jipspec) {
+							// No own pawn to copy a viewport from. A net
+							// client is always single-view (playerGetLocalCount
+							// returns 1), so the playerGetViewport* layout
+							// helpers return the full-screen values here.
+							dst->viewleft = playerGetViewportLeft();
+							dst->viewtop = playerGetViewportTop();
+							dst->viewwidth = playerGetViewportWidth();
+							dst->viewheight = playerGetViewportHeight();
+						} else {
+							struct player *src = g_NetLocalClient->player;
+							dst->viewleft = src->viewleft;
+							dst->viewtop = src->viewtop;
+							dst->viewwidth = src->viewwidth;
+							dst->viewheight = src->viewheight;
+							dst->fovy = src->fovy;
+							dst->aspect = src->aspect;
+						}
 						// Substitute the target into currentplayer/num/stats so this
 						// viewport renders the target's first-person frame, but KEEP
 						// this iteration's render order in currentplayerindex.
@@ -2845,7 +2865,15 @@ void lvTickPlayer(void)
 	// hit lvTickPlayer too on the server side (per-player iteration) and we
 	// don't want to stomp their state. netSpectateApply itself bails if no
 	// target is set, so the cost when not spectating is one branch.
-	if (g_NetMode && g_NetLocalClient && g_Vars.currentplayer == g_NetLocalClient->player) {
+	// The JIP mid-match joiner has NO local player (player == NULL until the
+	// round boundary seats it), so the first comparison never matches; run
+	// the auto-update once per frame (first render order) for it — that's
+	// what auto-engages the spectate redirect. netSpectateApply stays a no-op
+	// there (it bails without a local player; the lvRender redirect renders).
+	if (g_NetMode && g_NetLocalClient
+			&& (g_Vars.currentplayer == g_NetLocalClient->player
+				|| (g_NetMode == NETMODE_CLIENT && !g_NetLocalClient->player
+					&& g_NetLocalClient->is_spectator && g_Vars.currentplayerindex == 0))) {
 		// Auto-spectate on death / restore on respawn, then apply the camera
 		// override for whatever target is active (manual or death-driven).
 		netSpectateAutoUpdate();

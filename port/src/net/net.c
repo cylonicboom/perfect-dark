@@ -150,6 +150,11 @@ char g_NetLastJoinAddr[NET_MAX_ADDR + 1] = "127.0.0.1:27100";
 
 u32 g_NetTick = 0;
 u32 g_NetNextSyncId = 1;
+// First syncid that belongs to a RUNTIME-spawned prop (everything below it is
+// a static stage prop both sides allocate identically at load). Recorded by
+// netSyncIdsAllocate; used by the JIP catch-up snapshot to replay only the
+// dynamic props a mid-match joiner's fresh stage load cannot have.
+u32 g_NetFirstDynamicSyncId = 1;
 
 s32 g_NetSimPacketLoss = 0;
 s32 g_NetSimLagMs = 0;
@@ -1017,6 +1022,79 @@ void netServerStageStart(void)
 	netDiagLogf("stage_start", "stage=%u clients=%d sims=%d", g_StageNum, g_NetNumClients, g_BotCount);
 }
 
+void netServerSendJipSnapshot(struct netclient *cl)
+{
+	// One packet's worth of buffer; flushed whenever the next message might
+	// not fit (largest spawn message — powered projectile — is ~250 bytes).
+	static u8 snapdata[NET_BUFSIZE];
+	struct netbuf buf = { 0 };
+	s32 nprops = 0;
+	s32 ndoors = 0;
+	s32 nlifts = 0;
+
+	if (g_NetMode != NETMODE_SERVER || !cl) {
+		return;
+	}
+
+	if (g_StageNum == STAGE_TITLE || g_StageNum == STAGE_CITRAINING) {
+		return;
+	}
+
+	buf.data = snapdata;
+	buf.size = sizeof(snapdata);
+	netbufStartWrite(&buf);
+
+	for (s32 i = 0; i < g_Vars.maxprops; ++i) {
+		struct prop *prop = &g_Vars.props[i];
+
+		if (!prop->syncid) {
+			continue;
+		}
+
+		if (buf.wp >= NET_BUFSIZE - 320) {
+			netSend(cl, &buf, true, NETCHAN_DEFAULT); // resets buf
+		}
+
+		if (prop->syncid >= g_NetFirstDynamicSyncId && prop->obj
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+			// Runtime-spawned weapon/obj the joiner's fresh stage load lacks.
+			// Skip a deployed autogun whose owner is gone — the spawn write
+			// attributes it via g_Vars.players[owner]->client->id, which is
+			// NULL once the owner disconnected (orphaned pawn).
+			if (prop->type == PROPTYPE_OBJ && prop->obj->type == OBJTYPE_AUTOGUN) {
+				const u8 ownerplayernum = (prop->obj->hidden & 0xf0000000) >> 28;
+				if (ownerplayernum >= PLAYERCOUNT()
+						|| !g_Vars.players[ownerplayernum]
+						|| !g_Vars.players[ownerplayernum]->client) {
+					continue;
+				}
+			}
+			netmsgSvcPropSpawnWrite(&buf, prop);
+			++nprops;
+		} else if (prop->type == PROPTYPE_DOOR && prop->door) {
+			// Only doors that have moved off their stage-default closed/idle
+			// state; doorSetMode on the read side replays the motion and the
+			// frac converges as the door finishes it.
+			if (prop->door->mode != DOORMODE_IDLE || prop->door->frac > 0.0f) {
+				netmsgSvcPropDoorWrite(&buf, prop, NULL);
+				++ndoors;
+			}
+		} else if (prop->type == PROPTYPE_OBJ && prop->obj
+				&& prop->obj->type == OBJTYPE_LIFT) {
+			// Full lift state (level, motion, position) — idempotent.
+			netmsgSvcPropLiftWrite(&buf, prop);
+			++nlifts;
+		}
+	}
+
+	if (buf.wp) {
+		netSend(cl, &buf, true, NETCHAN_DEFAULT);
+	}
+
+	sysLogPrintf(LOG_NOTE, "NET: JIP snapshot to client %u: %d dynamic props, %d doors, %d lifts",
+			cl->id, nprops, ndoors, nlifts);
+}
+
 void netServerStageEnd(void)
 {
 	if (g_NetMode != NETMODE_SERVER) {
@@ -1503,6 +1581,22 @@ static void netServerEvDisconnect(struct netclient *cl)
 		netSpectateStop();
 	}
 
+	// Combat Sim: kill the leaver's pawn through the normal death path
+	// (playerDie = the kill-plane path: drops weapons, records the death,
+	// sets isdead; the server broadcast inside it ships SVC_PLAYER_STATS) so
+	// it corpses instead of standing in the arena as an untargetable statue
+	// for the rest of the round. The slot itself is still recycled only at
+	// the next round boundary. Co-op is excluded — there a leaver's pawn is
+	// kept for reclaim-on-rejoin (see the co-op drop-in work).
+	if (cl->state == CLSTATE_GAME && g_Vars.normmplayerisrunning
+			&& cl->playernum < MAX_PLAYERS
+			&& cl->player && cl->player->prop && !cl->player->isdead) {
+		const s32 prevplayernum = g_Vars.currentplayernum;
+		setCurrentPlayerNum(cl->playernum);
+		playerDie(true);
+		setCurrentPlayerNum(prevplayernum);
+	}
+
 	netClientReset(cl);
 
 	--g_NetNumClients;
@@ -1530,6 +1624,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_OBJECTIVE_DONE: rc = netmsgClcObjectiveDoneRead(&cl->in, cl); break;
 			case CLC_PICKUP_REQUEST: rc = netmsgClcPickupRequestRead(&cl->in, cl); break;
 			case CLC_BOT_CMD: rc = netmsgClcBotCmdRead(&cl->in, cl); break;
+			case CLC_STAGE_READY: rc = netmsgClcStageReadyRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2552,6 +2647,7 @@ void netSyncIdsAllocate(void)
 
 	// don't allocate anything else if we're in lobby
 	if (g_StageNum == STAGE_TITLE || g_StageNum == STAGE_CITRAINING) {
+		g_NetFirstDynamicSyncId = g_NetNextSyncId;
 		return;
 	}
 
@@ -2578,6 +2674,14 @@ void netSyncIdsAllocate(void)
 	// HACK: when we're a client, we'll need to swap our player and server player's props
 	// because of what we do in netPlayersAllocate
 	if (g_NetMode == NETMODE_CLIENT) {
+		// The stage world is built and syncids are assigned — tell the server
+		// targeted state can be applied now. For a JIP joiner this triggers
+		// the catch-up snapshot (netmsgClcStageReadyRead); harmless no-op for
+		// everyone else. Rides g_NetMsgRel, flushed by this frame's
+		// netEndFrame. Must run BEFORE the spectator early-return below —
+		// JIP joiners ARE spectators and are the whole point.
+		netbufWriteU8(&g_NetMsgRel, CLC_STAGE_READY);
+
 		// JIP-as-spectator: the local client connected mid-match and was
 		// flagged is_spectator on the server. They have no player / no prop
 		// of their own (won't until mpStartMatch unspectates them next
@@ -2607,6 +2711,11 @@ void netSyncIdsAllocate(void)
 	// first dynamic allocation would get the same syncid as the highest static
 	// prop — a collision that sends two props with the same syncid to clients.
 	g_NetNextSyncId++;
+
+	// Remember the static/dynamic boundary for the JIP catch-up snapshot:
+	// syncid >= this means the prop was spawned at runtime, so a mid-match
+	// joiner's fresh stage load won't have it and needs a replayed spawn.
+	g_NetFirstDynamicSyncId = g_NetNextSyncId;
 
 	sysLogPrintf(LOG_NOTE, "NET: last initial syncid: %u, next dynamic: %u",
 			g_NetNextSyncId - 1, g_NetNextSyncId);
@@ -3263,10 +3372,19 @@ static s32 netSpectateGatherTargets(struct chrdata **out, s32 cap)
 	}
 	const struct chrdata *localchr = (g_NetLocalClient && g_NetLocalClient->player && g_NetLocalClient->player->prop)
 		? g_NetLocalClient->player->prop->chr : NULL;
+	// JIP spectator (client with no own pawn): only PLAYER targets are
+	// viewable — the lvRender redirect renders a player slot's viewport, but
+	// the sim camera path overrides the LOCAL player's camera, which doesn't
+	// exist. Players occupy mpchr 0..PLAYERCOUNT()-1.
+	const bool playersonly = g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+		&& !g_NetLocalClient->player && g_NetLocalClient->is_spectator;
 	// Humans first (mpchr 0..MAX_PLAYERS-1), then sims (>=MAX_PLAYERS). Skip
 	// the local player and anything that's hidden / dead / unspawned.
 	for (s32 i = 0; i < MAX_MPCHRS && n < cap; ++i) {
 		struct chrdata *chr = g_MpAllChrPtrs[i];
+		if (playersonly && i >= PLAYERCOUNT()) {
+			break;
+		}
 		if (!chr || !chr->prop || chr == localchr) {
 			continue;
 		}
@@ -3674,10 +3792,35 @@ void netSpectateAutoUpdate(void)
 {
 	static bool s_wasdead = false;
 
-	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient || !g_NetLocalClient->player) {
+	static bool s_jipnotified = false;
+
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient) {
+		s_wasdead = false;
+		s_jipnotified = false;
+		return;
+	}
+
+	if (!g_NetLocalClient->player) {
+		// JIP mid-match joiner: no own pawn until the round boundary seats
+		// us. Auto-engage the spectate redirect on the first live player
+		// target so the wait is a proper first-person spectate instead of an
+		// undefined view. Pre-check targets so an empty match (bots only /
+		// everyone dead) doesn't log "no valid targets" every frame.
+		if (g_NetLocalClient->is_spectator && !g_NetSpectateChr) {
+			struct chrdata *targets[MAX_MPCHRS];
+			if (netSpectateGatherTargets(targets, ARRAYCOUNT(targets)) > 0) {
+				netSpectateCycle(+1);
+				if (!s_jipnotified) {
+					s_jipnotified = true;
+					sysLogPrintf(LOG_CHAT, "Joined mid-round - spectating until the next round starts");
+				}
+			}
+		}
 		s_wasdead = false;
 		return;
 	}
+
+	s_jipnotified = false;
 
 	const bool dead = (g_NetLocalClient->player->isdead != 0);
 

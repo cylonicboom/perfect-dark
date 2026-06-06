@@ -1509,7 +1509,29 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(srccl->playernum);
+
+	// Validate against the client's LATEST reported position, not its interpolated
+	// (lagged ~tens of units) pawn position on the host — otherwise objTestForPickup
+	// tests where the client WAS and denies a pickup the client already grabbed
+	// (the same interp-lag fix as propsTestForPickup for Combat Sim). Swap, test,
+	// restore. The freeing tickop below doesn't read the position.
+	struct coord savedpos;
+	bool swapped = false;
+	if (srccl->player && srccl->player->prop) {
+		const struct netplayermove *m = &srccl->inmove[srccl->inmove_head];
+		if (m->tick) {
+			savedpos = srccl->player->prop->pos;
+			srccl->player->prop->pos = m->pos;
+			swapped = true;
+		}
+	}
+
 	const s32 op = objTestForPickup(prop);
+
+	if (swapped) {
+		srccl->player->prop->pos = savedpos;
+	}
+
 	if (op != TICKOP_NONE) {
 		propExecuteTickOperation(prop, op);
 	}

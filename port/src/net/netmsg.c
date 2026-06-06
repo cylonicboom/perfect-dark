@@ -3247,6 +3247,24 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 		setCurrentPlayerNum(actcl->playernum);
 	}
 
+	// Client door-prediction reconcile: the local player may have already predicted
+	// this door open (doorsCheckAutomatic runs locally now), so the host's keyframe
+	// is ~RTT stale. Skip a confirming OPEN keyframe that would only rewind frac and
+	// replay doorStartOpen's sound on a door we've already driven at least this far
+	// open. Genuine changes (closing, or we're actually behind the host) still apply
+	// because then frac < the wire value or the modes differ. Keep flags/hidden synced.
+	if (g_NetMode == NETMODE_CLIENT
+			&& (doormode == DOORMODE_OPENING || doormode == DOORMODE_WAITING)
+			&& (prop->door->mode == DOORMODE_OPENING || prop->door->mode == DOORMODE_IDLE)
+			&& prop->door->frac >= frac) {
+		prop->door->base.hidden = hidden;
+		prop->door->base.flags = flags;
+		if (actcl) {
+			setCurrentPlayerNum(prevplayernum);
+		}
+		return src->error;
+	}
+
 	doorSetMode(prop->door, doormode);
 	prop->door->base.hidden = hidden;
 	prop->door->base.flags = flags;

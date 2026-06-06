@@ -1719,6 +1719,28 @@ bool currentPlayerInteract(bool eyespy)
 	struct prop *prop;
 	bool op = TICKOP_NONE;
 
+#ifndef PLATFORM_N64
+	// On the host, a remote client's pawn carries the INTERPOLATED (lagged)
+	// position, so propFindForInteract -> doorTestForInteract tests the door against
+	// where the client WAS, not where it pressed Use. If the client moved past the
+	// door before its UCMD_ACTIVATE was processed, the host finds no door and never
+	// opens it -- while the client already predicted it open (the "sometimes the
+	// host's door isn't open" mismatch). Search + activate against the client's
+	// latest reported position instead (the lag-comp / pickup pattern), then restore.
+	struct coord interactsavedpos;
+	bool interactposswapped = false;
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->client && g_Vars.currentplayer->prop) {
+		struct netclient *cl = g_Vars.currentplayer->client;
+		const struct netplayermove *m = &cl->inmove[cl->inmove_head];
+		if (m->tick) {
+			interactsavedpos = g_Vars.currentplayer->prop->pos;
+			g_Vars.currentplayer->prop->pos = m->pos;
+			interactposswapped = true;
+		}
+	}
+#endif
+
 	prop = propFindForInteract(eyespy);
 
 	if (prop) {
@@ -1761,9 +1783,19 @@ bool currentPlayerInteract(bool eyespy)
 		}
 #endif
 
+#ifndef PLATFORM_N64
+		if (interactposswapped) {
+			g_Vars.currentplayer->prop->pos = interactsavedpos;
+		}
+#endif
 		return false;
 	}
 
+#ifndef PLATFORM_N64
+	if (interactposswapped) {
+		g_Vars.currentplayer->prop->pos = interactsavedpos;
+	}
+#endif
 	return true;
 }
 

@@ -25,6 +25,7 @@
 #include "game/player.h"
 #include "game/bondgun.h"
 #include "game/cheats.h"
+#include "game/challenge.h"
 #include "game/bg.h"
 #include "game/game_1531a0.h"
 #include "game/luaai.h"
@@ -68,6 +69,12 @@ static u32 g_NetLastStageFlags;
 // SVC_CUTSCENE on a transition. Reset at co-op stage entry.
 static s32 g_NetLastCutsceneActive;
 static s16 g_NetLastCutsceneAnim;
+
+// Last slow-motion engaged flag broadcast (SVC_TIMESCALE), so netEndFrame only
+// sends on a transition (plus a periodic heal). Self-corrects across stages:
+// lvReset zeroes g_LvSlomoEngaged, so a stale 1 here just triggers one
+// harmless "off" broadcast at the next in-game frame.
+static u8 g_NetLastTimescale;
 
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
@@ -1349,6 +1356,11 @@ s32 netDisconnect(void)
 	g_NetCspHead = 0;
 	memset(g_NetCspHistory, 0, sizeof(g_NetCspHistory));
 
+	// Slow-motion timescale: a client leaving mid-slow-mo must not stay at
+	// half tick rate offline (the wire flag would never be cleared).
+	g_LvSlomoEngaged = false;
+	g_NetLastTimescale = 0;
+
 	// Clear the kill feed and lobby state so a fresh session starts clean.
 	netKillFeedClear();
 	g_NetLobbyState.valid = 0;
@@ -1589,6 +1601,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
 			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
+			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2097,6 +2110,23 @@ void netEndFrame(void)
 					g_NetLastCutsceneActive = active;
 					g_NetLastCutsceneAnim = anim;
 					netmsgSvcCutsceneWrite(&g_NetMsgRel, active, anim);
+				}
+			}
+
+			// Slow motion / combat boost timescale: lvTick decides the halved
+			// sim step on the server (g_LvSlomoEngaged); mirror it so clients
+			// halve the same pinned step in detPinTimestep and both machines
+			// advance identical sim time per tick (the g_NetTick cadence is
+			// real-time 60Hz either way, so interp / lag-comp / CSP timing is
+			// unaffected). On change for immediacy, plus a heartbeat heal at a
+			// free phase offset (50) for drops. Not co-op-gated — Combat Sim's
+			// Slow Motion option and the Combat Boost pickup both drive it.
+			{
+				const u8 ts = g_LvSlomoEngaged ? 1 : 0;
+				if (ts != g_NetLastTimescale
+						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 50u) {
+					g_NetLastTimescale = ts;
+					netmsgSvcTimescaleWrite(&g_NetMsgRel);
 				}
 			}
 
@@ -4569,6 +4599,26 @@ s32 netConsoleCommand(const char *line)
 					mychr->lastdamagetick60, stamped ? age : 0u, window,
 					in_iframe ? "(IFRAME ACTIVE)" : stamped ? "(iframe expired)" : "(never damaged)");
 		}
+	} else if (strcmp(cmd, "slomo") == 0) {
+		// /slomo — diagnostic for the slow-motion / combat-boost chain. Dumps
+		// every input of the decision (option bits, challenge unlock, type),
+		// the per-frame engage flag, the tick-pin state and the live tick
+		// values, so a single call on each machine pinpoints where the chain
+		// breaks (options missing vs flag not set vs step not halved vs
+		// client not applying the wire flag).
+		sysLogPrintf(LOG_CHAT, "SLOMO: type=%d (0=off 1=on 2=smart) opt_on=%d opt_smart=%d unlocked=%d normmpr=%d",
+				lvGetSlowMotionType(),
+				(g_MpSetup.options & MPOPTION_SLOWMOTION_ON) ? 1 : 0,
+				(g_MpSetup.options & MPOPTION_SLOWMOTION_SMART) ? 1 : 0,
+				challengeIsFeatureUnlocked(MPFEATURE_SLOWMOTION) ? 1 : 0,
+				g_Vars.normmplayerisrunning);
+		sysLogPrintf(LOG_CHAT, "SLOMO: engaged=%d pin=%d netmode=%d up240=%d up60=%d rem=%d diff240=%d",
+				g_LvSlomoEngaged, detTickPinActive(), g_NetMode,
+				g_Vars.lvupdate240, g_Vars.lvupdate60, g_Vars.lvupdate240rem,
+				g_Vars.diffframe240);
+		sysLogPrintf(LOG_CHAT, "SLOMO: speedpill on=%d want=%d time=%d incutscene=%d",
+				g_Vars.speedpillon, g_Vars.speedpillwant, g_Vars.speedpilltime,
+				g_Vars.in_cutscene);
 	} else if (strcmp(cmd, "playlist") == 0) {
 		// /playlist [list|reload]   server-only
 		if (g_NetMode != NETMODE_SERVER && g_NetMode != NETMODE_NONE) {
@@ -5107,6 +5157,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
 		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
 		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
+		sysLogPrintf(LOG_CHAT, "  /slomo           print slow-motion / combat-boost decision state");
 		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]              toggle wireframe (CHEAT_WIREFRAME)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe bg|wire RRGGBB        sky / wire colour (wire off = natural)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");

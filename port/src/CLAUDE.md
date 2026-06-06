@@ -7,7 +7,7 @@
 | File | Purpose |
 |---|---|
 | `main.c` | Entry point; initialises all subsystems in order |
-| `pdmain.c` | Game-side init (memory, stage selection) |
+| `pdmain.c` | Game-side init (memory, stage selection) **and the live `mainProc`/`mainLoop`/`mainTick` — `src/lib/main.c` is NOT compiled into the port build.** Any edit made to `src/lib/main.c`'s loop is dead code (this silently killed the det fixed-step loop and the `detFrameBegin`/`detEndTick` record/replay hooks; the step pacing now lives in `detPinTimestep`, det.c) |
 | `pdsched.c` | Per-frame scheduler; calls `netStartFrame`/`netEndFrame` |
 | `video.c` | SDL3 window/render; picks the OpenGL (default) or SDL_GPU rendering backend via `Video.Renderer`/`--renderer` (see `docs/PORT_SDLGPU.md`) |
 | `input.c` | SDL3 input, key binds |

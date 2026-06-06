@@ -44,6 +44,7 @@
 #define SVC_STAGE_FLAGS  0x50 // co-op: host-authoritative g_StageFlags mirror (scripts/objectives/triggers gate on it; set host-side)
 #define SVC_CUTSCENE     0x51 // co-op: host-authoritative in-engine cutscene state (active + anim); client starts/ends in lockstep
 #define SVC_COOP_LIVES   0x52 // co-op: "N lives remaining" respawn notification (F3 lives mutator); shown to the recipient's local player
+#define SVC_TIMESCALE    0x53 // global sim timescale: slow-motion/boost engaged flag + boost timer; clients halve the pinned sim step in lockstep with the server
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -145,6 +146,8 @@ u32 netmsgSvcCutsceneWrite(struct netbuf *dst, s32 active, s16 animnum);
 u32 netmsgSvcCutsceneRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcCoopLivesWrite(struct netbuf *dst, s32 count);
 u32 netmsgSvcCoopLivesRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcTimescaleWrite(struct netbuf *dst);
+u32 netmsgSvcTimescaleRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

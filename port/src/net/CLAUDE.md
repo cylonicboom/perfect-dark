@@ -80,6 +80,7 @@ Two ENet channels:
 | 0x42 | SVC_CHR_DAMAGE | NPC chr took damage |
 | 0x43 | SVC_CHR_DISARM | NPC chr disarmed |
 | 0x44 | SVC_CHR_FIRE | Sim chr fired (soundnum>0) or stopped firing (soundnum=0) — added on `port-net-predict` |
+| 0x53 | SVC_TIMESCALE | Slow motion / combat boost: server's sim-step halving flag + boost timer (proto 57; see "Slow Motion / Combat Boost Sync") |
 
 **Client → Server (CLC_*)**:
 
@@ -218,6 +219,7 @@ Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` u
   - `/diag <path>` — open the diagnostic CSV log to the given path (truncates). `/diag` with no arg closes it. See "Diagnostic Log" below.
   - `/diagrate <ticks>` — change `Net.Debug.LogRate` (per-tick position dump interval). 0 disables dumps.
   - `/netinfo` — print current net state (tick, mode, clients, sims, lag/loss settings, diag path) plus the live tuning knob values below.
+  - `/slomo` — dump the slow-motion / combat-boost decision chain: type + option bits + challenge unlock, the per-frame engage flag, tick-pin state, live `lvupdate240/60/rem`, and the speedpill (boost) state. Run on both machines to pinpoint where a net slow-mo failure sits (options missing vs flag not set vs step not halved vs client not applying).
   - `/igtick` — print the LOCAL machine's in-game tick rate. First call records `lvframe60` and the wall-clock timestamp; second+ calls report `(lvframe60_now - lvframe60_then) / elapsed_seconds` so you can see whether the local game loop is actually advancing at 60 tps. Also dumps the local player chr's GE i-frame stamp + age + window so you can debug whether the gate is firing. Diagnostic counterpart to `/netinfo`, which only reports the server / wire tick.
   - `/spec [name|next|prev|off|toggle]` — spectate another player/sim. **Player** targets now render the target's *own* viewport (full first-person + HUD + aim, via the `lvRender` slot redirect), not a camera — see `docs/PORT_CLIENT_SPECTATOR.md`. **Sim** targets use a camera at their eyes (yaw-only, no HUD). Auto-engages on death (`netSpectateAutoUpdate`); `toggle` enters/leaves manually. `g_NetSpectateChr` is dangling-guarded (cleared on disconnect + at `mainEndStage`; never dereferenced in the redirect).
   - **Tuning knobs** (promoted from compile-time `#define`s so they can be changed without rebuilding — useful for hunting CSP / interp regressions on the fly):
@@ -460,6 +462,73 @@ narrower, corruption paths):
 `netChrInterpolate` keeps a logged invariant check on `netsnaphead` (and
 `netChrRecordSnapshot` re-seats a corrupt head) so any *future* corruption logs
 and skips instead of crashing or silently freezing.
+
+### Slow Motion / Combat Boost Sync (`SVC_TIMESCALE`, proto 57)
+
+PD's slow motion (the Combat Sim option and the Combat Boost pickup) works by
+shrinking `g_Vars.lvupdate240` in `lvTick`. Under netplay that was dead:
+`detPinTimestep` pins the sim step to a fixed 4 (1/60) *after* lvTick's
+halving, overwriting it every frame. (It was also broken in **local** play at
+high fps — plain integer halving of a delta that's mostly 1 does nothing; fixed
+separately with a remainder-carrying halver, `lvSlomoScaleTick` in lv.c.)
+
+Mechanism:
+- `lvTick` (server/local) decides engagement each frame → `g_LvSlomoEngaged`
+  (slow-mo option active, SMART proximity, or combat boost — the same branches
+  that cap `lvupdate240`). When the tick pin is active (`detTickPinActive()`),
+  the lvTick-level halver stands down and `detPinTimestep` halves the **pinned**
+  step instead (4 → 2; remainder-carried for odd `/forcetick` steps).
+- **The `g_NetTick` cadence is unchanged** — still one tick per real 1/60s on
+  both machines. Only the sim time advanced per tick halves, so interp /
+  lag-comp / CSP (which all time in ticks) are unaffected.
+- Server mirrors the flag to clients via `SVC_TIMESCALE` `{engaged:u8,
+  speedpillwant:u8, speedpilltime:s32}` — on change + a heartbeat heal at phase
+  50 (reliable channel, `netEndFrame`, the `g_StageFlags` pattern). Clients
+  apply it in `netmsgSvcTimescaleRead` (the wire owns `g_LvSlomoEngaged` on
+  clients; their own lvTick decision is gated off). The speedpill fields keep
+  the client's boost HUD meter / activation transition cosmetically in sync.
+- Resets: `lvReset` zeroes the flag every stage load (both roles);
+  `netDisconnect` zeroes flag + last-sent so a client leaving mid-slow-mo
+  doesn't stay at half tick rate offline.
+- Transition skew is bounded by RTT (client engages a few ticks after the
+  server); CSP smooth-correction absorbs the resulting small position error.
+- **The dead-file / fps-scaling root cause (fixed):** `src/lib/main.c` is NOT
+  COMPILED into the port build — `port/src/pdmain.c` replaces it wholesale,
+  and pdmain's `mainTick` runs `lvTick` once per RENDER frame with no
+  fixed-step loop (the `mainnsteps` accumulator only ever existed in the dead
+  file). So the netplay pin made sim speed scale with fps/60: at a 116fps VRR
+  cap the net sim ran ~1.93× real time, and the slow-mo halving yielded
+  ~0.97× — "slow motion looks like normal speed". Fixed by moving the
+  real-time accumulator INTO `detPinTimestep`: whole 1/60 steps are emitted
+  at real-time rate; render-only frames pin `lvupdate240 = 0` (paused-frame
+  semantics). This also makes net sim speed correct at any fps and makes
+  `/forcetick` behave as documented for the first time. NOTE:
+  `detFrameBegin`/`detEndTick` (record/replay hooks) are still only called
+  from the dead file — det record/replay needs rewiring into pdmain.c.
+- **The lvupdate240rem gotcha (the "repeats one tick" softlock, fixed):**
+  `detPinTimestep` used to zero `g_Vars.lvupdate240rem` every frame. With the
+  halved step of 2, lv.c's derivation `lvupdate60 = (step + rem) >> 2` then
+  yields **0 forever** — every integer-tick consumer (timers, anim fullticks,
+  match clock) freezes while rendering continues. The pin now zeroes the
+  remainder only for 4-aligned steps; non-aligned steps (slow-mo's 2, odd
+  `/forcetick` rates) accumulate naturally so `lvupdate60` alternates 0/1 and
+  averages correctly. Never reintroduce an unconditional `rem = 0` there.
+- **SLOWMOTION_SMART uses a distance test in net games** (`lvTick`,
+  `LV_SMART_SLOMO_RANGE` = 1500 units): the vanilla test ("player A's room on
+  player B's screen", `g_MpRoomVisibility`) needs per-player render traversals
+  that are stale/garbage for remote players on the server (and the bitmask is
+  only 4 players wide), so SMART never fired in net games. Splitscreen keeps
+  the vanilla room-visibility test for player pairs.
+- **SMART also counts simulants now** (`lvSlomoSimNearby`, both local and
+  net): vanilla only ever checked human players, so a 1-human + bots match —
+  the common Combat Sim case — could never engage SMART at all ("activates if
+  an enemy chr is nearby" was the stated intent, but chrs were never checked).
+  A living sim within `LV_SMART_SLOMO_RANGE` of a living player engages it.
+- Known gap: on a **dedicated** server the boost activation transition
+  (`speedpillchange`, advanced in `lvRender`, `currentplayernum == 0`) never
+  runs headless, so a *combat-boost* pickup won't flip `speedpillon` there;
+  the slow-motion *option* path doesn't depend on it and works (user opted to
+  keep dedicated unfixed for now — listen servers only).
 
 ### Diagnostic Log (`net.c`)
 

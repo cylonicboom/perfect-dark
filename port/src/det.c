@@ -26,6 +26,7 @@
 #include "lib/joy.h"
 #include "video.h"
 #include "det.h"
+#include "game/lv.h" // g_LvSlomoEngaged
 
 s32 g_DetMode = DET_OFF;
 
@@ -267,9 +268,17 @@ void detComputeHash(struct dethash *out)
 
 /* ---- fixed-step pin ---- */
 
+// True when detPinTimestep will override lvupdate240 with a pinned step.
+// lvTick's slow-motion halver (lvSlomoScaleTick) stands down when this is
+// active — the halving happens here instead, on the pinned step.
+s32 detTickPinActive(void)
+{
+	return g_DetMode != DET_OFF || g_FixedTickEnabled || g_NetMode;
+}
+
 void detPinTimestep(void)
 {
-	if (g_DetMode == DET_OFF && !g_FixedTickEnabled && !g_NetMode) {
+	if (!detTickPinActive()) {
 		return;
 	}
 	// Respect pause: when the engine chose a zero step (paused / cutscene gate),
@@ -307,9 +316,69 @@ void detPinTimestep(void)
 		if (step < 1) {
 			step = 1;
 		}
+
+		// REAL-TIME STEP ACCUMULATOR. lvTick runs once per RENDER frame on the
+		// port (pdmain.c mainTick — the fixed-step mainnsteps loop in
+		// src/lib/main.c is NOT COMPILED into the port build; pdmain.c replaced
+		// that file). Pinning a full step on every render frame therefore made
+		// the sim run at fps/60 of real time — ~1.93x in netplay at a 116fps
+		// VRR cap (and the slow-motion halving then yielded ~0.97x, i.e.
+		// "slow-mo looks like normal speed"; this was also the old
+		// "fixed tick ran too fast with unlocked fps" bug). Emit whole steps
+		// at `rate`/sec of TRUE elapsed time instead: frames where no step is
+		// due pin lvupdate240 to 0 — a no-advance frame, the same semantics as
+		// a paused frame (lvUpdateMiscSfx is already gated so looping sfx
+		// don't stutter through them). At <rate fps a frame emits several
+		// steps' worth at once (one combined dt — the engine is built for
+		// variable dt), anti-spiral capped at 6.
+		{
+			static s32 accum240 = 0;
+			s32 nsteps;
+			accum240 += g_Vars.diffframe240;
+			if (accum240 < 0) {
+				accum240 = 0; // guard a stage-load time jump
+			}
+			nsteps = accum240 / step;
+			accum240 -= nsteps * step;
+			if (nsteps > 6) {
+				nsteps = 6;  // anti-spiral at very low fps
+				accum240 = 0; // drop backlog rather than chase it
+			}
+			step *= nsteps;
+		}
+
+		// Slow motion / combat boost: halve the pinned sim step. Without this
+		// the pin overwrote lvTick's halving every frame, so slow motion did
+		// nothing under the fixed tick or in netplay. The server decides
+		// (g_LvSlomoEngaged from lvTick); clients mirror it via SVC_TIMESCALE,
+		// so both machines advance the same sim time per tick. The g_NetTick
+		// cadence (one tick per real 1/60s) is unchanged — interp / lag-comp /
+		// CSP all time in ticks and are unaffected; the world just advances
+		// half as much per tick on both ends. Remainder-carried so odd steps
+		// (custom /forcetick rates) average exactly half. Excluded from
+		// DET_RECORD/REPLAY (above) which keep their fixed 1/60 step.
+		if (g_LvSlomoEngaged) {
+			static s32 slomorem = 0;
+			const s32 total = step + slomorem;
+			slomorem = total & 1;
+			step = total >> 1;
+		}
 	}
 	g_Vars.lvupdate240 = step;
-	g_Vars.lvupdate240rem = 0;
+	// Zero the remainder only when a nonzero step is 4-aligned (the canonical
+	// 1/60 step: lvupdate240=4 -> lvupdate60=1 exactly). For non-4-aligned
+	// steps — the slow-motion halved step (2), or odd /forcetick rates — the
+	// remainder MUST be left to accumulate through lv.c's derivation
+	// ((step+rem)>>2, rem &3) so lvupdate60 alternates 0/1 and AVERAGES right.
+	// Zeroing it every frame pinned lvupdate60 at 0 permanently, freezing
+	// every integer-tick consumer (timers, anim fullticks, match clock) — the
+	// net slow-motion "repeats one tick and softlocks" bug. Render-only
+	// frames (step 0) must not touch it either, or they'd drop the carry the
+	// next real step needs. DET record/replay always uses step=4, so their
+	// remainder stays 0 exactly as before.
+	if (step != 0 && (step & 3) == 0) {
+		g_Vars.lvupdate240rem = 0;
+	}
 }
 
 /* ---- record / replay ---- */

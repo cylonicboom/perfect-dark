@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 56 // 56: CLC_BOT_CMD — clients can order own-team simulants (server validates team ownership + applies)
+#define NET_PROTOCOL_VER 57 // 57: SVC_TIMESCALE — slow motion / combat boost: server mirrors the sim-step halving flag (+ boost timer) so clients tick in lockstep
+// 56: CLC_BOT_CMD — clients can order own-team simulants (server validates team ownership + applies)
 // 55: CLC_PICKUP_REQUEST — co-op clients can collect OBJ/weapon props (host re-validates + grants)
 // 54: SVC_PROP_PICKUP carries the host's show-toast decision so co-op clients mirror it
 // 53: CLC_OBJECTIVE_DONE — co-op client reports objectives it completed that the host can't witness

@@ -57,6 +57,11 @@ void detComputeHash(struct dethash *out);
 // a fixed 1/60 so record and replay advance identically regardless of wall clock.
 void detPinTimestep(void);
 
+// True when detPinTimestep will override lvupdate240 (det harness, fixed tick,
+// or netplay). lvTick's slow-motion halver stands down when active — the
+// halving happens on the pinned step inside detPinTimestep instead.
+s32 detTickPinActive(void);
+
 // Record/replay per-frame hooks. Called from the sim loop in main.c around the
 // per-player tick: detFrameBegin() just before the loop (capture inputs in
 // record mode / inject recorded inputs in replay mode), detEndTick() just after

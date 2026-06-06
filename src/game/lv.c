@@ -211,7 +211,16 @@ void lvUpdateMiscSfx(void)
 {
 	s32 i;
 
+#ifndef PLATFORM_N64
+	// Slow motion can legitimately produce zero-tick frames at high fps (the
+	// halved tick alternates 0/1 above 120fps). Only treat a zero frame as
+	// "stopped" when the game is actually paused — these are the only paths
+	// that set lvupdate240 to 0 in lvTick — so the boost heartbeat / rocket
+	// hum don't stutter on/off every other frame during slow motion.
+	if (g_Vars.lvupdate240 == 0 && (lvIsPaused() || mpIsPaused())) {
+#else
 	if (g_Vars.lvupdate240 == 0) {
+#endif
 		for (i = 0; i != ARRAYCOUNT(g_MiscSfxActiveTypes); i++) {
 			lvSetMiscSfxState(i, false);
 		}
@@ -235,7 +244,13 @@ void lvUpdateMiscSfx(void)
 		lvSetMiscSfxState(MISCSFX_SLAYERROCKETBEEP, usingrocket);
 	}
 
+#ifndef PLATFORM_N64
+	// Same zero-tick gate as above.
+	if (g_Vars.lvupdate240 == 0 && (lvIsPaused() || mpIsPaused())
+			&& g_MiscAudioHandle && sndGetState(g_MiscAudioHandle) != AL_STOPPED) {
+#else
 	if (g_Vars.lvupdate240 == 0 && g_MiscAudioHandle && sndGetState(g_MiscAudioHandle) != AL_STOPPED) {
+#endif
 		audioStop(g_MiscAudioHandle);
 	}
 }
@@ -533,6 +548,11 @@ void lvReset(s32 stagenum)
 	}
 
 #ifndef PLATFORM_N64
+	// Stage transition: never carry a slow-motion step into the next stage /
+	// the lobby (the speedpill vars are reset above; net clients get a fresh
+	// SVC_TIMESCALE if the new match engages it).
+	g_LvSlomoEngaged = false;
+
 	if (g_NetMode) {
 		netSyncIdsAllocate();
 	}
@@ -2211,6 +2231,80 @@ void lvUpdateCutsceneTime(void)
 	g_CutsceneTime240_60 = 0;
 }
 
+#ifndef PLATFORM_N64
+s32 g_LvSlomoEngaged = false;
+
+// Halve the tick delta with a remainder carried across frames, so slow motion
+// works at any framerate. Plain integer halving quantized away at high fps
+// (delta is mostly 1 above ~200fps — nothing to halve); the carry makes ticks
+// alternate 0/1 there, averaging exactly half speed. When the fixed-tick /
+// netplay step pin is active the halving happens in detPinTimestep instead
+// (a zero from here would read as "paused" to the pin), so pass through.
+s32 lvSlomoScaleTick(s32 ticks)
+{
+	static s32 rem = 0;
+	s32 total;
+
+	if (detTickPinActive()) {
+		return ticks;
+	}
+
+	total = ticks + rem;
+	rem = total & 1;
+	return total >> 1;
+}
+
+// Mark this frame as slow-motion for the fixed-tick / netplay step pin.
+// Net clients don't decide locally — the server's decision arrives via
+// SVC_TIMESCALE so both machines halve the same pinned step.
+static void lvSlomoEngage(void)
+{
+	if (g_NetMode != NETMODE_CLIENT) {
+		g_LvSlomoEngaged = true;
+	}
+}
+
+// SLOWMOTION_SMART: true if a living simulant is within LV_SMART_SLOMO_RANGE
+// of a living player. The vanilla proximity test only considers human
+// players, so SMART could never engage in the most common Combat Sim case —
+// one human plus simulants ("activates if an enemy chr is nearby" was the
+// stated intent, but chrs were never checked).
+static bool lvSlomoSimNearby(void)
+{
+	s32 i;
+	s32 playernum;
+
+	for (i = 0; i < g_BotCount; i++) {
+		struct chrdata *chr = g_MpBotChrPtrs[i];
+
+		if (!chr || !chr->prop || chrIsDead(chr)) {
+			continue;
+		}
+
+		for (playernum = 0; playernum < PLAYERCOUNT(); playernum++) {
+			struct player *pl = g_Vars.players[playernum];
+			f32 dx;
+			f32 dy;
+			f32 dz;
+
+			if (pl->is_spectator || !pl->prop || pl->isdead) {
+				continue;
+			}
+
+			dx = chr->prop->pos.x - pl->prop->pos.x;
+			dy = chr->prop->pos.y - pl->prop->pos.y;
+			dz = chr->prop->pos.z - pl->prop->pos.z;
+
+			if (dx * dx + dy * dy + dz * dz < LV_SMART_SLOMO_RANGE * LV_SMART_SLOMO_RANGE) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+#endif
+
 s32 lvGetSlowMotionType(void)
 {
 #if PIRACYCHECKS
@@ -2317,8 +2411,19 @@ void lvTick(void)
 		s32 slowmo = lvGetSlowMotionType();
 		g_Vars.lvupdate240 = g_Vars.diffframe240;
 
+#ifndef PLATFORM_N64
+		// Re-decide slow-motion engagement each frame (server/local only;
+		// net clients keep the wire-driven value from SVC_TIMESCALE).
+		if (g_NetMode != NETMODE_CLIENT) {
+			g_LvSlomoEngaged = false;
+		}
+#endif
+
 		if (slowmo == SLOWMOTION_ON) {
 			if (g_Vars.speedpillon == false || g_Vars.in_cutscene) {
+#ifndef PLATFORM_N64
+				lvSlomoEngage();
+#endif
 				if (g_Vars.lvupdate240 > LV_SLOMO_TICK_CAP) {
 					g_Vars.lvupdate240 = LV_SLOMO_TICK_RATE;
 				}
@@ -2330,6 +2435,46 @@ void lvTick(void)
 					bool foundnearbychr = false;
 					s32 playernum;
 
+#ifndef PLATFORM_N64
+					// Net games: the vanilla test below asks "is player A's
+					// room on player B's SCREEN" (g_MpRoomVisibility) — which
+					// only exists for rendered local viewports (and is only 4
+					// players wide). Remote players' visibility traversals on
+					// the server run with stale viewports, so SMART almost
+					// never fired in net games. Use a plain distance test
+					// between living players instead; the server's decision
+					// reaches clients via SVC_TIMESCALE as usual.
+					if (g_NetMode) {
+						for (playernum = 0; playernum < PLAYERCOUNT() && !foundnearbychr; playernum++) {
+							struct player *pa = g_Vars.players[playernum];
+							s32 otherplayernum;
+
+							if (pa->is_spectator || !pa->prop || pa->isdead) {
+								continue;
+							}
+
+							for (otherplayernum = playernum + 1; otherplayernum < PLAYERCOUNT(); otherplayernum++) {
+								struct player *pb = g_Vars.players[otherplayernum];
+								f32 dx;
+								f32 dy;
+								f32 dz;
+
+								if (pb->is_spectator || !pb->prop || pb->isdead) {
+									continue;
+								}
+
+								dx = pa->prop->pos.x - pb->prop->pos.x;
+								dy = pa->prop->pos.y - pb->prop->pos.y;
+								dz = pa->prop->pos.z - pb->prop->pos.z;
+
+								if (dx * dx + dy * dy + dz * dz < LV_SMART_SLOMO_RANGE * LV_SMART_SLOMO_RANGE) {
+									foundnearbychr = true;
+									break;
+								}
+							}
+						}
+					} else
+#endif
 					// Check if another player is in a nearby room
 					for (playernum = 0; playernum < PLAYERCOUNT() && !foundnearbychr; playernum++) {
 #ifndef PLATFORM_N64
@@ -2356,7 +2501,18 @@ void lvTick(void)
 						}
 					}
 
+#ifndef PLATFORM_N64
+					// Simulants count as nearby chrs too (one shared site for
+					// both the net distance test and the vanilla local path).
+					if (!foundnearbychr) {
+						foundnearbychr = lvSlomoSimNearby();
+					}
+#endif
+
 					if (foundnearbychr) {
+#ifndef PLATFORM_N64
+						lvSlomoEngage();
+#endif
 						if (g_Vars.lvupdate240 > LV_SLOMO_TICK_CAP) {
 							g_Vars.lvupdate240 = LV_SLOMO_TICK_RATE;
 						}
@@ -2366,6 +2522,9 @@ void lvTick(void)
 						}
 					}
 				} else {
+#ifndef PLATFORM_N64
+					lvSlomoEngage();
+#endif
 					if (g_Vars.lvupdate240 > LV_SLOMO_TICK_CAP) {
 						g_Vars.lvupdate240 = LV_SLOMO_TICK_RATE;
 					}
@@ -2374,6 +2533,9 @@ void lvTick(void)
 		} else {
 			// Slow motion settings are off
 			if (g_Vars.speedpillon && g_Vars.in_cutscene == false) {
+#ifndef PLATFORM_N64
+				lvSlomoEngage();
+#endif
 				if (g_Vars.lvupdate240 > LV_SLOMO_TICK_CAP) {
 					g_Vars.lvupdate240 = LV_SLOMO_TICK_RATE;
 				}

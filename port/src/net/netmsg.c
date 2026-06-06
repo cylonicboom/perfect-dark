@@ -11,6 +11,7 @@
 #include "lib/anim.h"
 #include "game/mplayer/mplayer.h"
 #include "game/chr.h"
+#include "game/lv.h"
 #include "game/chraction.h"
 #include "game/prop.h"
 #include "game/propobj.h"
@@ -3304,6 +3305,40 @@ u32 netmsgSvcPropReconcileRead(struct netbuf *src, struct netclient *srccl)
 			// same as SVC_PROP_FREE — a ghost may be a child of a chr (stuck mine).
 			objFreePermanently(prop->obj, true);
 		}
+	}
+
+	return src->error;
+}
+
+// Global sim timescale: slow motion / combat boost halve the per-tick sim step
+// (decided in lvTick on the server, applied in detPinTimestep on both ends).
+// The engaged flag must be mirrored so server and client advance the same sim
+// time per 60Hz tick; the boost-timer fields keep the client's boost HUD meter
+// and activation transition visuals in sync (cosmetic — the client's local
+// speedpill state doesn't drive its tick rate, the wire flag does).
+u32 netmsgSvcTimescaleWrite(struct netbuf *dst)
+{
+	netbufWriteU8(dst, SVC_TIMESCALE);
+	netbufWriteU8(dst, g_LvSlomoEngaged ? 1 : 0);
+	netbufWriteU8(dst, g_Vars.speedpillwant ? 1 : 0);
+	netbufWriteU32(dst, (u32)g_Vars.speedpilltime);
+	return dst->error;
+}
+
+u32 netmsgSvcTimescaleRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 engaged = netbufReadU8(src);
+	const u8 want = netbufReadU8(src);
+	const s32 time = (s32)netbufReadU32(src);
+
+	if (src->error) {
+		return src->error;
+	}
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		g_LvSlomoEngaged = engaged ? true : false;
+		g_Vars.speedpillwant = want ? true : false;
+		g_Vars.speedpilltime = time;
 	}
 
 	return src->error;

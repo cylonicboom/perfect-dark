@@ -107,6 +107,7 @@ static void bwalkUpdateRemote(void)
 	u16 cdtype = CDTYPE_ALL;
 
 	cl->inmovetick = inmove->tick;
+	cl->renderbehind = inmove->renderbehind; // proto 63: shooter's render offset, used by netLagCompBegin for the exact rewind tick
 
 	pl->bondshotspeed.x = 0.f;
 	pl->bondshotspeed.y = 0.f;

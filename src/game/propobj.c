@@ -17445,9 +17445,23 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 	}
 #endif
 
+#ifndef PLATFORM_N64
+	// A wire-driven pickup (the client applying the host's SVC_PROP_PICKUP) is
+	// processed during pre-tick message handling, where lvupdate240 can be 0 on a
+	// render-only frame (the detPinTimestep paused-frame pin). The host already
+	// granted it, so the lvupdate240 == 0 bail must NOT apply here: the box is
+	// removed regardless (netmsgSvcPropPickupRead runs the tickop after this), but
+	// the ammo/weapon would never enter the client's inventory — the box vanishes
+	// with no item, intermittently, depending on which frame the packet lands on.
+	// The isdead guard still stands.
+	if (g_Vars.currentplayer->isdead || (g_Vars.lvupdate240 == 0 && g_NetPickupWireShowMsg < 0)) {
+		return TICKOP_NONE;
+	}
+#else
 	if (g_Vars.currentplayer->isdead || g_Vars.lvupdate240 == 0) {
 		return TICKOP_NONE;
 	}
+#endif
 
 	// Suppress HUD pickup messages during cutscenes (e.g. items given at
 	// mission start via aiGiveObjectToChr). In co-op, keep showing them for
@@ -19372,8 +19386,17 @@ void doorsCheckAutomatic(void)
 	s16 propnums[256];
 
 #ifndef PLATFORM_N64
-	if (g_NetMode == NETMODE_CLIENT) {
-		// don't do anything if we're not the authority
+	// Client-side door prediction: let the LOCAL player open automatic doors
+	// locally instead of waiting a full RTT for the host's SVC_PROP_DOOR (very
+	// visible at high ping — walk into a closed door, pause ~350ms, it opens). The
+	// host stays authoritative: doorSetMode only broadcasts on the server, and the
+	// host's SVC_PROP_DOOR reconciles (netmsgSvcPropDoorRead skips the stale
+	// confirming OPEN keyframe so it can't slam a predicted-open door shut or replay
+	// the open sound). Only AUTOMATIC + UNLOCKED doors are predicted (checked below)
+	// — the host opens those too, so a misprediction can't strand a door. Remote
+	// players are NOT predicted here: their pawn is interpolated/lagged and the host
+	// drives their doors over the wire.
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.currentplayer->isremote) {
 		return;
 	}
 #endif
@@ -19426,6 +19449,12 @@ void doorsCheckAutomatic(void)
 
 				if (canopen) {
 					doorsRequestMode(door, DOORMODE_OPENING);
+#ifndef PLATFORM_N64
+					if (g_NetMode == NETMODE_CLIENT) {
+						netDiagLogf("door_predict", "sid=%u frac=%.2f mode=%d",
+								(unsigned)doorprop->syncid, door->frac, (s32)door->mode);
+					}
+#endif
 				}
 			}
 		}

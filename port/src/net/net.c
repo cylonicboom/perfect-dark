@@ -140,6 +140,10 @@ char g_NetPlaylistPath[260] = "$S/server_playlist.ini";
 struct netvotestate g_NetVote;
 
 u32 g_NetServerUpdateRate = 1;
+s32 g_NetLagCompExact = 1; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. /lagcomp toggles for live A/B
+s32 g_NetRelevancy = 1; // P2: per-client relevancy cull of sim/NPC chr-state (default on; /relevancy off = identical broadcast to all)
+f32 g_NetRelevancyDist = 9000.0f; // a sim NOT sharing a room with the client's pawn is culled beyond this (world units). Conservative default — well past LV_SMART_SLOMO_RANGE (1500). /relevancy dist N to tune
+static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *cl); // defined below (near netChrRoomsEqual); used by netEndFrame above it
 u32 g_NetServerInRate = 128 * 1024;
 u32 g_NetServerOutRate = 128 * 1024;
 u32 g_NetServerPort = NET_DEFAULT_PORT;
@@ -297,6 +301,13 @@ struct netbuf g_NetMsg = { .data = g_NetMsgBuf, .size = sizeof(g_NetMsgBuf) };
 static u8 g_NetMsgRelBuf[NET_BUFSIZE * 4]; // reliable buffer can be reliably fragmented
 struct netbuf g_NetMsgRel = { .data = g_NetMsgRelBuf, .size = sizeof(g_NetMsgRelBuf) };
 
+// P2 (docs/netplay-perf-review-2026.md): per-client relevancy-culled sim/NPC
+// chr-state. When g_NetRelevancy is on, the bandwidth-dominant chr-state blocks
+// are built per-client into this scratch buffer (only the chrs relevant to that
+// client) and sent individually, instead of one identical broadcast to all.
+static u8 g_NetRelevBufData[NET_BUFSIZE];
+static struct netbuf g_NetRelevBuf = { .data = g_NetRelevBufData, .size = sizeof(g_NetRelevBufData) };
+
 // Spectate target: when non-NULL, netSpectateApply rides the local camera on
 // this chr each tick. /spec console commands set/clear it; netSpectateCycle
 // walks the live players-then-sims list. Cleared automatically by
@@ -381,9 +392,19 @@ void netDiagLogf(const char *event, const char *fmt, ...)
 	vfprintf(g_NetDiagFile, fmt, ap);
 	va_end(ap);
 	fputc('\n', g_NetDiagFile);
-	// Flush every line so a crash doesn't lose the last few events that
-	// would otherwise sit in the stdio buffer.
-	fflush(g_NetDiagFile);
+	// Flush every line EXCEPT the high-rate per-tick position dumps (pos_cl /
+	// pos_sim, ~10Hz per client/sim at the default LogRate). Event/bracket lines
+	// (server_start, stage_start, csp_recon, lagcomp, tick, disconnect,
+	// proptick_guard, ...) still flush immediately so a crash never loses the
+	// lines that bracket it; the redundant position sampling rides the stdio
+	// buffer and reaches disk on the next event line's flush. The position trail
+	// is therefore only ever incomplete for the sub-100ms window since the last
+	// event — where the event lines already pinpoint the crash — in exchange for
+	// far fewer synchronous fflushes on the game thread under busy dumps.
+	const bool isposdump = (strcmp(event, "pos_cl") == 0 || strcmp(event, "pos_sim") == 0);
+	if (!isposdump) {
+		fflush(g_NetDiagFile);
+	}
 }
 
 // Lag compensation: saved client state for restore after hit rewind.
@@ -522,6 +543,15 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 
 	struct netplayermove *move = &cl->outmove[0];
 
+	// Zero the slot before populating fields individually. netClientNeedMove
+	// change-detects with a memcmp over the whole struct (minus tick + the anim
+	// tail); netplayermove has padding (e.g. after the s8 weaponnum, before the
+	// coord pos) that the field-by-field writes below never touch. Leaving it as
+	// recycled stack bytes makes that memcmp depend on stale padding — a latent
+	// spurious-send / missed-send the moment a field is reordered. memset makes
+	// the padding deterministic so the comparison only reflects real fields.
+	memset(move, 0, sizeof(*move));
+
 	move->tick = g_NetTick;
 	move->crouchofs = pl->crouchoffset;
 	move->leanofs = pl->swaytarget / 75.f;
@@ -552,6 +582,13 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 		move->animnum = pl->prop->chr->model->anim->animnum;
 		move->animframe = pl->prop->chr->model->anim->framea;
 	}
+
+	// Render offset (proto 63): how many ticks behind its own net clock this
+	// machine renders other entities (= g_NetInterpTicks, the interpolators'
+	// render-behind). Travels with the move so the server's lag-comp can rewind
+	// targets to the exact server-tick the shooter was displaying when it fired
+	// (inmovetick - renderbehind), instead of an RTT/2 + interp_lag estimate.
+	move->renderbehind = (u8)((g_NetInterpTicks > 255u) ? 255u : g_NetInterpTicks);
 
 	const struct netplayermove *inmove_newest = &cl->inmove[cl->inmove_head];
 	if (g_NetMode == NETMODE_SERVER && pl->isremote && inmove_newest->tick) {
@@ -643,10 +680,18 @@ static inline s32 netClientNeedMove(const struct netclient *cl)
 	// tick and undo the update-rate gating above. The anim fields piggyback
 	// on whatever sends we do make for genuine input/position changes, which
 	// is sufficient for keeping remote chr animations in rough sync.
-	const u8 *cmpa = (const u8 *)move + sizeof(move->tick);
+	// Compare only the fields between tick and the anim tail (animnum, animframe,
+	// and the proto-63 renderbehind that follows them). animframe ticks every
+	// frame and renderbehind is ~constant, so including either would force a send
+	// every tick and undo the update-rate gating. Bound the compare at the address
+	// of animnum so all trailing fields + padding are excluded regardless of
+	// layout (don't subtract fixed field sizes — that breaks when a field is
+	// appended after animframe, as renderbehind was).
+	const u8 *base = (const u8 *)move;
+	const u8 *cmpa = base + sizeof(move->tick);
 	const u8 *cmpb = (const u8 *)moveprev + sizeof(move->tick);
-	const size_t tail = sizeof(move->animnum) + sizeof(move->animframe);
-	return (memcmp(cmpa, cmpb, sizeof(*move) - sizeof(move->tick) - tail) != 0);
+	const size_t cmplen = (size_t)((const u8 *)&move->animnum - base) - sizeof(move->tick);
+	return (memcmp(cmpa, cmpb, cmplen) != 0);
 }
 
 static inline void netClientReadConfig(struct netclient *cl, const s32 playernum)
@@ -708,6 +753,57 @@ static inline const char *netGetDisconnectReason(const u32 reason)
 // summary block is the shared netmsgQuerySummaryWrite payload so the in-game
 // browser and the master server decode identical bytes. Larger static buffer
 // than the legacy response since details can carry up to 8 players + 8 sims.
+// Connectionless server queries (PDQM) are answered to an UNVERIFIED, spoofable
+// UDP source with a response many times larger than the 5-6 byte request — a
+// classic reflection/amplification primitive, and these servers are publicly
+// advertised to the master browser. Throttle responses per source IP (and a
+// global per-tick backstop) so a spoofed-victim flood can't be amplified through
+// us. A legitimate browser queries each server only a couple of times (summary +
+// details), so a few per second per source is ample headroom.
+#define NET_QUERY_LRU             16
+#define NET_QUERY_MIN_TICKS       15u // summary: ~4 responses/sec/source
+#define NET_QUERY_DETAILS_TICKS   60u // details (largest payload): ~1/sec/source
+#define NET_QUERY_GLOBAL_PER_TICK 8u  // hard cap on responses emitted per tick
+
+static s32 netQueryRateAllowed(const ENetAddress *address, u8 querytype)
+{
+	static struct { struct in6_addr host; u32 tick; u8 used; } lru[NET_QUERY_LRU];
+	static u32 next = 0;
+	static u32 gtick = 0, gcount = 0;
+	const u32 now = g_NetTick;
+	const u32 mininterval = (querytype == NET_QUERYTYPE_DETAILS)
+			? NET_QUERY_DETAILS_TICKS : NET_QUERY_MIN_TICKS;
+	s32 known = 0;
+
+	for (s32 i = 0; i < NET_QUERY_LRU; i++) {
+		if (lru[i].used && !memcmp(&lru[i].host, &address->ipv6, sizeof(lru[i].host))) {
+			// (now - tick) via u32 wraparound is safe on the free-running tick clock.
+			if ((u32)(now - lru[i].tick) < mininterval) {
+				return 0; // per-source throttle
+			}
+			lru[i].tick = now;
+			known = 1;
+			break;
+		}
+	}
+	if (!known) {
+		lru[next].host = address->ipv6;
+		lru[next].tick = now;
+		lru[next].used = 1;
+		next = (next + 1) % NET_QUERY_LRU;
+	}
+
+	// Global backstop: bound total responses per tick so a flood spread across
+	// many spoofed source IPs — which each slip the per-source LRU once — still
+	// can't turn us into a high-rate reflector.
+	if (gtick != now) { gtick = now; gcount = 0; }
+	if (gcount >= NET_QUERY_GLOBAL_PER_TICK) {
+		return 0;
+	}
+	gcount++;
+	return 1;
+}
+
 static void netServerQueryResponse(ENetAddress *address, u8 querytype)
 {
 	static u8 data[1024];
@@ -766,6 +862,12 @@ static s32 netServerConnectionlessPacket(ENetEvent *event, ENetAddress *address,
 		if (!memcmp(rxdata, NET_QUERY_MAGIC, sizeof(NET_QUERY_MAGIC) - 1)) {
 			// direct server query; optional trailing byte selects summary/details
 			const u8 querytype = (rxlen >= 6) ? rxdata[5] : NET_QUERYTYPE_SUMMARY;
+			// Drop (silently consume) if this source / the server as a whole is over
+			// the reflection-amplification rate limit. Still return 1 so the packet
+			// isn't passed to ENet as a connection attempt.
+			if (!netQueryRateAllowed(address, querytype)) {
+				return 1;
+			}
 			sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: query request from %s, responding", netFormatAddr(address));
 			netServerQueryResponse(address, querytype);
 			return 1;
@@ -1883,7 +1985,11 @@ static void netServerEvReceive(struct netclient *cl)
 	u32 rc = 0;
 	u8 msgid = 0;
 
-	while (!rc && netbufReadLeft(&cl->in) > 0) {
+	// Stop on cl->in.error as well as rc: a truncated final message leaves the
+	// read pointer short of wp with the error flag set; netbufReadU8 then keeps
+	// returning 0 (= *_NOP, rc stays 0) without advancing rp, so without this
+	// guard the loop would spin forever on a malformed packet (remote hang).
+	while (!rc && !cl->in.error && netbufReadLeft(&cl->in) > 0) {
 		msgid = netbufReadU8(&cl->in);
 		switch (msgid) {
 			case CLC_NOP: rc = 0; break;
@@ -1901,6 +2007,7 @@ static void netServerEvReceive(struct netclient *cl)
 			case CLC_PICKUP_REQUEST: rc = netmsgClcPickupRequestRead(&cl->in, cl); break;
 			case CLC_BOT_CMD: rc = netmsgClcBotCmdRead(&cl->in, cl); break;
 			case CLC_STAGE_READY: rc = netmsgClcStageReadyRead(&cl->in, cl); break;
+			case CLC_DOOR_ACTIVATE: rc = netmsgClcDoorActivateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -1936,7 +2043,9 @@ static void netClientEvReceive(struct netclient *cl)
 	u32 rc = 0;
 	u8 msgid = 0;
 
-	while (!rc && netbufReadLeft(&cl->in) > 0) {
+	// See netServerEvReceive: stop on cl->in.error too so a truncated trailing
+	// message can't spin this loop forever (SVC_NOP on a non-advancing read).
+	while (!rc && !cl->in.error && netbufReadLeft(&cl->in) > 0) {
 		msgid = netbufReadU8(&cl->in);
 		switch (msgid) {
 			case SVC_NOP: rc = 0; break;
@@ -2102,6 +2211,43 @@ void netStartFrame(void)
 
 	++g_NetTick;
 
+	// R4 (docs/netplay-perf-review-2026.md): g_NetTick advances once per
+	// netStartFrame call (once per diffframe60>0 frame), NOT once per logical 1/60
+	// sim step. On a machine that sustains <60fps the net clock drifts slower than
+	// wall-clock while the sim runs multiple steps per frame, skewing tick-stamped
+	// moves and CSP/interp timing. DIAGNOSTIC ONLY (no behaviour change): compare
+	// the net tick against the microsecond wall clock and warn (throttled) on
+	// sustained divergence so the condition is visible instead of silent. Re-bases
+	// on session start, a backward jump, or an implausibly large step (a client
+	// adopting the server's tick value), none of which are frame-rate drift.
+	{
+		static u64 s_base_us = 0;
+		static u32 s_base_tick = 0;
+		static u32 s_last_warn_tick = 0;
+		const u64 now_us = sysGetMicroseconds();
+		const s64 dtick = (s64)g_NetTick - (s64)s_base_tick;
+		if (s_base_us == 0u || dtick < 0) {
+			s_base_us = now_us;
+			s_base_tick = g_NetTick;
+		} else {
+			const s64 elapsed_ticks = (s64)((now_us - s_base_us) * 60ULL / 1000000ULL);
+			const s64 drift = dtick - elapsed_ticks; // < 0 => net clock behind wall clock
+			if (drift > 600 || drift < -600) {
+				// >10s implied drift can't accrue from frame pacing this fast — it's a
+				// clock discontinuity (e.g. server-tick adoption). Re-base silently.
+				s_base_us = now_us;
+				s_base_tick = g_NetTick;
+			} else if ((drift > 30 || drift < -30) && (g_NetTick - s_last_warn_tick) >= 60u) {
+				s_last_warn_tick = g_NetTick;
+				netDiagLogf("tickdrift", "net=%lld wall=%lld drift=%lld",
+						(long long)dtick, (long long)elapsed_ticks, (long long)drift);
+				sysLogPrintf(LOG_WARNING | LOGFLAG_NOCON,
+						"NET: tick clock drift %lld ticks vs wall clock (sustained <60fps?)",
+						(long long)drift);
+			}
+		}
+	}
+
 	// Heartbeat for crash hunts. Logs every 6 ticks (~100ms at 60Hz) so the
 	// diag file shows progress through gameplay with fine enough granularity
 	// to bracket a crash to ≤6 frames. Pairs with the existing pos_cl /
@@ -2143,14 +2289,22 @@ void netStartFrame(void)
 			s_adminMenuLockHeld = false;
 		}
 	}
-	s32 polled = false;
+	// Drain every event ready this frame, not just the first. enet_host_service()
+	// reads the whole socket and queues the inbound burst but hands back only the
+	// first event; the old loop processed that one and exited, leaving the rest of
+	// the burst to wait for the next frame (up to ~16ms added latency under load —
+	// netplay-perf-review-2026 "smaller"). Re-drain the queue with
+	// enet_host_check_events after each service, and cap the number of socket
+	// services so a sustained packet flood can't stall the frame.
+	const s32 maxservices = 8;
+	s32 numservices = 0;
 	ENetEvent ev = { .type = ENET_EVENT_TYPE_NONE };
-	while (!polled) {
+	for (;;) {
 		if (enet_host_check_events(g_NetHost, &ev) <= 0) {
-			if (enet_host_service(g_NetHost, &ev, 1) <= 0) {
+			if (numservices >= maxservices || enet_host_service(g_NetHost, &ev, 1) <= 0) {
 				break;
 			}
-			polled = true;
+			numservices++;
 		}
 
 		switch (ev.type) {
@@ -2353,15 +2507,71 @@ void netEndFrame(void)
 				}
 			}
 #ifndef PLATFORM_N64
-			// broadcast sim (bot) chr positions so clients can position-drive them
-			if (g_Vars.lvmpbotlevel) {
-				for (s32 i = 0; i < g_BotCount; i++) {
-					struct chrdata *chr = g_MpBotChrPtrs[i];
-					if (chr && chr->prop && chr->prop->syncid) {
-						const u32 b0 = g_NetMsg.wp;
+			// broadcast sim (bot) chr positions so clients can position-drive them.
+			// BYTE-BUDGETED ROUND-ROBIN (same scheme as the co-op NPC loop below):
+			// a chr-state block is ~120 bytes, so a high-sim-count Combat Sim match
+			// can exceed the unreliable buffer (g_NetMsg, NET_BUFSIZE). A plain
+			// 0..g_BotCount scan with no space guard let it overflow — the packet was
+			// then truncated on send and the client dropped the tail message, so the
+			// SAME high-index sims lost their update every tick (fixed scan order),
+			// reading as permanently laggy while sim 0 stayed smooth. Resume from a
+			// rotating cursor and stop before the buffer fills, so the loss (when it
+			// happens at all) is shared and interpolation hides it. Player moves were
+			// written above, so the threshold accounts for them.
+			if (g_Vars.lvmpbotlevel && g_BotCount > 0) {
+				if (g_NetRelevancy) {
+					// P2: per-client relevancy cull. Build each remote client its own
+					// chr-state packet of only the sims relevant to it
+					// (netChrRelevantTo) and send individually, instead of one identical
+					// broadcast. Same byte-budgeted round-robin as the legacy path but
+					// with a separate cursor per client so no client's high-index sims
+					// starve. The host (g_NetLocalClient) runs the sim locally and gets
+					// no packet.
+					static s32 simcursor[NET_MAX_CLIENTS];
+					for (s32 c = 0; c < g_NetMaxClients; ++c) {
+						struct netclient *cl = &g_NetClients[c];
+						if (cl == g_NetLocalClient || cl->state < CLSTATE_GAME || !cl->peer) {
+							continue;
+						}
+						netbufStartWrite(&g_NetRelevBuf);
+						if (simcursor[c] >= g_BotCount) {
+							simcursor[c] = 0;
+						}
+						s32 scanned = 0;
+						s32 i = simcursor[c];
+						while (scanned < g_BotCount && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
+							struct chrdata *chr = g_MpBotChrPtrs[i];
+							if (chr && chr->prop && chr->prop->syncid && netChrRelevantTo(chr, cl)) {
+								const u32 b0 = g_NetRelevBuf.wp;
+								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
+								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
+							}
+							i = (i + 1) % g_BotCount;
+							scanned++;
+						}
+						simcursor[c] = i;
+						if (g_NetRelevBuf.wp) {
+							netSend(cl, &g_NetRelevBuf, false, NETCHAN_DEFAULT);
+						}
+					}
+				} else {
+					static s32 simcursor = 0;
+					if (simcursor >= g_BotCount) {
+						simcursor = 0;
+					}
+					s32 scanned = 0;
+					s32 i = simcursor;
+					while (scanned < g_BotCount && g_NetMsg.wp < NET_BUFSIZE - 340) {
+						struct chrdata *chr = g_MpBotChrPtrs[i];
+						if (chr && chr->prop && chr->prop->syncid) {
+							const u32 b0 = g_NetMsg.wp;
 							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
 							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						}
+						i = (i + 1) % g_BotCount;
+						scanned++;
 					}
+					simcursor = i; // resume here next tick
 				}
 			}
 
@@ -2378,24 +2588,58 @@ void netEndFrame(void)
 			// written above, so the threshold accounts for them.
 			if (g_Vars.coopplayernum >= 0 && g_ChrSlots) {
 				const s32 numslots = chrsGetNumSlots();
-				static s32 coopnpcstart = 0;
-				if (coopnpcstart >= numslots) {
-					coopnpcstart = 0;
-				}
-				s32 scanned = 0;
-				s32 i = coopnpcstart;
-				while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
-					struct chrdata *chr = &g_ChrSlots[i];
-					if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
-							&& chr->prop->type == PROPTYPE_CHR) {
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+				if (g_NetRelevancy) {
+					// P2: per-client relevancy cull (see the sim loop above). Each remote
+					// co-op client gets only the NPCs relevant to its pawn; the host gets
+					// none (runs the NPCs locally). Separate per-client round-robin cursor.
+					static s32 coopcursor[NET_MAX_CLIENTS];
+					for (s32 c = 0; c < g_NetMaxClients; ++c) {
+						struct netclient *cl = &g_NetClients[c];
+						if (cl == g_NetLocalClient || cl->state < CLSTATE_GAME || !cl->peer) {
+							continue;
+						}
+						netbufStartWrite(&g_NetRelevBuf);
+						if (coopcursor[c] >= numslots) {
+							coopcursor[c] = 0;
+						}
+						s32 scanned = 0;
+						s32 i = coopcursor[c];
+						while (scanned < numslots && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
+							struct chrdata *chr = &g_ChrSlots[i];
+							if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
+									&& chr->prop->type == PROPTYPE_CHR && netChrRelevantTo(chr, cl)) {
+								const u32 b0 = g_NetRelevBuf.wp;
+								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
+								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
+							}
+							i = (i + 1) % numslots;
+							scanned++;
+						}
+						coopcursor[c] = i;
+						if (g_NetRelevBuf.wp) {
+							netSend(cl, &g_NetRelevBuf, false, NETCHAN_DEFAULT);
+						}
 					}
-					i = (i + 1) % numslots;
-					scanned++;
+				} else {
+					static s32 coopnpcstart = 0;
+					if (coopnpcstart >= numslots) {
+						coopnpcstart = 0;
+					}
+					s32 scanned = 0;
+					s32 i = coopnpcstart;
+					while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
+						struct chrdata *chr = &g_ChrSlots[i];
+						if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
+								&& chr->prop->type == PROPTYPE_CHR) {
+							const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						}
+						i = (i + 1) % numslots;
+						scanned++;
+					}
+					coopnpcstart = i; // resume here next tick
 				}
-				coopnpcstart = i; // resume here next tick
 			}
 
 			// Co-op movable OBJ position sync. An OBJ's position is otherwise only
@@ -2556,7 +2800,24 @@ void netEndFrame(void)
 			}
 #endif
 			if (g_NetNextUpdate <= g_NetTick) {
-				g_NetNextUpdate = g_NetTick + g_NetServerUpdateRate;
+				// P3 (docs/netplay-perf-review-2026.md): adaptive player-move send
+				// cadence. The gate that throttles SVC_PLAYER_MOVE sends is global,
+				// so its interval scales the per-tick player-move bandwidth directly.
+				// Keep every-tick (rate 1) for the common 2-4 combatant case — no
+				// feel change — and only stretch to every-other-tick once the match
+				// is large enough that 60Hz of full moves for everyone is wasteful;
+				// interpolation (g_NetInterpTicks, default 3 ticks) easily hides the
+				// 30Hz cadence. An operator override (/svcrate or Net.Server.Update-
+				// Frames > 1) still wins via max().
+				s32 combatants = 0;
+				for (s32 ci = 0; ci < g_NetMaxClients; ++ci) {
+					if (g_NetClients[ci].state >= CLSTATE_GAME && g_NetClients[ci].player) {
+						++combatants;
+					}
+				}
+				const u32 adaptive = (combatants > 4) ? 2u : 1u;
+				const u32 rate = (g_NetServerUpdateRate > adaptive) ? g_NetServerUpdateRate : adaptive;
+				g_NetNextUpdate = g_NetTick + rate;
 			}
 		}
 	}
@@ -3300,6 +3561,44 @@ static s32 netChrRoomsEqual(const RoomNum *ra, const RoomNum *rb)
 	return 1;
 }
 
+// P2 relevancy: true if the two -1-terminated room arrays share at least one
+// room. A chr in (or straddling) a room the client's pawn occupies is always
+// relevant regardless of distance, so a big open room never culls a visible chr.
+static s32 netRoomsShareAny(const RoomNum *a, const RoomNum *b)
+{
+	for (s32 i = 0; i < 8 && a[i] != -1; ++i) {
+		for (s32 j = 0; j < 8 && b[j] != -1; ++j) {
+			if (a[i] == b[j]) {
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+// P2 relevancy: is this chr worth sending to this client? Conservative by design
+// (the cull is default-on): always relevant when it shares a room with the
+// client's pawn (covers same-room visibility at any range), otherwise relevant
+// only within g_NetRelevancyDist (covers near-but-adjacent-room cases). A chr
+// that is BOTH far AND in unrelated rooms is "clearly elsewhere on the map" and
+// culled; interpolation + the 2Hz prop-reconcile absorb the brief re-entry pop.
+// Returns relevant (1) whenever it can't judge, so a missing pawn never culls.
+static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *cl)
+{
+	if (!cl->player || !cl->player->prop || !chr->prop) {
+		return 1;
+	}
+	const struct prop *cp = cl->player->prop;
+	const struct prop *xp = chr->prop;
+	if (netRoomsShareAny(xp->rooms, cp->rooms)) {
+		return 1;
+	}
+	const f32 dx = xp->pos.x - cp->pos.x;
+	const f32 dy = xp->pos.y - cp->pos.y;
+	const f32 dz = xp->pos.z - cp->pos.z;
+	return (dx * dx + dy * dy + dz * dz) <= (g_NetRelevancyDist * g_NetRelevancyDist);
+}
+
 void netChrInterpolate(struct chrdata *chr)
 {
 	if (!g_NetChrInterp || g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
@@ -3526,25 +3825,42 @@ void netLagCompBegin(const struct netclient *shooter)
 
 	// Rewind remote players to where they were when the shooter fired, so
 	// hit-tests reflect what the shooter saw on their screen rather than the
-	// current server-authoritative pose. The rewind amount is RTT/2 (network)
-	// plus the shooter's interpolation delay, computed in two steps below.
-	const u32 rtt_ms      = enet_peer_get_rtt(shooter->peer);
-	// Stack the shooter's INTERPOLATION delay on top of the network RTT/2: they
-	// render remote targets behind by g_NetInterpTicks + their measured interp_lag
-	// (Fix #1's snapshot-domain clock), so the pose they actually shot at was
-	// RTT/2 + interp_delay in the past. Omitting it under-rewound, so close-range
-	// and fast-strafe hits at high ping missed. interp_lag ~= one-way latency in
-	// ticks (the server's peak-hold of this client's snapshot staleness); under
-	// roughly symmetric latency it stands in for the shooter's own render-behind
-	// with no wire change (an exact shooter-sent render-tick would need a protocol
-	// bump). NET_LAGCOMP_SIZE (120 ticks / 2 s) covers the combined rewind at 350ms.
-	const u32 interp_ticks = g_NetInterpTicks + (u32)(shooter->interp_lag + 0.5f);
-	const u32 rewind_ticks = (rtt_ms / 2 + 8) / 16 + interp_ticks;
-	const u32 target_tick  = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
+	// current server-authoritative pose. Two ways to pick the rewind target tick:
+	// the exact path (default, proto 63) uses the shooter's own clock + render
+	// offset off the wire; the legacy path estimates it from RTT/2 + interp delay.
+	const u32 rtt_ms = enet_peer_get_rtt(shooter->peer);
+	u32 rewind_ticks;
+	u32 target_tick;
+
+	if (g_NetLagCompExact && shooter->inmovetick) {
+		// EXACT rewind (proto 63). The shooter stamped its firing move with its own
+		// net clock (inmovetick) and told us how far behind that clock it renders
+		// other entities (renderbehind = its g_NetInterpTicks). The server-tick it
+		// was actually displaying targets at when it fired is therefore
+		// inmovetick - renderbehind, which indexes our lagcomp ring directly (same
+		// server-tick epoch — a client's g_NetTick is baselined to the server's).
+		// This needs no latency estimate: g_NetTick - inmovetick already IS the true
+		// upstream staleness, and renderbehind is the client's real render-behind, so
+		// there's no symmetric-RTT or interp_lag-proxy assumption. Falls back to the
+		// legacy estimate below only when the shooter has no applied move yet.
+		target_tick = (shooter->inmovetick > shooter->renderbehind)
+			? (shooter->inmovetick - shooter->renderbehind) : 0;
+		rewind_ticks = (g_NetTick > target_tick) ? (g_NetTick - target_tick) : 0;
+		netDiagLogf("lagcomp", "shooter=%u mode=exact rtt=%u rb=%u rewind_ticks=%u target=%u",
+			shooter->id, rtt_ms, (u32)shooter->renderbehind, rewind_ticks, target_tick);
+	} else {
+		// LEGACY estimate (/lagcomp legacy, or no inmove yet): RTT/2 (network) plus
+		// the shooter's interpolation delay (g_NetInterpTicks + measured interp_lag).
+		// Correct only under roughly symmetric latency — the exact path above removes
+		// that assumption. NET_LAGCOMP_SIZE (120 ticks / 2 s) covers ~350ms either way.
+		const u32 interp_ticks = g_NetInterpTicks + (u32)(shooter->interp_lag + 0.5f);
+		rewind_ticks = (rtt_ms / 2 + 8) / 16 + interp_ticks;
+		target_tick = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
+		netDiagLogf("lagcomp", "shooter=%u mode=legacy rtt=%u interp=%u rewind_ticks=%u",
+			shooter->id, rtt_ms, interp_ticks, rewind_ticks);
+	}
 
 	g_LagCompLastRewindTicks = rewind_ticks;
-
-	netDiagLogf("lagcomp", "shooter=%u rtt=%u interp=%u rewind_ticks=%u", shooter->id, rtt_ms, interp_ticks, rewind_ticks);
 
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
 		struct netclient *cl = &g_NetClients[i];
@@ -4921,6 +5237,45 @@ s32 netConsoleCommand(const char *line)
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: client update interval = %u (usage: /clcrate <ticks>)", g_NetClientUpdateRate);
 		}
+	} else if (strcmp(cmd, "lagcomp") == 0) {
+		// /lagcomp [exact|legacy] — server-side hit-rewind mode. exact (default,
+		// proto 63) rewinds targets to inmovetick - renderbehind, the exact
+		// server-tick the shooter was displaying; legacy uses the old RTT/2 +
+		// interp_lag symmetric-latency estimate. Live A/B for hit registration feel.
+		if (strcmp(arg, "exact") == 0) {
+			g_NetLagCompExact = 1;
+			sysLogPrintf(LOG_CHAT, "NET: lag-comp = exact (inmovetick - renderbehind)");
+		} else if (strcmp(arg, "legacy") == 0) {
+			g_NetLagCompExact = 0;
+			sysLogPrintf(LOG_CHAT, "NET: lag-comp = legacy (RTT/2 + interp_lag)");
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: lag-comp = %s (usage: /lagcomp exact|legacy)",
+				g_NetLagCompExact ? "exact" : "legacy");
+		}
+	} else if (strcmp(cmd, "relevancy") == 0) {
+		// /relevancy [on|off|dist N] — server-side per-client sim/NPC relevancy
+		// cull (P2). on (default) sends each client only the chrs near/sharing a
+		// room with its pawn; off broadcasts every chr to everyone (legacy). dist
+		// sets the cull radius for chrs not sharing the pawn's room. Live A/B: flip
+		// off instantly if a far chr ever pops in.
+		if (strcmp(arg, "on") == 0) {
+			g_NetRelevancy = 1;
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = on (dist %.0f)", g_NetRelevancyDist);
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetRelevancy = 0;
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = off (broadcast all)");
+		} else if (strncmp(arg, "dist", 4) == 0) {
+			const char *n = arg + 4;
+			while (*n == ' ') n++;
+			if (*n) {
+				const f32 d = (f32)atof(n);
+				g_NetRelevancyDist = (d < 500.f) ? 500.f : d;
+			}
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull dist = %.0f", g_NetRelevancyDist);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = %s, dist %.0f (usage: /relevancy on|off|dist N)",
+				g_NetRelevancy ? "on" : "off", g_NetRelevancyDist);
+		}
 	} else if (strcmp(cmd, "cspframes") == 0) {
 		// /cspframes <N> — ticks the smooth CSP correction spreads error
 		// over. Smaller = snappier; larger = smoother but slower. Default 10.
@@ -5620,6 +5975,8 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");
 		sysLogPrintf(LOG_CHAT, "  /svcrate <n>     server update interval, ticks (default 1)");
 		sysLogPrintf(LOG_CHAT, "  /clcrate <n>     client update interval, ticks (default 1)");
+		sysLogPrintf(LOG_CHAT, "  /lagcomp x        hit-rewind mode: exact|legacy (default exact)");
+		sysLogPrintf(LOG_CHAT, "  /relevancy x      per-client chr cull: on|off|dist N (default on)");
 		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
 		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
 		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");
@@ -6300,6 +6657,8 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.InRate", &g_NetServerInRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.OutRate", &g_NetServerOutRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
+	configRegisterInt("Net.Server.Relevancy", &g_NetRelevancy, 0, 1);
+	configRegisterFloat("Net.Server.RelevancyDist", &g_NetRelevancyDist, 500.0f, 1000000.0f);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
 	configRegisterInt("Net.Server.HitValidate", &g_NetHitValidate, 0, 2);
 

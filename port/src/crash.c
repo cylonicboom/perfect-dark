@@ -326,6 +326,17 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 	DWORD msglen = 0;
 
 	CRASH_MSG("EXCEPTION: 0x%08lx\n", exinfo->ExceptionRecord->ExceptionCode);
+	// For access violations the exception record carries what faulted: [0] is
+	// 0/1/8 for read/write/execute, [1] is the address the instruction touched.
+	// This distinguishes a NULL-deref (small fault address = offsetof the field)
+	// from a garbage/dangling pointer at the same PC.
+	if (exinfo->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION
+			&& exinfo->ExceptionRecord->NumberParameters >= 2) {
+		const ULONG_PTR favmode = exinfo->ExceptionRecord->ExceptionInformation[0];
+		CRASH_MSG("FAULT: %s at %p\n",
+				favmode == 0 ? "read" : (favmode == 1 ? "write" : "execute"),
+				(void *)exinfo->ExceptionRecord->ExceptionInformation[1]);
+	}
 	CRASH_MSG("PC: %p", exinfo->ExceptionRecord->ExceptionAddress);
 	const BOOL pcHasLine = SymGetLineFromAddr64(process, (uintptr_t)exinfo->ExceptionRecord->ExceptionAddress, &disp, &line);
 	if (pcHasLine) {
@@ -335,6 +346,30 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 	const void *mainModBase = crashGetModuleBase(crashInit);
 	CRASH_MSG("\nMODULE: [%p]\n", pcModBase);
 	CRASH_MSG("MAIN MODULE: [%p]\n", mainModBase);
+
+	// Register dump: which register held the bad pointer narrows a faulting
+	// dereference to the exact expression when several share one source line.
+#ifdef PLATFORM_X86_64
+	CRASH_MSG("\nREGISTERS:\n");
+	CRASH_MSG("RAX=%016llx RBX=%016llx RCX=%016llx RDX=%016llx\n",
+			(unsigned long long)context.Rax, (unsigned long long)context.Rbx,
+			(unsigned long long)context.Rcx, (unsigned long long)context.Rdx);
+	CRASH_MSG("RSI=%016llx RDI=%016llx RBP=%016llx RSP=%016llx\n",
+			(unsigned long long)context.Rsi, (unsigned long long)context.Rdi,
+			(unsigned long long)context.Rbp, (unsigned long long)context.Rsp);
+	CRASH_MSG("R8 =%016llx R9 =%016llx R10=%016llx R11=%016llx\n",
+			(unsigned long long)context.R8, (unsigned long long)context.R9,
+			(unsigned long long)context.R10, (unsigned long long)context.R11);
+	CRASH_MSG("R12=%016llx R13=%016llx R14=%016llx R15=%016llx\n",
+			(unsigned long long)context.R12, (unsigned long long)context.R13,
+			(unsigned long long)context.R14, (unsigned long long)context.R15);
+#elif defined(PLATFORM_X86)
+	CRASH_MSG("\nREGISTERS:\n");
+	CRASH_MSG("EAX=%08lx EBX=%08lx ECX=%08lx EDX=%08lx\n",
+			context.Eax, context.Ebx, context.Ecx, context.Edx);
+	CRASH_MSG("ESI=%08lx EDI=%08lx EBP=%08lx ESP=%08lx\n",
+			context.Esi, context.Edi, context.Ebp, context.Esp);
+#endif
 	// If DbgHelp didn't give us a file:line and the PC is in our own exe, try
 	// addr2line for the DWARF symbols MinGW emits.
 	if (!pcHasLine && pcModBase == mainModBase && pcModBase) {

@@ -1719,12 +1719,42 @@ bool currentPlayerInteract(bool eyespy)
 	struct prop *prop;
 	bool op = TICKOP_NONE;
 
+#ifndef PLATFORM_N64
+	// On the host, a remote client's pawn carries the INTERPOLATED (lagged)
+	// position, so propFindForInteract -> doorTestForInteract tests the door against
+	// where the client WAS, not where it pressed Use. If the client moved past the
+	// door before its UCMD_ACTIVATE was processed, the host finds no door and never
+	// opens it -- while the client already predicted it open (the "sometimes the
+	// host's door isn't open" mismatch). Search + activate against the client's
+	// latest reported position instead (the lag-comp / pickup pattern), then restore.
+	struct coord interactsavedpos;
+	bool interactposswapped = false;
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->client && g_Vars.currentplayer->prop) {
+		struct netclient *cl = g_Vars.currentplayer->client;
+		const struct netplayermove *m = &cl->inmove[cl->inmove_head];
+		if (m->tick) {
+			interactsavedpos = g_Vars.currentplayer->prop->pos;
+			g_Vars.currentplayer->prop->pos = m->pos;
+			interactposswapped = true;
+		}
+	}
+#endif
+
 	prop = propFindForInteract(eyespy);
 
 	if (prop) {
 #ifndef PLATFORM_N64
-		// if we aren't the authority, don't do anything
-		if (g_NetMode == NETMODE_CLIENT) {
+		// Client door prediction: a manually-activated door opens locally the moment
+		// the local player interacts with it, instead of waiting a full RTT for the
+		// host's SVC_PROP_DOOR. This whole handler was gated off on clients, so a
+		// manual door took ~RTT and several button presses at high ping. The client
+		// still sends UCMD_ACTIVATE, so the host runs the same interact
+		// authoritatively and broadcasts SVC_PROP_DOOR, which reconciles on the
+		// client (its stale OPEN keyframe is skipped; SVC_PROP_USE skips doors). Only
+		// unlocked doors actually toggle (propdoorInteract checks doorIsUnlocked).
+		// All OTHER interactables (weapons / obj / switches) stay host-authoritative.
+		if (g_NetMode == NETMODE_CLIENT && prop->type != PROPTYPE_DOOR) {
 			return false;
 		}
 #endif
@@ -1735,7 +1765,23 @@ bool currentPlayerInteract(bool eyespy)
 			op = propobjInteract(prop);
 			break;
 		case PROPTYPE_DOOR:
+#ifndef PLATFORM_N64
+			if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+				// Remote clients drive their own doors via CLC_DOOR_ACTIVATE (exact
+				// syncid), so the host doesn't re-derive the door from a lagged
+				// position + a momentary UCMD_ACTIVATE. Skip here to avoid a double
+				// toggle — the door comes through netmsgClcDoorActivateRead instead.
+				break;
+			}
+#endif
 			op = propdoorInteract(prop);
+#ifndef PLATFORM_N64
+			if (g_NetMode == NETMODE_CLIENT) {
+				// Predicted the door locally; tell the host the EXACT door so it opens
+				// the same one reliably, with no position/timing guessing.
+				netmsgClcDoorActivateWrite(&g_NetMsgRel, prop);
+			}
+#endif
 			break;
 		case PROPTYPE_CHR:
 		case PROPTYPE_EYESPY:
@@ -1753,9 +1799,19 @@ bool currentPlayerInteract(bool eyespy)
 		}
 #endif
 
+#ifndef PLATFORM_N64
+		if (interactposswapped) {
+			g_Vars.currentplayer->prop->pos = interactsavedpos;
+		}
+#endif
 		return false;
 	}
 
+#ifndef PLATFORM_N64
+	if (interactposswapped) {
+		g_Vars.currentplayer->prop->pos = interactsavedpos;
+	}
+#endif
 	return true;
 }
 
@@ -2629,6 +2685,31 @@ void propsTestForPickup(void)
 			&& !g_PlayerInvincible
 			&& PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)
 			) {
+#ifndef PLATFORM_N64
+		// On the host, a remote client's pawn carries the INTERPOLATED (render-
+		// smoothed) position, which trails the client's actual position by the
+		// interp delay (tens of units at any ping). objTestForPickup tests box
+		// overlap against that lagged pos, so a client walking over a box is tested
+		// where it WAS — pickups intermittently miss (a glancing pass never brings
+		// the lagged point inside the pickup radius). Combat Sim clients don't
+		// request pickups themselves (objTestForPickup bails for NETMODE_CLIENT), so
+		// the host's scan IS the pickup and must use the true client position. Swap
+		// in the client's latest reported pos for the scan (the lag-comp pattern),
+		// then restore below. Rooms still come from prop->rooms + neighbours, which a
+		// tens-of-units delta stays within.
+		struct coord pickupsavedpos;
+		bool pickupposswapped = false;
+		if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+				&& g_Vars.currentplayer->client && g_Vars.currentplayer->prop) {
+			struct netclient *cl = g_Vars.currentplayer->client;
+			const struct netplayermove *m = &cl->inmove[cl->inmove_head];
+			if (m->tick) {
+				pickupsavedpos = g_Vars.currentplayer->prop->pos;
+				g_Vars.currentplayer->prop->pos = m->pos;
+				pickupposswapped = true;
+			}
+		}
+#endif
 		roomsCopy(g_Vars.currentplayer->prop->rooms, allrooms);
 
 		for (i = 0; g_Vars.currentplayer->prop->rooms[i] != -1; i++) {
@@ -2670,6 +2751,12 @@ void propsTestForPickup(void)
 
 			propnumptr++;
 		}
+
+#ifndef PLATFORM_N64
+		if (pickupposswapped) {
+			g_Vars.currentplayer->prop->pos = pickupsavedpos;
+		}
+#endif
 	}
 }
 

@@ -1,6 +1,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
+#include <math.h>
 #include "net/netenet.h"
 #include "types.h"
 #include "data.h"
@@ -161,6 +162,7 @@ static inline u32 netbufWritePlayerMove(struct netbuf *buf, const struct netplay
 	netbufWriteCoord(buf, &in->pos);
 	netbufWriteS16(buf, in->animnum);
 	netbufWriteS16(buf, in->animframe);
+	netbufWriteU8(buf, in->renderbehind);
 	if (in->ucmd & UCMD_AIMMODE) {
 		netbufWriteF32(buf, in->zoomfov);
 	}
@@ -183,6 +185,7 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 	netbufReadCoord(buf, &in->pos);
 	in->animnum = netbufReadS16(buf);
 	in->animframe = netbufReadS16(buf);
+	in->renderbehind = netbufReadU8(buf);
 	if (in->ucmd & UCMD_AIMMODE) {
 		in->zoomfov = netbufReadF32(buf);
 	} else {
@@ -1515,6 +1518,44 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgClcDoorActivateWrite(struct netbuf *dst, struct prop *prop)
+{
+	netbufWriteU8(dst, CLC_DOOR_ACTIVATE);
+	netbufWriteU16(dst, prop->syncid);
+	return dst->error;
+}
+
+u32 netmsgClcDoorActivateRead(struct netbuf *src, struct netclient *srccl)
+{
+	// Client door prediction (high-ping doors): the client opened a door locally and
+	// tells the host the EXACT door it used (by syncid), so the host doesn't have to
+	// re-derive which door from a lagged/ambiguous position plus a momentary
+	// UCMD_ACTIVATE flag — the reason the position-swap and activate-scan fixes were
+	// only "sometimes" reliable. Run propdoorInteract as the requesting client: it
+	// checks doorIsUnlocked (a client still can't open a locked door without the key),
+	// picks the swing direction, toggles the door, and broadcasts SVC_PROP_DOOR to all
+	// (doorSetMode on the server). The requesting client already predicted it; its
+	// reconcile skips the echoed keyframe.
+	const u16 syncid = netbufReadU16(src);
+	if (src->error || g_NetMode != NETMODE_SERVER || srccl->state < CLSTATE_GAME
+			|| srccl->is_spectator || !srccl->player || !srccl->player->prop
+			|| srccl->playernum >= MAX_PLAYERS) {
+		return src->error;
+	}
+
+	struct prop *prop = netSyncIdToProp(syncid);
+	if (!prop || !prop->door || prop->type != PROPTYPE_DOOR) {
+		return src->error;
+	}
+
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	setCurrentPlayerNum(srccl->playernum);
+	propdoorInteract(prop);
+	setCurrentPlayerNum(prevplayernum);
+
+	return src->error;
+}
+
 u32 netmsgClcBotCmdRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 botindex = netbufReadU8(src);
@@ -1901,6 +1942,47 @@ u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+// --- Pose-field quantization (proto 62, docs/netplay-perf-review-2026.md P1) ---
+// The chr-state block in SVC_PROP_MOVE is broadcast for EVERY networked chr EVERY
+// server tick, so its size dominates netplay bandwidth. The pose ANGLE fields
+// (body yaw, the four aim joints, the aibot angle offset) and the anim playback
+// speed don't need 32-bit precision — an s16 fixed-point step is far finer than
+// anything rendering or interpolation resolves. Sending these seven fields as s16
+// instead of f32 trims 14 bytes per chr per tick. Position stays a full coord
+// (precision feeds hit/visual) and chr->damage stays f32 (wide, sometimes-negative
+// range). Lossy but the step is ~1e-4 rad / ~5e-4 speed-units.
+#define NET_AIMQ_RANGE   3.14159265358979f // aim-joint clamp (radians); a half-turn
+#define NET_SPEEDQ_RANGE 16.0f             // anim-speed clamp; locomotion sits 0..~4
+
+// Periodic facing angle (radians) -> s16 over [-pi, pi). Wrap, not clamp: a yaw is
+// modular so reducing it is lossless. Non-finite -> 0. Reuses the file's existing
+// round+clamp helper netQuantRound(v, lo, hi).
+static void netbufWriteAngleQ(struct netbuf *dst, f32 rad)
+{
+	const f32 PI = NET_AIMQ_RANGE, TWO_PI = 6.28318530717959f;
+	f32 a = isfinite(rad) ? fmodf(rad, TWO_PI) : 0.f;
+	if (a >= PI) a -= TWO_PI; else if (a < -PI) a += TWO_PI;
+	netbufWriteS16(dst, (s16)netQuantRound(a * (32768.0f / PI), -32768, 32767));
+}
+
+static f32 netbufReadAngleQ(struct netbuf *src)
+{
+	return (f32)netbufReadS16(src) * (NET_AIMQ_RANGE / 32768.0f);
+}
+
+// Bounded, NON-periodic value (aim joint, anim speed) -> s16 over [-range, range].
+// Clamp (these are not modular). Non-finite -> 0.
+static void netbufWriteBoundedQ(struct netbuf *dst, f32 v, f32 range)
+{
+	if (!isfinite(v)) v = 0.f;
+	netbufWriteS16(dst, (s16)netQuantRound(v * (32767.0f / range), -32767, 32767));
+}
+
+static f32 netbufReadBoundedQ(struct netbuf *src, f32 range)
+{
+	return (f32)netbufReadS16(src) * (range / 32767.0f);
+}
+
 u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *initrot)
 {
 	// prop->obj, prop->chr, prop->door etc. all alias the same union slot, so
@@ -2004,8 +2086,9 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		// the target — the "stationary sim faces ~90 deg off while firing" bug. The
 		// client applies this rendered yaw via modelSetChrRotY and adds the synced
 		// angleoffset at the waist, reproducing the server's exact pose. Fall back to
-		// chrGetRotY only if the chr somehow has no model.
-		netbufWriteF32(dst, chr->model ? modelGetChrRotY(chr->model) : chrGetRotY(chr));
+		// chrGetRotY only if the chr somehow has no model. Quantized (periodic
+		// facing angle) — proto 62.
+		netbufWriteAngleQ(dst, chr->model ? modelGetChrRotY(chr->model) : chrGetRotY(chr));
 		// ANIMATION: animnum, current frame index, and playback speed. anim->speed
 		// is set on the server by playerChooseThirdPersonAnimation (called via
 		// botApplyMovement) and scales the cycle to match the chr's actual
@@ -2018,7 +2101,7 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		if (chr->model && chr->model->anim) {
 			netbufWriteS16(dst, chr->model->anim->animnum);
 			netbufWriteS16(dst, chr->model->anim->framea);
-			netbufWriteF32(dst, chr->model->anim->speed);
+			netbufWriteBoundedQ(dst, chr->model->anim->speed, NET_SPEEDQ_RANGE); // quantized — proto 62
 			// FLIP was tried here and reverted: the goal was to fix sims
 			// appearing left-handed when the server played a flipped variant
 			// (e.g. left-strafe), but syncing the bit broke Skedar and other
@@ -2038,7 +2121,7 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		} else {
 			netbufWriteS16(dst, 0);
 			netbufWriteS16(dst, 0);
-			netbufWriteF32(dst, 1.0f);
+			netbufWriteBoundedQ(dst, 1.0f, NET_SPEEDQ_RANGE); // quantized — proto 62
 		}
 		// HELD WEAPONS: per-hand weaponnum (or -1 if unarmed). The client doesn't
 		// run bot AI (which controls weapon swaps via chrGiveWeapon when
@@ -2063,11 +2146,12 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		// arms pointed straight forward regardless of target/aim direction, making
 		// the held weapon not align with the chr's actual aim. angleoffset is
 		// aibot-specific (AI angle offset from target); non-aibots send 0.
-		netbufWriteF32(dst, chr->aimupback);
-		netbufWriteF32(dst, chr->aimsideback);
-		netbufWriteF32(dst, chr->aimuplshoulder);
-		netbufWriteF32(dst, chr->aimuprshoulder);
-		netbufWriteF32(dst, chr->aibot ? chr->aibot->angleoffset : 0.f);
+		// Aim joints: bounded-clamped s16 (proto 62). angleoffset: periodic angle s16.
+		netbufWriteBoundedQ(dst, chr->aimupback, NET_AIMQ_RANGE);
+		netbufWriteBoundedQ(dst, chr->aimsideback, NET_AIMQ_RANGE);
+		netbufWriteBoundedQ(dst, chr->aimuplshoulder, NET_AIMQ_RANGE);
+		netbufWriteBoundedQ(dst, chr->aimuprshoulder, NET_AIMQ_RANGE);
+		netbufWriteAngleQ(dst, chr->aibot ? chr->aibot->angleoffset : 0.f);
 		// GUNFIRE VISIBILITY (continuous, robust). The muzzle flash was otherwise
 		// driven ONLY by edge-triggered SVC_CHR_FIRE on/off events. A missed
 		// off-edge leaves the flash stuck on — exactly the reported "sim muzzle
@@ -2312,20 +2396,20 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// actiontype == ACT_DEAD (prop.c collision gate). The client forces
 		// ACT_STAND, so without this a co-op NPC corpse keeps blocking the player.
 		const s8 wireactiontype = netbufReadS8(src);
-		const f32 yrot = netbufReadF32(src);
+		const f32 yrot = netbufReadAngleQ(src); // quantized — proto 62
 		const s16 animnum = netbufReadS16(src);
 		const s16 animframe = netbufReadS16(src);
-		const f32 animspeed = netbufReadF32(src);
+		const f32 animspeed = netbufReadBoundedQ(src, NET_SPEEDQ_RANGE); // quantized — proto 62
 		// flip byte was removed — see Write side. The client keeps whatever
 		// flip the local chrTick happened to set; better than the maps
 		// breaking when we tried to sync it.
 		const s8 weapon_r = netbufReadS8(src);
 		const s8 weapon_l = netbufReadS8(src);
-		const f32 aimupback = netbufReadF32(src);
-		const f32 aimsideback = netbufReadF32(src);
-		const f32 aimuplshoulder = netbufReadF32(src);
-		const f32 aimuprshoulder = netbufReadF32(src);
-		const f32 angleoffset = netbufReadF32(src);
+		const f32 aimupback = netbufReadBoundedQ(src, NET_AIMQ_RANGE); // quantized — proto 62
+		const f32 aimsideback = netbufReadBoundedQ(src, NET_AIMQ_RANGE);
+		const f32 aimuplshoulder = netbufReadBoundedQ(src, NET_AIMQ_RANGE);
+		const f32 aimuprshoulder = netbufReadBoundedQ(src, NET_AIMQ_RANGE);
+		const f32 angleoffset = netbufReadAngleQ(src); // quantized — proto 62
 		// Per-hand gunfire-visible state (bit0 = right, bit1 = left). Read in wire
 		// order here with the other fields; applied after the weapons-held sync
 		// below (the weapon props must exist before we can toggle their flash).
@@ -3199,6 +3283,25 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	const s32 prevplayernum = g_Vars.currentplayernum;
 	if (actcl) {
 		setCurrentPlayerNum(actcl->playernum);
+	}
+
+	// Client door-prediction reconcile: the local player may have already predicted
+	// this door open (doorsCheckAutomatic runs locally now), so the host's keyframe
+	// is ~RTT stale. Skip a confirming OPEN keyframe that would only rewind frac and
+	// replay doorStartOpen's sound on a door we've already driven at least this far
+	// open. Genuine changes (closing, or we're actually behind the host) still apply
+	// because then frac < the wire value or the modes differ. Keep flags/hidden synced.
+	if (g_NetMode == NETMODE_CLIENT
+			&& (doormode == DOORMODE_OPENING || doormode == DOORMODE_WAITING)
+			&& (prop->door->mode == DOORMODE_OPENING
+				|| (prop->door->mode == DOORMODE_IDLE && prop->door->frac > 0.f))
+			&& prop->door->frac >= frac) {
+		prop->door->base.hidden = hidden;
+		prop->door->base.flags = flags;
+		if (actcl) {
+			setCurrentPlayerNum(prevplayernum);
+		}
+		return src->error;
 	}
 
 	doorSetMode(prop->door, doormode);

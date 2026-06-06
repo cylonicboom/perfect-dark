@@ -5,7 +5,10 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 61 // 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
+#define NET_PROTOCOL_VER 64 // 64: CLC_DOOR_ACTIVATE — client predicts a door and sends the host the exact door syncid, so high-ping door activation no longer depends on the host re-deriving the door from a lagged position + a momentary UCMD_ACTIVATE. See docs/netplay-perf-review-2026.md
+// 63: netplayermove carries renderbehind (u8) — the client's g_NetInterpTicks render offset, so server lag-comp rewinds targets to the EXACT server-tick the shooter was displaying (inmovetick - renderbehind) instead of an RTT/2 + interp_lag symmetric-latency estimate. See docs/netplay-perf-review-2026.md lag-comp item
+// 62: SVC_PROP_MOVE chr-state pose bandwidth cut — body yaw, the four aim joints, angleoffset and anim speed now ride as s16 (quantized) instead of f32 (-14 bytes/chr/tick; pos + chr->damage stay full-precision). See docs/netplay-perf-review-2026.md P1
+// 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
 // 60: co-op SVC_STAGE_START manifest carries a spectator byte — mid-mission JIP joiners ride flagged spectator (sentinel playernum) instead of colliding with the host's slot 0
 // 59: CLC_STAGE_READY (client world built) + JIP catch-up snapshot (replayed dynamic prop spawns, door/lift state to mid-match joiners)
 // 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients
@@ -345,6 +348,7 @@ struct netplayermove {
 	struct coord pos; // player position at g_NetTick == tick
 	s16 animnum; // chr->model->anim->animnum at write time, 0 if unknown
 	s16 animframe; // integer frame index of the active animation (chr->model->anim->framea)
+	u8 renderbehind; // client's g_NetInterpTicks at write time (server lag-comp render offset, proto 63). Appended after the anim tail so it's outside netClientNeedMove's memcmp (it's ~constant, must not force sends)
 };
 
 struct netclient {
@@ -397,6 +401,7 @@ struct netclient {
 	struct netplayermove inmove[NET_SNAPSHOT_COUNT];
 	u32 inmove_head; // index of newest entry in inmove[]
 	u32 inmovetick; // last inmove tick which was applied to the player
+	u8 renderbehind; // server-side: the firing client's render offset (g_NetInterpTicks) from its last applied inmove; lag-comp rewinds to inmovetick - renderbehind (proto 63)
 	u32 outmoveack; // last acked outmove tick
 	u32 forcetick; // tick on which the client's position was forced, or 0 if not forcing
 	u32 lerpticks; // how many ticks we've been lerping the position
@@ -486,6 +491,9 @@ extern u32 g_NetRngLatch;
 extern u64 g_NetMusicRngSeed;
 
 extern u32 g_NetInterpTicks;
+extern s32 g_NetLagCompExact; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. Live A/B via /lagcomp
+extern s32 g_NetRelevancy; // P2: 1 = per-client relevancy-culled sim/NPC chr-state (default); 0 = identical broadcast to all. /relevancy
+extern f32 g_NetRelevancyDist; // cull distance for a sim not sharing the client pawn's room (world units). /relevancy dist N
 extern u32 g_NetServerPort;
 // Actual bound listen port of the running server (set in netStartServer). The
 // master heartbeat advertises this so the tracker pairs it with the source IP.

@@ -495,7 +495,7 @@ extern u32 g_NetInterpTicks;
 extern s32 g_NetLagCompExact; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. Live A/B via /lagcomp
 extern s32 g_NetRelevancy; // P2: 1 = per-client relevancy-culled sim/NPC chr-state (default); 0 = identical broadcast to all. /relevancy
 extern f32 g_NetRelevancyDist; // cull distance for a sim not sharing the client pawn's room (world units). /relevancy dist N
-extern s32 g_NetPosQuant; // P2: 1 = quantize SVC_PROP_MOVE positions to s16 (proto 65, ~6B vs 12B); 0 = full coord (default). /posquant
+extern s32 g_NetPosQuant; // P2: 1 = quantize SVC_PROP_MOVE positions to s16 (proto 65, ~6B vs 12B, default); 0 = full coord. /posquant
 extern f32 g_NetPosQuantScale; // world units per s16 step (default 1.0 = ~1-unit precision, +/-32767 range). /posquant scale N
 extern u32 g_NetServerPort;
 // Actual bound listen port of the running server (set in netStartServer). The

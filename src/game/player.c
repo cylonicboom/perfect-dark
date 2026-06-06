@@ -743,6 +743,16 @@ void playerStartNewLife(void)
 	// set for the wrong spawn — which makes the player fall through the floor.
 	if (g_NetMode == NETMODE_SERVER) {
 		g_Vars.currentplayer->ucmd |= UCMD_FL_FORCEPOS | UCMD_FL_FORCEANGLE | UCMD_FL_FORCEGROUND;
+		// Latch forcetick directly for a remote client's respawn, exactly like the
+		// stage-load force (lv.c) and the co-op buddy spawn (player.c:1968 below).
+		// Without it, the bondwalk.c one-shot clear wipes the bare FORCEMASK while
+		// forcetick == 0 (bwalkUpdateRemote runs before netClientRecordMove's
+		// auto-latch could fire), so no force correction is sent and the server
+		// adopts the client's stale DEATH position instead of this fresh spawn —
+		// the "respawn on death spot" bug, which also fails host-side pickup tests.
+		if (g_Vars.currentplayer->isremote && g_Vars.currentplayer->client) {
+			g_Vars.currentplayer->client->forcetick = g_NetTick;
+		}
 	}
 #endif
 }

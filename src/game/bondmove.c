@@ -245,8 +245,28 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 	}
 
 	if (g_NetMode == NETMODE_SERVER) {
-		if (!handled && (inmove->ucmd & UCMD_ACTIVATE)) {
-			pl->bondactivateorreload |= JO_ACTION_ACTIVATE;
+		// UCMD_ACTIVATE is a one-tick press, but several moves can arrive in a single
+		// frame at high ping (the per-frame event drain makes bursts common) while
+		// only inmove[head] is read for input below -- an activate on a skipped
+		// (non-head) move was silently lost, so the host never opened the door the
+		// client already predicted ("works sometimes"). Scan every move newer than the
+		// last-processed tick so the press is caught; each move falls in exactly one
+		// tick's unprocessed window, so it fires once (no door double-toggle). The
+		// interact position (inmove[head] via the swap in currentPlayerInteract) stays
+		// within the 200u door-interact range even if head overshot the press a little.
+		if (!handled) {
+			s32 k;
+			for (k = 0; k < NET_SNAPSHOT_COUNT; k++) {
+				const struct netplayermove *m =
+						&pl->client->inmove[(head + NET_SNAPSHOT_COUNT - k) % NET_SNAPSHOT_COUNT];
+				if (m->tick <= pl->client->inmovetick) {
+					break;
+				}
+				if (m->ucmd & UCMD_ACTIVATE) {
+					pl->bondactivateorreload |= JO_ACTION_ACTIVATE;
+					break;
+				}
+			}
 		}
 
 		if (g_Vars.bondvisible && (bgunIsFiring(HAND_RIGHT) || bgunIsFiring(HAND_LEFT))) {

@@ -2629,6 +2629,31 @@ void propsTestForPickup(void)
 			&& !g_PlayerInvincible
 			&& PLAYER_IS_NOT_ANTI(g_Vars.currentplayer)
 			) {
+#ifndef PLATFORM_N64
+		// On the host, a remote client's pawn carries the INTERPOLATED (render-
+		// smoothed) position, which trails the client's actual position by the
+		// interp delay (tens of units at any ping). objTestForPickup tests box
+		// overlap against that lagged pos, so a client walking over a box is tested
+		// where it WAS — pickups intermittently miss (a glancing pass never brings
+		// the lagged point inside the pickup radius). Combat Sim clients don't
+		// request pickups themselves (objTestForPickup bails for NETMODE_CLIENT), so
+		// the host's scan IS the pickup and must use the true client position. Swap
+		// in the client's latest reported pos for the scan (the lag-comp pattern),
+		// then restore below. Rooms still come from prop->rooms + neighbours, which a
+		// tens-of-units delta stays within.
+		struct coord pickupsavedpos;
+		bool pickupposswapped = false;
+		if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+				&& g_Vars.currentplayer->client && g_Vars.currentplayer->prop) {
+			struct netclient *cl = g_Vars.currentplayer->client;
+			const struct netplayermove *m = &cl->inmove[cl->inmove_head];
+			if (m->tick) {
+				pickupsavedpos = g_Vars.currentplayer->prop->pos;
+				g_Vars.currentplayer->prop->pos = m->pos;
+				pickupposswapped = true;
+			}
+		}
+#endif
 		roomsCopy(g_Vars.currentplayer->prop->rooms, allrooms);
 
 		for (i = 0; g_Vars.currentplayer->prop->rooms[i] != -1; i++) {
@@ -2670,6 +2695,12 @@ void propsTestForPickup(void)
 
 			propnumptr++;
 		}
+
+#ifndef PLATFORM_N64
+		if (pickupposswapped) {
+			g_Vars.currentplayer->prop->pos = pickupsavedpos;
+		}
+#endif
 	}
 }
 

@@ -1032,10 +1032,10 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		}
 		g_NetLocalClient->state = CLSTATE_GAME;
 		g_MissionConfig.stageindex = 0; // TODO: sync index for briefing/HUD
-		// numcombatants is the manifest count MINUS spectators (mid-mission
-		// JIP joiners), so every machine allocates the same N co-op player
-		// slots as the host did at mission start — a joiner counting itself
-		// would shift the allocation and desync player binding.
+		// numcombatants (manifest count MINUS spectators) sizes the shared
+		// F3 lives pool. The SLOT allocation is the fixed NET_COOP_MAX_SLOTS
+		// inside netCoopEnterStage on every machine — slots beyond the
+		// seated players park dormant for drop-in claims.
 		netCoopEnterStage((s32)stagenum, (s32)difficulty, (s32)numcombatants);
 		return src->error;
 	}
@@ -1590,6 +1590,14 @@ u32 netmsgClcStageReadyRead(struct netbuf *src, struct netclient *srccl)
 	if (srccl->jip_pending_unspectate && !srccl->jip_snapshot_sent) {
 		srccl->jip_snapshot_sent = 1;
 		netServerSendJipSnapshot(srccl);
+
+		// Co-op drop-in: the joiner's world is loaded (same 4-slot layout as
+		// ours), so seat it on a dormant/reserved slot now — after the
+		// snapshot, so the claim + respawn force-snap land on a caught-up
+		// world. Combat Sim keeps the round-boundary seating instead.
+		if (g_Vars.coopplayernum >= 0) {
+			netServerCoopClaim(srccl);
+		}
 	}
 
 	return 0;
@@ -3338,6 +3346,16 @@ u32 netmsgSvcPropReconcileWrite(struct netbuf *dst)
 				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
 			netbufWriteU16(dst, (u16)prop->syncid);
 		}
+		// Co-op (proto 61): also list chr syncids, so a drop-in joiner's
+		// fresh-loaded NPCs that the host killed AND freed before the join
+		// (their SVC_PROP_FREE predates the connection) get reaped instead
+		// of standing at their spawn points forever. Combat Sim is excluded
+		// — sims/players are never freed mid-match, so the list would only
+		// grow for nothing.
+		else if (g_Vars.coopplayernum >= 0 && prop->syncid
+				&& prop->type == PROPTYPE_CHR && prop->chr) {
+			netbufWriteU16(dst, (u16)prop->syncid);
+		}
 	}
 	netbufWriteU16(dst, 0); // terminator (syncid 0 is never valid)
 	return dst->error;
@@ -3363,13 +3381,23 @@ u32 netmsgSvcPropReconcileRead(struct netbuf *src, struct netclient *srccl)
 	// Remove ghosts: weapon/obj synced props we hold that the host doesn't.
 	for (s32 i = 0; i < g_Vars.maxprops; i++) {
 		struct prop *prop = &g_Vars.props[i];
-		if (prop->syncid && prop->obj
-				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
-				&& prop->syncid < NET_RECONCILE_MAXSYNCID
-				&& (hostset[prop->syncid >> 3] & (1 << (prop->syncid & 7))) == 0) {
+		if (!prop->syncid || prop->syncid >= NET_RECONCILE_MAXSYNCID
+				|| (hostset[prop->syncid >> 3] & (1 << (prop->syncid & 7))) != 0) {
+			continue;
+		}
+		if (prop->obj
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
 			// Use the engine's full teardown (objDetach/embedment/model/rooms/free),
 			// same as SVC_PROP_FREE — a ghost may be a child of a chr (stuck mine).
 			objFreePermanently(prop->obj, true);
+		} else if (g_Vars.coopplayernum >= 0 && prop->type == PROPTYPE_CHR) {
+			// Co-op chr ghost (proto 61): an NPC the host freed before we
+			// joined. Reap through the engine's own delete flag, exactly like
+			// the SVC_PROP_FREE chr path — chrRemove dereferences chr->model,
+			// so a not-yet-loaded shell is left for the next pass.
+			if (prop->chr && prop->active && prop->chr->model) {
+				prop->chr->hidden |= CHRHFLAG_DELETING;
+			}
 		}
 	}
 
@@ -3408,6 +3436,67 @@ u32 netmsgSvcTimescaleRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	return src->error;
+}
+
+// Co-op drop-in seat/release broadcast (proto 61). Seat: clientid claims
+// player slot `playernum` — every machine binds the netclient to the
+// pre-allocated pawn and wakes it (netCoopSeatClient); the host's
+// playerStartNewLife + force-snap deliver the spawn. Release (clientid ==
+// NET_NULL_CLIENT): the slot parks dormant again, reserved server-side under
+// the leaver's name for reclaim. This message is also how OTHER clients learn
+// a mid-mission joiner exists at all (no lobby-state broadcasts in-game).
+u32 netmsgSvcCoopClaimWrite(struct netbuf *dst, u8 clientid, u8 playernum, const char *name, u8 bodybit)
+{
+	netbufWriteU8(dst, SVC_COOP_CLAIM);
+	netbufWriteU8(dst, clientid);
+	netbufWriteU8(dst, playernum);
+	netbufWriteStr(dst, name ? name : "");
+	netbufWriteU8(dst, bodybit);
+	return dst->error;
+}
+
+u32 netmsgSvcCoopClaimRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 clientid = netbufReadU8(src);
+	const u8 playernum = netbufReadU8(src);
+	char *name = netbufReadStr(src);
+	const u8 bodybit = netbufReadU8(src);
+
+	if (src->error || !name) {
+		return 1;
+	}
+
+	if (g_NetMode != NETMODE_CLIENT || g_Vars.coopplayernum < 0) {
+		return 0; // server is authoritative; ignore in the wrong mode
+	}
+
+	if (playernum >= PLAYERCOUNT()) {
+		sysLogPrintf(LOG_WARNING, "NET: SVC_COOP_CLAIM for bad slot %u", playernum);
+		return 0;
+	}
+
+	if (clientid == NET_NULL_CLIENT) {
+		// Release: the leaver's pawn parks dormant (held for reclaim).
+		netCoopDormantSlot(playernum);
+		sysLogPrintf(LOG_CHAT, "%s left the mission (slot %u held for rejoin)", name, playernum);
+		return 0;
+	}
+
+	struct netclient *ncl = netResolveWireClient(clientid);
+	if (!ncl) {
+		return 0;
+	}
+
+	// A claim can introduce a client this machine has never seen (it joined
+	// mid-mission); the id assignment + GAME promotion happen here.
+	ncl->id = clientid;
+	netCoopSeatClient(ncl, playernum, name, bodybit);
+
+	if (ncl == g_NetLocalClient) {
+		sysLogPrintf(LOG_CHAT, "Seated in the mission - good luck");
+	}
+
+	return 0;
 }
 
 u32 netmsgSvcChrDamageWrite(struct netbuf *dst, struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset,

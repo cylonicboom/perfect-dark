@@ -1275,16 +1275,16 @@ Gfx *lvRender(Gfx *gdl)
 				// the next stage) — those crash the per-player gameplay below.
 				// JIP spectator variant: a mid-match joiner has NO own pawn
 				// (player == NULL until the round boundary), so there's no
-				// "own viewport iteration" — substitute on the LAST render
-				// order instead, whose viewport paints on top. Every other
-				// slot still renders beneath it, keeping the per-iteration
-				// once-per-frame bookkeeping (propsTickPlayer etc.) intact.
+				// "own viewport iteration" — substitute on render order 0
+				// instead: in net mode every order EXCEPT 0 has its display
+				// list rolled back after the body (the `gdl = savedgdl`
+				// further down), so order 0 is the only one that displays.
 				const bool jipspec = g_NetMode == NETMODE_CLIENT && g_NetLocalClient
 						&& !g_NetLocalClient->player && g_NetLocalClient->is_spectator;
 				if (g_NetMode && g_NetSpectateChr && g_NetLocalClient
 						&& ((g_NetLocalClient->player
 								&& g_Vars.currentplayernum == g_NetLocalClient->playernum)
-							|| (jipspec && islastplayer))) {
+							|| (jipspec && i == 0))) {
 					s32 tnum = -1;
 					for (s32 pn = 0; pn < MAX_PLAYERS; ++pn) {
 						if (g_Vars.players[pn] && g_Vars.players[pn]->client
@@ -1954,8 +1954,26 @@ Gfx *lvRender(Gfx *gdl)
 			artifactsTick();
 
 #ifndef PLATFORM_N64
-			if ((g_NetMode && i) || i >= MAX_LOCAL_PLAYERS) {
-				gdl = savedgdl;
+			// Net mode: only the LOCAL player's render order actually
+			// displays — every other slot is ticked then rolled back. This
+			// was hard-coded to order 0 (the local player always sat at slot
+			// 0 via the netPlayersAllocate swap), but a co-op drop-in
+			// claimant binds at its wire slot N without the load-time swap,
+			// so key on the local binding instead. Playerless spectators
+			// keep order 0 (the jipspec redirect substitutes the spectated
+			// slot there). The iteration is identified by
+			// playermgrGetPlayerAtOrder(i), NOT currentplayernum — the
+			// spectate redirect substitutes the latter.
+			{
+				bool islocaliter;
+				if (g_NetMode && g_NetLocalClient && g_NetLocalClient->player) {
+					islocaliter = playermgrGetPlayerAtOrder(i) == g_NetLocalClient->playernum;
+				} else {
+					islocaliter = (i == 0);
+				}
+				if ((g_NetMode && !islocaliter) || i >= MAX_LOCAL_PLAYERS) {
+					gdl = savedgdl;
+				}
 			}
 #endif
 

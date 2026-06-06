@@ -45,6 +45,7 @@
 #define SVC_CUTSCENE     0x51 // co-op: host-authoritative in-engine cutscene state (active + anim); client starts/ends in lockstep
 #define SVC_COOP_LIVES   0x52 // co-op: "N lives remaining" respawn notification (F3 lives mutator); shown to the recipient's local player
 #define SVC_TIMESCALE    0x53 // global sim timescale: slow-motion/boost engaged flag + boost timer; clients halve the pinned sim step in lockstep with the server
+#define SVC_COOP_CLAIM   0x54 // co-op drop-in: a client claims (or releases, clientid=NET_NULL_CLIENT) a pre-allocated dormant co-op slot mid-mission
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -154,6 +155,11 @@ u32 netmsgSvcCoopLivesWrite(struct netbuf *dst, s32 count);
 u32 netmsgSvcCoopLivesRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcTimescaleWrite(struct netbuf *dst);
 u32 netmsgSvcTimescaleRead(struct netbuf *src, struct netclient *srccl);
+// SVC_COOP_CLAIM (co-op drop-in, proto 61): {clientid u8, playernum u8,
+// name str, bodybit u8}. clientid = NET_NULL_CLIENT means RELEASE: slot
+// `playernum` goes dormant again (leaver's pawn parked for reclaim).
+u32 netmsgSvcCoopClaimWrite(struct netbuf *dst, u8 clientid, u8 playernum, const char *name, u8 bodybit);
+u32 netmsgSvcCoopClaimRead(struct netbuf *src, struct netclient *srccl);
 
 u32 netmsgSvcAuthWrite(struct netbuf *dst, struct netclient *authcl);
 u32 netmsgSvcAuthRead(struct netbuf *src, struct netclient *srccl);

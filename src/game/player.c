@@ -4711,6 +4711,17 @@ void playerTick(bool arg0)
 						continue;
 					}
 
+#ifndef PLATFORM_N64
+					// Co-op drop-in: dormant pre-allocated slots are nobody.
+					// They must neither block the all-out (their unspent F3
+					// lives would make the mission unfailable) nor count as
+					// out (lives OFF would otherwise read them as fullydead,
+					// which is fine, but skipping keeps both modes correct).
+					if (cp->isdormant) {
+						continue;
+					}
+#endif
+
 					fullydead = cp->isdead && cp->redbloodfinished && cp->deathanimfinished;
 #ifndef PLATFORM_N64
 					// F3 lives: a player with a life left isn't out — they'll respawn.
@@ -5268,7 +5279,12 @@ Gfx *playerRenderHud(Gfx *gdl)
 									? &g_NetCoopSharedLives
 									: &g_NetCoopLives[g_Vars.currentplayernum];
 
-								if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+								if (g_Vars.currentplayer->isdormant) {
+									// Co-op drop-in: a parked slot has no owner —
+									// never let a local pad revive it (its mpReset
+									// contpad maps to a real local device).
+									restart = false;
+								} else if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
 									const struct netclient *cl_ = g_Vars.currentplayer->client;
 									restart = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
 								} else {
@@ -5316,7 +5332,11 @@ Gfx *playerRenderHud(Gfx *gdl)
 								f32 shield;
 
 #ifndef PLATFORM_N64
-								if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+								if (g_Vars.currentplayer->isdormant) {
+									// Co-op drop-in: parked slot — no local pad may
+									// revive it (see the F3 branch above).
+									canrestart = false;
+								} else if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
 									const struct netclient *cl_ = g_Vars.currentplayer->client;
 									canrestart = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
 								} else if (g_NetMode != NETMODE_CLIENT)

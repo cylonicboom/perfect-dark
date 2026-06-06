@@ -2874,6 +2874,11 @@ struct player {
 	// undefined. Same value as the slot's index in g_Vars.players[] but kept
 	// explicit so any future re-ordering doesn't silently break the mapping.
 	u8 spectator_panel;
+	// Net co-op drop-in: pre-allocated player slot with no client seated yet
+	// (parked dead+hidden at stage start by netCoopDormantInit; revived when
+	// a mid-mission joiner claims it via SVC_COOP_CLAIM). Gates the all-out
+	// mission-fail test and the respawn-input reads. Always 0 on N64.
+	u8 isdormant;
 	// GoldenEye Style damage flash: lvframe60 at the moment this local
 	// player last took damage. Drives an 8-frame triangular white
 	// fade-in/fade-out overlay rendered alongside the GE HUD bars.

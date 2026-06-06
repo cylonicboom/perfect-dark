@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 60 // 60: co-op SVC_STAGE_START manifest carries a spectator byte — mid-mission JIP joiners ride flagged spectator (sentinel playernum) instead of colliding with the host's slot 0
+#define NET_PROTOCOL_VER 61 // 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
+// 60: co-op SVC_STAGE_START manifest carries a spectator byte — mid-mission JIP joiners ride flagged spectator (sentinel playernum) instead of colliding with the host's slot 0
 // 59: CLC_STAGE_READY (client world built) + JIP catch-up snapshot (replayed dynamic prop spawns, door/lift state to mid-match joiners)
 // 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients
 // 57: SVC_TIMESCALE — slow motion / combat boost: server mirrors the sim-step halving flag (+ boost timer) so clients tick in lockstep
@@ -576,6 +577,31 @@ void netEndFrame(void);
 // SVC_STAGE_START handler both call this). numplayers = total co-op players N
 // (host + remote partners), up to MAX_PLAYERS.
 void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers);
+
+// Co-op drop-in: net co-op stages always allocate this many player slots
+// regardless of the connected count, so the prop/syncid layout is identical
+// on every machine (the deterministic-allocation invariant) and a mid-mission
+// joiner can claim a pre-allocated dormant slot. Matches the locked co-op
+// plan cap of 4 players (PORT_COOP_PLAN.md); extra connectees stay spectators.
+#define NET_COOP_MAX_SLOTS MAX_LOCAL_PLAYERS
+
+// Seat a netclient on co-op player slot `playernum` (drop-in claim): binds
+// netclient<->player, wakes the dormant pawn (unhide, clear isdormant/isdead),
+// sets the config (local profile restore for the claimant; remote-config
+// otherwise) and the F2 body bit. Shared by the server's claim decision and
+// the client-side SVC_COOP_CLAIM apply.
+void netCoopSeatClient(struct netclient *ncl, s32 playernum, const char *name, u8 bodybit);
+
+// Server: pick a slot for a mid-mission co-op joiner (reserved-by-name first
+// — reclaim after a disconnect — else first dormant), seat it, respawn the
+// pawn through the checkpoint path and broadcast SVC_COOP_CLAIM. No-op if no
+// slot is free (the joiner stays a spectator).
+void netServerCoopClaim(struct netclient *cl);
+
+// Mark co-op slot `playernum` dormant again (release): park the pawn dead +
+// hidden and unbind any netclient holding it. Used at release-on-disconnect
+// (server + SVC_COOP_CLAIM release broadcast on clients).
+void netCoopDormantSlot(s32 playernum);
 
 s32 netStartServer(u16 port, s32 maxclients);
 s32 netStartClient(const char *addr);

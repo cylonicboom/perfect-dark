@@ -87,8 +87,29 @@ s32 g_NetJoinLatch = false;
 // when the next round seats us on one of those slots we'd inherit the
 // poison: CONTROLMODE_NA kills all input including the pause menu (bondmove
 // early-returns before the ESC/START handling). The local-bind path in
-// netPlayersAllocate restores the input/identity fields from this snapshot.
+// netPlayersAllocate and the co-op drop-in seat (netCoopSeatClient) restore
+// the input/identity fields from this snapshot.
 static struct mpplayerconfig g_NetLocalProfileBackup;
+
+// Restore the input/identity fields of the local profile into a config slot
+// the local client is binding to. base.team is deliberately untouched (the
+// stage-start manifest / claim flow owns it). Contpads restored too — a co-op
+// drop-in claimant binds at its wire slot N, whose mpReset default contpad is
+// pad N, not the local pad 0.
+static void netRestoreLocalProfile(struct mpplayerconfig *cfg)
+{
+	// Guard a snapshot that was itself taken from a poisoned profile (e.g. a
+	// force-closed session left NA in the array): never seat the local player
+	// with dead controls.
+	cfg->controlmode = (g_NetLocalProfileBackup.controlmode == CONTROLMODE_NA)
+			? CONTROLMODE_11 : g_NetLocalProfileBackup.controlmode;
+	cfg->options = g_NetLocalProfileBackup.options;
+	cfg->contpad1 = g_NetLocalProfileBackup.contpad1;
+	cfg->contpad2 = g_NetLocalProfileBackup.contpad2;
+	cfg->base.mpbodynum = g_NetLocalProfileBackup.base.mpbodynum;
+	cfg->base.mpheadnum = g_NetLocalProfileBackup.base.mpheadnum;
+	memcpy(cfg->base.name, g_NetLocalProfileBackup.base.name, sizeof(cfg->base.name));
+}
 
 // Dedicated-server mode latches. g_NetDedicatedLatch is set by --dedicated
 // (mode 1) or --dedicated-windowed (mode 2) at CLI parse time, before any
@@ -1005,7 +1026,13 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	g_Vars.bondplayernum = 0;
 	g_Vars.coopplayernum = 1;
 	g_Vars.antiplayernum = -1;
-	setNumPlayers(numplayers);
+	// Drop-in: net co-op always allocates the full slot budget so every
+	// machine (including a future mid-mission joiner's fresh load) produces
+	// the identical player/prop/syncid layout. Slots beyond the connected
+	// players start dormant (netCoopDormantInit) and are claimed via
+	// SVC_COOP_CLAIM. numplayers (the connected count) still sized the
+	// shared lives pool above. Non-net (splitscreen) co-op is unchanged.
+	setNumPlayers(g_NetMode ? NET_COOP_MAX_SLOTS : numplayers);
 	lvSetDifficulty(difficulty);
 	titleSetNextMode(TITLEMODE_SKIP);
 	mainChangeToStage(stagenum);
@@ -1105,6 +1132,212 @@ void netServerSendJipSnapshot(struct netclient *cl)
 
 	sysLogPrintf(LOG_NOTE, "NET: JIP snapshot to client %u: %d dynamic props, %d doors, %d lifts",
 			cl->id, nprops, ndoors, nlifts);
+}
+
+// ---------- Co-op drop-in (dormant slots / claim / release / reclaim) ----------
+
+// Reservation of a co-op slot for a disconnected client (reclaim-on-rejoin):
+// the leaver's name, matched against CLC_AUTH names of later joiners. Empty
+// string = no reservation. Server-side only; cleared on stage change.
+static char g_NetCoopReservedNames[MAX_PLAYERS][32];
+
+// Park co-op slot `playernum` dormant: dead + hidden + unbound. Runs on every
+// machine (stage-load init for unclaimed slots; SVC_COOP_CLAIM release).
+void netCoopDormantSlot(s32 playernum)
+{
+	struct player *pl = (playernum >= 0 && playernum < PLAYERCOUNT())
+			? g_Vars.players[playernum] : NULL;
+
+	if (!pl) {
+		return;
+	}
+
+	pl->isdormant = true;
+	// "Dead awaiting respawn" is the engine state with all the machinery we
+	// want for free: enemies ignore dead players, the buddy-revive search
+	// skips them, and the claim revives through the normal respawn path.
+	// Anim/blood flags pre-finished so the death handling treats it as
+	// settled rather than mid-death.
+	pl->isdead = true;
+	pl->redbloodfinished = true;
+	pl->deathanimfinished = true;
+	pl->dostartnewlife = false;
+
+	if (pl->prop && pl->prop->chr) {
+		pl->prop->chr->chrflags |= CHRCFLAG_HIDDEN;
+	}
+
+	if (pl->client) {
+		pl->client->player = NULL;
+		pl->client = NULL;
+	}
+	pl->isremote = false;
+}
+
+// Stage-load init: park every pre-allocated co-op slot that has no netclient
+// seated (netPlayersAllocate bound the connected ones just before). Runs on
+// every machine from netSyncIdsAllocate — the bindings are identical
+// everywhere, so the dormant set is too.
+static void netCoopDormantInit(void)
+{
+	s32 ndormant = 0;
+
+	if (!g_NetMode || g_Vars.coopplayernum < 0) {
+		return;
+	}
+
+	for (s32 n = 0; n < PLAYERCOUNT(); ++n) {
+		struct player *pl = g_Vars.players[n];
+		if (!pl || pl->client || pl->is_spectator) {
+			continue;
+		}
+		netCoopDormantSlot(n);
+		++ndormant;
+	}
+
+	if (g_NetMode == NETMODE_SERVER) {
+		memset(g_NetCoopReservedNames, 0, sizeof(g_NetCoopReservedNames));
+	}
+
+	if (ndormant) {
+		sysLogPrintf(LOG_NOTE, "NET: co-op drop-in: %d dormant slot(s) ready", ndormant);
+	}
+}
+
+void netCoopSeatClient(struct netclient *ncl, s32 playernum, const char *name, u8 bodybit)
+{
+	struct player *pl = (playernum >= 0 && playernum < PLAYERCOUNT())
+			? g_Vars.players[playernum] : NULL;
+
+	if (!ncl || !pl) {
+		return;
+	}
+
+	// netclient seat
+	ncl->playernum = (u8)playernum;
+	ncl->is_spectator = 0;
+	ncl->jip_pending_unspectate = 0;
+	ncl->state = CLSTATE_GAME;
+	if (name && name != ncl->settings.name) {
+		strncpy(ncl->settings.name, name, sizeof(ncl->settings.name) - 1);
+		ncl->settings.name[sizeof(ncl->settings.name) - 1] = '\0';
+	}
+
+	// config (the netPlayersAllocate per-client binding, claim-time edition)
+	struct mpplayerconfig *cfg = &g_PlayerConfigsArray[playernum];
+	if (ncl == g_NetLocalClient) {
+		// We're the claimant: local profile drives controls + identity
+		// (contpads included — this slot's mpReset default is pad N).
+		netRestoreLocalProfile(cfg);
+		netSpectateStop();
+	} else {
+		cfg->controlmode = CONTROLMODE_NA;
+		cfg->base.mpbodynum = ncl->settings.bodynum;
+		cfg->base.mpheadnum = ncl->settings.headnum;
+		snprintf(cfg->base.name, sizeof(cfg->base.name), "%s\n", ncl->settings.name);
+		cfg->options = g_PlayerConfigsArray[0].options & OPTION_PAINTBALL;
+		cfg->options |= ncl->settings.options & ~OPTION_PAINTBALL;
+		cfg->options &= ~(OPTION_AIMCONTROL | OPTION_LOOKAHEAD);
+		cfg->options |= OPTION_FORWARDPITCH | OPTION_ASKEDSAVEPLAYER;
+	}
+	cfg->client = ncl;
+	cfg->handicap = 0x80;
+	ncl->config = cfg;
+
+	// player bind + wake the dormant pawn. The HOST revives it through the
+	// normal respawn path (dostartnewlife -> playerStartNewLife, set by the
+	// caller); clients just unpark it — position/health arrive via the
+	// force-snap + stats heartbeat.
+	ncl->player = pl;
+	pl->client = ncl;
+	pl->isremote = (ncl != g_NetLocalClient);
+	pl->isdormant = false;
+	pl->isdead = false;
+	if (pl->prop && pl->prop->chr) {
+		pl->prop->chr->chrflags &= ~CHRCFLAG_HIDDEN;
+	}
+
+	// F2 body bit for this slot (cosmetic; the pawn's chrbody was built at
+	// stage start, so a mismatched body may not apply until a model rebuild)
+	if (bodybit) {
+		g_NetCoopBodyBits |= (u8)(1 << playernum);
+	} else {
+		g_NetCoopBodyBits &= (u8)~(1 << playernum);
+	}
+
+	// fresh wire state for the new binding (the stage-start manifest pattern)
+	memset(ncl->inmove, 0, sizeof(ncl->inmove));
+	memset(ncl->outmove, 0, sizeof(ncl->outmove));
+	ncl->inmove_head = 0;
+	ncl->lerpticks = 0;
+	ncl->outmoveack = 0;
+
+	sysLogPrintf(LOG_CHAT, "%s joined the mission (slot %d)", ncl->settings.name, playernum);
+}
+
+void netServerCoopClaim(struct netclient *cl)
+{
+	s32 slot = -1;
+
+	if (g_NetMode != NETMODE_SERVER || !cl || g_Vars.coopplayernum < 0) {
+		return;
+	}
+
+	// Reclaim first: a slot reserved under this client's name (it
+	// disconnected mid-mission and came back) takes priority.
+	for (s32 n = 0; n < PLAYERCOUNT(); ++n) {
+		if (g_NetCoopReservedNames[n][0]
+				&& strncmp(g_NetCoopReservedNames[n], cl->settings.name,
+						sizeof(g_NetCoopReservedNames[n]) - 1) == 0) {
+			slot = n;
+			break;
+		}
+	}
+
+	// Otherwise the first dormant, unreserved slot.
+	if (slot < 0) {
+		for (s32 n = 0; n < PLAYERCOUNT(); ++n) {
+			struct player *pl = g_Vars.players[n];
+			if (pl && pl->isdormant && !g_NetCoopReservedNames[n][0]) {
+				slot = n;
+				break;
+			}
+		}
+	}
+
+	if (slot < 0) {
+		// Mission full (all slots seated or reserved for others): the joiner
+		// stays a spectator, exactly like the pre-drop-in behaviour.
+		sysLogPrintf(LOG_CHAT, "%s joined as spectator (no free co-op slot)", cl->settings.name);
+		return;
+	}
+
+	g_NetCoopReservedNames[slot][0] = '\0';
+
+	const u8 bodybit = (cl->settings.coopbodytype == COOPBODY_MASCULINE
+			|| (cl->settings.coopbodytype == COOPBODY_RANDOM && (rngCosmeticRandom() & 1))) ? 1 : 0;
+
+	netCoopSeatClient(cl, slot, NULL, bodybit);
+
+	// Shared lives pool: the new player brings its contribution (per-player
+	// budgets were seeded for every slot at stage start already).
+	if (g_NetCoopLivesMode == COOP_LIVES_SHARED) {
+		g_NetCoopSharedLives += g_NetCoopLivesCount;
+	}
+
+	// Revive through the normal respawn path: playerStartNewLife runs from
+	// the per-player loop (server-gated) and the established force-snap
+	// ships the spawn position to every client.
+	if (cl->player) {
+		cl->player->dostartnewlife = true;
+	}
+
+	// Tell everyone (including the claimant) about the seat.
+	netbufStartWrite(&g_NetMsgRel);
+	netmsgSvcCoopClaimWrite(&g_NetMsgRel, cl->id, (u8)slot, cl->settings.name, bodybit);
+	netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+
+	netDiagLogf("coop_claim", "cl=%u slot=%d body=%u", cl->id, slot, bodybit);
 }
 
 void netServerStageEnd(void)
@@ -1616,6 +1849,25 @@ static void netServerEvDisconnect(struct netclient *cl)
 		setCurrentPlayerNum(prevplayernum);
 	}
 
+	// Co-op drop-in: reserve the leaver's slot under its name (reclaim on
+	// rejoin — netServerCoopClaim matches CLC_AUTH names against this) and
+	// park the pawn dormant; broadcast the release so every client parks it
+	// too. The reservation holds until mission end or the owner returns.
+	if (cl->state == CLSTATE_GAME && g_Vars.coopplayernum >= 0
+			&& cl->playernum < MAX_PLAYERS && cl->player) {
+		const s32 slot = cl->playernum;
+		strncpy(g_NetCoopReservedNames[slot], cl->settings.name,
+				sizeof(g_NetCoopReservedNames[slot]) - 1);
+		g_NetCoopReservedNames[slot][sizeof(g_NetCoopReservedNames[slot]) - 1] = '\0';
+		netCoopDormantSlot(slot); // also unbinds cl->player
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgSvcCoopClaimWrite(&g_NetMsgRel, NET_NULL_CLIENT, (u8)slot,
+				g_NetCoopReservedNames[slot], 0);
+		netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
+		sysLogPrintf(LOG_CHAT, "%s left the mission (slot %d held for rejoin)",
+				g_NetCoopReservedNames[slot], slot);
+	}
+
 	netClientReset(cl);
 
 	--g_NetNumClients;
@@ -1716,6 +1968,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
 			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
+			case SVC_COOP_CLAIM: rc = netmsgSvcCoopClaimRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2626,16 +2879,7 @@ void netPlayersAllocate(void)
 			// bondmove gate early-returns before ESC/START handling), and
 			// wore the remote player's name/body/options. base.team is left
 			// alone — the stage-start manifest just assigned it.
-			struct mpplayerconfig *cfg = &g_PlayerConfigsArray[cl->playernum];
-			// Guard a snapshot that was itself taken from a poisoned profile
-			// (e.g. a force-closed session left NA in the array): never seat
-			// the local player with dead controls.
-			cfg->controlmode = (g_NetLocalProfileBackup.controlmode == CONTROLMODE_NA)
-					? CONTROLMODE_11 : g_NetLocalProfileBackup.controlmode;
-			cfg->options = g_NetLocalProfileBackup.options;
-			cfg->base.mpbodynum = g_NetLocalProfileBackup.base.mpbodynum;
-			cfg->base.mpheadnum = g_NetLocalProfileBackup.base.mpheadnum;
-			memcpy(cfg->base.name, g_NetLocalProfileBackup.base.name, sizeof(cfg->base.name));
+			netRestoreLocalProfile(&g_PlayerConfigsArray[cl->playernum]);
 		}
 
 		cl->config = &g_PlayerConfigsArray[cl->playernum];
@@ -2690,6 +2934,11 @@ void netSyncIdsAllocate(void)
 		g_NetFirstDynamicSyncId = g_NetNextSyncId;
 		return;
 	}
+
+	// Co-op drop-in: park the pre-allocated slots that have no client seated
+	// (netPlayersAllocate just ran, so the bindings — identical on every
+	// machine — are in place, and the player props exist).
+	netCoopDormantInit();
 
 	// iterate active props first
 	struct prop *prop = g_Vars.activeprops;

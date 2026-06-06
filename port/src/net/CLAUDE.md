@@ -464,6 +464,26 @@ narrower, corruption paths):
 `netChrRecordSnapshot` re-seats a corrupt head) so any *future* corruption logs
 and skips instead of crashing or silently freezing.
 
+### Co-op Drop-in (proto 61)
+
+Mid-mission co-op join/leave/rejoin. Net co-op always allocates
+`NET_COOP_MAX_SLOTS` (4) player slots (`netCoopEnterStage`) so every machine
+keeps the deterministic prop/syncid layout; unbound slots park dormant
+(`player.isdormant`, dead+hidden, `netCoopDormantInit` from
+`netSyncIdsAllocate`). A joiner's `CLC_STAGE_READY` triggers the JIP snapshot
+then `netServerCoopClaim`: name-reserved slot first (reclaim) else first
+dormant; seat via `netCoopSeatClient` (shared with the client-side apply),
+revive via `dostartnewlife` → `playerStartNewLife` + spawn force-snap;
+broadcast **`SVC_COOP_CLAIM 0x54`** `{clientid, playernum, name, bodybit}`
+(`clientid = NET_NULL_CLIENT` = release → slot parks dormant, reserved under
+the leaver's name). `SVC_PROP_RECONCILE` also lists **chr** syncids in co-op
+so a joiner's fresh-loaded NPCs that the host already freed get reaped
+(`CHRHFLAG_DELETING`). Gotchas: NO mid-mission slot-0 swap — the claimant
+stays at wire slot N (lv.c render rollback keys on the local order now;
+contpads restored via `netRestoreLocalProfile`); the all-out mission-fail
+loop and respawn-input reads skip `isdormant` slots. See
+`docs/PORT_COOP_DROPIN.md`.
+
 ### JIP v2 — Combat Sim catch-up + spectate-while-waiting (proto 59)
 
 A mid-match joiner (JIP) is seated as a spectator and spawns at the next round

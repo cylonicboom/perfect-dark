@@ -381,9 +381,19 @@ void netDiagLogf(const char *event, const char *fmt, ...)
 	vfprintf(g_NetDiagFile, fmt, ap);
 	va_end(ap);
 	fputc('\n', g_NetDiagFile);
-	// Flush every line so a crash doesn't lose the last few events that
-	// would otherwise sit in the stdio buffer.
-	fflush(g_NetDiagFile);
+	// Flush every line EXCEPT the high-rate per-tick position dumps (pos_cl /
+	// pos_sim, ~10Hz per client/sim at the default LogRate). Event/bracket lines
+	// (server_start, stage_start, csp_recon, lagcomp, tick, disconnect,
+	// proptick_guard, ...) still flush immediately so a crash never loses the
+	// lines that bracket it; the redundant position sampling rides the stdio
+	// buffer and reaches disk on the next event line's flush. The position trail
+	// is therefore only ever incomplete for the sub-100ms window since the last
+	// event — where the event lines already pinpoint the crash — in exchange for
+	// far fewer synchronous fflushes on the game thread under busy dumps.
+	const bool isposdump = (strcmp(event, "pos_cl") == 0 || strcmp(event, "pos_sim") == 0);
+	if (!isposdump) {
+		fflush(g_NetDiagFile);
+	}
 }
 
 // Lag compensation: saved client state for restore after hit rewind.

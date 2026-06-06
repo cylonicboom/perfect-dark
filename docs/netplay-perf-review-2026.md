@@ -137,10 +137,13 @@ with far less desync risk than delta encoding, and each is independently testabl
   `enet_host_check_events` after each service and re-services the socket up to
   `maxservices` (8) times, so a full inbound burst is handled the same frame while
   a sustained flood still can't stall the loop. No wire change.
-- **`netDiagLogf` flushes every line** when a diag log is open; the 10 Hz
-  per-entity `pos_cl`/`pos_sim` dumps are a lot of synchronous `fflush` on the
-  game thread. Keep strictly opt-in (it is) and consider buffered writes flushed
-  only on event lines.
+- **`netDiagLogf` flushes every line** **[FIXED]** — when a diag log was open the
+  10 Hz per-entity `pos_cl`/`pos_sim` dumps were a lot of synchronous `fflush` on
+  the game thread. Now the per-line flush is skipped for `pos_cl`/`pos_sim` only;
+  every event/bracket line (`server_start`, `stage_start`, `csp_recon`, `lagcomp`,
+  `tick`, `disconnect`, `proptick_guard`, …) still flushes immediately, so crash
+  brackets are never lost. Buffered position lines reach disk on the next event
+  line's flush (and on close via `fclose`). Opt-in as before. No wire change.
 - **Lag-comp rewind uses `interp_lag` as a proxy** for the shooter's render-tick
   (honestly documented). Correct only under symmetric latency; an exact fix
   needs the shooter to send its render-tick (proto bump). Acceptable ceiling.

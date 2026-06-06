@@ -607,7 +607,7 @@ Events emitted:
 - `pos_cl` — per-tick (rate-gated) snapshot of every client's authoritative position + ping + look angles. One line per client per dump.
 - `pos_sim` — same for sims, also includes `act` (actiontype) and `hp`.
 
-Dump rate for `pos_cl`/`pos_sim` is controlled by `Net.Debug.LogRate` (default 6 ticks ≈ 10 Hz; set to 0 to disable position dumps entirely while keeping event lines). Every line is flushed immediately so a crash doesn't lose the last few events.
+Dump rate for `pos_cl`/`pos_sim` is controlled by `Net.Debug.LogRate` (default 6 ticks ≈ 10 Hz; set to 0 to disable position dumps entirely while keeping event lines). Event/bracket lines are flushed immediately so a crash never loses the lines that bracket it; the high-rate `pos_cl`/`pos_sim` dumps are left in the stdio buffer (flushed on the next event line, or on close) to cut synchronous `fflush` load on the game thread.
 
 The log is greppable / spreadsheet-importable. For teleport hunting: filter to `pos_cl,id=N` for a specific client, diff consecutive `x/y/z`, sort by delta magnitude. For lag-comp validation: cross-reference `lagcomp` and `pos_cl` entries around the same `tick`.
 

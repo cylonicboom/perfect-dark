@@ -74,23 +74,57 @@ diagnostic that `g_NetTick` tracks wall-clock 60 Hz under frame drops.
 
 ---
 
-## Performance (recommendations — these need a protocol bump)
+## Performance
 
-### P1 — Chr-state block is the bandwidth driver: 119 bytes, 16 raw f32, every tick
-`netmsgSvcPropMoveWrite`. Most of the 16 floats are angles/normalized poses
-(`yrot`, `angleoffset`, the four `aim*`, `anim->speed`) that quantize losslessly
-to s16/u8 — roughly a 25-30% cut to the dominant per-entity cost with no quality
-change. Highest-leverage perf win; mechanical but needs a proto bump.
+### P1 — Chr-state block is the bandwidth driver **[DONE — proto 62]**
+`netmsgSvcPropMoveWrite` ships ~119 bytes per networked chr every server tick.
+The seven pose fields that don't need 32-bit precision now ride as s16: body yaw
+and `angleoffset` as periodic angles (`[-π,π)` wrap), the four `aim*` joints as
+clamped `[-π,π]`, and `anim->speed` as clamped `[-16,16]`. The quantization step
+(~1e-4 rad / ~5e-4 speed-units) is below what rendering or interpolation resolves.
+Saves **14 bytes/chr/tick**. Position stays a full coord (precision feeds
+hit/visual) and `chr->damage` stays f32 (wide, sometimes-negative). Realised cut
+is ~12% of the block, not the 25-30% first estimated — position is the other big
+chunk but quantizing it well is map-range-dependent and was judged too risky to
+land untested. Protocol bumped 61 → 62.
 
-### P2 — Unreliable broadcast has no relevancy filtering
+### P3 — adaptive player-move cadence **[DONE]**
+`g_NetServerUpdateRate` defaulted to 1 (every-tick SVC_PLAYER_MOVE). The global
+send gate now stretches to every-other-tick once a match has **>4 combatants**,
+halving per-tick player-move bandwidth in large games; 2-4 player matches are
+untouched (no feel change) and interpolation hides the 30Hz cadence. An operator
+override (`/svcrate`, `Net.Server.UpdateFrames > 1`) still wins via `max()`.
+
+### P2 — Per-client relevancy + delta compression **[DEFERRED — design below]**
 `enet_host_broadcast` ships one identical all-entity packet to every client with
-no PVS/room-distance interest management. The real scaling answer (per-client out
-buffers + delta-compression against a per-client acked baseline) is a project,
-not a patch, but worth a design note.
+no PVS/room-distance interest management, and every field is absolute (no delta).
+This is the real scaling answer but it is an **architectural rewrite of the core
+send path**, and this environment cannot compile or run the game — shipping an
+untested rewrite of the working broadcast path risks regressing netplay for a gain
+that can't be measured here. Deferred with a concrete plan rather than blind-coded.
 
-### P3 — `g_NetServerUpdateRate` defaults to 1 (full state every tick)
-Given P1/P2, consider defaulting to 2 (or adapting to connected client count)
-and letting the existing interpolation hide it — a near-free bandwidth halving.
+**Plan (do this in a build/test-capable environment):**
+1. **Per-client out buffers.** Replace the single shared `g_NetMsg` unreliable
+   broadcast in `netEndFrame` with a per-client write: loop clients, build each
+   one's packet into `cl->out` (already exists), `netSend(cl, …)` individually.
+   Keep `g_NetMsg` only for genuinely global reliable events. Cost: N× the
+   serialization work on the host — acceptable up to 8 clients, and the relevancy
+   cull below reduces per-packet size to compensate.
+2. **Relevancy cull.** For each (client, entity) decide inclusion by room/PVS
+   first (reuse `prop->rooms` ∩ the client's player rooms, or a coarse
+   room-adjacency test) then a distance fallback. The local player's own move must
+   always be included (CSP reconciliation depends on the echo). Start with sims +
+   campaign NPCs (the bulk); players are few and usually relevant.
+3. **Delta baselines.** Per client, keep the last *acked* value of each replicated
+   field (the move ring already carries acks). Send a per-entity changed-field
+   bitmask + only the changed fields; full state on the first send after an entity
+   becomes relevant. This is the big win but also the most error-prone — gate it
+   behind a config flag and ship relevancy (steps 1-2) first.
+4. **Protocol + tooling.** New proto bump; extend `tools/query.py` / the F9 overlay
+   to show per-client packet sizes so the cull/delta benefit is measurable.
+
+Land steps 1-2 first (relevancy, no delta) — they give most of the scaling benefit
+with far less desync risk than delta encoding, and each is independently testable.
 
 ---
 

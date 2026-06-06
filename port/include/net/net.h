@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 61 // 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
+#define NET_PROTOCOL_VER 62 // 62: SVC_PROP_MOVE chr-state pose bandwidth cut — body yaw, the four aim joints, angleoffset and anim speed now ride as s16 (quantized) instead of f32 (-14 bytes/chr/tick; pos + chr->damage stay full-precision). See docs/netplay-perf-review-2026.md P1
+// 61: co-op drop-in — SVC_COOP_CLAIM (seat/release dormant slots mid-mission) + SVC_PROP_RECONCILE also lists chr syncids in co-op (heals the joiner's ghost NPCs)
 // 60: co-op SVC_STAGE_START manifest carries a spectator byte — mid-mission JIP joiners ride flagged spectator (sentinel playernum) instead of colliding with the host's slot 0
 // 59: CLC_STAGE_READY (client world built) + JIP catch-up snapshot (replayed dynamic prop spawns, door/lift state to mid-match joiners)
 // 58: SVC_STAGE_START carries g_MpSlotFnFlags[6] after the weapons block — playlist weapon/function bans + preset fn restrictions now enforced on clients

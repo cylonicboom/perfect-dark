@@ -131,7 +131,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Build pd.x86_64 (default = client)
         run: |
-          cmake -G"Unix Makefiles" -Bbuild .
+          # -DUSE_SDLGPU=OFF: the runner doesn't ship glslang (required by the
+          # SDL_GPU backend, CMakeLists.txt:309). This non-regression job only
+          # needs to confirm the default client still builds and links SDL3, so
+          # build without the SDL_GPU backend rather than install glslang in CI.
+          cmake -G"Unix Makefiles" -Bbuild . -DUSE_SDLGPU=OFF
           cmake --build build -j
       - name: Verify the client still links SDL3
         run: |

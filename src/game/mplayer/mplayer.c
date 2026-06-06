@@ -615,6 +615,33 @@ void mpReset(void)
 		}
 
 		g_MpNumChrs = 2;
+
+#ifndef PLATFORM_N64
+		// Net co-op drop-in: the engine's co-op path is hard-coded for 2
+		// players, but net co-op pre-allocates NET_COOP_MAX_SLOTS so a
+		// mid-mission joiner can claim a dormant slot. Slots 2..N-1 need the
+		// same per-slot init as 0/1 — without it playerstats[].mpindex is
+		// stale garbage and every read through currentplayerstats->mpindex
+		// (controls, menus, stats) indexes wild memory. These slots are
+		// always remote or dormant on every machine, so the contpads are
+		// inert (their configs sit at CONTROLMODE_NA until claimed).
+		if (g_NetMode && g_Vars.coopplayernum >= 0) {
+			for (i = 2; i < PLAYERCOUNT(); i++) {
+				g_Vars.playerstats[i].mpindex = i;
+
+				g_PlayerConfigsArray[i].contpad1 = i;
+				g_PlayerConfigsArray[i].contpad2 = 0;
+
+				if (g_Vars.coopradaron) {
+					g_PlayerConfigsArray[i].base.displayoptions |= MPDISPLAYOPTION_RADAR;
+				} else {
+					g_PlayerConfigsArray[i].base.displayoptions &= ~MPDISPLAYOPTION_RADAR;
+				}
+
+				g_MpNumChrs++;
+			}
+		}
+#endif
 	} else {
 		for (i = 0; i < MAX_PLAYERS; i++) {
 			if (g_MpSetup.chrslots & (1 << i)) {

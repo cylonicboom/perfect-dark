@@ -2905,9 +2905,13 @@ void lvTickPlayer(void)
 		// off the current (order-0) slot's context: its stats->mpindex is 0,
 		// so the menu binds to contpad 0 — the local keyboard/pad. The
 		// rankings header shows that slot's name (cosmetic); Quit works.
+		// Covers Combat Sim AND co-op (an unseated co-op spectator — mission
+		// full / claim failed — was otherwise stuck force-closing the game;
+		// mpPushPauseDialog's non-normmplayer branch pushes the mission
+		// pause dialog).
 		if (g_NetMode == NETMODE_CLIENT && !g_NetLocalClient->player
 				&& g_NetLocalClient->is_spectator
-				&& g_Vars.normmplayerisrunning
+				&& (g_Vars.normmplayerisrunning || g_Vars.coopplayernum >= 0)
 				&& g_MenuData.root != MENUROOT_MPPAUSE
 				&& g_Vars.currentplayer && g_Vars.currentplayer->prop
 				&& (inputKeyJustPressed(VK_ESCAPE)

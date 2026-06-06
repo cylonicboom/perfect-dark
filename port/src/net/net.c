@@ -1163,6 +1163,11 @@ void netCoopDormantSlot(s32 playernum)
 	pl->deathanimfinished = true;
 	pl->dostartnewlife = false;
 
+	// A parked slot must never sample local input: its config may hold a
+	// leftover live controlmode (mpReset doesn't NA it), and bondmove would
+	// happily read pad N for it. The claim restores/assigns the real value.
+	g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_NA;
+
 	if (pl->prop && pl->prop->chr) {
 		pl->prop->chr->chrflags |= CHRCFLAG_HIDDEN;
 	}

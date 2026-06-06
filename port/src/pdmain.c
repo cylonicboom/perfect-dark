@@ -1067,9 +1067,23 @@ void func0000e990(void)
 	// SVC_CUTSCENE) and then runs mainEndStage -> netServerStageEnd -> SVC_STAGE_END,
 	// which the client receives and ends on. The host falls through to mainEndStage
 	// below.
+	//
+	// BUT only a GENUINE completion may notify: this choke point is also
+	// reached by the death/abort fade path (player.c, var8007074c — a button
+	// press during the fade-out), so the unconditional notify let a client
+	// ABORTING or dying out of the mission end it for the host and everyone
+	// else ("client leaves -> host forced to quit"). objectivesCheckAll just
+	// ran, so the statuses are fresh: incomplete objectives = the client is
+	// bailing, not finishing — leave the session (the host's disconnect path
+	// parks our pawn for reclaim) and end the stage locally, which is plain
+	// solo semantics once offline.
 	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
-		netClientStageComplete();
-		return;
+		if (objectiveIsAllComplete()) {
+			netClientStageComplete();
+			return;
+		}
+		netDisconnect();
+		// fall through: ends OUR stage only (we're offline now)
 	}
 
 	mainEndStage();

@@ -1449,7 +1449,15 @@ u32 netmsgClcStageCompleteRead(struct netbuf *src, struct netclient *srccl)
 	// that sent this included — its own mainEndStage is already guarded by
 	// g_MainIsEndscreen, so the echo is a no-op). Gated to an in-progress co-op
 	// game so a stray/late packet can't end a lobby or a Combat Sim match.
+	// Re-validated against the HOST's own objective state (which includes the
+	// client-witnessed latches from CLC_OBJECTIVE_DONE): a client whose local
+	// abort/death-fade slipped a completion notify through must not end the
+	// mission for everyone.
 	if (g_NetMode == NETMODE_SERVER && g_Vars.coopplayernum >= 0 && !g_MainIsEndscreen) {
+		if (!objectiveIsAllComplete()) {
+			sysLogPrintf(LOG_WARNING, "NET: client %u reported mission complete but objectives aren't - ignored", srccl->id);
+			return src->error;
+		}
 		mainEndStage();
 	}
 

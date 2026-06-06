@@ -122,10 +122,11 @@ struct netplayermove {
     struct coord pos; // world position at this tick
     s16 animnum;      // chr->model->anim->animnum (port-net-predict; 0 if unknown)
     s16 animframe;    // chr->model->anim->framea (port-net-predict)
+    u8  renderbehind; // client's g_NetInterpTicks render offset (proto 63, lag-comp)
 };
 ```
 
-Note: `animnum`/`animframe` are excluded from `netClientNeedMove`'s change detection (otherwise animframe ticking every frame would force a send every tick).
+Note: `animnum`/`animframe`/`renderbehind` are excluded from `netClientNeedMove`'s change detection (otherwise animframe ticking every frame would force a send every tick; `renderbehind` is ~constant). The memcmp is bounded at the *address of* `animnum`, so any field appended after it is automatically excluded — don't reintroduce a fixed `sizeof(animnum)+sizeof(animframe)` tail (that breaks the moment a field is appended, as `renderbehind` was).
 
 Important `UCMD_*` bits: `FIRE`, `ACTIVATE`, `RELOAD`, `AIMMODE`, `SELECT`, `SELECT_DUAL` trigger reliable sends. `UCMD_FL_FORCE*` bits force position correction.
 
@@ -227,6 +228,7 @@ Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` u
     - `/interp <ticks>` — entity interpolation lag. Default 3. Backed by `g_NetInterpTicks` (also config key `Net.LerpTicks`).
     - `/stale <ticks>` — snapshot age before `bwalkUpdateRemote` hard-snaps instead of lerping between stale entries. Default 30 (~500 ms). Backed by `g_NetStaleSnapshotTicks`.
     - `/svcrate <n>` / `/clcrate <n>` — server / client update interval, in ticks. 1 = every tick. Back `g_NetServerUpdateRate` / `g_NetClientUpdateRate`.
+    - `/lagcomp [exact|legacy]` — server-side hit-rewind mode (`g_NetLagCompExact`, default exact/proto 63). `exact` rewinds targets to `inmovetick − renderbehind` (the precise server-tick the shooter was displaying); `legacy` uses the old `RTT/2 + interp_lag` symmetric-latency estimate. Live A/B for hit-registration feel; the `lagcomp` diag line shows the active mode.
     - `/cspframes <n>` — CSP smooth-correction window length. Default 10. Backed by `g_NetCspCorrFramesMax` (the in-flight countdown stays in `g_NetCspCorrFrames`).
     - `/cspcorr <units>` — minimum prediction error (world units) that triggers smooth correction. Default 25. Entered in plain units, stored squared in `g_NetCspCorrThreshSq`.
     - `/cspteleport <units>` — error magnitude (world units) that triggers a hard snap instead of smooth correction. Default 120. Stored squared in `g_NetCspTeleportThreshSq`. Should always be > `/cspcorr`.
@@ -281,8 +283,10 @@ Local player already runs physics locally (N64 game handles this). CSP reconcili
 ### Lag Compensation (`net.c`, `prop.c`)
 
 - Server records `{tick, pos}` for each remote client each frame via `netLagCompSave()` into `netclient.lagcomp[120]`.
-- In `prop.c`'s `shotCalculateHits()`, before the `chrTestHit` loop: `netLagCompBegin(shooter_client)` computes shooter's one-way RTT in ticks and moves all OTHER clients' `prop->pos` and `rootmtx->m[3]` (broad-phase sphere position) to their historical positions.
+- In `prop.c`'s `shotCalculateHits()`, before the `chrTestHit` loop: `netLagCompBegin(shooter_client)` rewinds all OTHER clients' `prop->pos` and `rootmtx->m[3]` (broad-phase sphere position) to their historical positions at the tick the shooter was displaying.
 - After the loop: `netLagCompEnd()` restores everything.
+
+**Exact rewind tick (proto 63).** The rewind target is `target_tick = shooter->inmovetick − shooter->renderbehind`: `inmovetick` is the client's own net-clock stamp on its last applied move (so `g_NetTick − inmovetick` already IS the true upstream staleness — no RTT estimate needed), and `renderbehind` is the client's `g_NetInterpTicks` carried on the move (how far behind its clock it renders other entities). This indexes the lagcomp ring directly (same server-tick epoch). It replaced the old `RTT/2 + (g_NetInterpTicks + interp_lag)` estimate, which was correct only under symmetric latency. The legacy estimate is retained as the fallback when the shooter has no applied move yet (`inmovetick == 0`), and is selectable live via `/lagcomp exact|legacy` (`g_NetLagCompExact`, default 1) for A/B'ing hit feel. The `lagcomp` diag line logs `mode=exact|legacy` + the rewind/target ticks.
 - Only the sphere broad-phase is lag-compensated. **A full-array bone-matrix translation was attempted on `port-net-predict` and reverted** — `chr->model->matrices` is allocated each frame from `gfxAllocate` (a per-frame heap reset by `gfxSwapBuffers`), so the pointer may be stale or already reused for vertex buffers by the time `shotCalculateHits` runs. Writing past matrix[0] crashed the host on disconnect (access violation, `0xc0000005`). Doing this safely would require either re-deriving the matrices on demand or hooking into the model render path.
 
 ### Projectile Rotation Fix (`netmsg.c`)

@@ -162,6 +162,7 @@ static inline u32 netbufWritePlayerMove(struct netbuf *buf, const struct netplay
 	netbufWriteCoord(buf, &in->pos);
 	netbufWriteS16(buf, in->animnum);
 	netbufWriteS16(buf, in->animframe);
+	netbufWriteU8(buf, in->renderbehind);
 	if (in->ucmd & UCMD_AIMMODE) {
 		netbufWriteF32(buf, in->zoomfov);
 	}
@@ -184,6 +185,7 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 	netbufReadCoord(buf, &in->pos);
 	in->animnum = netbufReadS16(buf);
 	in->animframe = netbufReadS16(buf);
+	in->renderbehind = netbufReadU8(buf);
 	if (in->ucmd & UCMD_AIMMODE) {
 		in->zoomfov = netbufReadF32(buf);
 	} else {

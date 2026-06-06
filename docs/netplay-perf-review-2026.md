@@ -145,5 +145,12 @@ with far less desync risk than delta encoding, and each is independently testabl
   brackets are never lost. Buffered position lines reach disk on the next event
   line's flush (and on close via `fclose`). Opt-in as before. No wire change.
 - **Lag-comp rewind uses `interp_lag` as a proxy** for the shooter's render-tick
-  (honestly documented). Correct only under symmetric latency; an exact fix
-  needs the shooter to send its render-tick (proto bump). Acceptable ceiling.
+  **[FIXED — proto 63]** — it was correct only under symmetric latency. The move
+  now carries `renderbehind` (u8 = the client's `g_NetInterpTicks`), so the server
+  rewinds hit targets to the **exact** server-tick the shooter was displaying:
+  `target_tick = inmovetick − renderbehind`. `inmovetick` (the client's own net-clock
+  stamp on its last applied move) already encodes the true upstream staleness, so the
+  rewind uses no latency estimate at all — the RTT/2 + `interp_lag`-proxy assumption is
+  gone. The legacy formula is retained as the fallback when a shooter has no applied
+  move yet, and is reachable live via `/lagcomp exact|legacy` for A/B'ing hit feel
+  (default exact). +1 byte/move. **Hit-registration change — validate on a real build.**

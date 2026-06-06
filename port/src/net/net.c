@@ -140,6 +140,7 @@ char g_NetPlaylistPath[260] = "$S/server_playlist.ini";
 struct netvotestate g_NetVote;
 
 u32 g_NetServerUpdateRate = 1;
+s32 g_NetLagCompExact = 1; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. /lagcomp toggles for live A/B
 u32 g_NetServerInRate = 128 * 1024;
 u32 g_NetServerOutRate = 128 * 1024;
 u32 g_NetServerPort = NET_DEFAULT_PORT;
@@ -572,6 +573,13 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 		move->animframe = pl->prop->chr->model->anim->framea;
 	}
 
+	// Render offset (proto 63): how many ticks behind its own net clock this
+	// machine renders other entities (= g_NetInterpTicks, the interpolators'
+	// render-behind). Travels with the move so the server's lag-comp can rewind
+	// targets to the exact server-tick the shooter was displaying when it fired
+	// (inmovetick - renderbehind), instead of an RTT/2 + interp_lag estimate.
+	move->renderbehind = (u8)((g_NetInterpTicks > 255u) ? 255u : g_NetInterpTicks);
+
 	const struct netplayermove *inmove_newest = &cl->inmove[cl->inmove_head];
 	if (g_NetMode == NETMODE_SERVER && pl->isremote && inmove_newest->tick) {
 		// carry some of the client inputs over to the outmove
@@ -662,10 +670,18 @@ static inline s32 netClientNeedMove(const struct netclient *cl)
 	// tick and undo the update-rate gating above. The anim fields piggyback
 	// on whatever sends we do make for genuine input/position changes, which
 	// is sufficient for keeping remote chr animations in rough sync.
-	const u8 *cmpa = (const u8 *)move + sizeof(move->tick);
+	// Compare only the fields between tick and the anim tail (animnum, animframe,
+	// and the proto-63 renderbehind that follows them). animframe ticks every
+	// frame and renderbehind is ~constant, so including either would force a send
+	// every tick and undo the update-rate gating. Bound the compare at the address
+	// of animnum so all trailing fields + padding are excluded regardless of
+	// layout (don't subtract fixed field sizes — that breaks when a field is
+	// appended after animframe, as renderbehind was).
+	const u8 *base = (const u8 *)move;
+	const u8 *cmpa = base + sizeof(move->tick);
 	const u8 *cmpb = (const u8 *)moveprev + sizeof(move->tick);
-	const size_t tail = sizeof(move->animnum) + sizeof(move->animframe);
-	return (memcmp(cmpa, cmpb, sizeof(*move) - sizeof(move->tick) - tail) != 0);
+	const size_t cmplen = (size_t)((const u8 *)&move->animnum - base) - sizeof(move->tick);
+	return (memcmp(cmpa, cmpb, cmplen) != 0);
 }
 
 static inline void netClientReadConfig(struct netclient *cl, const s32 playernum)
@@ -3689,25 +3705,42 @@ void netLagCompBegin(const struct netclient *shooter)
 
 	// Rewind remote players to where they were when the shooter fired, so
 	// hit-tests reflect what the shooter saw on their screen rather than the
-	// current server-authoritative pose. The rewind amount is RTT/2 (network)
-	// plus the shooter's interpolation delay, computed in two steps below.
-	const u32 rtt_ms      = enet_peer_get_rtt(shooter->peer);
-	// Stack the shooter's INTERPOLATION delay on top of the network RTT/2: they
-	// render remote targets behind by g_NetInterpTicks + their measured interp_lag
-	// (Fix #1's snapshot-domain clock), so the pose they actually shot at was
-	// RTT/2 + interp_delay in the past. Omitting it under-rewound, so close-range
-	// and fast-strafe hits at high ping missed. interp_lag ~= one-way latency in
-	// ticks (the server's peak-hold of this client's snapshot staleness); under
-	// roughly symmetric latency it stands in for the shooter's own render-behind
-	// with no wire change (an exact shooter-sent render-tick would need a protocol
-	// bump). NET_LAGCOMP_SIZE (120 ticks / 2 s) covers the combined rewind at 350ms.
-	const u32 interp_ticks = g_NetInterpTicks + (u32)(shooter->interp_lag + 0.5f);
-	const u32 rewind_ticks = (rtt_ms / 2 + 8) / 16 + interp_ticks;
-	const u32 target_tick  = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
+	// current server-authoritative pose. Two ways to pick the rewind target tick:
+	// the exact path (default, proto 63) uses the shooter's own clock + render
+	// offset off the wire; the legacy path estimates it from RTT/2 + interp delay.
+	const u32 rtt_ms = enet_peer_get_rtt(shooter->peer);
+	u32 rewind_ticks;
+	u32 target_tick;
+
+	if (g_NetLagCompExact && shooter->inmovetick) {
+		// EXACT rewind (proto 63). The shooter stamped its firing move with its own
+		// net clock (inmovetick) and told us how far behind that clock it renders
+		// other entities (renderbehind = its g_NetInterpTicks). The server-tick it
+		// was actually displaying targets at when it fired is therefore
+		// inmovetick - renderbehind, which indexes our lagcomp ring directly (same
+		// server-tick epoch — a client's g_NetTick is baselined to the server's).
+		// This needs no latency estimate: g_NetTick - inmovetick already IS the true
+		// upstream staleness, and renderbehind is the client's real render-behind, so
+		// there's no symmetric-RTT or interp_lag-proxy assumption. Falls back to the
+		// legacy estimate below only when the shooter has no applied move yet.
+		target_tick = (shooter->inmovetick > shooter->renderbehind)
+			? (shooter->inmovetick - shooter->renderbehind) : 0;
+		rewind_ticks = (g_NetTick > target_tick) ? (g_NetTick - target_tick) : 0;
+		netDiagLogf("lagcomp", "shooter=%u mode=exact rtt=%u rb=%u rewind_ticks=%u target=%u",
+			shooter->id, rtt_ms, (u32)shooter->renderbehind, rewind_ticks, target_tick);
+	} else {
+		// LEGACY estimate (/lagcomp legacy, or no inmove yet): RTT/2 (network) plus
+		// the shooter's interpolation delay (g_NetInterpTicks + measured interp_lag).
+		// Correct only under roughly symmetric latency — the exact path above removes
+		// that assumption. NET_LAGCOMP_SIZE (120 ticks / 2 s) covers ~350ms either way.
+		const u32 interp_ticks = g_NetInterpTicks + (u32)(shooter->interp_lag + 0.5f);
+		rewind_ticks = (rtt_ms / 2 + 8) / 16 + interp_ticks;
+		target_tick = (g_NetTick > rewind_ticks) ? (g_NetTick - rewind_ticks) : 0;
+		netDiagLogf("lagcomp", "shooter=%u mode=legacy rtt=%u interp=%u rewind_ticks=%u",
+			shooter->id, rtt_ms, interp_ticks, rewind_ticks);
+	}
 
 	g_LagCompLastRewindTicks = rewind_ticks;
-
-	netDiagLogf("lagcomp", "shooter=%u rtt=%u interp=%u rewind_ticks=%u", shooter->id, rtt_ms, interp_ticks, rewind_ticks);
 
 	for (s32 i = 0; i < g_NetMaxClients; ++i) {
 		struct netclient *cl = &g_NetClients[i];
@@ -5084,6 +5117,21 @@ s32 netConsoleCommand(const char *line)
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: client update interval = %u (usage: /clcrate <ticks>)", g_NetClientUpdateRate);
 		}
+	} else if (strcmp(cmd, "lagcomp") == 0) {
+		// /lagcomp [exact|legacy] — server-side hit-rewind mode. exact (default,
+		// proto 63) rewinds targets to inmovetick - renderbehind, the exact
+		// server-tick the shooter was displaying; legacy uses the old RTT/2 +
+		// interp_lag symmetric-latency estimate. Live A/B for hit registration feel.
+		if (strcmp(arg, "exact") == 0) {
+			g_NetLagCompExact = 1;
+			sysLogPrintf(LOG_CHAT, "NET: lag-comp = exact (inmovetick - renderbehind)");
+		} else if (strcmp(arg, "legacy") == 0) {
+			g_NetLagCompExact = 0;
+			sysLogPrintf(LOG_CHAT, "NET: lag-comp = legacy (RTT/2 + interp_lag)");
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: lag-comp = %s (usage: /lagcomp exact|legacy)",
+				g_NetLagCompExact ? "exact" : "legacy");
+		}
 	} else if (strcmp(cmd, "cspframes") == 0) {
 		// /cspframes <N> — ticks the smooth CSP correction spreads error
 		// over. Smaller = snappier; larger = smoother but slower. Default 10.
@@ -5783,6 +5831,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /stale <n>       snap-on-stale threshold ticks (default 30)");
 		sysLogPrintf(LOG_CHAT, "  /svcrate <n>     server update interval, ticks (default 1)");
 		sysLogPrintf(LOG_CHAT, "  /clcrate <n>     client update interval, ticks (default 1)");
+		sysLogPrintf(LOG_CHAT, "  /lagcomp x        hit-rewind mode: exact|legacy (default exact)");
 		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
 		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
 		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");

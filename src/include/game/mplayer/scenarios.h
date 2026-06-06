@@ -14,7 +14,11 @@ struct mpscenariooverview {
 	u8 teamonly;
 };
 
+#ifndef PLATFORM_N64
+extern struct mpscenariooverview g_MpScenarioOverviews[7]; // +1 port-only: Paint the Map
+#else
 extern struct mpscenariooverview g_MpScenarioOverviews[6];
+#endif
 
 MenuItemHandlerResult menuhandlerMpOpenOptions(s32 operation, struct menuitem *item, union handlerdata *data);
 void scenarioReadSave(struct savebuffer *buffer, u8 version);

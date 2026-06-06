@@ -2085,6 +2085,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
 			case SVC_COOP_CLAIM: rc = netmsgSvcCoopClaimRead(&cl->in, cl); break;
+			case SVC_PAINT_STATE: rc = netmsgSvcPaintStateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2755,6 +2756,16 @@ void netEndFrame(void)
 			if (g_MpSetup.scenario == MPSCENARIO_KINGOFTHEHILL
 					&& (g_NetTick % NET_HEARTBEAT_INTERVAL) == 0u) {
 				netmsgSvcKohStateWrite(&g_NetMsgRel);
+			}
+
+			// Paint the Map: broadcast owned-room ownership on change
+			// (g_MpPaintDirty, raised by paintSetRoomOwner on the host) plus a
+			// 1s keep-alive at a free phase offset (35) so dropped packets and
+			// mid-match joiners heal.
+			if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM
+					&& (g_MpPaintDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 35u)) {
+				g_MpPaintDirty = 0;
+				netmsgSvcPaintStateWrite(&g_NetMsgRel);
 			}
 
 			// Scoreboard heartbeat: SVC_SCORE only fires on kill events

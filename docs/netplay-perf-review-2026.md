@@ -130,10 +130,13 @@ with far less desync risk than delta encoding, and each is independently testabl
 
 ## Smaller / lower-priority (recommendations)
 
-- **`netStartFrame` event pump** does one `enet_host_service(…, 1)` per tick
-  after draining queued events; a burst of inbound packets is dispatched
-  one-per-frame (≤ 16 ms added latency under load). Loop the service call
-  (bounded) until it returns 0.
+- **`netStartFrame` event pump** **[FIXED]** — did one `enet_host_service(…, 1)`
+  per tick after draining queued events, processed that single serviced event and
+  exited, so the rest of the burst `enet_host_service` had queued waited a frame
+  (≤ 16 ms added latency under load). Now re-drains the queue via
+  `enet_host_check_events` after each service and re-services the socket up to
+  `maxservices` (8) times, so a full inbound burst is handled the same frame while
+  a sustained flood still can't stall the loop. No wire change.
 - **`netDiagLogf` flushes every line** when a diag log is open; the 10 Hz
   per-entity `pos_cl`/`pos_sim` dumps are a lot of synchronous `fflush` on the
   game thread. Keep strictly opt-in (it is) and consider buffered writes flushed

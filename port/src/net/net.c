@@ -2252,14 +2252,22 @@ void netStartFrame(void)
 			s_adminMenuLockHeld = false;
 		}
 	}
-	s32 polled = false;
+	// Drain every event ready this frame, not just the first. enet_host_service()
+	// reads the whole socket and queues the inbound burst but hands back only the
+	// first event; the old loop processed that one and exited, leaving the rest of
+	// the burst to wait for the next frame (up to ~16ms added latency under load —
+	// netplay-perf-review-2026 "smaller"). Re-drain the queue with
+	// enet_host_check_events after each service, and cap the number of socket
+	// services so a sustained packet flood can't stall the frame.
+	const s32 maxservices = 8;
+	s32 numservices = 0;
 	ENetEvent ev = { .type = ENET_EVENT_TYPE_NONE };
-	while (!polled) {
+	for (;;) {
 		if (enet_host_check_events(g_NetHost, &ev) <= 0) {
-			if (enet_host_service(g_NetHost, &ev, 1) <= 0) {
+			if (numservices >= maxservices || enet_host_service(g_NetHost, &ev, 1) <= 0) {
 				break;
 			}
-			polled = true;
+			numservices++;
 		}
 
 		switch (ev.type) {

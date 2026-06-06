@@ -522,6 +522,15 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 
 	struct netplayermove *move = &cl->outmove[0];
 
+	// Zero the slot before populating fields individually. netClientNeedMove
+	// change-detects with a memcmp over the whole struct (minus tick + the anim
+	// tail); netplayermove has padding (e.g. after the s8 weaponnum, before the
+	// coord pos) that the field-by-field writes below never touch. Leaving it as
+	// recycled stack bytes makes that memcmp depend on stale padding — a latent
+	// spurious-send / missed-send the moment a field is reordered. memset makes
+	// the padding deterministic so the comparison only reflects real fields.
+	memset(move, 0, sizeof(*move));
+
 	move->tick = g_NetTick;
 	move->crouchofs = pl->crouchoffset;
 	move->leanofs = pl->swaytarget / 75.f;
@@ -708,6 +717,57 @@ static inline const char *netGetDisconnectReason(const u32 reason)
 // summary block is the shared netmsgQuerySummaryWrite payload so the in-game
 // browser and the master server decode identical bytes. Larger static buffer
 // than the legacy response since details can carry up to 8 players + 8 sims.
+// Connectionless server queries (PDQM) are answered to an UNVERIFIED, spoofable
+// UDP source with a response many times larger than the 5-6 byte request — a
+// classic reflection/amplification primitive, and these servers are publicly
+// advertised to the master browser. Throttle responses per source IP (and a
+// global per-tick backstop) so a spoofed-victim flood can't be amplified through
+// us. A legitimate browser queries each server only a couple of times (summary +
+// details), so a few per second per source is ample headroom.
+#define NET_QUERY_LRU             16
+#define NET_QUERY_MIN_TICKS       15u // summary: ~4 responses/sec/source
+#define NET_QUERY_DETAILS_TICKS   60u // details (largest payload): ~1/sec/source
+#define NET_QUERY_GLOBAL_PER_TICK 8u  // hard cap on responses emitted per tick
+
+static s32 netQueryRateAllowed(const ENetAddress *address, u8 querytype)
+{
+	static struct { struct in6_addr host; u32 tick; u8 used; } lru[NET_QUERY_LRU];
+	static u32 next = 0;
+	static u32 gtick = 0, gcount = 0;
+	const u32 now = g_NetTick;
+	const u32 mininterval = (querytype == NET_QUERYTYPE_DETAILS)
+			? NET_QUERY_DETAILS_TICKS : NET_QUERY_MIN_TICKS;
+	s32 known = 0;
+
+	for (s32 i = 0; i < NET_QUERY_LRU; i++) {
+		if (lru[i].used && !memcmp(&lru[i].host, &address->ipv6, sizeof(lru[i].host))) {
+			// (now - tick) via u32 wraparound is safe on the free-running tick clock.
+			if ((u32)(now - lru[i].tick) < mininterval) {
+				return 0; // per-source throttle
+			}
+			lru[i].tick = now;
+			known = 1;
+			break;
+		}
+	}
+	if (!known) {
+		lru[next].host = address->ipv6;
+		lru[next].tick = now;
+		lru[next].used = 1;
+		next = (next + 1) % NET_QUERY_LRU;
+	}
+
+	// Global backstop: bound total responses per tick so a flood spread across
+	// many spoofed source IPs — which each slip the per-source LRU once — still
+	// can't turn us into a high-rate reflector.
+	if (gtick != now) { gtick = now; gcount = 0; }
+	if (gcount >= NET_QUERY_GLOBAL_PER_TICK) {
+		return 0;
+	}
+	gcount++;
+	return 1;
+}
+
 static void netServerQueryResponse(ENetAddress *address, u8 querytype)
 {
 	static u8 data[1024];
@@ -766,6 +826,12 @@ static s32 netServerConnectionlessPacket(ENetEvent *event, ENetAddress *address,
 		if (!memcmp(rxdata, NET_QUERY_MAGIC, sizeof(NET_QUERY_MAGIC) - 1)) {
 			// direct server query; optional trailing byte selects summary/details
 			const u8 querytype = (rxlen >= 6) ? rxdata[5] : NET_QUERYTYPE_SUMMARY;
+			// Drop (silently consume) if this source / the server as a whole is over
+			// the reflection-amplification rate limit. Still return 1 so the packet
+			// isn't passed to ENet as a connection attempt.
+			if (!netQueryRateAllowed(address, querytype)) {
+				return 1;
+			}
 			sysLogPrintf(LOG_NOTE | LOGFLAG_NOCON, "NET: query request from %s, responding", netFormatAddr(address));
 			netServerQueryResponse(address, querytype);
 			return 1;
@@ -1883,7 +1949,11 @@ static void netServerEvReceive(struct netclient *cl)
 	u32 rc = 0;
 	u8 msgid = 0;
 
-	while (!rc && netbufReadLeft(&cl->in) > 0) {
+	// Stop on cl->in.error as well as rc: a truncated final message leaves the
+	// read pointer short of wp with the error flag set; netbufReadU8 then keeps
+	// returning 0 (= *_NOP, rc stays 0) without advancing rp, so without this
+	// guard the loop would spin forever on a malformed packet (remote hang).
+	while (!rc && !cl->in.error && netbufReadLeft(&cl->in) > 0) {
 		msgid = netbufReadU8(&cl->in);
 		switch (msgid) {
 			case CLC_NOP: rc = 0; break;
@@ -1936,7 +2006,9 @@ static void netClientEvReceive(struct netclient *cl)
 	u32 rc = 0;
 	u8 msgid = 0;
 
-	while (!rc && netbufReadLeft(&cl->in) > 0) {
+	// See netServerEvReceive: stop on cl->in.error too so a truncated trailing
+	// message can't spin this loop forever (SVC_NOP on a non-advancing read).
+	while (!rc && !cl->in.error && netbufReadLeft(&cl->in) > 0) {
 		msgid = netbufReadU8(&cl->in);
 		switch (msgid) {
 			case SVC_NOP: rc = 0; break;
@@ -2353,16 +2425,35 @@ void netEndFrame(void)
 				}
 			}
 #ifndef PLATFORM_N64
-			// broadcast sim (bot) chr positions so clients can position-drive them
-			if (g_Vars.lvmpbotlevel) {
-				for (s32 i = 0; i < g_BotCount; i++) {
+			// broadcast sim (bot) chr positions so clients can position-drive them.
+			// BYTE-BUDGETED ROUND-ROBIN (same scheme as the co-op NPC loop below):
+			// a chr-state block is ~120 bytes, so a high-sim-count Combat Sim match
+			// can exceed the unreliable buffer (g_NetMsg, NET_BUFSIZE). A plain
+			// 0..g_BotCount scan with no space guard let it overflow — the packet was
+			// then truncated on send and the client dropped the tail message, so the
+			// SAME high-index sims lost their update every tick (fixed scan order),
+			// reading as permanently laggy while sim 0 stayed smooth. Resume from a
+			// rotating cursor and stop before the buffer fills, so the loss (when it
+			// happens at all) is shared and interpolation hides it. Player moves were
+			// written above, so the threshold accounts for them.
+			if (g_Vars.lvmpbotlevel && g_BotCount > 0) {
+				static s32 simcursor = 0;
+				if (simcursor >= g_BotCount) {
+					simcursor = 0;
+				}
+				s32 scanned = 0;
+				s32 i = simcursor;
+				while (scanned < g_BotCount && g_NetMsg.wp < NET_BUFSIZE - 340) {
 					struct chrdata *chr = g_MpBotChrPtrs[i];
 					if (chr && chr->prop && chr->prop->syncid) {
 						const u32 b0 = g_NetMsg.wp;
-							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
-							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
 					}
+					i = (i + 1) % g_BotCount;
+					scanned++;
 				}
+				simcursor = i; // resume here next tick
 			}
 
 			// Campaign co-op (Phase 1): broadcast every active campaign NPC chr's

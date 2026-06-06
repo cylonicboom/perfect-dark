@@ -36,6 +36,17 @@ set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-
 option(FORCE_CROSSCOMPILE "Force cross compiling" NO)
 option(DEDICATED_SERVER "Build a headless dedicated server (no SDL/OpenGL/audio/input; never a client)" OFF)
 option(USE_SDLGPU "Build the SDL_GPU (Vulkan) rendering backend in addition to OpenGL (desktop clients only; needs glslang)" ON)
+# Static shader-toolchain link defaults ON for MinGW/Windows so a release
+# build only needs SDL3/zlib1/libgcc/libwinpthread next to the exe (MSYS2
+# ships the .a archives). Other platforms default OFF — distro static
+# glslang/SPIRV archives aren't guaranteed, and the DLL-shipping problem this
+# solves is Windows-specific. Override either way with -DUSE_SDLGPU_STATIC=.
+if(MINGW)
+  set(USE_SDLGPU_STATIC_DEFAULT ON)
+else()
+  set(USE_SDLGPU_STATIC_DEFAULT OFF)
+endif()
+option(USE_SDLGPU_STATIC "Link the SDL_GPU shader toolchain (glslang/SPIRV-Tools/spirv-cross) statically so no extra runtime DLLs are needed" ${USE_SDLGPU_STATIC_DEFAULT})
 
 # Determine target arch
 
@@ -275,23 +286,45 @@ if(DEDICATED_SERVER OR NINTENDO_SWITCH)
   set(USE_SDLGPU OFF)
 endif()
 if(USE_SDLGPU)
-  find_package(glslang CONFIG)
-  if(NOT TARGET glslang::glslang)
-    message(FATAL_ERROR "USE_SDLGPU requires glslang (MSYS2: pacman -S mingw-w64-x86_64-glslang); configure with -DUSE_SDLGPU=OFF to build without the SDL_GPU backend")
-  endif()
-  list(APPEND LIBS glslang::glslang)
-  if(TARGET glslang::SPIRV)
-    list(APPEND LIBS glslang::SPIRV)
-  endif()
-  if(TARGET glslang::glslang-default-resource-limits)
-    list(APPEND LIBS glslang::glslang-default-resource-limits)
+  if(USE_SDLGPU_STATIC)
+    # Static link. MSYS2 ships .a archives alongside the DLLs, but the glslang
+    # CMake config package only exports SHARED imported targets, so locate the
+    # archives directly (explicit lib*.a names so a .dll.a import lib can never
+    # satisfy the search). Not going through the config also drops its
+    # GLSLANG_IS_SHARED_LIBRARY interface define, which is what makes the
+    # headers emit plain (non-dllimport) declarations for static linking.
+    # Link order matters: glslang -> SPIRV-Tools-opt -> SPIRV-Tools.
+    find_library(GLSLANG_STATIC_LIB libglslang.a)
+    find_library(GLSLANG_RESLIMITS_STATIC_LIB libglslang-default-resource-limits.a)
+    find_library(SPIRV_TOOLS_OPT_STATIC_LIB libSPIRV-Tools-opt.a)
+    find_library(SPIRV_TOOLS_STATIC_LIB libSPIRV-Tools.a)
+    if(NOT (GLSLANG_STATIC_LIB AND GLSLANG_RESLIMITS_STATIC_LIB AND SPIRV_TOOLS_OPT_STATIC_LIB AND SPIRV_TOOLS_STATIC_LIB))
+      message(FATAL_ERROR "USE_SDLGPU_STATIC requires the static glslang + SPIRV-Tools archives (MSYS2: pacman -S mingw-w64-x86_64-glslang mingw-w64-x86_64-spirv-tools); configure with -DUSE_SDLGPU_STATIC=OFF to link the DLLs instead")
+    endif()
+    list(APPEND LIBS "${GLSLANG_STATIC_LIB}" "${GLSLANG_RESLIMITS_STATIC_LIB}" "${SPIRV_TOOLS_OPT_STATIC_LIB}" "${SPIRV_TOOLS_STATIC_LIB}")
+    message(STATUS "SDL_GPU: glslang + SPIRV-Tools linked statically")
+  else()
+    find_package(glslang CONFIG)
+    if(NOT TARGET glslang::glslang)
+      message(FATAL_ERROR "USE_SDLGPU requires glslang (MSYS2: pacman -S mingw-w64-x86_64-glslang); configure with -DUSE_SDLGPU=OFF to build without the SDL_GPU backend")
+    endif()
+    list(APPEND LIBS glslang::glslang)
+    if(TARGET glslang::SPIRV)
+      list(APPEND LIBS glslang::SPIRV)
+    endif()
+    if(TARGET glslang::glslang-default-resource-limits)
+      list(APPEND LIBS glslang::glslang-default-resource-limits)
+    endif()
   endif()
   add_compile_definitions(USE_SDLGPU)
 
   # SPIRV-Cross (optional): enables the D3D12 (DXBC) and Metal (MSL) shader
   # formats for the SDL_GPU backend (MSYS2: mingw-w64-x86_64-spirv-cross).
-  # Without it the backend is Vulkan/SPIR-V only.
-  find_package(spirv_cross_c_shared QUIET)
+  # Without it the backend is Vulkan/SPIR-V only. USE_SDLGPU_STATIC skips the
+  # shared config package so the find_library fallback picks up the .a libs.
+  if(NOT USE_SDLGPU_STATIC)
+    find_package(spirv_cross_c_shared QUIET)
+  endif()
   if(TARGET spirv-cross-c-shared)
     list(APPEND LIBS spirv-cross-c-shared)
     add_compile_definitions(GFX_SDLGPU_HAS_SPIRV_CROSS)

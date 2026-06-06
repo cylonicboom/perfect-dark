@@ -123,6 +123,21 @@ Two implementation notes:
 - New build dependency when ON: **glslang** (`mingw-w64-x86_64-glslang` on
   MSYS2) for the runtime GLSL→SPIR-V shader pipeline (used from Phase 1).
   `-DUSE_SDLGPU=OFF` builds exactly the old GL-only client.
+- `USE_SDLGPU_STATIC` links the shader toolchain statically
+  (`libglslang.a` + `libglslang-default-resource-limits.a` +
+  `libSPIRV-Tools{,-opt}.a`, and routes spirv-cross to its `.a` fallback
+  instead of `libspirv-cross-c-shared.dll`), so the shipped DLL set shrinks
+  back to the pre-SDL_GPU four (SDL3, zlib1, libgcc_s_seh-1, libwinpthread-1
+  — `libstdc++-6.dll` also drops out since the exe links `-static-libstdc++`).
+  MSYS2 packages ship the static archives alongside the DLLs; the glslang
+  CMake config only exports SHARED targets, hence the direct `find_library`
+  on explicit `lib*.a` names. **Default ON for MinGW/Windows builds**, OFF
+  elsewhere (distro static glslang archives aren't guaranteed; the
+  DLL-shipping problem is Windows-specific). `-DUSE_SDLGPU_STATIC=OFF`
+  restores the shared-DLL link (slightly faster links for dev iteration).
+  Adds ~17 MB to the exe (measured, Debug). Note: an option default never
+  overrides an existing build dir's cache — reconfigure with an explicit
+  `-DUSE_SDLGPU_STATIC=ON` to flip a pre-existing dir.
 - Sources: `port/fast3d/gfx_sdlgpu.{h,cpp}` (+ `gfx_sdlgpu_shader.cpp` from
   Phase 1). Bodies are `#ifdef USE_SDLGPU`; CMake also drops the files from
   the glob when OFF.

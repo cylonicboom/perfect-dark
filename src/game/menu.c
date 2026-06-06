@@ -805,11 +805,15 @@ void menuCalculateItemSize(struct menuitem *item, s16 *width, s16 *height, struc
 #endif
 
 			if ((item->flags & (MENUITEMFLAG_LABEL_HASRIGHTTEXT | MENUITEMFLAG_BIGFONT)) == 0) {
-#ifndef PLATFORM_N64
-				if (item->flags & MENUITEMFLAG_LITERAL_TEXT) {
-					text = (const char *)item->param3;
-				} else
-#endif
+				// (port) param3 right-side text must resolve the same way the render
+				// paths do (menuitemLabelRender / menuitemSelectableRender): a text id
+				// or a menutext function pointer, never a literal string — nothing in
+				// the game puts one in param3. A former MENUITEMFLAG_LITERAL_TEXT
+				// branch here measured the machine-code BYTES of the menutext function
+				// pointer as a string, inflating the dialog width by however many
+				// non-zero bytes the exe layout put there (screen-wide in the
+				// statically-linked build) and pushing the right-side values
+				// off-screen.
 				text = menuResolveText(item->param3, item);
 
 				// @bug: This is not how you check for an empty string

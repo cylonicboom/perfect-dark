@@ -17445,9 +17445,23 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 	}
 #endif
 
+#ifndef PLATFORM_N64
+	// A wire-driven pickup (the client applying the host's SVC_PROP_PICKUP) is
+	// processed during pre-tick message handling, where lvupdate240 can be 0 on a
+	// render-only frame (the detPinTimestep paused-frame pin). The host already
+	// granted it, so the lvupdate240 == 0 bail must NOT apply here: the box is
+	// removed regardless (netmsgSvcPropPickupRead runs the tickop after this), but
+	// the ammo/weapon would never enter the client's inventory — the box vanishes
+	// with no item, intermittently, depending on which frame the packet lands on.
+	// The isdead guard still stands.
+	if (g_Vars.currentplayer->isdead || (g_Vars.lvupdate240 == 0 && g_NetPickupWireShowMsg < 0)) {
+		return TICKOP_NONE;
+	}
+#else
 	if (g_Vars.currentplayer->isdead || g_Vars.lvupdate240 == 0) {
 		return TICKOP_NONE;
 	}
+#endif
 
 	// Suppress HUD pickup messages during cutscenes (e.g. items given at
 	// mission start via aiGiveObjectToChr). In co-op, keep showing them for

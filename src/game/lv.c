@@ -2926,6 +2926,23 @@ void lvStop(void)
 {
 	paksStop(true);
 
+#ifndef PLATFORM_N64
+	// The player structs live in the stage pool that's about to be freed —
+	// any netclient binding kept across this point is a dangling pointer the
+	// per-tick net code dereferences on the next frame (crash observed: a
+	// co-op client declining the retry-mission dialog exits to the menu
+	// WHILE STILL CONNECTED; netClientRecordMove then read the freed
+	// player/chr/model chain). Bindings are re-established at the next stage
+	// load (netPlayersAllocate / the stage-start manifest / co-op claim), so
+	// severing them here is always safe.
+	if (g_NetMode) {
+		for (s32 i = 0; i <= NET_MAX_CLIENTS; ++i) {
+			g_NetClients[i].player = NULL;
+		}
+		netSpectateStop();
+	}
+#endif
+
 	if (g_MiscAudioHandle && sndGetState(g_MiscAudioHandle)) {
 		audioStop(g_MiscAudioHandle);
 	}

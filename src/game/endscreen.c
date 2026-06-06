@@ -30,10 +30,24 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#endif
 
 MenuItemHandlerResult endscreenHandleDeclineMission(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
+#ifndef PLATFORM_N64
+		// Net co-op client declining the retry: they're leaving the mission
+		// for the main menu, so leave the SESSION too — the host's
+		// disconnect path parks their pawn for reclaim-on-rejoin. Staying
+		// connected while the local stage unloads left the per-tick net
+		// code running against a half-torn-down world (and a menu-idling
+		// client the host still counted as in-game).
+		if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0) {
+			netDisconnect();
+		}
+#endif
 		menuPopDialog();
 		menuPopDialog();
 	}

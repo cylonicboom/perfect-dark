@@ -1983,6 +1983,36 @@ static f32 netbufReadBoundedQ(struct netbuf *src, f32 range)
 	return (f32)netbufReadS16(src) * (range / 32767.0f);
 }
 
+// --- Position quantization (proto 65, docs/netplay-perf-review-2026.md P2) ---
+// The per-chr-per-tick coord (12 bytes) is the single biggest SVC_PROP_MOVE field.
+// When g_NetPosQuant is on and the position fits the s16 range at the current
+// scale, ship it as 3x s16 (6 bytes) instead of 3x f32. Lossy to ~g_NetPosQuantScale
+// world units (default 1.0 -> ~1 unit, sub-visual). Positions outside the s16 range
+// fall back to a full coord (flag bit clear), so a large map can never clamp/teleport
+// a chr — worst case it just doesn't save bytes for that one prop.
+static bool netPosFitsQuant(const struct coord *p)
+{
+	const f32 lim = 32767.0f * g_NetPosQuantScale;
+	return p->x > -lim && p->x < lim
+		&& p->y > -lim && p->y < lim
+		&& p->z > -lim && p->z < lim;
+}
+
+static void netbufWritePosQ(struct netbuf *dst, const struct coord *p)
+{
+	const f32 inv = 1.0f / g_NetPosQuantScale;
+	netbufWriteS16(dst, (s16)netQuantRound(p->x * inv, -32767, 32767));
+	netbufWriteS16(dst, (s16)netQuantRound(p->y * inv, -32767, 32767));
+	netbufWriteS16(dst, (s16)netQuantRound(p->z * inv, -32767, 32767));
+}
+
+static void netbufReadPosQ(struct netbuf *src, struct coord *p)
+{
+	p->x = (f32)netbufReadS16(src) * g_NetPosQuantScale;
+	p->y = (f32)netbufReadS16(src) * g_NetPosQuantScale;
+	p->z = (f32)netbufReadS16(src) * g_NetPosQuantScale;
+}
+
 u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *initrot)
 {
 	// prop->obj, prop->chr, prop->door etc. all alias the same union slot, so
@@ -2043,10 +2073,22 @@ u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *
 		flags |= (1 << 4);
 	}
 
+	// BIT 5: position is s16-quantized (proto 65, P2 bandwidth). Set only when
+	// enabled AND in range; out-of-range positions stay a full coord so a big map
+	// can't clamp a chr.
+	const bool posq = g_NetPosQuant && netPosFitsQuant(&prop->pos);
+	if (posq) {
+		flags |= (1 << 5);
+	}
+
 	netbufWriteU8(dst, SVC_PROP_MOVE);
 	netbufWriteU8(dst, flags);
 	netbufWritePropPtr(dst, prop);
-	netbufWriteCoord(dst, &prop->pos);
+	if (posq) {
+		netbufWritePosQ(dst, &prop->pos);
+	} else {
+		netbufWriteCoord(dst, &prop->pos);
+	}
 	netbufWriteRooms(dst, prop->rooms, ARRAYCOUNT(prop->rooms));
 	if (projectile) {
 		netbufWriteCoord(dst, &projectile->speed);
@@ -2259,7 +2301,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 flags = netbufReadU8(src);
 	struct prop *prop = netbufReadPropPtr(src);
-	struct coord pos; netbufReadCoord(src, &pos);
+	struct coord pos;
+	if (flags & (1 << 5)) {
+		netbufReadPosQ(src, &pos); // proto 65: s16-quantized position
+	} else {
+		netbufReadCoord(src, &pos);
+	}
 	RoomNum rooms[8] = { -1 }; netbufReadRooms(src, rooms, ARRAYCOUNT(rooms));
 
 	if (src->error) {

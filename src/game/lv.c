@@ -42,6 +42,7 @@
 #include "game/lang.h"
 #include "game/lv.h"
 #include "game/menu.h"
+#include "game/mplayer/ingame.h"
 #include "game/mplayer/mplayer.h"
 #include "game/mplayer/scenarios.h"
 #include "game/mplayer/setup.h"
@@ -98,6 +99,7 @@
 #include "lib/vi.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include "input.h"
 #include "net/net.h"
 #include "net/netmsg.h"
 #include "spectator.h"
@@ -2878,6 +2880,22 @@ void lvTickPlayer(void)
 		// override for whatever target is active (manual or death-driven).
 		netSpectateAutoUpdate();
 		netSpectateApply();
+
+		// JIP spectator pause menu: with no own player, bondmove never runs
+		// for us, so the normal ESC/START -> mpPushPauseDialog path is
+		// unreachable and the spectator can't leave the match. Open it here
+		// off the current (order-0) slot's context: its stats->mpindex is 0,
+		// so the menu binds to contpad 0 — the local keyboard/pad. The
+		// rankings header shows that slot's name (cosmetic); Quit works.
+		if (g_NetMode == NETMODE_CLIENT && !g_NetLocalClient->player
+				&& g_NetLocalClient->is_spectator
+				&& g_Vars.normmplayerisrunning
+				&& g_MenuData.root != MENUROOT_MPPAUSE
+				&& g_Vars.currentplayer && g_Vars.currentplayer->prop
+				&& (inputKeyJustPressed(VK_ESCAPE)
+					|| (joyGetButtonsPressedThisFrame(0, START_BUTTON) != 0))) {
+			mpPushPauseDialog();
+		}
 	}
 #endif
 }

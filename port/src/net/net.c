@@ -79,6 +79,17 @@ static u8 g_NetLastTimescale;
 s32 g_NetHostLatch = false;
 s32 g_NetJoinLatch = false;
 
+// Snapshot of the LOCAL machine's player-1 profile (g_PlayerConfigsArray[0]),
+// taken at net session start while it's still pristine. netPlayersAllocate
+// repurposes the shared g_PlayerConfigsArray slots for REMOTE players
+// (CONTROLMODE_NA, remote-adjusted options, their name/body) — while the
+// local client is a JIP spectator, that stomps EVERY slot including [0], and
+// when the next round seats us on one of those slots we'd inherit the
+// poison: CONTROLMODE_NA kills all input including the pause menu (bondmove
+// early-returns before the ESC/START handling). The local-bind path in
+// netPlayersAllocate restores the input/identity fields from this snapshot.
+static struct mpplayerconfig g_NetLocalProfileBackup;
+
 // Dedicated-server mode latches. g_NetDedicatedLatch is set by --dedicated
 // (mode 1) or --dedicated-windowed (mode 2) at CLI parse time, before any
 // subsystem init. main.c copies it to g_NetDedicatedMode before videoInit /
@@ -903,6 +914,7 @@ s32 netStartServer(u16 port, s32 maxclients)
 	g_NetLocalClient = &g_NetClients[0];
 	g_NetLocalClient->state = CLSTATE_LOBBY; // local client doesn't need auth
 	netClientReadConfig(g_NetLocalClient, 0);
+	g_NetLocalProfileBackup = g_PlayerConfigsArray[0];
 
 	// Dedicated server: the host doesn't participate as a combatant. Force
 	// is_spectator=1 so netPlayersAllocate skips slot 0 for the host
@@ -1379,6 +1391,7 @@ s32 netStartClient(const char *addr)
 
 	g_NetLocalClient->state = CLSTATE_CONNECTING;
 	netClientReadConfig(g_NetLocalClient, 0);
+	g_NetLocalProfileBackup = g_PlayerConfigsArray[0];
 
 	g_NetMode = NETMODE_CLIENT;
 
@@ -2588,7 +2601,9 @@ void netPlayersAllocate(void)
 
 		if (cl != g_NetLocalClient) {
 			// disable controls for the remote pawns and set their settings
-			// TODO: backup the player configs or something
+			// (the local profile this stomps is snapshotted in
+			// g_NetLocalProfileBackup at session start and restored by the
+			// local-bind branch below whenever we get seated on a slot)
 			struct mpplayerconfig *cfg = &g_PlayerConfigsArray[cl->playernum];
 			cfg->controlmode = CONTROLMODE_NA;
 			cfg->base.mpbodynum = cl->settings.bodynum;
@@ -2602,6 +2617,25 @@ void netPlayersAllocate(void)
 			// don't enable toggle aim, invert pitch or lookahead for remote players
 			cfg->options &= ~(OPTION_AIMCONTROL | OPTION_LOOKAHEAD);
 			cfg->options |= OPTION_FORWARDPITCH | OPTION_ASKEDSAVEPLAYER;
+		} else {
+			// Restore the LOCAL profile into whatever slot we bind. The slot
+			// may have belonged to a REMOTE player last round (we were a JIP
+			// spectator, so the branch above stomped every combatant config,
+			// ours included) — inheriting it left CONTROLMODE_NA on our own
+			// pawn, which kills all input INCLUDING the pause menu (the
+			// bondmove gate early-returns before ESC/START handling), and
+			// wore the remote player's name/body/options. base.team is left
+			// alone — the stage-start manifest just assigned it.
+			struct mpplayerconfig *cfg = &g_PlayerConfigsArray[cl->playernum];
+			// Guard a snapshot that was itself taken from a poisoned profile
+			// (e.g. a force-closed session left NA in the array): never seat
+			// the local player with dead controls.
+			cfg->controlmode = (g_NetLocalProfileBackup.controlmode == CONTROLMODE_NA)
+					? CONTROLMODE_11 : g_NetLocalProfileBackup.controlmode;
+			cfg->options = g_NetLocalProfileBackup.options;
+			cfg->base.mpbodynum = g_NetLocalProfileBackup.base.mpbodynum;
+			cfg->base.mpheadnum = g_NetLocalProfileBackup.base.mpheadnum;
+			memcpy(cfg->base.name, g_NetLocalProfileBackup.base.name, sizeof(cfg->base.name));
 		}
 
 		cl->config = &g_PlayerConfigsArray[cl->playernum];

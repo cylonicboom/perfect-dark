@@ -95,7 +95,29 @@ halving per-tick player-move bandwidth in large games; 2-4 player matches are
 untouched (no feel change) and interpolation hides the 30Hz cadence. An operator
 override (`/svcrate`, `Net.Server.UpdateFrames > 1`) still wins via `max()`.
 
-### P2 — Per-client relevancy + delta compression **[DEFERRED — design below]**
+### P2 — Per-client relevancy + delta compression **[STEPS 1-2 DONE — default on; delta still deferred]**
+
+**Implemented (steps 1-2, no wire change):** the sim + co-op-NPC chr-state broadcast
+in `netEndFrame` no longer writes each chr once into the shared `g_NetMsg` and
+`enet_host_broadcast`s an identical packet. With `g_NetRelevancy` on (default), it
+builds **each remote client its own packet** of only the chrs relevant to that
+client (`netChrRelevantTo`) into a scratch buffer and `netSend`s it unicast. The
+host runs the sims locally and gets nothing. Relevancy is **conservative** (the cull
+is default-on): a chr **sharing a room** with the client's pawn is always sent
+(same-room visibility at any range); otherwise it's sent only within
+`g_NetRelevancyDist` (9000 units, well past `LV_SMART_SLOMO_RANGE` 1500); a chr that
+is *both* far *and* in unrelated rooms is culled. Each client keeps its own
+byte-budgeted round-robin cursor (preserves the R1 fairness guarantee). A
+no-pawn client (spectator/JIP) is sent everything (can't judge). Live toggle
+`/relevancy on|off|dist N`, config `Net.Server.Relevancy` / `Net.Server.RelevancyDist`.
+**Tradeoff:** on a *small/open* map where every sim is relevant to everyone, the
+per-client path is slightly *worse* than the broadcast (same payload, but N× the
+packets + serialization) — flip `/relevancy off` there. The win is large maps with
+distant sims. **Validate on a real build** (watch for a far chr popping in; the
+F9 per-client byte counters show the cull benefit). **Delta encoding (step 3)
+stays deferred** — most error-prone, gated for a later pass.
+
+Original deferral note + full plan (delta still applies):
 `enet_host_broadcast` ships one identical all-entity packet to every client with
 no PVS/room-distance interest management, and every field is absolute (no delta).
 This is the real scaling answer but it is an **architectural rewrite of the core

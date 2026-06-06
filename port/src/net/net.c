@@ -141,6 +141,9 @@ struct netvotestate g_NetVote;
 
 u32 g_NetServerUpdateRate = 1;
 s32 g_NetLagCompExact = 1; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. /lagcomp toggles for live A/B
+s32 g_NetRelevancy = 1; // P2: per-client relevancy cull of sim/NPC chr-state (default on; /relevancy off = identical broadcast to all)
+f32 g_NetRelevancyDist = 9000.0f; // a sim NOT sharing a room with the client's pawn is culled beyond this (world units). Conservative default — well past LV_SMART_SLOMO_RANGE (1500). /relevancy dist N to tune
+static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *cl); // defined below (near netChrRoomsEqual); used by netEndFrame above it
 u32 g_NetServerInRate = 128 * 1024;
 u32 g_NetServerOutRate = 128 * 1024;
 u32 g_NetServerPort = NET_DEFAULT_PORT;
@@ -297,6 +300,13 @@ struct netbuf g_NetMsg = { .data = g_NetMsgBuf, .size = sizeof(g_NetMsgBuf) };
 
 static u8 g_NetMsgRelBuf[NET_BUFSIZE * 4]; // reliable buffer can be reliably fragmented
 struct netbuf g_NetMsgRel = { .data = g_NetMsgRelBuf, .size = sizeof(g_NetMsgRelBuf) };
+
+// P2 (docs/netplay-perf-review-2026.md): per-client relevancy-culled sim/NPC
+// chr-state. When g_NetRelevancy is on, the bandwidth-dominant chr-state blocks
+// are built per-client into this scratch buffer (only the chrs relevant to that
+// client) and sent individually, instead of one identical broadcast to all.
+static u8 g_NetRelevBufData[NET_BUFSIZE];
+static struct netbuf g_NetRelevBuf = { .data = g_NetRelevBufData, .size = sizeof(g_NetRelevBufData) };
 
 // Spectate target: when non-NULL, netSpectateApply rides the local camera on
 // this chr each tick. /spec console commands set/clear it; netSpectateCycle
@@ -2508,23 +2518,60 @@ void netEndFrame(void)
 			// happens at all) is shared and interpolation hides it. Player moves were
 			// written above, so the threshold accounts for them.
 			if (g_Vars.lvmpbotlevel && g_BotCount > 0) {
-				static s32 simcursor = 0;
-				if (simcursor >= g_BotCount) {
-					simcursor = 0;
-				}
-				s32 scanned = 0;
-				s32 i = simcursor;
-				while (scanned < g_BotCount && g_NetMsg.wp < NET_BUFSIZE - 340) {
-					struct chrdata *chr = g_MpBotChrPtrs[i];
-					if (chr && chr->prop && chr->prop->syncid) {
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+				if (g_NetRelevancy) {
+					// P2: per-client relevancy cull. Build each remote client its own
+					// chr-state packet of only the sims relevant to it
+					// (netChrRelevantTo) and send individually, instead of one identical
+					// broadcast. Same byte-budgeted round-robin as the legacy path but
+					// with a separate cursor per client so no client's high-index sims
+					// starve. The host (g_NetLocalClient) runs the sim locally and gets
+					// no packet.
+					static s32 simcursor[NET_MAX_CLIENTS];
+					for (s32 c = 0; c < g_NetMaxClients; ++c) {
+						struct netclient *cl = &g_NetClients[c];
+						if (cl == g_NetLocalClient || cl->state < CLSTATE_GAME || !cl->peer) {
+							continue;
+						}
+						netbufStartWrite(&g_NetRelevBuf);
+						if (simcursor[c] >= g_BotCount) {
+							simcursor[c] = 0;
+						}
+						s32 scanned = 0;
+						s32 i = simcursor[c];
+						while (scanned < g_BotCount && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
+							struct chrdata *chr = g_MpBotChrPtrs[i];
+							if (chr && chr->prop && chr->prop->syncid && netChrRelevantTo(chr, cl)) {
+								const u32 b0 = g_NetRelevBuf.wp;
+								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
+								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
+							}
+							i = (i + 1) % g_BotCount;
+							scanned++;
+						}
+						simcursor[c] = i;
+						if (g_NetRelevBuf.wp) {
+							netSend(cl, &g_NetRelevBuf, false, NETCHAN_DEFAULT);
+						}
 					}
-					i = (i + 1) % g_BotCount;
-					scanned++;
+				} else {
+					static s32 simcursor = 0;
+					if (simcursor >= g_BotCount) {
+						simcursor = 0;
+					}
+					s32 scanned = 0;
+					s32 i = simcursor;
+					while (scanned < g_BotCount && g_NetMsg.wp < NET_BUFSIZE - 340) {
+						struct chrdata *chr = g_MpBotChrPtrs[i];
+						if (chr && chr->prop && chr->prop->syncid) {
+							const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						}
+						i = (i + 1) % g_BotCount;
+						scanned++;
+					}
+					simcursor = i; // resume here next tick
 				}
-				simcursor = i; // resume here next tick
 			}
 
 			// Campaign co-op (Phase 1): broadcast every active campaign NPC chr's
@@ -2540,24 +2587,58 @@ void netEndFrame(void)
 			// written above, so the threshold accounts for them.
 			if (g_Vars.coopplayernum >= 0 && g_ChrSlots) {
 				const s32 numslots = chrsGetNumSlots();
-				static s32 coopnpcstart = 0;
-				if (coopnpcstart >= numslots) {
-					coopnpcstart = 0;
-				}
-				s32 scanned = 0;
-				s32 i = coopnpcstart;
-				while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
-					struct chrdata *chr = &g_ChrSlots[i];
-					if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
-							&& chr->prop->type == PROPTYPE_CHR) {
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+				if (g_NetRelevancy) {
+					// P2: per-client relevancy cull (see the sim loop above). Each remote
+					// co-op client gets only the NPCs relevant to its pawn; the host gets
+					// none (runs the NPCs locally). Separate per-client round-robin cursor.
+					static s32 coopcursor[NET_MAX_CLIENTS];
+					for (s32 c = 0; c < g_NetMaxClients; ++c) {
+						struct netclient *cl = &g_NetClients[c];
+						if (cl == g_NetLocalClient || cl->state < CLSTATE_GAME || !cl->peer) {
+							continue;
+						}
+						netbufStartWrite(&g_NetRelevBuf);
+						if (coopcursor[c] >= numslots) {
+							coopcursor[c] = 0;
+						}
+						s32 scanned = 0;
+						s32 i = coopcursor[c];
+						while (scanned < numslots && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
+							struct chrdata *chr = &g_ChrSlots[i];
+							if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
+									&& chr->prop->type == PROPTYPE_CHR && netChrRelevantTo(chr, cl)) {
+								const u32 b0 = g_NetRelevBuf.wp;
+								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
+								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
+							}
+							i = (i + 1) % numslots;
+							scanned++;
+						}
+						coopcursor[c] = i;
+						if (g_NetRelevBuf.wp) {
+							netSend(cl, &g_NetRelevBuf, false, NETCHAN_DEFAULT);
+						}
 					}
-					i = (i + 1) % numslots;
-					scanned++;
+				} else {
+					static s32 coopnpcstart = 0;
+					if (coopnpcstart >= numslots) {
+						coopnpcstart = 0;
+					}
+					s32 scanned = 0;
+					s32 i = coopnpcstart;
+					while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
+						struct chrdata *chr = &g_ChrSlots[i];
+						if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
+								&& chr->prop->type == PROPTYPE_CHR) {
+							const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						}
+						i = (i + 1) % numslots;
+						scanned++;
+					}
+					coopnpcstart = i; // resume here next tick
 				}
-				coopnpcstart = i; // resume here next tick
 			}
 
 			// Co-op movable OBJ position sync. An OBJ's position is otherwise only
@@ -3477,6 +3558,44 @@ static s32 netChrRoomsEqual(const RoomNum *ra, const RoomNum *rb)
 		}
 	}
 	return 1;
+}
+
+// P2 relevancy: true if the two -1-terminated room arrays share at least one
+// room. A chr in (or straddling) a room the client's pawn occupies is always
+// relevant regardless of distance, so a big open room never culls a visible chr.
+static s32 netRoomsShareAny(const RoomNum *a, const RoomNum *b)
+{
+	for (s32 i = 0; i < 8 && a[i] != -1; ++i) {
+		for (s32 j = 0; j < 8 && b[j] != -1; ++j) {
+			if (a[i] == b[j]) {
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+// P2 relevancy: is this chr worth sending to this client? Conservative by design
+// (the cull is default-on): always relevant when it shares a room with the
+// client's pawn (covers same-room visibility at any range), otherwise relevant
+// only within g_NetRelevancyDist (covers near-but-adjacent-room cases). A chr
+// that is BOTH far AND in unrelated rooms is "clearly elsewhere on the map" and
+// culled; interpolation + the 2Hz prop-reconcile absorb the brief re-entry pop.
+// Returns relevant (1) whenever it can't judge, so a missing pawn never culls.
+static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *cl)
+{
+	if (!cl->player || !cl->player->prop || !chr->prop) {
+		return 1;
+	}
+	const struct prop *cp = cl->player->prop;
+	const struct prop *xp = chr->prop;
+	if (netRoomsShareAny(xp->rooms, cp->rooms)) {
+		return 1;
+	}
+	const f32 dx = xp->pos.x - cp->pos.x;
+	const f32 dy = xp->pos.y - cp->pos.y;
+	const f32 dz = xp->pos.z - cp->pos.z;
+	return (dx * dx + dy * dy + dz * dz) <= (g_NetRelevancyDist * g_NetRelevancyDist);
 }
 
 void netChrInterpolate(struct chrdata *chr)
@@ -5132,6 +5251,30 @@ s32 netConsoleCommand(const char *line)
 			sysLogPrintf(LOG_CHAT, "NET: lag-comp = %s (usage: /lagcomp exact|legacy)",
 				g_NetLagCompExact ? "exact" : "legacy");
 		}
+	} else if (strcmp(cmd, "relevancy") == 0) {
+		// /relevancy [on|off|dist N] — server-side per-client sim/NPC relevancy
+		// cull (P2). on (default) sends each client only the chrs near/sharing a
+		// room with its pawn; off broadcasts every chr to everyone (legacy). dist
+		// sets the cull radius for chrs not sharing the pawn's room. Live A/B: flip
+		// off instantly if a far chr ever pops in.
+		if (strcmp(arg, "on") == 0) {
+			g_NetRelevancy = 1;
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = on (dist %.0f)", g_NetRelevancyDist);
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetRelevancy = 0;
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = off (broadcast all)");
+		} else if (strncmp(arg, "dist", 4) == 0) {
+			const char *n = arg + 4;
+			while (*n == ' ') n++;
+			if (*n) {
+				const f32 d = (f32)atof(n);
+				g_NetRelevancyDist = (d < 500.f) ? 500.f : d;
+			}
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull dist = %.0f", g_NetRelevancyDist);
+		} else {
+			sysLogPrintf(LOG_CHAT, "NET: relevancy cull = %s, dist %.0f (usage: /relevancy on|off|dist N)",
+				g_NetRelevancy ? "on" : "off", g_NetRelevancyDist);
+		}
 	} else if (strcmp(cmd, "cspframes") == 0) {
 		// /cspframes <N> — ticks the smooth CSP correction spreads error
 		// over. Smaller = snappier; larger = smoother but slower. Default 10.
@@ -5832,6 +5975,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /svcrate <n>     server update interval, ticks (default 1)");
 		sysLogPrintf(LOG_CHAT, "  /clcrate <n>     client update interval, ticks (default 1)");
 		sysLogPrintf(LOG_CHAT, "  /lagcomp x        hit-rewind mode: exact|legacy (default exact)");
+		sysLogPrintf(LOG_CHAT, "  /relevancy x      per-client chr cull: on|off|dist N (default on)");
 		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
 		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
 		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");
@@ -6512,6 +6656,8 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.InRate", &g_NetServerInRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.OutRate", &g_NetServerOutRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
+	configRegisterInt("Net.Server.Relevancy", &g_NetRelevancy, 0, 1);
+	configRegisterFloat("Net.Server.RelevancyDist", &g_NetRelevancyDist, 500.0f, 1000000.0f);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
 	configRegisterInt("Net.Server.HitValidate", &g_NetHitValidate, 0, 2);
 

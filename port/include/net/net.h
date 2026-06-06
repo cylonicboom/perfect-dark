@@ -491,6 +491,8 @@ extern u64 g_NetMusicRngSeed;
 
 extern u32 g_NetInterpTicks;
 extern s32 g_NetLagCompExact; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. Live A/B via /lagcomp
+extern s32 g_NetRelevancy; // P2: 1 = per-client relevancy-culled sim/NPC chr-state (default); 0 = identical broadcast to all. /relevancy
+extern f32 g_NetRelevancyDist; // cull distance for a sim not sharing the client pawn's room (world units). /relevancy dist N
 extern u32 g_NetServerPort;
 // Actual bound listen port of the running server (set in netStartServer). The
 // master heartbeat advertises this so the tracker pairs it with the source IP.

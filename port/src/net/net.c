@@ -143,7 +143,7 @@ u32 g_NetServerUpdateRate = 1;
 s32 g_NetLagCompExact = 1; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. /lagcomp toggles for live A/B
 s32 g_NetRelevancy = 1; // P2: per-client relevancy cull of sim/NPC chr-state (default on; /relevancy off = identical broadcast to all)
 f32 g_NetRelevancyDist = 9000.0f; // a sim NOT sharing a room with the client's pawn is culled beyond this (world units). Conservative default — well past LV_SMART_SLOMO_RANGE (1500). /relevancy dist N to tune
-s32 g_NetPosQuant = 0; // P2: quantize SVC_PROP_MOVE positions to s16 (proto 65). Default OFF — wire-format/lossy, opt-in. /posquant on
+s32 g_NetPosQuant = 1; // P2: quantize SVC_PROP_MOVE positions to s16 (proto 65, ~6B vs 12B). Default ON (validated; lossy ~1 unit, out-of-range falls back to full coord). /posquant off to disable
 f32 g_NetPosQuantScale = 1.0f; // world units per s16 step. 1.0 = ~1-unit precision over +/-32767; raise for bigger maps (coarser), lower for finer. /posquant scale N
 static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *cl); // defined below (near netChrRoomsEqual); used by netEndFrame above it
 u32 g_NetServerInRate = 128 * 1024;
@@ -6004,7 +6004,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /clcrate <n>     client update interval, ticks (default 1)");
 		sysLogPrintf(LOG_CHAT, "  /lagcomp x        hit-rewind mode: exact|legacy (default exact)");
 		sysLogPrintf(LOG_CHAT, "  /relevancy x      per-client chr cull: on|off|dist N (default on)");
-		sysLogPrintf(LOG_CHAT, "  /posquant x       quantize prop positions: on|off|scale N (default off)");
+		sysLogPrintf(LOG_CHAT, "  /posquant x       quantize prop positions: on|off|scale N (default on)");
 		sysLogPrintf(LOG_CHAT, "  /cspframes <n>   CSP smooth-correction window (default 10)");
 		sysLogPrintf(LOG_CHAT, "  /cspcorr <u>     CSP min correction error, units (default 25)");
 		sysLogPrintf(LOG_CHAT, "  /cspteleport <u> CSP hard-snap threshold, units (default 120)");

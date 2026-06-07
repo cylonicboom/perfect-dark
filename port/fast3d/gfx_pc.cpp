@@ -409,6 +409,34 @@ static void dlcacheCloseSegment(void) {
     g_DlCacheSegTris = 0;
 }
 
+// Drop cached entries whose KEY (the leaf gdl pointer) lies inside a freed
+// memory range. Called from bgUnloadRoom: room gfxdata is heap-allocated, so a
+// NEW room can load at the SAME address as a freed one — its leaf gdl pointers
+// then collide with the dead room's cache keys and replay serves the OLD
+// room's geometry in the new room's draw slot ("rooms drawn in the incorrect
+// slots"). The original "orphaned entries get dropped on the next cache
+// clear" assumption is wrong under allocator address reuse.
+extern "C" void gfx_dlcache_invalidate_range(const void* start, const void* end) {
+    const uintptr_t s = (uintptr_t)start;
+    const uintptr_t t = (uintptr_t)end;
+
+    for (auto it = g_DlCache.begin(); it != g_DlCache.end();) {
+        const uintptr_t key = (uintptr_t)it->first;
+
+        if (key >= s && key < t) {
+            if (it->second.buffer_id != 0) {
+                gfx_rapi->cache_delete_buffer(it->second.buffer_id);
+            }
+            if (it->second.palette_tex != 0) {
+                gfx_rapi->cache_delete_palette(it->second.palette_tex);
+            }
+            it = g_DlCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 // Drop every cached entry + its GPU buffer (and abort any in-progress record).
 // Called on any texture-cache change so stored texture ids can never dangle.
 static void dlcacheInvalidateAll(void) {

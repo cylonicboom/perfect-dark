@@ -3286,6 +3286,15 @@ void bgUnloadRoom(s32 roomnum)
 		size = g_Rooms[roomnum].gfxdatalen;
 		memaFree(g_Rooms[roomnum].gfxdata, size);
 #else
+		if (g_Rooms[roomnum].gfxdata != NULL) {
+			// Drop this room's display-list cache entries BEFORE freeing: the
+			// cache is keyed by leaf gdl pointers inside this allocation, and
+			// a room loading later at the same heap address would otherwise
+			// hit the dead room's entries (rooms drawn in the wrong slots).
+			extern void gfx_dlcache_invalidate_range(const void *start, const void *end);
+			gfx_dlcache_invalidate_range(g_Rooms[roomnum].gfxdata,
+					(u8 *)g_Rooms[roomnum].gfxdata + g_Rooms[roomnum].gfxdatalen);
+		}
 		sysMemFree(g_Rooms[roomnum].gfxdata);
 #endif
 		g_Rooms[roomnum].gfxdata = NULL;

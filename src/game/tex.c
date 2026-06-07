@@ -498,6 +498,12 @@ Gfx *texWriteLoadToTmemAddr(Gfx *gdl, struct tex *tex, s32 tmemoffset)
 
 	texGetDepthAndSize(tex, &depth, &len);
 
+#ifndef PLATFORM_N64
+	// ext_tex: tag the following SETTIMG with the game texture number so the
+	// renderer can substitute a data/ext_tex PNG (rafccq/port-ext-textures)
+	gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_GENERAL, 0, tex->texturenum, 0);
+#endif
+
 	if (tex->lutmodeindex == 0) {
 		gDPSetTextureImage(gdl++, tex->gbiformat, depth, 1, tex->data);
 
@@ -612,6 +618,11 @@ Gfx *texWriteLoadToTmemZero(Gfx *gdl, struct tex *tex)
 	s32 len;
 
 	texGetDepthAndSize(tex, &depth, &len);
+
+#ifndef PLATFORM_N64
+	// ext_tex: see texWriteLoadToTmemAddr
+	gDPSetTextureInfoEXT(gdl++, G_TEXTYPE_GENERAL, 0, tex->texturenum, 0);
+#endif
 
 	if (tex->lutmodeindex == 0) {
 		gDPSetTextureImage(gdl++, tex->gbiformat, depth, 1, tex->data);

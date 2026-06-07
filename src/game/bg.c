@@ -1107,6 +1107,20 @@ Gfx *bgRenderScene(Gfx *gdl)
 	g_BgOctreeStats.nodesculled = 0;
 	g_BgOctreeStats.batchesdrawn = 0;
 	g_BgOctreeStats.batchesculled = 0;
+
+	// With dlcache on, per-batch octree culling happens at REPLAY time inside
+	// the renderer (bgEmitLeafCulled is bypassed), so batchesdrawn/culled would
+	// read 0 here. Seed them from the renderer's counts for the last completed
+	// frame so /octree stats and the Lua overlay stay truthful. Absorbed =
+	// octree-culled but drawn anyway by the gap-tolerant draw merge (clipped by
+	// the GPU, ~free) — counted as drawn.
+	{
+		extern void gfx_dlcache_get_vis_stats(u32 *drawn, u32 *culled, u32 *absorbed);
+		u32 visdrawn = 0, visculled = 0, visabsorbed = 0;
+		gfx_dlcache_get_vis_stats(&visdrawn, &visculled, &visabsorbed);
+		g_BgOctreeStats.batchesdrawn = visdrawn + visabsorbed;
+		g_BgOctreeStats.batchesculled = visculled;
+	}
 #endif
 
 	if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
@@ -2119,6 +2133,41 @@ void bgBuildTables(s32 stagenum)
 			g_Rooms[r].gfxdatalen = ALIGN16(*datalenptr * 0x10 + 0x100);
 			datalenptr++;
 		}
+
+#ifndef PLATFORM_N64
+		// The u16 sizes above cap a room's gfx data at ~1MB (0xffff * 0x10),
+		// which large custom rooms (octree / dlcache era) can exceed — the
+		// file value wraps and the room would under-allocate at load time.
+		// Each room's compressed data is rzip 1173, whose header stores the
+		// true inflated size as a 24-bit value, so peek it per room and take
+		// whichever is larger. Stock maps are unaffected (max() is a no-op).
+		{
+			u8 zhdrbuf[0x20];
+			u8 *zhdr = (u8 *)ALIGN16((uintptr_t)zhdrbuf);
+			u32 zfileoffset;
+			s32 truelen;
+
+			for (r = 1; r < g_Vars.roomcount; r++) {
+				// same offset calculation as the room loader in bgLoadRoom
+				zfileoffset = g_BgRooms[r].unk00 - 0x0f000000 - var8007fc54;
+
+				bgLoadFile(zhdr, zfileoffset, 0x10);
+
+				if (rzipIs1173(zhdr)) {
+					truelen = ((u32)zhdr[2] << 16) | ((u32)zhdr[3] << 8) | zhdr[4];
+				} else {
+					// stored uncompressed - the file size is the true size
+					truelen = g_BgRooms[r + 1].unk00 - g_BgRooms[r].unk00;
+				}
+
+				truelen = ALIGN16(truelen + 0x100);
+
+				if (truelen > g_Rooms[r].gfxdatalen) {
+					g_Rooms[r].gfxdatalen = truelen;
+				}
+			}
+		}
+#endif
 
 		// The last part of section 3 is the number of lights per room.
 		// This is calculating the index into the lights file where each room's
@@ -3702,6 +3751,67 @@ s32 bgOctreeMarkCurrentRoom(void)
 	bgBuildRoomOctree(roomnum);
 
 	return roomnum;
+}
+
+/**
+ * Console diagnostic (/octree stats): log the local player's current room's
+ * octree state so a silent bgCullBeginPass bail-out is visible — whether the
+ * room is flagged (or covered by markall/bigroom/auto), has vtxbatches, and
+ * has a built octree. Answers "why is nothing being culled in this room".
+ */
+void bgOctreeLogRoomInfo(void)
+{
+	s32 roomnum;
+	struct room *room;
+	bool autoout;
+	bool covered;
+	const char *why = NULL;
+
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		sysLogPrintf(LOG_CHAT, "OCTREE: no local player to find a room for");
+		return;
+	}
+
+	roomnum = g_Vars.currentplayer->prop->rooms[0];
+
+	if (roomnum <= 0 || roomnum >= g_Vars.roomcount) {
+		sysLogPrintf(LOG_CHAT, "OCTREE: current room %d invalid (roomcount %d)", roomnum, g_Vars.roomcount);
+		return;
+	}
+
+	room = &g_Rooms[roomnum];
+
+	sysLogPrintf(LOG_CHAT, "OCTREE: room %d: loaded=%d vtxbatches=%d flagged=%d outdoors=%d octree=%s",
+			roomnum,
+			room->loaded240 ? 1 : 0,
+			room->numvtxbatches,
+			(room->extra_flags & ROOMFLAG_EX_OCTREE) ? 1 : 0,
+			(room->flags & ROOMFLAG_OUTDOORS) ? 1 : 0,
+			room->octree != NULL ? "built" : "none");
+
+	if (room->octree != NULL) {
+		sysLogPrintf(LOG_CHAT, "OCTREE: room %d octree: %d nodes, %d batch refs, depth %d",
+				roomnum, room->octree->numnodes, room->octree->numbatchindices, room->octree->maxdepth);
+	}
+
+	// Mirror bgCullBeginPass's bail-out chain so the user sees which gate fails
+	autoout = g_BgOctreeAutoOutdoor && (room->flags & ROOMFLAG_OUTDOORS);
+	covered = (room->extra_flags & ROOMFLAG_EX_OCTREE) || g_BgOctreeMarkAll || g_BgOctreeBigRoom || autoout;
+
+	if (!g_BgOctreeEnabled) {
+		why = "master toggle off (/octree on)";
+	} else if (!covered) {
+		why = "room not flagged (use /octree mark|markall|auto, or aiSetRoomOctree in the setup)";
+	} else if (room->numvtxbatches <= 0) {
+		why = "no vtxbatches (room not loaded yet, or batch alloc failed)";
+	}
+
+	if (why != NULL) {
+		sysLogPrintf(LOG_CHAT, "OCTREE: room %d NOT culled: %s", roomnum, why);
+	} else {
+		sysLogPrintf(LOG_CHAT, "OCTREE: room %d engages octree culling%s", roomnum,
+				room->octree == NULL ? " (octree builds on next render)" : "");
+	}
 }
 
 /**

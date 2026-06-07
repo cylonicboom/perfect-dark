@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <limits.h>
 
+#include "gbiex.h"
+
 #include "preprocess/common.h"
 #include "preprocess/gbi.h"
 
@@ -33,6 +35,7 @@ static u32 dstVtxOffset;
 
 static struct texaddr texAddrs[64];
 static int numTexAddrs;
+extern s32 loadingFileNum;
 
 void gbiReset(void)
 {
@@ -172,7 +175,7 @@ void gbiGdlRewriteAddrs(u8 *dst, u32 offset)
 	} while (!CMD_IS_ENDDL(cmd));
 }
 
-u32 gbiConvertGdl(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, int segment_cmds)
+u32 gbiConvertGdl(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, u8 segment_cmds)
 {
 	dstpos = ALIGN8(dstpos);
 
@@ -182,6 +185,25 @@ u32 gbiConvertGdl(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, int segment_cmds)
 
 	do {
 		cmd = PD_BE64(*n64_cmd);
+
+		if (CMD_IS_SETTIMG(cmd) && ((u32)cmd & 0xffff0000) == 0xabcd0000) {
+			// texLoad-pool texture reference (0xabcdxxxx — BG room gdls):
+			// tag with the game texture number so ext_tex can substitute room
+			// textures (data/ext_tex/%04x.png). Local addition on top of
+			// rafccq/port-ext-textures, whose injection below only covered
+			// model-segment refs (rooms got a bogus MODEL tag and never
+			// substituted). Checked first: 0xabcd also matches the 0x5000000
+			// mask below.
+			u16 texnum = cmd & 0xffff;
+			gDPSetTextureInfoEXT(host_cmd, G_TEXTYPE_GENERAL, 0, texnum, 0);
+			dstpos += sizeof(*host_cmd) * HOST_DWORDS_PER_CMD;
+			host_cmd += HOST_DWORDS_PER_CMD;
+		} else if (CMD_IS_SETTIMG(cmd) && cmd & 0x5000000) {
+			u16 texnum = cmd & 0xfffff;
+			gDPSetTextureInfoEXT(host_cmd, G_TEXTYPE_MODEL, loadingFileNum, texnum, 0);
+			dstpos += sizeof(*host_cmd) * HOST_DWORDS_PER_CMD;
+			host_cmd += HOST_DWORDS_PER_CMD;
+		}
 
 #if HOST_DWORDS_PER_CMD == 2
 		host_cmd[0] = ((cmd & 0xffffffff00000000) >> 32);

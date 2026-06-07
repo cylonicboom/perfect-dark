@@ -21,6 +21,7 @@
 #include "console.h"
 #include "utils.h"
 #include "net/net.h"
+#include "ext_tex.h"
 
 u32 g_OsMemSize = 0;
 s32 g_OsMemSizeMb = 16;
@@ -168,6 +169,7 @@ int main(int argc, const char **argv)
 	audioInit();
 	romdataInit();
 	netInit();
+	extTexInit();
 
 	g_ValidGbcRomFound = romdataCheckGbcRom();
 

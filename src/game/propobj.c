@@ -21323,6 +21323,73 @@ Gfx *countdownTimerRender(Gfx *gdl)
 	s32 ms;
 	s32 y;
 
+#ifndef PLATFORM_N64
+	// Combat Sim remaining-time display: render in the campaign mission
+	// timer's spot and style (bottom-left, green numeric text — see
+	// hudmsgRenderMissionTimer) instead of the solo bomb-timer's bottom-centre
+	// digits. Solo missions keep the original rendering below.
+	if (!g_CountdownTimerOff && g_Vars.normmplayerisrunning) {
+		extern s32 g_HudPaddingX; // hudmsg.c (no header decl)
+		extern s32 g_HudPaddingY;
+		extern void formatTime(char *dst, s32 time60, s32 precision); // savebuffer.h
+		char buffer[24];
+		s32 mptimery;
+		s32 mpx;
+		s32 mpviewleft = viGetViewLeft() / g_ScaleX;
+		s32 mpplayercount = LOCALPLAYERCOUNT();
+		s32 mpplayernum = g_Vars.currentplayernum;
+		f32 mpvalue60 = g_CountdownTimerValue60;
+
+		if (mpvalue60 < 0.0f) {
+			mpvalue60 = 0.0f;
+		}
+
+		// position formula mirrored from hudmsgRenderMissionTimer
+		mptimery = viGetViewTop() + viGetViewHeight() - g_HudPaddingY - 8;
+
+		if (mpplayercount == 2) {
+			if (IS4MB() || (optionsGetScreenSplit() != SCREENSPLIT_VERTICAL && mpplayernum == 0)) {
+				mptimery += 10;
+			} else {
+				mptimery += 2;
+			}
+		} else if (mpplayercount >= 3) {
+			if (mpplayernum < 2) {
+				mptimery += 10;
+			} else {
+				mptimery += 2;
+			}
+		} else {
+			if (optionsGetEffectiveScreenSize() != SCREENSIZE_FULL) {
+				mptimery += 8;
+			}
+		}
+
+		if (mpplayercount == 2 && (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || IS4MB()) && mpplayernum == 1) {
+			mpviewleft -= 14;
+		} else if (mpplayercount >= 3 && (mpplayernum & 1) == 1) {
+			mpviewleft -= 14;
+		}
+
+		formatTime(buffer, (s32)mpvalue60, TIMEPRECISION_HUNDREDTHS);
+
+		mpx = mpviewleft + g_HudPaddingX + 3;
+
+		if (mpplayercount < 2 || (mpplayercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL)) {
+			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
+		}
+
+		gdl = text0f153628(gdl);
+		gdl = textRender(gdl, &mpx, &mptimery, buffer, g_CharsNumeric, g_FontNumeric,
+				0x00ff00a0, 0x000000a0, viGetWidth(), viGetHeight(), 0, 0);
+		gdl = text0f153780(gdl);
+
+		gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT);
+
+		return gdl;
+	}
+#endif
+
 	if (!g_CountdownTimerOff) {
 		f32 value60 = g_CountdownTimerValue60;
 		u32 stack;

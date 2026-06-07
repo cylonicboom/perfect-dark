@@ -412,7 +412,10 @@ Gfx *paintRenderHud(Gfx *gdl)
 
 		if (nteams > 0) {
 			s32 barx = viGetViewLeft() + (viGetViewWidth() - (nteams * (barw + gap) - gap)) / 2;
-			s32 bary2 = viGetViewTop() + viGetViewHeight() - 26;
+			// bottom centre, in the spot the bottom-centre countdown digits
+			// used to occupy (the Combat Sim timer now sits bottom-left in
+			// the campaign mission-timer position)
+			s32 bary2 = viGetViewTop() + viGetViewHeight() - 14;
 
 			for (t = 0; t < MAX_TEAMS; t++) {
 				s32 h;

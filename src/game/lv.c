@@ -2672,6 +2672,26 @@ void lvTick(void)
 			s32 nexttime = g_Vars.lvupdate60 + g_StageTimeElapsed60;
 			s32 warntime = TICKS(g_MpTimeLimit60) - TICKS(3600);
 
+#ifndef PLATFORM_N64
+			// Combat Sim remaining-time HUD: drive the solo-mission countdown
+			// timer (mm:ss:cc, bottom centre, countdownTimerRender) with the
+			// match's remaining time so it counts DOWN to the time limit. The
+			// value is pinned every frame (running stays false so its own
+			// tick never fights this); setupLoadFiles re-hides it on the next
+			// stage load by resetting g_CountdownTimerOff.
+			{
+				f32 remaining60 = (f32)(TICKS(g_MpTimeLimit60) - g_StageTimeElapsed60);
+
+				if (remaining60 < 0.0f) {
+					remaining60 = 0.0f;
+				}
+
+				countdownTimerSetRunning(false);
+				countdownTimerSetValue60(remaining60);
+				countdownTimerSetVisible(COUNTDOWNTIMERREASON_AI | COUNTDOWNTIMERREASON_NOCONTROL, true);
+			}
+#endif
+
 			// Show HUD message at one minute remaining
 			if (elapsed < warntime && nexttime >= warntime) {
 				s32 i;

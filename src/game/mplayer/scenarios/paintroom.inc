@@ -370,6 +370,87 @@ Gfx *paintRenderHud(Gfx *gdl)
 	gdl = text0f153990(gdl, x, y, textwidth, textheight);
 	gdl = textRender(gdl, &x, &y, text, g_CharsHandelGothicXs, g_FontHandelGothicXs,
 			(g_TeamColours[myteam] & 0xffffff00) | 0xa0, 0xa0, viGetWidth(), viGetHeight(), 0, 0);
+
+	// Team floor-coverage bars (bottom centre, just above the countdown
+	// timer): one vertical bar per active team in its team colour. The
+	// leading team's bar is full height (15px); the others scale as a ratio
+	// of the leader. Each bar sits in a dim full-height slot for readability.
+	// Drawing pattern (textSetPrimColour + gDPFillRectangle with
+	// text0f153838 flushes between colour changes) follows the HTM
+	// download bar in hackthatmac.inc.
+	{
+		bool present[MAX_TEAMS];
+		s32 t;
+		s32 i;
+		s32 nteams = 0;
+		s32 leader = 0;
+		const s32 barw = 4;
+		const s32 gap = 2;
+		const s32 maxh = 15;
+
+		for (t = 0; t < MAX_TEAMS; t++) {
+			present[t] = false;
+		}
+
+		for (i = 0; i < g_MpNumChrs; i++) {
+			t = radarGetTeamIndex(g_MpAllChrPtrs[i]->team);
+
+			if (t >= 0 && t < MAX_TEAMS) {
+				present[t] = true;
+			}
+		}
+
+		for (t = 0; t < MAX_TEAMS; t++) {
+			if (present[t]) {
+				nteams++;
+
+				if (paint->teamcounts[t] > leader) {
+					leader = paint->teamcounts[t];
+				}
+			}
+		}
+
+		if (nteams > 0) {
+			s32 barx = viGetViewLeft() + (viGetViewWidth() - (nteams * (barw + gap) - gap)) / 2;
+			s32 bary2 = viGetViewTop() + viGetViewHeight() - 26;
+
+			for (t = 0; t < MAX_TEAMS; t++) {
+				s32 h;
+
+				if (!present[t]) {
+					continue;
+				}
+
+				h = 1;
+
+				if (leader > 0 && paint->teamcounts[t] > 0) {
+					h = (paint->teamcounts[t] * maxh + leader / 2) / leader;
+
+					if (h < 1) {
+						h = 1;
+					}
+					if (h > maxh) {
+						h = maxh;
+					}
+				}
+
+				// dim full-height slot
+				gdl = text0f153838(gdl);
+				gdl = textSetPrimColour(gdl, 0x18181870);
+				gDPFillRectangle(gdl++, barx, bary2 - maxh + 1, barx + barw, bary2 + 1);
+
+				// filled portion from the bottom up, in team colour
+				gdl = text0f153838(gdl);
+				gdl = textSetPrimColour(gdl, (g_TeamColours[t] & 0xffffff00) | 0xc0);
+				gDPFillRectangle(gdl++, barx, bary2 - h + 1, barx + barw, bary2 + 1);
+
+				barx += barw + gap;
+			}
+
+			gdl = text0f153838(gdl);
+		}
+	}
+
 	gdl = text0f153780(gdl);
 
 #ifndef PLATFORM_N64

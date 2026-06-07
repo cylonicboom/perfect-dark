@@ -18,6 +18,6 @@ Public headers for the netplay layer. Edit here when adding new message IDs, str
 
 - **`NET_CSP_*` macros are aliases for the `g_Net*` extern globals.** Both names refer to the same variable; prefer `g_Net*` in new code.
 - **`netplayermove.animnum`/`animframe` are excluded from `netClientNeedMove`'s memcmp.** Fields appended after them are also excluded. Insert change-detected fields before `animnum`, or explicitly extend the memcmp size.
-- **Bump `NET_PROTOCOL_VER` when the wire format changes** — mismatched versions are rejected at auth time with `DISCONNECT_VERSION`. (Currently 61: co-op drop-in — SVC_COOP_CLAIM + chr syncids in the co-op reconcile; see the changelog comments above the define in `net.h`.)
+- **Bump `NET_PROTOCOL_VER` when the wire format changes** — mismatched versions are rejected at auth time with `DISCONNECT_VERSION`. Also bump when gameplay-gate *semantics* of already-synced state change across builds (e.g. 67: the Classic Options bits — wire format unchanged, but mixed versions would apply different rules). See the changelog comments above the define in `net.h`.
 - **The query summary block (`netmsgQuerySummaryWrite`) is shared verbatim** by the direct PDQM query response and the master HEARTBEAT. Changing its field order changes both — and the VPS master must match (see `docs/PORT_MASTER_SERVER.md`).
 - **`netmaster.h` must stay ENet-free.** Menu code (`netmenu.c`) includes it; ENet-typed glue (`netParseAddr`, `netSendConnectionless`) is `extern`-declared in `netmaster.c` instead.

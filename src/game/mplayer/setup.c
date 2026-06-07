@@ -661,8 +661,9 @@ MenuItemHandlerResult menuhandlerMpTeamsEnabled(s32 operation, struct menuitem *
 		}
 
 #ifndef PLATFORM_N64
-		// Graffiti is team-based — keep teams locked on like CTC/KoH.
-		if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM) {
+		// Graffiti and Zones are team-based — keep teams locked on like CTC/KoH.
+		if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM
+				|| g_MpSetup.scenario == MPSCENARIO_ZONES) {
 			return true;
 		}
 #endif
@@ -3692,6 +3693,29 @@ struct menuitem g_MpLimitsMenuItems[] = {
 		0x00000190,
 		menuhandlerMpTeamScoreLimitSlider,
 	},
+#ifndef PLATFORM_N64
+	{
+		// Port-only global Lives system (elimination.inc): 0 = Off (default),
+		// 1-9 = lives — every death spends one; out of lives = no respawn;
+		// last faction standing ends the match. Works with any scenario.
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LESSLEFTPADDING | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Lives",
+		9,
+		menuhandlerMpElimLives,
+	},
+	{
+		// Solo = per-combatant pools; Team = one shared pool per team of
+		// exactly the Lives value. Greyed out while Lives is Off.
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LESSLEFTPADDING | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Lives Mode",
+		0,
+		menuhandlerMpElimLivesMode,
+	},
+#endif
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
@@ -7162,6 +7186,19 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		menuhandlerMpCheckboxOption,
 	},
 #ifndef PLATFORM_N64
+	{
+		// Forces controller-only input for every connected machine. The
+		// option lives in g_MpSetup.options so it ships in SVC_STAGE_START
+		// — every client honours the host's setting via the gate in the
+		// input layer. Useful for "fair" lobbies that want to rule out
+		// mouse-aim and instant keyboard strafes.
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Controllers Only",
+		MPOPTION_CONTROLLERS_ONLY,
+		menuhandlerMpCheckboxOption,
+	},
 	// Port-only: "No Doors" lives in the high 32 bits of g_MpSetup.options, so it
 	// uses the high-word checkbox handler. param3 carries the high-word bit index
 	// (MPOPTION_NODOORS >> 32), which the handler shifts back up by 32.
@@ -7177,11 +7214,154 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
+#ifndef PLATFORM_N64
+extern struct menudialogdef g_MpClassicOptionsMenuDialog;
+#endif
+
 struct menudialogdef g_ExtGameOptionsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	(uintptr_t) "More Options\n",
 	g_MpExtGameOptionsMenuItems,
 	NULL,
 	MENUDIALOGFLAG_LITERAL_TEXT,
+#ifndef PLATFORM_N64
+	// Third sibling on the scenario-options carousel:
+	// Combat/scenario Options -> More Options -> Classic Options.
+	&g_MpClassicOptionsMenuDialog,
+#else
+	NULL,
+#endif
+};
+
+#ifndef PLATFORM_N64
+// "Classic Options" carousel page: the GoldenEye Style rule set broken into
+// individually selectable per-match options. Row 0 is the MPOPTION_GOLDENEYE
+// master ("all of them", low-word bit 31, standard handler); the rest live
+// in the high 32 bits of g_MpSetup.options, so they use the high-word
+// checkbox handler (param3 = BIT >> 32, shifted back up by 32). A behaviour
+// is active when the master OR its own bit is set (classicOptionActive).
+struct menuitem g_MpClassicOptionsMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"GoldenEye Style",
+		MPOPTION_GOLDENEYE,
+		menuhandlerMpCheckboxOption,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Snap Lean",
+		MPOPTION_CLASSIC_SNAPLEAN >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Crouch Accuracy",
+		MPOPTION_CLASSIC_NOCROUCHACC >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Classic Reloads",
+		MPOPTION_CLASSIC_RELOAD >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Ledge Walls",
+		MPOPTION_CLASSIC_LEDGEWALL >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Classic Crosshair",
+		MPOPTION_CLASSIC_SIGHT >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Hide Crosshair Unless Aiming",
+		MPOPTION_CLASSIC_HIDESIGHT >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"GoldenEye HUD",
+		MPOPTION_CLASSIC_GEHUD >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Secondary Functions",
+		MPOPTION_CLASSIC_NOSECONDARY >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Mid-Crouch",
+		MPOPTION_CLASSIC_NOMIDCROUCH >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Dual Wield",
+		MPOPTION_CLASSIC_NODUALWIELD >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Damage Invulnerability",
+		MPOPTION_CLASSIC_IFRAMES >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"No Blur Effects",
+		MPOPTION_CLASSIC_NOBLUR >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpClassicOptionsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Classic Options\n",
+	g_MpClassicOptionsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
 	NULL,
 };
+#endif

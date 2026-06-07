@@ -47,6 +47,9 @@
 #define SVC_TIMESCALE    0x53 // global sim timescale: slow-motion/boost engaged flag + boost timer; clients halve the pinned sim step in lockstep with the server
 #define SVC_COOP_CLAIM   0x54 // co-op drop-in: a client claims (or releases, clientid=NET_NULL_CLIENT) a pre-allocated dormant co-op slot mid-mission
 #define SVC_PAINT_STATE  0x55 // "Graffiti" scenario: per-room team ownership (full owned-room list; on-change + 1s heartbeat)
+#define SVC_ZONES_STATE  0x56 // "Zones" scenario: zone owners + team scores + score-cycle countdown (on-change + 1s heartbeat)
+#define SVC_ELIM_STATE   0x57 // global Lives system: per-combatant lives + team pools + eliminated set (on-change + 1s heartbeat)
+#define SVC_RACE_STATE   0x58 // "Race" scenario: per-racer checkpoint/lap progress + finish order + finish timer (on-change + 1s heartbeat)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -209,6 +212,12 @@ u32 netmsgSvcKohStateWrite(struct netbuf *dst);
 u32 netmsgSvcKohStateRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPaintStateWrite(struct netbuf *dst);
 u32 netmsgSvcPaintStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcZonesStateWrite(struct netbuf *dst);
+u32 netmsgSvcZonesStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcElimStateWrite(struct netbuf *dst);
+u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcRaceStateWrite(struct netbuf *dst);
+u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcExplosionWrite(struct netbuf *dst, s32 exptype, const struct coord *pos, const RoomNum *rooms);
 u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcLobbyStateWrite(struct netbuf *dst);

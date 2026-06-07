@@ -5,7 +5,13 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 66 // 66: SVC_PAINT_STATE — "Graffiti" scenario broadcasts per-room team ownership (full owned-room list, on-change + 1s heartbeat); rooms tint to the last team to cross them. See docs/PORT_GRAFFITI.md
+#define NET_PROTOCOL_VER 72 // 72: "Race" scenario (MPSCENARIO_RACE 8, checkpoint racing over the KoH hillpads) — new SVC_RACE_STATE (0x58: per-racer progress + finish order + finish timer), and g_MpSetup.racelaps/racepitytime u8s appended after elimlives in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_RACE.md
+// 71: Lives went GLOBAL (any scenario; Limits menu; elimlives 0 = off) and the short-lived Elimination scenario (id 8) was retired — same wire fields as 70 but gate semantics differ and id 8 no longer exists, so mixed versions must not join. See docs/PORT_ELIMINATION.md
+// 70: "Elimination" scenario (MPSCENARIO_ELIMINATION, lives-based last-standing) — new SVC_ELIM_STATE (0x57: per-combatant lives + team pools + eliminated set), and g_MpSetup.elimlivesmode/elimlives u8s appended after zonecapturetime in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_ELIMINATION.md
+// 69: "Zones" scenario (MPSCENARIO_ZONES, TS2-style territory control) — new SVC_ZONES_STATE (0x56: zone owners + team scores + score-cycle countdown), and g_MpSetup.zonescoretime/zonecapturetime u8s appended after paintclaimtime in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_ZONES.md
+// 68: Graffiti "Claim Time" — g_MpSetup.paintclaimtime u8 appended after htmstaticpad in SVC_STAGE_START and CLC_ADMIN_SETUP (seconds in a room before it can be claimed; timer pauses while contested by another team). See docs/PORT_GRAFFITI.md
+// 67: Classic Options — MPOPTION_CLASSIC_* high-word bits 34-45 (GE Style broken into per-behaviour options) + MPOPTION_NOCULL/NOOMLIMIT retired. Wire format unchanged (options already ride as u64) but gameplay-gate semantics differ across builds, so mixed versions must not join. See docs/PORT_GOLDENEYE.md
+// 66: SVC_PAINT_STATE — "Graffiti" scenario broadcasts per-room team ownership (full owned-room list, on-change + 1s heartbeat); rooms tint to the last team to cross them. See docs/PORT_GRAFFITI.md
 // 65: SVC_PROP_MOVE position quantization — when Net.Server.PosQuant is on, the per-chr coord rides as 3x s16 (6B) instead of 3x f32 (flags bit 5; out-of-range positions stay full coord). See docs/netplay-perf-review-2026.md P2
 // 64: CLC_DOOR_ACTIVATE — client predicts a door and sends the host the exact door syncid, so high-ping door activation no longer depends on the host re-deriving the door from a lagged position + a momentary UCMD_ACTIVATE. See docs/netplay-perf-review-2026.md
 // 63: netplayermove carries renderbehind (u8) — the client's g_NetInterpTicks render offset, so server lag-comp rewinds targets to the EXACT server-tick the shooter was displaying (inmovetick - renderbehind) instead of an RTT/2 + interp_lag symmetric-latency estimate. See docs/netplay-perf-review-2026.md lag-comp item
@@ -820,7 +826,40 @@ void netClientReportPropHit(struct prop *prop, f32 damage, const struct coord *p
 // both the host tick and the client wire-apply share one code path.
 u8 *paintGetRoomOwner(s32 *roomcount_out);
 void paintSetRoomOwner(s32 roomnum, u8 owner);
+
+// "Zones" scenario (MPSCENARIO_ZONES) shared state — the same arrangement as
+// the Graffiti accessors above. zonesGetData exposes the zone/score state for
+// the SVC_ZONES_STATE writer (struct scenariodata_zones is in types.h);
+// zonesApplyWireState is the client-side apply (owners via the shared setter
+// so rooms re-tint, authoritative team scores, cycle countdown resync);
+// g_MpZonesDirty is the host's on-change broadcast signal.
+struct scenariodata_zones *zonesGetData(void);
+void zonesApplyWireState(const u8 *owners, s32 count, const s32 *teamscores, s32 cycle240);
+extern u8 g_MpZonesDirty;
 void paintHandleDeath(s32 aplayernum, s32 vplayernum); // kill claims the killer's room (mpstatsRecordDeath hook)
 extern u8 g_MpPaintDirty; // host: painted set changed this frame -> broadcast in netEndFrame
+
+// Global Lives system shared state (elimination.inc; scenario-independent,
+// active when g_MpSetup.elimlives > 0) — the zones/paint accessor pattern.
+// elimGetData feeds the SVC_ELIM_STATE writer; elimApplyWireState is the
+// client apply; elimHandleDeath is the mpstatsRecordDeath hook (spends a
+// life); elimChrCanRespawn gates the MP player respawn (player.c) and the
+// bot corpse-fade respawn (chraction.c).
+struct elimdata *elimGetData(void);
+void elimApplyWireState(const u8 *lives, const u8 *teamlives, u16 elimmask);
+void elimHandleDeath(s32 aplayernum, s32 vplayernum);
+bool elimChrCanRespawn(struct chrdata *chr);
+bool elimShouldEndMatch(void); // polled from lv.c's match-end block (NOT elimTick — the reasons counter resets each frame)
+extern u8 g_MpElimDirty;
+
+// "Race" scenario (MPSCENARIO_RACE) shared state — the same accessor
+// pattern. raceGetData feeds the SVC_RACE_STATE writer; raceApplyWireState
+// is the client apply; raceShouldEndMatch is polled from lv.c's match-end
+// block (same rule as elimShouldEndMatch above).
+struct scenariodata_race *raceGetData(void);
+void raceApplyWireState(const u8 *nextcp, const u8 *lapsdone, const u8 *finishpos,
+		u8 finishcount, u8 humancount, u8 pitystarted, s32 pity240);
+bool raceShouldEndMatch(void);
+extern u8 g_MpRaceDirty;
 
 #endif // _IN_NET_H

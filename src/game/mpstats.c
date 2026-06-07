@@ -262,6 +262,12 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_PAINTROOM) {
 		paintHandleDeath(aplayernum, vplayernum);
 	}
+
+	// Global Lives system: every death spends one of the victim's lives
+	// (elimHandleDeath no-ops on clients; lives ride SVC_ELIM_STATE)
+	if (g_Vars.normmplayerisrunning && g_MpSetup.elimlives > 0) {
+		elimHandleDeath(aplayernum, vplayernum);
+	}
 #endif
 
 	// Find attacker and victim mpchrs

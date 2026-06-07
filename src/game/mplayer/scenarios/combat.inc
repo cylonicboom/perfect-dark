@@ -57,90 +57,12 @@ struct menuitem g_MpCombatOptionsMenuItems[] = {
 		MPOPTION_NOAUTOAIM,
 		menuhandlerMpCheckboxOption,
 	},
-#ifndef PLATFORM_N64
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Start Armed",
-		MPOPTION_SPAWNWITHWEAPON,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Drug Blur",
-		MPOPTION_NODRUGBLUR,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR,
-		L_OPTIONS_257, // "Friendly Fire"
-		MPOPTION_FRIENDLYFIRE,
-		menuhandlerMpDisplayTeam,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Player on Radar",
-		MPOPTION_NOPLAYERONRADAR,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		// Forces controller-only input for every connected machine. The
-		// option lives in g_MpSetup.options so it ships in SVC_STAGE_START
-		// — every client honours the host's setting via the gate in the
-		// input layer. Useful for "fair" lobbies that want to rule out
-		// mouse-aim and instant keyboard strafes.
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Controllers Only",
-		MPOPTION_CONTROLLERS_ONLY,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		// Bypasses portal-based room culling: every room is marked onscreen
-		// every frame so nothing is hidden by the visibility graph. Fixes
-		// cases where a gap or window lets you see into a room the portal
-		// graph would normally cull. Costs extra draw calls on large maps.
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Room Culling",
-		MPOPTION_NOCULL,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		// Removes the 60-room draw-slot cap so every room above slot 59 gets its
-		// own dedicated draw call instead of being merged into slot 59's scissor
-		// region. Only meaningful with No Room Culling enabled (the portal graph
-		// naturally keeps visible room counts well under 60 otherwise).
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Draw Slot Limit",
-		MPOPTION_NOOMLIMIT,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		// GoldenEye-style combat: snap lean (no interpolation), no
-		// crouch accuracy bonus, lower-and-raise reload for every
-		// weapon (skip first-person reload anim entirely), and
-		// invisible-wall ledges. Applies to human players only;
-		// sims/bots are unaffected.
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"GoldenEye Style",
-		MPOPTION_GOLDENEYE,
-		menuhandlerMpCheckboxOption,
-	},
-#endif
+	// Port-only options live on the sibling carousel pages (setup.c): Start
+	// Armed / No Drug Blur / Friendly Fire / No Player on Radar / Controllers
+	// Only / No Doors on "More Options" (g_MpExtGameOptionsMenuItems);
+	// GoldenEye Style + its broken-out pieces on "Classic Options"
+	// (g_MpClassicOptionsMenuItems). No Room Culling / No Draw Slot Limit
+	// were retired (replaced by the /octree commands).
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,

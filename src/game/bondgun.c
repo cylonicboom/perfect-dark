@@ -11,6 +11,7 @@
 #include "game/propsnd.h"
 #include "game/game_096360.h"
 #include "game/acosfasinf.h"
+#include "game/atan2f.h"
 #include "game/game_096b20.h"
 #include "game/quaternion.h"
 #include "game/game_097aa0.h"
@@ -1609,7 +1610,7 @@ s32 bgunTickIncReload(struct handweaponinfo *info, s32 handnum, struct hand *han
 				if (info->definition->ammos[func->ammoindex]->reload_animation
 						&& info->weaponnum != WEAPON_COMBATKNIFE
 #ifndef PLATFORM_N64
-						&& !goldeneyeStyleActive()
+						&& !classicOptionActive(CHEAT_CLASSIC_RELOAD, MPOPTION_CLASSIC_RELOAD)
 #endif
 				) {
 					bgunStartAnimation(info->definition->ammos[func->ammoindex]->reload_animation, handnum, hand);
@@ -3398,9 +3399,9 @@ static u8 mpSlotFlagsForWeapon(s32 weaponnum)
 /**
  * Reusable gate for "this weapon's secondary function is disabled."
  *
- * Driven by MPOPTION_GOLDENEYE (Combat Sim GoldenEye Style forces every
- * weapon to primary-only) and by per-slot FNFLAG_SECONDARY_DISABLED bits
- * on saved Custom presets. Designed as a single choke point so future
+ * Driven by the Classic "No Secondary Functions" option (GoldenEye Style
+ * master or its individual toggle) and by per-slot FNFLAG_SECONDARY_DISABLED
+ * bits on saved Custom presets. Designed as a single choke point so future
  * weapon-loadout options can OR additional conditions in here.
  *
  * Used by:
@@ -3411,7 +3412,7 @@ static u8 mpSlotFlagsForWeapon(s32 weaponnum)
  */
 bool bgunSecondaryFunctionDisabled(s32 weaponnum)
 {
-	if (goldeneyeStyleActive()) {
+	if (classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)) {
 		return true;
 	}
 	if (mpSlotFlagsForWeapon(weaponnum) & FNFLAG_SECONDARY_DISABLED) {
@@ -3446,8 +3447,8 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
 /**
  * Reusable gate for "dual wielding is disabled."
  *
- * Currently driven by MPOPTION_GOLDENEYE (Combat Sim GoldenEye Style
- * forces single-wield only). Same pattern as bgunSecondaryFunctionDisabled
+ * Driven by the Classic "No Dual Wield" option (GoldenEye Style master or
+ * its individual toggle). Same pattern as bgunSecondaryFunctionDisabled
  * — single choke point so future weapon-loadout options that ban
  * per-weapon dual-wield can plug in here.
  *
@@ -3458,15 +3459,16 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
  */
 bool bgunDualWieldDisabled(void)
 {
-	if (goldeneyeStyleActive()) {
+	if (classicOptionActive(CHEAT_CLASSIC_NODUALWIELD, MPOPTION_CLASSIC_NODUALWIELD)) {
 		return true;
 	}
 	return false;
 }
 
 /**
- * Returns true when the current player is inside the GoldenEye Style
- * i-frame window (TICKS(18) ~ 300ms after the last damage event).
+ * Returns true when the current player is inside the Classic "Damage
+ * Invulnerability" i-frame window (TICKS(18) ~ 300ms after the last damage
+ * event). Part of the GoldenEye Style rule set, individually toggleable.
  *
  * Used to block firing while invulnerable: bgunSetState refuses new
  * ATTACK / ATTACKEMPTY transitions, and bgunTickInc force-cancels any
@@ -3474,7 +3476,7 @@ bool bgunDualWieldDisabled(void)
  */
 bool bgunCurrentPlayerInIframe(void)
 {
-	if (!goldeneyeStyleActive()) {
+	if (!classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES)) {
 		return false;
 	}
 	if (!g_Vars.currentplayer->prop || !g_Vars.currentplayer->prop->chr) {
@@ -5599,7 +5601,7 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	// Decrease spread if double crouched
 	if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT
 #ifndef PLATFORM_N64
-			&& !goldeneyeStyleActive()
+			&& !classicOptionActive(CHEAT_CLASSIC_NOCROUCHACC, MPOPTION_CLASSIC_NOCROUCHACC)
 #endif
 	) {
 		spread *= 0.5f;
@@ -7249,6 +7251,15 @@ void bgunUpdateSmoke(struct hand *hand, s32 handnum, s32 weaponnum, struct weapo
 	}
 }
 
+#ifndef PLATFORM_N64
+// tan(fovy/2) with fovy in degrees — the codebase has no tanf (camera.c idiom)
+static inline f32 bgunTanHalfFovY(f32 fovy)
+{
+	f32 half = fovy * (M_PI / 360.0f);
+	return sinf(half) / cosf(half);
+}
+#endif
+
 /**
  * Update the red beam and dot (used by the Falcon 2 and its variants).
  */
@@ -7266,6 +7277,29 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 	struct coord sp30;
 	bool busy;
 
+#ifndef PLATFORM_N64
+	// Gun FOV: the laser beam renders in world space (world-FOV projection)
+	// but the gun model is drawn with its own projection (see bgunRender), so
+	// the muzzle node's view-space position projects to a different screen
+	// point than the drawn barrel tip. vmscale reprojects view-space laterals
+	// so beam points appear exactly where the gun-FOV render puts them — the
+	// inverse of the bgun0f0a5550 aim-fix scale. Stays 1.0 when disabled.
+	// The crosshair-aimed far end and the wall dot are NOT scaled: they must
+	// stay on the true aim point.
+	// Uses the UNZOOMED world FOV: the render-side gun FOV scales with the
+	// world zoom ratio in tan space (bgunRender), so the world/gun tan ratio
+	// is constant — equal to the base ratio — at any zoom level.
+	f32 vmscale = 1.0f;
+	{
+		f32 vmfovy = PLAYER_EXTCFG().gunfovy;
+
+		if (vmfovy >= 5.0f && vmfovy != PLAYER_DEFAULT_FOV
+				&& g_Vars.currentplayer->teleportstate == TELEPORTSTATE_INACTIVE) {
+			vmscale = bgunTanHalfFovY(PLAYER_DEFAULT_FOV) / bgunTanHalfFovY(vmfovy);
+		}
+	}
+#endif
+
 	node = modelGetPart(modeldef, MODELPART_GUN_LASERSIGHT);
 
 	if (node) {
@@ -7274,6 +7308,11 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 		beamnear.x = ((Mtxf *)((uintptr_t)allocation + mtxindex * sizeof(Mtxf)))->m[3][0];
 		beamnear.y = ((Mtxf *)((uintptr_t)allocation + mtxindex * sizeof(Mtxf)))->m[3][1];
 		beamnear.z = ((Mtxf *)((uintptr_t)allocation + mtxindex * sizeof(Mtxf)))->m[3][2];
+
+#ifndef PLATFORM_N64
+		beamnear.x *= vmscale;
+		beamnear.y *= vmscale;
+#endif
 
 		mtx4TransformVecInPlace(camGetProjectionMtxF(), &beamnear);
 
@@ -7284,6 +7323,13 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 			beamfar.z = 1.0f;
 
 			mtx4RotateVecInPlace(&hand->cammtx, &beamfar);
+
+#ifndef PLATFORM_N64
+			// barrel direction in view space — reproject so the beam tracks
+			// the drawn (gun-FOV) barrel
+			beamfar.x *= vmscale;
+			beamfar.y *= vmscale;
+#endif
 
 			sp48.x = beamfar.x;
 			sp48.y = beamfar.y;
@@ -7324,6 +7370,14 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 			beamfar.z = 500.0f;
 
 			mtx4TransformVecInPlace((Mtxf *)((uintptr_t)allocation + mtxindex * sizeof(Mtxf)), &beamfar);
+
+#ifndef PLATFORM_N64
+			// reload/busy anims wave the barrel around: this far point is a
+			// view-space point along the animated barrel — reproject it so the
+			// beam follows the drawn (gun-FOV) barrel
+			beamfar.x *= vmscale;
+			beamfar.y *= vmscale;
+#endif
 		} else {
 #ifndef PLATFORM_N64
 			// CHEAT_MIRROR: the idle laser sight points toward the on-screen
@@ -8000,14 +8054,25 @@ void bgunCreateFx(struct hand *hand, s32 handnum, struct weaponfunc *funcdef, s3
 
 // offset calculation from NeonNyan/perfect-dark
 
+// The FOV the viewmodel is actually rendered with: the Gun FOV setting when
+// valid (bgunRender overrides the gun-pass projection with it), else the
+// world FOV. The position offsets below must compensate for the FOV the gun
+// is *drawn* at, not the world FOV — with Gun FOV at 60 they collapse to 0
+// and the viewmodel sits exactly where it does on N64.
+static inline f32 bgunGetRenderFovY(void)
+{
+	f32 gunfovy = PLAYER_EXTCFG().gunfovy;
+	return gunfovy >= 5.0f ? gunfovy : PLAYER_DEFAULT_FOV;
+}
+
 static inline f32 bgunGetFovOffsetZ(void)
 {
-	return (PLAYER_DEFAULT_FOV - 60.f) / 3.f;
+	return (bgunGetRenderFovY() - 60.f) / 3.f;
 }
 
 static inline f32 bgunGetFovOffsetY(void)
 {
-	return (PLAYER_DEFAULT_FOV - 60.f) / (2.75f * 4.f);
+	return (bgunGetRenderFovY() - 60.f) / (2.75f * 4.f);
 }
 
 #endif
@@ -8203,6 +8268,29 @@ void bgun0f0a5550(s32 handnum)
 	sp1a4.y = 0.0f;
 
 	bgun0f0a24f0(&sp118, handnum);
+
+#ifndef PLATFORM_N64
+	// Gun FOV: sp118 is the view-space aim point derived from the crosshair's
+	// screen position under the WORLD projection, but the gun model is rendered
+	// with its own projection (Gun FOV, see bgunRender). A view-space ray
+	// projects to different screen points under the two FOVs, so the barrel
+	// would visibly over-rotate past the crosshair whenever they differ.
+	// Rescale the lateral components by tan(gunfov/2)/tan(worldfov/2) so the
+	// barrel's apparent aim under the gun projection lands back on the
+	// crosshair. Uses the UNZOOMED world FOV: the render-side gun FOV scales
+	// with the world zoom ratio in tan space (bgunRender), so this ratio is
+	// constant at any zoom level.
+	{
+		f32 vmfovy = PLAYER_EXTCFG().gunfovy;
+
+		if (vmfovy >= 5.0f && vmfovy != PLAYER_DEFAULT_FOV
+				&& g_Vars.currentplayer->teleportstate == TELEPORTSTATE_INACTIVE) {
+			f32 vmscale = bgunTanHalfFovY(vmfovy) / bgunTanHalfFovY(PLAYER_DEFAULT_FOV);
+			sp118.x *= vmscale;
+			sp118.y *= vmscale;
+		}
+	}
+#endif
 
 	sp1a4.y = -bgun0f0a2498(sp118.x, sp118.z, sp274.f[0], sp274.f[2]);
 	sp1a4.x = bgun0f0a2498(sp118.y, sp118.z, sp274.f[1], sp274.f[2]);
@@ -11459,6 +11547,34 @@ void bgunRender(Gfx **gdlptr)
 
 	static bool renderhand = true; // var800702dc
 
+#ifndef PLATFORM_N64
+	// Separate viewmodel FOV (Gun FOV slider): render the gun/hand models
+	// with their own projection so a high world FOV doesn't warp the weapon.
+	// Beams and casings in this pass are world-space and keep the world
+	// projection. Skipped during teleport, which forces its own 60 FOV
+	// projection below.
+	f32 gunfovy = PLAYER_EXTCFG().gunfovy;
+	bool usegunfov = gunfovy >= 5.0f
+			&& g_Vars.currentplayer->teleportstate == TELEPORTSTATE_INACTIVE;
+
+	if (usegunfov) {
+		// Weapon zoom: scale the gun FOV by the world's current zoom ratio in
+		// tan space so the gun magnifies on screen exactly as much as the
+		// world does (vanilla zoom feel); no-op when not zoomed. This keeps
+		// the aim/laser compensations constant (see bgun0f0a5550 /
+		// bgunUpdateLasersight — their tan ratio reduces to the base ratio).
+		if (viGetFovY() != PLAYER_DEFAULT_FOV) {
+			f32 t = bgunTanHalfFovY(gunfovy) * bgunTanHalfFovY(viGetFovY()) / bgunTanHalfFovY(PLAYER_DEFAULT_FOV);
+			gunfovy = 2.0f * atan2f(t, 1.0f) * (180.0f / M_PI);
+		}
+
+		// equal FOVs project identically — skip the redundant matrix loads
+		if (gunfovy == viGetFovY()) {
+			usegunfov = false;
+		}
+	}
+#endif
+
 	player = g_Vars.currentplayer;
 
 	if (player->visionmode == VISIONMODE_XRAY) {
@@ -11517,6 +11633,12 @@ void bgunRender(Gfx **gdlptr)
 
 		if (hand->visible) {
 			gdl = beamRender(gdl, &hand->beam, 0, 0);
+
+#ifndef PLATFORM_N64
+			if (usegunfov) {
+				gdl = viPerspectiveFov(gdl, gunfovy, 1.5, 1000);
+			}
+#endif
 
 			if (weaponHasFlag(hand->gset.weaponnum, WEAPONFLAG_00008000)) {
 				gSPSetLights1(gdl++, var80070090);
@@ -11695,6 +11817,14 @@ void bgunRender(Gfx **gdlptr)
 			mtx00016784();
 
 			gSPPerspNormalize(gdl++, viGetPerspScale());
+
+#ifndef PLATFORM_N64
+			if (usegunfov) {
+				// Restore the world-FOV projection for the next hand's beam
+				// and the casings below
+				gdl = vi0000aca4(gdl, 1.5, 1000);
+			}
+#endif
 		}
 	}
 
@@ -12251,15 +12381,16 @@ s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromac
 	const bool extcontrols = PLAYER_EXTCFG().extcontrols || g_Vars.currentplayer->isremote;
 	bool docontinue;
 
-	// GoldenEye Style: refuse to enter a secondary function via the
-	// dedicated alt-fire button OR the active-menu function-toggle path.
-	// Covers weapons like RCP120 / AR34 / Laptop / Dragon whose secondary
-	// is activated via `invertgunfunc` / `activatesecondary` rather than
-	// the standard CHANGEFUNC state (which `bgunSetState` already gates).
+	// Classic "No Secondary Functions": refuse to enter a secondary function
+	// via the dedicated alt-fire button OR the active-menu function-toggle
+	// path. Covers weapons like RCP120 / AR34 / Laptop / Dragon whose
+	// secondary is activated via `invertgunfunc` / `activatesecondary` rather
+	// than the standard CHANGEFUNC state (which `bgunSetState` already gates).
 	// `!bgunIsUsingSecondaryFunction()` checks the direction so the
 	// player can still toggle BACK to primary if they were somehow in
-	// secondary when GE activated.
-	if (goldeneyeStyleActive() && !bgunIsUsingSecondaryFunction()) {
+	// secondary when the option activated.
+	if (classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)
+			&& !bgunIsUsingSecondaryFunction()) {
 		return USETIMER_STOP;
 	}
 #endif
@@ -13469,10 +13600,10 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	}
 
 #ifndef PLATFORM_N64
-	// GoldenEye Style also hides the small red/yellow primary/secondary
-	// indicator square next to the ammo counter — paired with the
-	// function-name overlay gate below for a clean minimal HUD.
-	if (!goldeneyeStyleActive())
+	// Classic "No Secondary Functions" also hides the small red/yellow
+	// primary/secondary indicator square next to the ammo counter — paired
+	// with the function-name overlay gate below for a clean minimal HUD.
+	if (!classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY))
 #endif
 	{
 		gdl = textSetPrimColour(gdl, fncolour);
@@ -13554,11 +13685,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 		if (func
 #ifndef PLATFORM_N64
-				// GoldenEye Style hides the primary/secondary function
-				// name overlay ("Single Shot", "Burst Fire", etc.) to
-				// match GE's minimal HUD. The weapon name above it is
-				// left visible.
-				&& !goldeneyeStyleActive()
+				// Classic "No Secondary Functions" hides the
+				// primary/secondary function name overlay ("Single Shot",
+				// "Burst Fire", etc.) to match GE's minimal HUD. The
+				// weapon name above it is left visible.
+				&& !classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)
 #endif
 		) {
 			langGet(func->name);

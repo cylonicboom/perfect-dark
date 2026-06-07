@@ -2086,6 +2086,9 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
 			case SVC_COOP_CLAIM: rc = netmsgSvcCoopClaimRead(&cl->in, cl); break;
 			case SVC_PAINT_STATE: rc = netmsgSvcPaintStateRead(&cl->in, cl); break;
+			case SVC_ZONES_STATE: rc = netmsgSvcZonesStateRead(&cl->in, cl); break;
+			case SVC_ELIM_STATE: rc = netmsgSvcElimStateRead(&cl->in, cl); break;
+			case SVC_RACE_STATE: rc = netmsgSvcRaceStateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2766,6 +2769,35 @@ void netEndFrame(void)
 					&& (g_MpPaintDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 35u)) {
 				g_MpPaintDirty = 0;
 				netmsgSvcPaintStateWrite(&g_NetMsgRel);
+			}
+
+			// Zones: broadcast zone owners + team scores + the cycle countdown
+			// on change (g_MpZonesDirty: zone flips and cycle awards) plus a 1s
+			// keep-alive at phase 20 (free — KoH 0, reconcile 10/40, score 15,
+			// lobby 30, paint 35, stats 45, timescale 50).
+			if (g_MpSetup.scenario == MPSCENARIO_ZONES
+					&& (g_MpZonesDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
+				g_MpZonesDirty = 0;
+				netmsgSvcZonesStateWrite(&g_NetMsgRel);
+			}
+
+			// Global Lives system (any scenario): broadcast lives + pools +
+			// the eliminated set on change (a spent life / an elimination)
+			// plus a 1s keep-alive at phase 25 (free, see the phase list
+			// above).
+			if (g_Vars.normmplayerisrunning && g_MpSetup.elimlives > 0
+					&& (g_MpElimDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 25u)) {
+				g_MpElimDirty = 0;
+				netmsgSvcElimStateWrite(&g_NetMsgRel);
+			}
+
+			// Race: broadcast per-racer progress + finish order + the finish
+			// timer on change (checkpoint passes, finishes) plus a 1s
+			// keep-alive at phase 5 (free, see the phase list above).
+			if (g_MpSetup.scenario == MPSCENARIO_RACE
+					&& (g_MpRaceDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 5u)) {
+				g_MpRaceDirty = 0;
+				netmsgSvcRaceStateWrite(&g_NetMsgRel);
 			}
 
 			// Scoreboard heartbeat: SVC_SCORE only fires on kill events
@@ -5410,12 +5442,14 @@ s32 netConsoleCommand(const char *line)
 		}
 		prev_us = now_us;
 		prev_lvframe60 = g_Vars.lvframe60;
-		// GE i-frame state for the local player chr.
-		sysLogPrintf(LOG_CHAT, "IGTICK: gemode=%d normmpr=%d gecheat=%d active=%d ticks(18)=%d",
+		// Classic i-frame state for the local player chr. `iframes` is the
+		// per-behaviour gate (GE master OR the individual Classic option).
+		sysLogPrintf(LOG_CHAT, "IGTICK: gemode=%d normmpr=%d gecheat=%d master=%d iframes=%d ticks(18)=%d",
 				(g_MpSetup.options & MPOPTION_GOLDENEYE) ? 1 : 0,
 				g_Vars.normmplayerisrunning,
 				cheatIsActive(CHEAT_GOLDENEYE) ? 1 : 0,
 				goldeneyeStyleActive() ? 1 : 0,
+				classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES) ? 1 : 0,
 				(s32)TICKS(18));
 		if (!g_Vars.currentplayer) {
 			sysLogPrintf(LOG_CHAT, "IGTICK: no currentplayer");

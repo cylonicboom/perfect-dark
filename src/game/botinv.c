@@ -1048,8 +1048,8 @@ bool botinvSwitchToWeapon(struct chrdata *chr, s32 weaponnum, s32 funcnum)
 
 #ifndef PLATFORM_N64
 	// Single choke point for Combat Sim weapon-function gating. Subsumes:
-	//  - MPOPTION_GOLDENEYE (bgunSecondaryFunctionDisabled returns true
-	//    for every weapon when goldeneyeStyleActive())
+	//  - The Classic "No Secondary Functions" option / GE Style master
+	//    (bgunSecondaryFunctionDisabled returns true for every weapon)
 	//  - Per-slot FNFLAG_* bits on saved Custom presets (consulted via
 	//    bgunSecondary/PrimaryFunctionDisabled). Bot AI picks funcnum
 	//    via botinvScoreWeapon* and commits here, so clamping once covers

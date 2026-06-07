@@ -20,6 +20,9 @@ Vp *viGetCurrentPlayerViewport(void);
 u16 viGetPerspScale(void);
 Gfx *vi0000ab78(Gfx *gdl);
 Gfx *vi0000aca4(Gfx *gdl, f32 znear, f32 zfar);
+#ifndef PLATFORM_N64
+Gfx *viPerspectiveFov(Gfx *gdl, f32 fovy, f32 znear, f32 zfar);
+#endif
 Gfx *vi0000ad5c(Gfx *gdl, Vp *vp);
 Gfx *vi0000af00(Gfx *gdl, Vp *vp);
 Gfx *vi0000b0e8(Gfx *gdl, f32 fovy, f32 aspect);

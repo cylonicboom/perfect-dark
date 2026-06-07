@@ -406,6 +406,13 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	}
 	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
 	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
+	netbufWriteU8(dst, g_MpSetup.paintclaimtime);
+	netbufWriteU8(dst, g_MpSetup.zonescoretime);
+	netbufWriteU8(dst, g_MpSetup.zonecapturetime);
+	netbufWriteU8(dst, g_MpSetup.elimlivesmode);
+	netbufWriteU8(dst, g_MpSetup.elimlives);
+	netbufWriteU8(dst, g_MpSetup.racelaps);
+	netbufWriteU8(dst, g_MpSetup.racepitytime);
 	netbufWriteU8(dst, (u8)g_BotCount);
 	netbufWriteU8(dst, MAX_BOTS);
 	for (s32 i = 0; i < MAX_BOTS; ++i) {
@@ -440,6 +447,13 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	const u8 htbstaticpad = netbufReadU8(src);
 	const u8 htmstaticpad = netbufReadU8(src);
+	const u8 paintclaimtime = netbufReadU8(src);
+	const u8 zonescoretime = netbufReadU8(src);
+	const u8 zonecapturetime = netbufReadU8(src);
+	const u8 elimlivesmode = netbufReadU8(src);
+	const u8 elimlives = netbufReadU8(src);
+	const u8 racelaps = netbufReadU8(src);
+	const u8 racepitytime = netbufReadU8(src);
 	const u8 botcount = netbufReadU8(src);
 	const u8 numbots = netbufReadU8(src);
 
@@ -494,6 +508,13 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 	g_MpSetup.htbstaticpad = htbstaticpad;
 	g_MpSetup.htmstaticpad = htmstaticpad;
+	g_MpSetup.paintclaimtime = paintclaimtime;
+	g_MpSetup.zonescoretime = zonescoretime;
+	g_MpSetup.zonecapturetime = zonecapturetime;
+	g_MpSetup.elimlivesmode = elimlivesmode;
+	g_MpSetup.elimlives = elimlives;
+	g_MpSetup.racelaps = racelaps;
+	g_MpSetup.racepitytime = racepitytime;
 	strcpy(g_MpSetup.name, "server");
 
 	for (u8 i = 0; i < numbots; ++i) {
@@ -911,6 +932,21 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	// Server + client must agree before htbCreateToken / htbCreateUplink runs.
 	netbufWriteU8(dst, g_MpSetup.htbstaticpad);
 	netbufWriteU8(dst, g_MpSetup.htmstaticpad);
+	// Graffiti timed-claim seconds (NET_PROTOCOL_VER >= 68). Claiming is
+	// host-authoritative (only the server's paintTick claims rooms), so this
+	// is mirrored for consistency / menu display, not determinism.
+	netbufWriteU8(dst, g_MpSetup.paintclaimtime);
+	// Zones score-cycle / capture-hold seconds (NET_PROTOCOL_VER >= 69).
+	// Same host-authoritative arrangement as paintclaimtime above.
+	netbufWriteU8(dst, g_MpSetup.zonescoretime);
+	netbufWriteU8(dst, g_MpSetup.zonecapturetime);
+	// Elimination lives mode / count (NET_PROTOCOL_VER >= 70). Same
+	// host-authoritative arrangement.
+	netbufWriteU8(dst, g_MpSetup.elimlivesmode);
+	netbufWriteU8(dst, g_MpSetup.elimlives);
+	// Race laps / finish timer (NET_PROTOCOL_VER >= 72). Same arrangement.
+	netbufWriteU8(dst, g_MpSetup.racelaps);
+	netbufWriteU8(dst, g_MpSetup.racepitytime);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -1062,6 +1098,13 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	}
 	g_MpSetup.htbstaticpad = netbufReadU8(src);
 	g_MpSetup.htmstaticpad = netbufReadU8(src);
+	g_MpSetup.paintclaimtime = netbufReadU8(src);
+	g_MpSetup.zonescoretime = netbufReadU8(src);
+	g_MpSetup.zonecapturetime = netbufReadU8(src);
+	g_MpSetup.elimlivesmode = netbufReadU8(src);
+	g_MpSetup.elimlives = netbufReadU8(src);
+	g_MpSetup.racelaps = netbufReadU8(src);
+	g_MpSetup.racepitytime = netbufReadU8(src);
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {
@@ -4299,6 +4342,192 @@ u32 netmsgSvcPaintStateRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+// SVC_ZONES_STATE: "Zones" — the full zone-owner list (indices are stable on
+// both sides: the zones derive deterministically from the stage's hillpads),
+// the accumulated team scores, and the score-cycle countdown. Sent on change
+// (zone flip / cycle award) and as a 1s keep-alive, so dropped packets and
+// mid-match joiners heal within a second.
+#define NET_ZONES_MAXZONES 9 // ARRAYCOUNT(scenariodata_zones.hillpads)
+
+u32 netmsgSvcZonesStateWrite(struct netbuf *dst)
+{
+	struct scenariodata_zones *zones = zonesGetData();
+	u8 count = (u8)zones->hillcount;
+	s32 i;
+
+	if (count > NET_ZONES_MAXZONES) {
+		count = NET_ZONES_MAXZONES;
+	}
+
+	netbufWriteU8(dst, SVC_ZONES_STATE);
+	netbufWriteU8(dst, count);
+
+	for (i = 0; i < count; i++) {
+		netbufWriteU8(dst, zones->owners[i]);
+	}
+
+	for (i = 0; i < MAX_TEAMS; i++) {
+		s32 score = zones->teamscores[i];
+		netbufWriteU16(dst, (u16)(score < 0 ? 0 : (score > 0xffff ? 0xffff : score)));
+	}
+
+	// cycle remaining in lvupdate240 units; max 60s * 240 = 14400, fits u16
+	netbufWriteU16(dst, (u16)(zones->cycle240 < 0 ? 0 : zones->cycle240));
+
+	return dst->error;
+}
+
+u32 netmsgSvcZonesStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	u8 owners[NET_ZONES_MAXZONES];
+	s32 teamscores[MAX_TEAMS];
+	const u8 count = netbufReadU8(src);
+	s32 i;
+
+	if (count > NET_ZONES_MAXZONES) {
+		sysLogPrintf(LOG_WARNING, "NET: SVC_ZONES_STATE bad zone count %u", count);
+		return 1;
+	}
+
+	for (i = 0; i < count; i++) {
+		owners[i] = netbufReadU8(src);
+	}
+
+	for (i = 0; i < MAX_TEAMS; i++) {
+		teamscores[i] = netbufReadU16(src);
+	}
+
+	const u16 cycle240 = netbufReadU16(src);
+
+	if (src->error) {
+		return src->error;
+	}
+
+	if (srccl->state >= CLSTATE_GAME && g_MpSetup.scenario == MPSCENARIO_ZONES) {
+		// zonesApplyWireState applies owners via the shared setter (re-tints
+		// rooms, never raises the broadcast flag on a client), overwrites the
+		// team scores and resyncs the countdown.
+		zonesApplyWireState(owners, count, teamscores, cycle240);
+	}
+
+	return src->error;
+}
+
+// SVC_ELIM_STATE: "Elimination" — authoritative per-combatant lives, per-team
+// shared pools and the eliminated set. Fixed-size payload (MAX_MPCHRS +
+// MAX_TEAMS are wire constants). Sent on change (a spent life / an
+// elimination) and as a 1s keep-alive.
+u32 netmsgSvcElimStateWrite(struct netbuf *dst)
+{
+	struct elimdata *elim = elimGetData();
+	u16 elimmask = 0;
+	s32 i;
+
+	netbufWriteU8(dst, SVC_ELIM_STATE);
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		s32 lives = elim->lives[i];
+		netbufWriteU8(dst, (u8)(lives < 0 ? 0 : (lives > 0xff ? 0xff : lives)));
+
+		if (elim->eliminated[i]) {
+			elimmask |= 1u << i;
+		}
+	}
+
+	for (i = 0; i < MAX_TEAMS; i++) {
+		s32 pool = elim->teamlives[i];
+		netbufWriteU8(dst, (u8)(pool < 0 ? 0 : (pool > 0xff ? 0xff : pool)));
+	}
+
+	netbufWriteU16(dst, elimmask);
+
+	return dst->error;
+}
+
+u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	u8 lives[MAX_MPCHRS];
+	u8 teamlives[MAX_TEAMS];
+	s32 i;
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		lives[i] = netbufReadU8(src);
+	}
+
+	for (i = 0; i < MAX_TEAMS; i++) {
+		teamlives[i] = netbufReadU8(src);
+	}
+
+	const u16 elimmask = netbufReadU16(src);
+
+	if (src->error) {
+		return src->error;
+	}
+
+	if (srccl->state >= CLSTATE_GAME && g_MpSetup.elimlives > 0) {
+		elimApplyWireState(lives, teamlives, elimmask);
+	}
+
+	return src->error;
+}
+
+// SVC_RACE_STATE: "Race" — authoritative per-racer checkpoint/lap progress,
+// finishing order and the post-winner finish timer. Fixed-size payload
+// (MAX_MPCHRS is a wire constant). Sent on change (a checkpoint pass / a
+// finish) and as a 1s keep-alive.
+u32 netmsgSvcRaceStateWrite(struct netbuf *dst)
+{
+	struct scenariodata_race *race = raceGetData();
+	s32 i;
+
+	netbufWriteU8(dst, SVC_RACE_STATE);
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		netbufWriteU8(dst, race->nextcp[i]);
+		netbufWriteU8(dst, race->lapsdone[i]);
+		netbufWriteU8(dst, race->finishpos[i]);
+	}
+
+	netbufWriteU8(dst, race->finishcount);
+	netbufWriteU8(dst, race->humancount);
+	netbufWriteU8(dst, race->pitystarted);
+	// finish-timer remaining in lvupdate240 units; max 120s * 240 = 28800,
+	// fits u16
+	netbufWriteU16(dst, (u16)(race->pity240 < 0 ? 0 : race->pity240));
+
+	return dst->error;
+}
+
+u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	u8 nextcp[MAX_MPCHRS];
+	u8 lapsdone[MAX_MPCHRS];
+	u8 finishpos[MAX_MPCHRS];
+	s32 i;
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		nextcp[i] = netbufReadU8(src);
+		lapsdone[i] = netbufReadU8(src);
+		finishpos[i] = netbufReadU8(src);
+	}
+
+	const u8 finishcount = netbufReadU8(src);
+	const u8 humancount = netbufReadU8(src);
+	const u8 pitystarted = netbufReadU8(src);
+	const u16 pity240 = netbufReadU16(src);
+
+	if (src->error) {
+		return src->error;
+	}
+
+	if (srccl->state >= CLSTATE_GAME && g_MpSetup.scenario == MPSCENARIO_RACE) {
+		raceApplyWireState(nextcp, lapsdone, finishpos, finishcount, humancount,
+				pitystarted, pity240);
+	}
+
+	return src->error;
+}
+
 // SVC_EXPLOSION: server notifies clients of an explosion visual at a world
 // position. Used when a timer-detonated networked prop (phoenix secondary,
 // grenade, etc.) explodes — the weapon's propExplode runs server-side only,
@@ -4433,6 +4662,7 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 	static const char *const scenarioNames[] = {
 		"Combat", "Hold the Briefcase", "Hacker Central",
 		"Pop-A-Cap", "King of the Hill", "Capture the Case",
+		"Graffiti", "Zones", "Race",
 	};
 
 	// Helper: copy src into buf (max len), strip embedded '\n' width markers.

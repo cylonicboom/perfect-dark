@@ -28,6 +28,31 @@ u8 g_MpPaintDirty = 0;
 // exceed that.
 #define PAINT_SPAWN_MAXPADS 24
 
+// "Claim Time" slider: seconds (0..10) a combatant must remain in a room
+// before it flips to their team. 0 = instant claim on entry (the original
+// behaviour). Stored in g_MpSetup.paintclaimtime (host-authoritative — only
+// the server's paintTick claims rooms).
+MenuItemHandlerResult menuhandlerMpPaintClaimTime(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_MpSetup.paintclaimtime;
+		break;
+	case MENUOP_SET:
+		g_MpSetup.paintclaimtime = (u8)data->slider.value;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		if (data->slider.value == 0) {
+			sprintf(data->slider.label, "Instant\n");
+		} else {
+			sprintf(data->slider.label, "%ds\n", (s32)data->slider.value);
+		}
+		break;
+	}
+
+	return 0;
+}
+
 struct menuitem g_MpPaintOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -77,14 +102,8 @@ struct menuitem g_MpPaintOptionsMenuItems[] = {
 		MPOPTION_NOAUTOAIM,
 		menuhandlerMpCheckboxOption,
 	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR,
-		L_OPTIONS_257, // "Friendly Fire"
-		MPOPTION_FRIENDLYFIRE,
-		menuhandlerMpDisplayTeam,
-	},
+	// Friendly Fire lives on the "More Options" sibling page (setup.c),
+	// shared by every scenario.
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
@@ -105,6 +124,16 @@ struct menuitem g_MpPaintOptionsMenuItems[] = {
 		(uintptr_t)"Owned Room Spawn",
 		MPOPTION_OWNEDROOMSPAWN >> 32,
 		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		// Port-only: seconds a combatant must hold a room before claiming
+		// it (0 = instant). param3 is the slider max.
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Claim Time",
+		10,
+		menuhandlerMpPaintClaimTime,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,
@@ -170,7 +199,34 @@ void paintInitProps(void)
 		paint->lastroom[i] = -1;
 	}
 
+	for (i = 0; i < (s32)ARRAYCOUNT(paint->claimtime240); i++) {
+		paint->claimtime240[i] = 0;
+	}
+
 	g_MpPaintDirty = 0;
+}
+
+/**
+ * A room is contested while a living combatant from another team is inside it.
+ * The timed claim (paintclaimtime > 0) pauses KoH-style for everyone in a
+ * contested room until one team holds it exclusively — kills resolve the
+ * stand-off (paintHandleDeath claims instantly for the killer's team).
+ */
+static bool paintRoomContested(RoomNum room, s32 team)
+{
+	s32 j;
+
+	for (j = 0; j < g_MpNumChrs; j++) {
+		struct chrdata *other = g_MpAllChrPtrs[j];
+
+		if (other && other->prop && !chrIsDead(other)
+				&& other->prop->rooms[0] == room
+				&& radarGetTeamIndex(other->team) != team) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /**
@@ -228,15 +284,27 @@ void paintTick(void)
 	}
 
 	// Ownership is host-authoritative; clients receive it via SVC_PAINT_STATE.
-	// Rooms are claimed on ENTRY only (rooms[0] changed since last tick) — NOT
-	// continuously by standing in them. Continuous claiming made contested
-	// rooms flip every frame to whoever iterated last in g_MpAllChrPtrs (the
-	// sims, which sit after the humans), so a human could never hold a room a
-	// sim was standing in. Kills also claim — see paintHandleDeath.
-#ifndef PLATFORM_N64
-	if (g_NetMode != NETMODE_CLIENT)
-#endif
+	// With Claim Time at 0 (default), rooms are claimed on ENTRY only
+	// (rooms[0] changed since last tick) — NOT continuously by standing in
+	// them. Continuous claiming made contested rooms flip every frame to
+	// whoever iterated last in g_MpAllChrPtrs (the sims, which sit after the
+	// humans), so a human could never hold a room a sim was standing in.
+	// With Claim Time > 0, a combatant must remain in the room for that many
+	// seconds before it flips; the timer pauses (KoH dual-occupancy rule)
+	// while another team is also in the room, so contested rooms are won by
+	// clearing them out. Kills also claim — see paintHandleDeath.
+	//
+	// The room/timer TRACKING runs on every machine (clients predict the
+	// timers locally off replicated positions so paintRenderHud can show the
+	// capture countdown); only the ownership WRITES are gated to the server.
 	{
+		s32 claimticks = g_MpSetup.paintclaimtime * TICKS(240);
+#ifndef PLATFORM_N64
+		bool isclient = g_NetMode == NETMODE_CLIENT;
+#else
+		bool isclient = false;
+#endif
+
 		for (i = 0; i < g_MpNumChrs && i < (s32)ARRAYCOUNT(paint->lastroom); i++) {
 			struct chrdata *chr = g_MpAllChrPtrs[i];
 
@@ -246,16 +314,36 @@ void paintTick(void)
 
 				if (room != paint->lastroom[i]) {
 					paint->lastroom[i] = room;
+					paint->claimtime240[i] = 0;
 
-					if (room >= 1 && room < paint->roomcount
+					if (claimticks == 0 && !isclient
+							&& room >= 1 && room < paint->roomcount
 							&& team >= 0 && team < MAX_TEAMS) {
 						paintSetRoomOwner(room, (u8)(team + 1));
+					}
+				} else if (claimticks > 0
+						&& room >= 1 && room < paint->roomcount
+						&& team >= 0 && team < MAX_TEAMS
+						&& paint->roomowner[room] != (u8)(team + 1)
+						&& !paintRoomContested(room, team)) {
+					paint->claimtime240[i] += g_Vars.lvupdate240;
+
+					if (paint->claimtime240[i] >= claimticks) {
+						if (isclient) {
+							// hold at the threshold (HUD reads 0.00) until
+							// the host's claim arrives via SVC_PAINT_STATE
+							paint->claimtime240[i] = claimticks;
+						} else {
+							paint->claimtime240[i] = 0;
+							paintSetRoomOwner(room, (u8)(team + 1));
+						}
 					}
 				}
 			} else {
 				// dead/missing: forget the room so the respawn counts as an
 				// entry even if it lands in the same room they died in
 				paint->lastroom[i] = -1;
+				paint->claimtime240[i] = 0;
 			}
 		}
 	}
@@ -333,23 +421,18 @@ Gfx *paintRenderHud(Gfx *gdl)
 	s32 textheight;
 	s32 x;
 	s32 y;
+	s32 barbottom;
 	char text[16];
 
 	if (paint->roomowner == NULL || chr == NULL) {
 		return gdl;
 	}
 
-	// Show the local player's own team's room tally at the top of the screen.
 	myteam = radarGetTeamIndex(chr->team);
 
 	if (myteam < 0 || myteam >= MAX_TEAMS) {
 		return gdl;
 	}
-
-	sprintf(text, "%d", paint->teamcounts[myteam]);
-
-	x = viGetViewLeft() + viGetViewWidth() / 2;
-	y = viGetViewTop() + 10;
 
 #ifndef PLATFORM_N64
 	{
@@ -361,18 +444,50 @@ Gfx *paintRenderHud(Gfx *gdl)
 #endif
 
 	gdl = text0f153628(gdl);
-	textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicXs, g_FontHandelGothicXs, 0);
 
-	x -= textwidth / 2;
-	textwidth += x;
-	textheight += y;
+	// Capture countdown (top centre, "s.hh"): time remaining before the room
+	// the local player is standing in flips to their team. Only shown with a
+	// non-instant Claim Time, while alive in a claimable room (valid + not
+	// already owned by the team). The value freezes while the room is
+	// contested (paintTick pauses the timer).
+	if (g_MpSetup.paintclaimtime > 0 && !chrIsDead(chr)) {
+		RoomNum room = chr->prop->rooms[0];
 
-	gdl = text0f153990(gdl, x, y, textwidth, textheight);
-	gdl = textRender(gdl, &x, &y, text, g_CharsHandelGothicXs, g_FontHandelGothicXs,
-			(g_TeamColours[myteam] & 0xffffff00) | 0xa0, 0xa0, viGetWidth(), viGetHeight(), 0, 0);
+		if (room >= 1 && room < paint->roomcount
+				&& paint->roomowner[room] != (u8)(myteam + 1)) {
+			s32 myindex = mpPlayerGetIndex(chr);
 
-	// Team floor-coverage bars (bottom centre, just above the countdown
-	// timer): one vertical bar per active team in its team colour. The
+			if (myindex >= 0 && myindex < (s32)ARRAYCOUNT(paint->claimtime240)) {
+				s32 claimticks = g_MpSetup.paintclaimtime * TICKS(240);
+				s32 remaining = claimticks - paint->claimtime240[myindex];
+
+				if (remaining < 0) {
+					remaining = 0;
+				}
+
+				sprintf(text, "%d.%02d", remaining / TICKS(240),
+						(remaining % TICKS(240)) * 100 / TICKS(240));
+
+				x = viGetViewLeft() + viGetViewWidth() / 2;
+				y = viGetViewTop() + 10;
+
+				textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicXs, g_FontHandelGothicXs, 0);
+
+				x -= textwidth / 2;
+				textwidth += x;
+				textheight += y;
+
+				gdl = text0f153990(gdl, x, y, textwidth, textheight);
+				gdl = textRender(gdl, &x, &y, text, g_CharsHandelGothicXs, g_FontHandelGothicXs,
+						(g_TeamColours[myteam] & 0xffffff00) | 0xa0, 0xa0, viGetWidth(), viGetHeight(), 0, 0);
+			}
+		}
+	}
+
+	barbottom = viGetViewTop() + viGetViewHeight() - 14;
+
+	// Team floor-coverage bars (bottom centre, with the team's owned-room
+	// tally just below): one vertical bar per active team in its team colour. The
 	// leading team's bar is full height (15px); the others scale as a ratio
 	// of the leader. Each bar sits in a dim full-height slot for readability.
 	// Drawing pattern (textSetPrimColour + gDPFillRectangle with
@@ -415,7 +530,7 @@ Gfx *paintRenderHud(Gfx *gdl)
 			// bottom centre, in the spot the bottom-centre countdown digits
 			// used to occupy (the Combat Sim timer now sits bottom-left in
 			// the campaign mission-timer position)
-			s32 bary2 = viGetViewTop() + viGetViewHeight() - 14;
+			s32 bary2 = barbottom;
 
 			for (t = 0; t < MAX_TEAMS; t++) {
 				s32 h;
@@ -453,6 +568,23 @@ Gfx *paintRenderHud(Gfx *gdl)
 			gdl = text0f153838(gdl);
 		}
 	}
+
+	// Owned-room tally (the local team's floor count), bottom centre just
+	// below the coverage bars.
+	sprintf(text, "%d", paint->teamcounts[myteam]);
+
+	x = viGetViewLeft() + viGetViewWidth() / 2;
+	y = barbottom + 3;
+
+	textMeasure(&textheight, &textwidth, text, g_CharsHandelGothicXs, g_FontHandelGothicXs, 0);
+
+	x -= textwidth / 2;
+	textwidth += x;
+	textheight += y;
+
+	gdl = text0f153990(gdl, x, y, textwidth, textheight);
+	gdl = textRender(gdl, &x, &y, text, g_CharsHandelGothicXs, g_FontHandelGothicXs,
+			(g_TeamColours[myteam] & 0xffffff00) | 0xa0, 0xa0, viGetWidth(), viGetHeight(), 0, 0);
 
 	gdl = text0f153780(gdl);
 

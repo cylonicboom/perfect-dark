@@ -1,11 +1,53 @@
-# Port-only Feature: GoldenEye Style
+# Port-only Feature: GoldenEye Style + Classic Options
+
+> **Classic Options update (2026-06).** The GE rule set was broken into 12 individually
+> selectable "Classic Options". Each behaviour now has its own cheat (`CHEAT_CLASSIC_*`
+> 49-60) and its own per-match MP option (`MPOPTION_CLASSIC_*`, high-word bits 34-45,
+> `ULL` constants), with **GoldenEye Style kept as the master** — a behaviour is active when
+> the master OR its own toggle is set, on either route. The per-behaviour choke point is:
+>
+> ```c
+> bool classicOptionActive(s32 cheat_id, u64 mpoption)
+> {
+>     if (cheatIsActive(CHEAT_GOLDENEYE) || cheatIsActive(cheat_id)) return true;
+>     if (g_Vars.normmplayerisrunning && (g_MpSetup.options & (MPOPTION_GOLDENEYE | mpoption))) return true;
+>     return false;
+> }
+> ```
+>
+> Every gate site listed in this doc now calls `classicOptionActive(CHEAT_CLASSIC_X,
+> MPOPTION_CLASSIC_X)` instead of `goldeneyeStyleActive()` (which remains, master-only,
+> for diagnostics). The behaviour → toggle mapping:
+>
+> | Classic option | Cheat (idx) | MP bit | Behaviours (doc sections below) |
+> |---|---|---|---|
+> | Snap Lean | `CHEAT_CLASSIC_SNAPLEAN` 49 | 34 | §1 snap lean |
+> | No Crouch Accuracy | `CHEAT_CLASSIC_NOCROUCHACC` 50 | 35 | §2 no crouch accuracy bonus |
+> | Classic Reloads | `CHEAT_CLASSIC_RELOAD` 51 | 36 | §3 lower-and-raise reloads |
+> | Ledge Walls | `CHEAT_CLASSIC_LEDGEWALL` 52 | 37 | §4 invisible-wall ledges |
+> | Classic Crosshair | `CHEAT_CLASSIC_SIGHT` 53 | 38 | §5 classic crosshair |
+> | Hide Crosshair Unless Aiming | `CHEAT_CLASSIC_HIDESIGHT` 54 | 39 | §6 hide-unless-aiming |
+> | GoldenEye HUD | `CHEAT_CLASSIC_GEHUD` 55 | 40 | §7 arc HUD **+ the damage flash** (the flash renders inside `playerRenderHealthBarGE`, so it's a GEHUD cosmetic — its `damageflashstart60` stamp in `chrDamage` is GEHUD-gated) |
+> | No Secondary Functions | `CHEAT_CLASSIC_NOSECONDARY` 56 | 41 | §8 secondary-function bans (`bgunSecondaryFunctionDisabled`), bot cloak disable, fn-indicator HUD hides |
+> | No Mid-Crouch | `CHEAT_CLASSIC_NOMIDCROUCH` 57 | 42 | §9 all five crouch-input sites |
+> | No Dual Wield | `CHEAT_CLASSIC_NODUALWIELD` 58 | 43 | §10 (`bgunDualWieldDisabled`) |
+> | Damage Invulnerability | `CHEAT_CLASSIC_IFRAMES` 59 | 44 | §11 i-frames + fire lockout (`bgunCurrentPlayerInIframe`, `lastdamagetick60` stamps) — **no flash unless GEHUD is also on** |
+> | No Blur Effects | `CHEAT_CLASSIC_NOBLUR` 60 | 45 | §12 dizzy/poison blur/bot blur wipe |
+>
+> Menus: cheats in **Extended Options > Experiments > Classic Options** (master on top);
+> MP options on the **"Classic Options" carousel page** (`g_MpClassicOptionsMenuDialog`,
+> `src/game/mplayer/setup.c`), third sibling after "More Options"
+> (`g_ExtGameOptionsMenuDialog.nextsibling`), shared by every scenario. High-word rows use
+> `menuhandlerMpCheckboxPortOption` (`param3 = BIT >> 32`). Playlist names: `CLASSIC_*`
+> (`port/src/net/playlist.c`). `NET_PROTOCOL_VER` bumped to 67 (wire format unchanged —
+> options already ride as u64 — but gate semantics differ across builds).
 
 Two activation routes that trigger the same behavioural rule set:
 
 - **`MPOPTION_GOLDENEYE`** (`0x80000000`, `src/include/constants.h`) — Combat Sim toggle in the host's lobby. Applies to the active match only. Wire-synced via `SVC_STAGE_START` so server and clients evaluate every gate identically (`port/src/net/netmsg.c:517` write, `:603` read).
-- **`CHEAT_GOLDENEYE`** (45, `src/include/constants.h`) — gameplay cheat (always-unlocked, port-only). Works in any mode — solo, training, MP — so the GE rule set isn't tied to Combat Sim alone.
+- **`CHEAT_GOLDENEYE`** (45, `src/include/constants.h`) — gameplay cheat (always-unlocked, port-only). Works in any mode — solo, training, MP — so the GE rule set isn't tied to Combat Sim alone. Toggled from **Extended Options > Experiments > Classic Options** (it was moved out of the Cheats > Gameplay menu).
 
-Every gate site routes through a single helper `goldeneyeStyleActive()` (`src/game/cheats.c`, declared in `src/game/cheats.h`):
+Every gate site routes through the per-behaviour helper above; the master-only helper remains for diagnostics:
 
 ```c
 bool goldeneyeStyleActive(void)
@@ -16,7 +58,7 @@ bool goldeneyeStyleActive(void)
 }
 ```
 
-So adding new GE behaviour means: call `goldeneyeStyleActive()` at the gate. Both routes pick it up automatically.
+So adding new GE/Classic behaviour means: pick (or add) a `CHEAT_CLASSIC_*`/`MPOPTION_CLASSIC_*` pair and call `classicOptionActive(...)` at the gate. Both routes — and the master — pick it up automatically.
 
 Everything is gated under `#ifndef PLATFORM_N64` so the N64 build is byte-identical.
 
@@ -26,9 +68,11 @@ Everything is gated under `#ifndef PLATFORM_N64` so the N64 build is byte-identi
 
 | File | Site | Purpose |
 |---|---|---|
-| `src/include/constants.h` | `MPOPTION_GOLDENEYE 0x80000000` | Bit definition (upper byte is now fully allocated) |
-| `src/game/mplayer/scenarios/combat.inc` | inside the existing `#ifndef PLATFORM_N64` block | "GoldenEye Style" checkbox in the Combat menu |
-| `port/src/net/netmenu.c` | `s_opts[]` table | Lobby active-options summary string |
+| `src/include/constants.h` | `MPOPTION_GOLDENEYE 0x80000000` + `MPOPTION_CLASSIC_*` bits 34-45; `CHEAT_GOLDENEYE 45` + `CHEAT_CLASSIC_*` 49-60 | Bit/index definitions |
+| `src/game/mplayer/setup.c` | `g_MpClassicOptionsMenuDialog` | "Classic Options" carousel page (master + 12 toggles), third sibling after "More Options" |
+| `port/src/optionsmenu.c` | `g_ExtendedClassicMenuDialog` | Extended Options > Experiments > Classic Options (cheat checkboxes) |
+| `port/src/net/netmenu.c` | `s_opts[]` table (u64 flags) | Lobby active-options summary string |
+| `port/src/net/playlist.c` | `s_options[]` | Playlist `options=` names (`GOLDENEYE`, `CLASSIC_*`) |
 
 ---
 

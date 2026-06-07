@@ -92,7 +92,7 @@ struct drawslot g_BgDrawSlots[61];
 #else
 // 256 slots: indices 0-254 are usable draw slots; index 255 is the special
 // full-screen bbox sentinel (g_BgSpecialDrawSlot). The extra capacity is only
-// used when g_BgNoDrawSlotLimit is set by CHEAT_NODRAWLIMIT or MPOPTION_NOOMLIMIT.
+// used when g_BgNoDrawSlotLimit is set (/octree bigroom).
 struct drawslot g_BgDrawSlots[256];
 #endif
 u8 *g_BgPrimaryData;
@@ -144,7 +144,7 @@ s32 g_BgLoadCandidateTimer240 = 0;
 s32 g_BgNumDrawSlots = 0;
 s32 g_BgNumAttemptedDrawSlots = 0;
 #ifndef PLATFORM_N64
-// Set each frame in bgTickPortals from CHEAT_NOCULL/NODRAWLIMIT and MPOPTION_NOCULL/NOOMLIMIT.
+// Set each frame in bgTickPortals from g_BgOctreeBigRoom (/octree bigroom).
 // Read by bgSetRoomOnscreen; explicit globals so callers inside bgTickPortals don't
 // need extra parameters.
 bool g_BgNoCull = false;
@@ -6858,10 +6858,10 @@ void bgTickPortals(void)
 		g_BgSpecialDrawSlot->box.xmax = box.xmax;
 		g_BgSpecialDrawSlot->box.ymax = box.ymax;
 #ifndef PLATFORM_N64
-		g_BgNoCull = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOCULL))
-		          || cheatIsActive(CHEAT_NOCULL) || g_BgOctreeBigRoom;
-		g_BgNoDrawSlotLimit = (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NOOMLIMIT))
-		                   || cheatIsActive(CHEAT_NODRAWLIMIT) || g_BgOctreeBigRoom;
+		// The No Room Culling / No Draw Slot Limit cheats + MP options were
+		// retired; /octree bigroom is now the only driver of these globals.
+		g_BgNoCull = g_BgOctreeBigRoom;
+		g_BgNoDrawSlotLimit = g_BgOctreeBigRoom;
 		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
 		gfx_mirror_mode = cheatIsActive(CHEAT_MIRROR) ? 1 : 0;
 		g_SndTonalInversion = cheatIsActive(CHEAT_TONALINVERSION) ? 1 : 0;

@@ -2560,14 +2560,18 @@ void botTickUnpaused(struct chrdata *chr)
 		}
 
 #ifndef PLATFORM_N64
-		// GoldenEye Style: bots aren't allowed to use cloak alt-fire
-		// abilities (cloak device or RCP120 cloak). Override the AI's
-		// decisions made above so a bot in GE mode never goes invisible.
-		// Also clear any residual blur/dizziness so a freshly-flipped
-		// GE cheat instantly wipes lingering state from prior hits.
-		if (goldeneyeStyleActive()) {
+		// Classic "No Secondary Functions": bots aren't allowed to use cloak
+		// alt-fire abilities (cloak device or RCP120 cloak). Override the
+		// AI's decisions made above so a bot never goes invisible.
+		if (classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)) {
 			aibot->cloakdeviceenabled = false;
 			aibot->rcp120cloakenabled = false;
+		}
+
+		// Classic "No Blur Effects": clear any residual blur/dizziness so a
+		// freshly-flipped option instantly wipes lingering state from prior
+		// hits.
+		if (classicOptionActive(CHEAT_CLASSIC_NOBLUR, MPOPTION_CLASSIC_NOBLUR)) {
 			chr->blurdrugamount = 0;
 			chr->blurnumtimesdied = 0;
 		}

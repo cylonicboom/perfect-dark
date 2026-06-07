@@ -670,7 +670,7 @@ void spectatorTickPanel(s32 panelnum)
 	// Cache room for the next tick so the BSP renderer can start its portal
 	// walk from a populated room. For free/topdown cams we keep whichever
 	// room playerSetCamPropertiesWithoutRoom picks (it walks the portal
-	// graph from `room`) — see also MPOPTION_NOCULL.
+	// graph from `room`) — see also /octree bigroom (g_BgNoCull).
 	p->pos = pos;
 
 	pl->cam_pos = pos;

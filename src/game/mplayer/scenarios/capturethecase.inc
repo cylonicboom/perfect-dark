@@ -113,38 +113,8 @@ struct menuitem g_CtcOptionsMenuItems[] = {
 		menuhandlerMpCheckboxOption,
 	},
 #ifndef PLATFORM_N64
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Start Armed",
-		MPOPTION_SPAWNWITHWEAPON,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Drug Blur",
-		MPOPTION_NODRUGBLUR,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR,
-		L_OPTIONS_257, // "Friendly Fire"
-		MPOPTION_FRIENDLYFIRE,
-		menuhandlerMpDisplayTeam,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Player on Radar",
-		MPOPTION_NOPLAYERONRADAR,
-		menuhandlerMpCheckboxOption,
-	},
+	// Start Armed / No Drug Blur / Friendly Fire / No Player on Radar live on
+	// the "More Options" sibling page (setup.c), shared by every scenario.
 	{
 		MENUITEMTYPE_DROPDOWN,
 		0, // team index

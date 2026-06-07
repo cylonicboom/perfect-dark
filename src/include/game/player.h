@@ -117,6 +117,8 @@ s32 playerGetLocalCount(void);
 #ifndef PLATFORM_N64
 f32 playerGetDefaultFovY(s32 playernum);
 f32 playerGetZoomFovMult(s32 playernum);
+f32 playerAdjustZoomFovY(f32 fovy, s32 playernum);
+f32 playerUnadjustZoomFovY(f32 fovy, s32 playernum);
 #endif
 
 #endif

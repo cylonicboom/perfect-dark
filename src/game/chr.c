@@ -2370,9 +2370,9 @@ void chrTickPoisoned(struct chrdata *chr)
 				chr->poisoncounter = 0;
 			} else if (chr->poisoncounter < TICKS(1680)) {
 #ifndef PLATFORM_N64
-				// GoldenEye Style: no dizzy/blur effects from any source,
-				// including poison ammo accumulation.
-				if (!goldeneyeStyleActive())
+				// Classic "No Blur Effects": no dizzy/blur effects from any
+				// source, including poison ammo accumulation.
+				if (!classicOptionActive(CHEAT_CLASSIC_NOBLUR, MPOPTION_CLASSIC_NOBLUR))
 #endif
 				{
 					chr->blurdrugamount += g_Vars.lvupdate240 * 10;

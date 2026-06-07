@@ -48,10 +48,10 @@
 #ifndef PLATFORM_N64
 // Multiply the per-frame master-DL and vtx pools by this on the port. They are
 // bump-allocated with no bounds check and sized for the portal-culled visible
-// set, so disabling portal culling (No Room Culling cheat / MPOPTION_NOCULL /
-// /octree bigroom) to render the whole level overruns them and corrupts adjacent
-// memory ("triangles out of order"). The extra headroom keeps normal-sized
-// levels in bounds; extreme levels can still raise -mgfx / -mvtx.
+// set, so disabling portal culling (/octree bigroom) to render the whole level
+// overruns them and corrupts adjacent memory ("triangles out of order"). The
+// extra headroom keeps normal-sized levels in bounds; extreme levels can still
+// raise -mgfx / -mvtx.
 #define PD_BIG_POOL_SCALE 8
 #endif
 

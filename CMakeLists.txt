@@ -358,7 +358,17 @@ endif()
 # Platform-specific extra libs
 if(NOT EXTRA_LIBRARIES)
   if(WIN32)
-    set(EXTRA_LIBRARIES ws2_32 winmm dbghelp -static-libstdc++)
+    # Statically link the whole GCC runtime (libstdc++ was already static):
+    # -static-libgcc folds in libgcc_s_seh-1.dll and the winpthread section
+    # folds in libwinpthread-1.dll (whole-archive — its TLS/init machinery is
+    # pulled lazily and gets dropped otherwise; the trailing -Bdynamic
+    # restores normal linking for the driver's default libs). Without this,
+    # players with a stale runtime DLL next to the exe hit loader errors like
+    # "entry point clock_gettime64 could not be located" whenever the build
+    # toolchain moves ahead of the shipped DLLs. Distribution now only needs
+    # SDL3.dll + zlib1.dll (both self-contained, system imports only).
+    set(EXTRA_LIBRARIES ws2_32 winmm dbghelp -static-libstdc++ -static-libgcc
+        -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic)
   elseif(NINTENDO_SWITCH)
     set(EXTRA_LIBRARIES stdc++ pthread)
   else()

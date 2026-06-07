@@ -15,9 +15,29 @@ struct mpscenariooverview {
 };
 
 #ifndef PLATFORM_N64
-extern struct mpscenariooverview g_MpScenarioOverviews[7]; // +1 port-only: Graffiti
+extern struct mpscenariooverview g_MpScenarioOverviews[9]; // +3 port-only: Graffiti, Zones, Race
 #else
 extern struct mpscenariooverview g_MpScenarioOverviews[6];
+#endif
+
+#ifndef PLATFORM_N64
+// Last raw 32-bit scenario save slot consumed by scenarioReadSave's default
+// (no-readsavefunc) branch. mpsetupfileLoadWad re-dispatches it when the v10
+// scenario high-bit reveals the real scenario (8+) after the slot was already
+// consumed under the masked low-3-bits id (see constants.h MPSCENARIO note).
+extern u32 g_ScenarioSaveSlotRaw;
+void raceApplySaveSlot(u32 val);
+#endif
+
+#ifndef PLATFORM_N64
+// Global Lives system (elimination.inc — scenario-independent; see
+// docs/PORT_ELIMINATION.md). Menu handlers for the Limits dialog (setup.c)
+// and the per-match reset hooked from scenarioInitProps.
+MenuItemHandlerResult menuhandlerMpElimLivesMode(s32 operation, struct menuitem *item, union handlerdata *data);
+MenuItemHandlerResult menuhandlerMpElimLives(s32 operation, struct menuitem *item, union handlerdata *data);
+void elimReset(void);
+void elimTick(void);
+Gfx *elimRenderHud(Gfx *gdl);
 #endif
 
 MenuItemHandlerResult menuhandlerMpOpenOptions(s32 operation, struct menuitem *item, union handlerdata *data);

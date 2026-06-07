@@ -106,10 +106,24 @@ static const struct namedoption s_options[] = {
 	{ "FRIENDLYFIRE",       MPOPTION_FRIENDLYFIRE },
 	{ "NOPLAYERONRADAR",    MPOPTION_NOPLAYERONRADAR },
 	{ "CONTROLLERS_ONLY",   MPOPTION_CONTROLLERS_ONLY },
-	{ "NOCULL",             MPOPTION_NOCULL },
-	{ "NOOMLIMIT",          MPOPTION_NOOMLIMIT },
+	// NOCULL / NOOMLIMIT were retired (replaced by the /octree commands);
+	// old playlists naming them now warn as unknown options.
 	{ "GOLDENEYE",          MPOPTION_GOLDENEYE },
 	{ "NODOORS",            MPOPTION_NODOORS }, // port-only, high word (bit 32)
+	// Classic options (GE Style broken into pieces) — port-only, high word
+	// (bits 34-45). GOLDENEYE is the master; each is active master OR own bit.
+	{ "CLASSIC_SNAPLEAN",    MPOPTION_CLASSIC_SNAPLEAN },
+	{ "CLASSIC_NOCROUCHACC", MPOPTION_CLASSIC_NOCROUCHACC },
+	{ "CLASSIC_RELOAD",      MPOPTION_CLASSIC_RELOAD },
+	{ "CLASSIC_LEDGEWALL",   MPOPTION_CLASSIC_LEDGEWALL },
+	{ "CLASSIC_SIGHT",       MPOPTION_CLASSIC_SIGHT },
+	{ "CLASSIC_HIDESIGHT",   MPOPTION_CLASSIC_HIDESIGHT },
+	{ "CLASSIC_GEHUD",       MPOPTION_CLASSIC_GEHUD },
+	{ "CLASSIC_NOSECONDARY", MPOPTION_CLASSIC_NOSECONDARY },
+	{ "CLASSIC_NOMIDCROUCH", MPOPTION_CLASSIC_NOMIDCROUCH },
+	{ "CLASSIC_NODUALWIELD", MPOPTION_CLASSIC_NODUALWIELD },
+	{ "CLASSIC_IFRAMES",     MPOPTION_CLASSIC_IFRAMES },
+	{ "CLASSIC_NOBLUR",      MPOPTION_CLASSIC_NOBLUR },
 	// MPOPTION_HOSTSPECTATOR intentionally not exposed — set by netStartServer in dedicated.
 	{ NULL, 0 }
 };
@@ -773,9 +787,9 @@ void playlistApply(const struct playlistentry *resolved)
 	// Playlist is authoritative for g_MpSetup.options. Bits listed in
 	// `options=` are ON; everything else is OFF. This stops bits that
 	// mpsetupLoadCurrentFile picked up from disk — particularly the
-	// port-only upper-byte flags like MPOPTION_GOLDENEYE / MPOPTION_NOCULL /
-	// MPOPTION_NOOMLIMIT that a previous menu-driven Combat Sim session may
-	// have saved into mpsetups.bin — from silently leaking into dedicated-
+	// port-only flags like MPOPTION_GOLDENEYE / the high-word
+	// MPOPTION_CLASSIC_* set that a previous menu-driven Combat Sim session
+	// may have saved into mpsetups.bin — from silently leaking into dedicated-
 	// server matches. `options_clear=` remains parsed for back-compat but
 	// is now redundant: any bit not in `options=` is already 0.
 	//

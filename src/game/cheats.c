@@ -14,9 +14,6 @@
 #include "data.h"
 #include "string.h"
 #include "types.h"
-#ifndef PLATFORM_N64
-extern bool g_BgNoDrawSlotLimit;
-#endif
 
 u32 g_CheatsActiveBank0;
 u32 g_CheatsActiveBank1;
@@ -112,14 +109,30 @@ struct cheat g_Cheats[] = {
 #ifndef PLATFORM_N64
 	{ L_MPWEAPONS_215, 0,                 SOLOSTAGEINDEX_EXTRACTION,     DIFF_A,  CHEATFLAG_COMPLETION                         }, // Dual wield all guns
 	// Developer/testing cheats: always unlocked (no mission completion required).
-	// CHEAT_NOCULL also calls gamefileUnlockEverything() on activation so every
-	// stage, cheat and weapon is available immediately for testing campaigns.
-	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Room Culling (CHEAT_NOCULL)
-	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Draw Slot Limit (CHEAT_NODRAWLIMIT)
+	// Rows 43/44 (No Room Culling / No Draw Slot Limit) are RETIRED — replaced
+	// by the /octree commands. The rows stay as dead placeholders so indices
+	// 45+ and saved enabled-bank bits don't shift (append-only rule). They have
+	// no menu item, no name and no activate handling.
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // retired (was CHEAT_NOCULL)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // retired (was CHEAT_NODRAWLIMIT)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // GoldenEye Style (CHEAT_GOLDENEYE)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Wireframe (CHEAT_WIREFRAME)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Mirror (CHEAT_MIRROR)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Tonal Inversion (CHEAT_TONALINVERSION)
+	// Classic Options: the GoldenEye Style rule set broken into individually
+	// toggleable cheats (Extended Options > Experiments > Classic Options).
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Snap Lean (CHEAT_CLASSIC_SNAPLEAN)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Crouch Accuracy (CHEAT_CLASSIC_NOCROUCHACC)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Classic Reloads (CHEAT_CLASSIC_RELOAD)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Ledge Walls (CHEAT_CLASSIC_LEDGEWALL)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Classic Crosshair (CHEAT_CLASSIC_SIGHT)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Hide Crosshair Unless Aiming (CHEAT_CLASSIC_HIDESIGHT)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // GoldenEye HUD (CHEAT_CLASSIC_GEHUD)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Secondary Functions (CHEAT_CLASSIC_NOSECONDARY)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Mid-Crouch (CHEAT_CLASSIC_NOMIDCROUCH)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Dual Wield (CHEAT_CLASSIC_NODUALWIELD)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Damage Invulnerability (CHEAT_CLASSIC_IFRAMES)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Blur Effects (CHEAT_CLASSIC_NOBLUR)
 #endif
 };
 
@@ -127,12 +140,22 @@ struct cheat g_Cheats[] = {
 // Literal names for always-unlocked port-only cheats. Indexed by cheat_id.
 // Entries for all other cheat IDs are NULL (use the lang string instead).
 static const char *const s_cheat_literal_names[] = {
-	[CHEAT_NOCULL]      = "No Room Culling",
-	[CHEAT_NODRAWLIMIT] = "No Draw Slot Limit",
 	[CHEAT_GOLDENEYE]   = "GoldenEye Style",
 	[CHEAT_WIREFRAME]   = "Wireframe",
 	[CHEAT_MIRROR]      = "Mirror",
 	[CHEAT_TONALINVERSION] = "Tonal Inversion",
+	[CHEAT_CLASSIC_SNAPLEAN]    = "Snap Lean",
+	[CHEAT_CLASSIC_NOCROUCHACC] = "No Crouch Accuracy",
+	[CHEAT_CLASSIC_RELOAD]      = "Classic Reloads",
+	[CHEAT_CLASSIC_LEDGEWALL]   = "Ledge Walls",
+	[CHEAT_CLASSIC_SIGHT]       = "Classic Crosshair",
+	[CHEAT_CLASSIC_HIDESIGHT]   = "Hide Crosshair Unless Aiming",
+	[CHEAT_CLASSIC_GEHUD]       = "GoldenEye HUD",
+	[CHEAT_CLASSIC_NOSECONDARY] = "No Secondary Functions",
+	[CHEAT_CLASSIC_NOMIDCROUCH] = "No Mid-Crouch",
+	[CHEAT_CLASSIC_NODUALWIELD] = "No Dual Wield",
+	[CHEAT_CLASSIC_IFRAMES]     = "Damage Invulnerability",
+	[CHEAT_CLASSIC_NOBLUR]      = "No Blur Effects",
 };
 
 /**
@@ -153,6 +176,26 @@ bool goldeneyeStyleActive(void)
 		return true;
 	}
 	if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_GOLDENEYE)) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Per-behaviour Classic Options gate. The GoldenEye Style rule set is broken
+ * into individually toggleable pieces; each former goldeneyeStyleActive()
+ * gate site routes through this with its CHEAT_CLASSIC_* / MPOPTION_CLASSIC_*
+ * pair. A behaviour is active when the master (CHEAT_GOLDENEYE or
+ * MPOPTION_GOLDENEYE) OR its own cheat / per-match option bit is set. As with
+ * the master, the cheat path drops the `normmplayerisrunning` requirement so
+ * the behaviours work outside of Combat Sim too (solo, training, etc.).
+ */
+bool classicOptionActive(s32 cheat_id, u64 mpoption)
+{
+	if (cheatIsActive(CHEAT_GOLDENEYE) || cheatIsActive(cheat_id)) {
+		return true;
+	}
+	if (g_Vars.normmplayerisrunning && (g_MpSetup.options & (MPOPTION_GOLDENEYE | mpoption))) {
 		return true;
 	}
 	return false;
@@ -255,16 +298,6 @@ void cheatActivate(s32 cheat_id)
 			setCurrentPlayerNum(prevplayernum);
 		}
 		break;
-#ifndef PLATFORM_N64
-	case CHEAT_NOCULL:
-		// Unlock all game content so every stage, cheat and weapon is available
-		// for testing. Harmless to call multiple times (idempotent).
-		gamefileUnlockEverything();
-		break;
-	case CHEAT_NODRAWLIMIT:
-		g_BgNoDrawSlotLimit = true;
-		break;
-#endif
 	}
 
 	if (cheat_id < 32) {
@@ -302,11 +335,6 @@ void cheatDeactivate(s32 cheat_id)
 			setCurrentPlayerNum(prevplayernum);
 		}
 		break;
-#ifndef PLATFORM_N64
-	case CHEAT_NODRAWLIMIT:
-		g_BgNoDrawSlotLimit = false;
-		break;
-#endif
 	}
 
 	if (cheat_id < 32) {
@@ -1224,79 +1252,10 @@ struct menuitem g_CheatsGameplayMenuItems[] = {
 		0,
 		cheatCheckboxMenuHandler,
 	},
-	{
-		// Bypasses portal-based room culling so every room renders every frame.
-		// Also calls gamefileUnlockEverything() on activation, making all
-		// missions, cheats and weapons available for campaign testing.
-		MENUITEMTYPE_CHECKBOX,
-		CHEAT_NOCULL,
-		0,
-		(uintptr_t)&cheatGetNameIfUnlocked,
-		0,
-		cheatCheckboxMenuHandler,
-	},
-	{
-		// Removes the 60-room draw-slot cap. Only meaningful alongside
-		// CHEAT_NOCULL or on maps where more than 60 rooms are simultaneously
-		// visible (extremely rare without culling disabled).
-		MENUITEMTYPE_CHECKBOX,
-		CHEAT_NODRAWLIMIT,
-		0,
-		(uintptr_t)&cheatGetNameIfUnlocked,
-		0,
-		cheatCheckboxMenuHandler,
-	},
-	{
-		// GoldenEye Style: full GE-mode rule set (snap lean, no crouch
-		// bonus, lower-and-raise reload, ledge wall, classic crosshair,
-		// arc HUD, no secondary functions, no mid-crouch, no dual-wield,
-		// 300ms i-frames + flash + fire lockout). Works in any mode;
-		// the cheat path mirrors the MPOPTION_GOLDENEYE Combat Sim
-		// option behaviour outside of multiplayer.
-		MENUITEMTYPE_CHECKBOX,
-		CHEAT_GOLDENEYE,
-		0,
-		(uintptr_t)&cheatGetNameIfUnlocked,
-		0,
-		cheatCheckboxMenuHandler,
-	},
-	{
-		// Wireframe: draws depth-tested 3D geometry (world, props, characters,
-		// first-person weapon) as polygon outlines via the fast3d GL backend.
-		// HUD/menus/2D stay solid. Local visual cheat only; no wire/save impact.
-		MENUITEMTYPE_CHECKBOX,
-		CHEAT_WIREFRAME,
-		0,
-		(uintptr_t)&cheatGetNameIfUnlocked,
-		0,
-		cheatCheckboxMenuHandler,
-	},
-	{
-		// Mirror: flips the entire rendered 3D world left-right (a horizontal
-		// reflection) via the fast3d GL backend — works everywhere, including the
-		// Carrington Institute hub. 2D HUD/text stay un-mirrored and readable.
-		// Local visual cheat only; gameplay/hit detection run on un-mirrored
-		// coordinates, so no wire/save impact.
-		MENUITEMTYPE_CHECKBOX,
-		CHEAT_MIRROR,
-		0,
-		(uintptr_t)&cheatGetNameIfUnlocked,
-		0,
-		cheatCheckboxMenuHandler,
-	},
-	{
-		// Tonal Inversion: reflects every music note's pitch around middle C
-		// (strict/real melodic inversion) in the sequence player, mirroring
-		// the musical contour while the soundtrack keeps playing "the same
-		// piece". SFX unaffected. Audio-cosmetic only; like Mirror it never
-		// counts as an active cheat. See docs/PORT_TONAL_INVERSION.md.
-		MENUITEMTYPE_CHECKBOX,
-		CHEAT_TONALINVERSION,
-		0,
-		(uintptr_t)&cheatGetNameIfUnlocked,
-		0,
-		cheatCheckboxMenuHandler,
-	},
+	// The other port-added cheats (GoldenEye Style, Wireframe, Mirror, Tonal
+	// Inversion, Classic Options) live in Extended Options > Experiments
+	// (port/src/optionsmenu.c), not here — Dual Wield All Guns stays because
+	// it's a real completion-unlocked cheat like the originals.
 #endif
 	{
 		MENUITEMTYPE_SEPARATOR,

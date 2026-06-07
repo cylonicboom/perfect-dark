@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 65 // 65: SVC_PROP_MOVE position quantization — when Net.Server.PosQuant is on, the per-chr coord rides as 3x s16 (6B) instead of 3x f32 (flags bit 5; out-of-range positions stay full coord). See docs/netplay-perf-review-2026.md P2
+#define NET_PROTOCOL_VER 66 // 66: SVC_PAINT_STATE — "Paint the Map" scenario broadcasts per-room team ownership (full owned-room list, on-change + 1s heartbeat); rooms tint to the last team to cross them. See docs/PORT_PAINT_THE_MAP.md
+// 65: SVC_PROP_MOVE position quantization — when Net.Server.PosQuant is on, the per-chr coord rides as 3x s16 (6B) instead of 3x f32 (flags bit 5; out-of-range positions stay full coord). See docs/netplay-perf-review-2026.md P2
 // 64: CLC_DOOR_ACTIVATE — client predicts a door and sends the host the exact door syncid, so high-ping door activation no longer depends on the host re-deriving the door from a lagged position + a momentary UCMD_ACTIVATE. See docs/netplay-perf-review-2026.md
 // 63: netplayermove carries renderbehind (u8) — the client's g_NetInterpTicks render offset, so server lag-comp rewinds targets to the EXACT server-tick the shooter was displaying (inmovetick - renderbehind) instead of an RTT/2 + interp_lag symmetric-latency estimate. See docs/netplay-perf-review-2026.md lag-comp item
 // 62: SVC_PROP_MOVE chr-state pose bandwidth cut — body yaw, the four aim joints, angleoffset and anim speed now ride as s16 (quantized) instead of f32 (-14 bytes/chr/tick; pos + chr->damage stay full-precision). See docs/netplay-perf-review-2026.md P1
@@ -810,5 +811,15 @@ void netServerEnqueuePropHit(struct prop *prop, f32 damage, const struct coord *
 // Client -> server: report our local player's gunfire hit on a destructible prop.
 // Called from objTakeGunfire; no-op unless we're a connected client in-game.
 void netClientReportPropHit(struct prop *prop, f32 damage, const struct coord *pos, s32 weaponnum);
+
+// "Paint the Map" scenario (MPSCENARIO_PAINTROOM) shared state. The owner array
+// + room count live in g_ScenarioData.paint (scenarios.c); these accessors let
+// the net layer (netmsg.c/net.c) read/write ownership and the host signal that
+// the painted set changed this frame so netEndFrame broadcasts SVC_PAINT_STATE.
+// paintSetRoomOwner applies one room's owner + the LIGHTOP_HIGHLIGHT/reshade so
+// both the host tick and the client wire-apply share one code path.
+u8 *paintGetRoomOwner(s32 *roomcount_out);
+void paintSetRoomOwner(s32 roomnum, u8 owner);
+extern u8 g_MpPaintDirty; // host: painted set changed this frame -> broadcast in netEndFrame
 
 #endif // _IN_NET_H

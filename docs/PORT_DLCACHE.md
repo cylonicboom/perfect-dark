@@ -93,10 +93,24 @@ maps to `vtxbatches[startidx + k]` (the same mapping `bgEmitLeafCulled` uses), s
 range. It re-applies GL state only when `state_group` changes (so a state-run that
 was split into many per-batch segments costs **one** state-setup), and merges
 consecutive **visible** same-group segments into a single `glDrawArrays` (segments
-are buffer-contiguous by construction). A culled batch (`vis[batch_index] == 0`)
-or a group change flushes the pending draw. With `vis == NULL` (octree off) every
-batch is visible, so replay collapses to one draw per state-run — identical work
-to Phase 1.
+are buffer-contiguous by construction). A group change flushes the pending draw.
+With `vis == NULL` (octree off) every batch is visible, so replay collapses to
+one draw per state-run — identical work to Phase 1.
+
+**Octree holes are gap-tolerant** (`g_DlCacheGapTris`, default 256, `/dlcache gap
+<tris>`): a culled batch (`vis[batch_index] == 0`) no longer splits the merge
+unconditionally — that fragmented a leaf's few large draws into many small ones
+and made octree+dlcache *slower* than dlcache alone (measured 475 vs 550 fps on a
+29k-tri map; the per-draw overhead outweighed the saved triangles). A culled hole
+of ≤ gap tris is instead **absorbed** into the surrounding draw — its triangles
+are outside the frustum, so the GPU clips them after trivial vertex shading and
+no fragments are rasterised. Only a culled span larger than the gap (e.g. the
+half of a huge room behind the camera) splits the draw, which is exactly when
+splitting pays. Absorption requires the hole's segments to share the pending
+draw's shader program (same vertex stride — a foreign-stride hole forces the
+split since one draw range can't span it). `0` restores split-on-every-hole.
+`/dlcache stats` prints `draws=` (cache_draw calls last frame) to watch the
+effect.
 
 ---
 

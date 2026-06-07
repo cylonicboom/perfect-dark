@@ -31,6 +31,10 @@
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 
+extern "C" {
+#include "ext_tex.h"
+}
+
 uintptr_t gfxFramebuffer;
 
 #define ALIGN(x, a) (((x) + (a - 1)) & ~(a - 1))
@@ -150,6 +154,14 @@ struct LoadedTexture {
     uint32_t full_image_line_size_bytes;
     uint32_t line_size_bytes;
     uint32_t tex_flags;
+    // external-texture tag (rafccq/port-ext-textures): set by G_SETTEXINFO_EXT
+    // via gfx_dp_load_block when a data/ext_tex replacement exists; ext_key's
+    // top byte flags "external" and keys the texture cache instead of addr
+    uint64_t ext_key;
+    uint8_t type;
+    uint16_t id;
+    uint16_t id_mask;
+    uint32_t texnum;
     struct RawTexMetadata raw_tex_metadata;
 };
 
@@ -162,6 +174,11 @@ static struct RDP {
         uint8_t siz;
         uint32_t width;
         uint32_t tex_flags;
+        // pending G_SETTEXINFO_EXT tag for the next load (ext_tex)
+        uint8_t type;
+        uint16_t id;
+        uint16_t id_mask;
+        uint32_t texnum;
         struct RawTexMetadata raw_tex_metadata;
     } texture_to_load;
     struct {
@@ -224,6 +241,7 @@ float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
 float gfx_wireframe_line_width = 1.0f;
+bool gfx_external_textures_enabled = false; // data/ext_tex PNG substitution
 
 static bool game_renders_to_framebuffer;
 static int game_framebuffer;
@@ -326,7 +344,23 @@ static bool g_DlCacheFrontCcw = true;   // GL front-face winding for cached cull
 static int g_DlCacheCullMode = 0;
 static uint32_t g_DlCacheFrameSegments; // segments replayed last frame
 static uint32_t g_DlCacheFrameTris;     // tris replayed last frame
+static uint32_t g_DlCacheFrameDraws;    // cache_draw calls issued last frame
+// octree-visibility accounting for replayed leaves (vis != NULL only), so the
+// octree overlay/stats aren't blind when dlcache handles the culling:
+static uint32_t g_DlCacheFrameVisDrawn;    // batches drawn because visible
+static uint32_t g_DlCacheFrameVisCulled;   // batches skipped (culled, not drawn)
+static uint32_t g_DlCacheFrameVisAbsorbed; // culled batches drawn anyway (gap-merge)
 static uint32_t g_DlCacheAbortReasons;  // OR of GFX_DLC_ABORT_* across bad leaves (diagnostic)
+
+// Octree + dlcache interop: gap-tolerant draw merging. An octree-culled batch
+// used to split the contiguous-batch merge unconditionally, fragmenting a
+// leaf's few large cache_draw calls into many small ones — making octree+
+// dlcache SLOWER than dlcache alone (draw-call overhead outweighs the saved
+// triangles; culled batches are outside the frustum so drawing them costs
+// only vertex shading, no raster). Culled holes up to this many tris are now
+// absorbed into the surrounding draw; only bigger culled spans split it.
+// 0 = legacy split-on-every-hole. Tune live with /dlcache gap <tris>.
+static int g_DlCacheGapTris = 256;
 
 static const float g_DlCacheIdentity[16] = {
     1.f, 0.f, 0.f, 0.f,
@@ -670,6 +704,7 @@ void gfx_texture_cache_clear() {
     gfx_texture_cache.lru.clear();
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
     memset(rendering_state.textures, 0, sizeof(rendering_state.textures));
+    extTexFree(); // drop decoded ext_tex PNG data along with the GPU cache
 }
 
 static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
@@ -1051,14 +1086,46 @@ static void import_texture(int i, int tile, bool importReplacement) {
     const uint8_t* orig_addr = loaded_texture.addr;
     SUPPORT_CHECK(orig_addr);
 
+    // ext_tex: a texture tagged external (gfx_dp_load_block found a PNG for
+    // its G_SETTEXINFO_EXT id) is cached by ext_key instead of address and
+    // uploaded straight from the decoded PNG, skipping the N64 format decode
+    const uint8_t external = loaded_texture.ext_key >> (7 * 8);
+
     TextureCacheKey key;
-    if (fmt == G_IM_FMT_CI) {
+    if (external) {
+        key = { 0, {}, 0, 0, 0, loaded_texture.ext_key, loaded_texture.id_mask };
+    } else if (fmt == G_IM_FMT_CI) {
         key = { orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index };
     } else {
         key = { orig_addr, {}, fmt, siz, palette_index };
     }
 
     if (gfx_texture_cache_lookup(i, key)) {
+        loaded_texture.id_mask = 0;
+        return;
+    }
+
+    if (external) {
+        uint8_t type = loaded_texture.type;
+        uint16_t id = loaded_texture.id | loaded_texture.id_mask;
+        uint32_t texnum = loaded_texture.texnum;
+
+        uint32_t width, height;
+
+        uint8_t* ext_addr = extTexLoad(type, id, texnum, &width, &height);
+        if (!ext_addr) {
+            // upload a single pink pixel as visual feedback
+            tex_upload_buffer[0] = 255;
+            tex_upload_buffer[1] = 0;
+            tex_upload_buffer[2] = 255;
+            tex_upload_buffer[3] = 255;
+            width = height = 1;
+            ext_addr = tex_upload_buffer;
+        }
+
+        loaded_texture.id_mask = 0;
+
+        gfx_rapi->upload_texture(ext_addr, width, height, rdp.tex_lod);
         return;
     }
 
@@ -2094,6 +2161,20 @@ static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t wi
     rdp.texture_to_load.tex_flags = tex_flags;
 }
 
+// ext_tex (rafccq/port-ext-textures): G_SETTEXINFO_EXT handler — remembers the
+// game texture identity for the next load so gfx_dp_load_block can check for a
+// data/ext_tex replacement
+static void gfx_dp_set_texture_info(uint8_t type, uint8_t id_mask, uint16_t id, uint32_t texnum) {
+    rdp.texture_to_load.type = type;
+    rdp.texture_to_load.texnum = texnum;
+    rdp.texture_to_load.id = id;
+    rdp.texture_to_load.id_mask = id_mask << 8;
+}
+
+static inline uint64_t make_key(bool external, uint64_t type, uint64_t id, uint32_t texnum) {
+    return (uint64_t)external << (7 * 8) | type << (6 * 8) | id << (4 * 8) | texnum;
+}
+
 static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t tmem, uint8_t tile, uint32_t palette,
                             uint32_t cmt, uint32_t maskt, uint32_t shiftt, uint32_t cms, uint32_t masks,
                             uint32_t shifts) {
@@ -2202,6 +2283,40 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
     loaded_texture.raw_tex_metadata = rdp.texture_to_load.raw_tex_metadata;
     loaded_texture.addr = rdp.texture_to_load.addr;
 
+    // ext_tex: if this load was tagged by G_SETTEXINFO_EXT and a replacement
+    // PNG exists, flag the slot external (import_texture short-circuits).
+    // .addr stays set (unlike upstream) so the original data still imports
+    // when the feature is toggled off mid-session.
+    {
+        uint8_t type = rdp.texture_to_load.type;
+        uint16_t id = rdp.texture_to_load.id;
+        uint16_t id_mask = rdp.texture_to_load.id_mask;
+        uint32_t texnum = rdp.texture_to_load.texnum;
+
+        if (gfx_external_textures_enabled && extTexExists(type, id, texnum)) {
+            loaded_texture.type = type;
+            loaded_texture.id = id;
+            loaded_texture.texnum = texnum;
+            loaded_texture.id_mask = id_mask;
+            loaded_texture.ext_key = make_key(1, type, id, texnum);
+
+            // clear the masked id if its related texture doesn't exist
+            if (id_mask != 0 && !extTexExists(type, id | id_mask, texnum)) {
+                loaded_texture.id_mask = 0;
+            }
+        } else {
+            loaded_texture.ext_key = 0;
+        }
+
+        // one-shot: unlike upstream (which tags every SETTIMG site), not all
+        // our load sites emit G_SETTEXINFO_EXT — consume the tag here so a
+        // stale one can't mis-substitute the next untagged load
+        rdp.texture_to_load.type = G_TEXTYPE_NONE;
+        rdp.texture_to_load.id = 0;
+        rdp.texture_to_load.id_mask = 0;
+        rdp.texture_to_load.texnum = 0;
+    }
+
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
 }
 
@@ -2241,6 +2356,7 @@ static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     loaded_texture.tex_flags = rdp.texture_to_load.tex_flags;
     loaded_texture.raw_tex_metadata = rdp.texture_to_load.raw_tex_metadata;
     loaded_texture.addr = rdp.texture_to_load.addr + start_offset_bytes;
+    loaded_texture.ext_key = 0; // LOADTILE loads are never ext-tagged; clear any stale tag
 
     rdp.texture_tile[tile].uls = uls;
     rdp.texture_tile[tile].ult = ult;
@@ -2719,22 +2835,43 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
 
     // Walk segments, applying GL state once per state group and merging
     // contiguous visible batches into one draw. Segments are buffer-contiguous by
-    // construction, so a merged draw just sums num_tris; a culled batch (or a
-    // state-group change) flushes the pending draw.
+    // construction, so a merged draw just sums num_tris; a state-group change
+    // flushes the pending draw. Octree-culled batches are GAP-TOLERANT: a culled
+    // hole of <= g_DlCacheGapTris tris is absorbed into the surrounding draw
+    // (its tris are outside the frustum — the GPU clips them after trivial
+    // vertex shading), keeping the draw count low; only a bigger culled span
+    // (or a hole whose program/stride differs, which can't share a draw range)
+    // splits the merge.
     struct ShaderProgram* curprg = NULL;
     uint32_t applied_group = (uint32_t)-1;
     struct ShaderProgram* pend_prg = NULL;
     size_t pend_base = 0;
     size_t pend_tris = 0;
+    size_t gap_tris = 0;    // culled tris accumulated since the last visible segment
+    uint32_t gap_batches = 0; // culled batches in that gap (stats only)
     uint32_t drawn_batches = 0;
 
     for (const DlCacheSegment& seg : e->segments) {
         const bool visible = (vis == NULL) || (seg.batch_index < 0) || vis[seg.batch_index];
         if (!visible) {
-            if (pend_tris > 0) {
+            if (pend_tris == 0) {
+                g_DlCacheFrameVisCulled++;
+                continue; // leading hole: nothing pending to extend, just skip
+            }
+            if (seg.prg == pend_prg) {
+                // defer the split decision to the next visible seg
+                gap_tris += seg.num_tris;
+                gap_batches++;
+            } else {
+                // different program = different vertex stride: the pending draw
+                // range can't span this segment, so the split is forced
                 gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
                 g_DlCacheFrameTris += (uint32_t)pend_tris;
+                g_DlCacheFrameDraws++;
                 pend_tris = 0;
+                g_DlCacheFrameVisCulled += gap_batches + 1;
+                gap_tris = 0;
+                gap_batches = 0;
             }
             continue;
         }
@@ -2742,8 +2879,13 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             if (pend_tris > 0) {
                 gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
                 g_DlCacheFrameTris += (uint32_t)pend_tris;
+                g_DlCacheFrameDraws++;
                 pend_tris = 0;
             }
+            // a trailing hole before a state change is never drawn
+            g_DlCacheFrameVisCulled += gap_batches;
+            gap_tris = 0;
+            gap_batches = 0;
             gfx_rapi->set_depth_mode(seg.depth_test, seg.depth_update, seg.depth_compare,
                                      seg.depth_source_prim, seg.zmode);
             // viewport/scissor are set once above from live state (view-dependent).
@@ -2789,13 +2931,37 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
         if (pend_tris == 0) {
             pend_prg = seg.prg;
             pend_base = seg.base_float;
+            gap_tris = 0;
+            gap_batches = 0;
+        } else if (gap_tris > 0) {
+            // a culled hole sits between the pending draw and this segment:
+            // absorb it if small (offscreen tris just get clipped), else split
+            if (gap_tris <= (size_t)g_DlCacheGapTris) {
+                pend_tris += gap_tris;
+                g_DlCacheFrameVisAbsorbed += gap_batches;
+            } else {
+                gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
+                g_DlCacheFrameTris += (uint32_t)pend_tris;
+                g_DlCacheFrameDraws++;
+                pend_tris = 0;
+                pend_prg = seg.prg;
+                pend_base = seg.base_float;
+                g_DlCacheFrameVisCulled += gap_batches;
+            }
+            gap_tris = 0;
+            gap_batches = 0;
+        }
+        if (vis != NULL && seg.batch_index >= 0) {
+            g_DlCacheFrameVisDrawn++;
         }
         pend_tris += seg.num_tris;
         drawn_batches++;
     }
+    g_DlCacheFrameVisCulled += gap_batches; // trailing hole at the end of the leaf
     if (pend_tris > 0) {
         gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
         g_DlCacheFrameTris += (uint32_t)pend_tris;
+        g_DlCacheFrameDraws++;
     }
     if (curprg != NULL) {
         gfx_rapi->unload_shader(curprg);
@@ -2846,6 +3012,27 @@ extern "C" void gfx_dlcache_set_cullmode(int mode) {
 
 extern "C" int gfx_dlcache_get_cullmode(void) {
     return g_DlCacheCullMode;
+}
+
+extern "C" void gfx_dlcache_set_gap_tris(int tris) {
+    g_DlCacheGapTris = tris < 0 ? 0 : tris; // read live at replay; no re-record
+}
+
+extern "C" int gfx_dlcache_get_gap_tris(void) {
+    return g_DlCacheGapTris;
+}
+
+extern "C" int gfx_dlcache_get_frame_draws(void) {
+    return (int)g_DlCacheFrameDraws;
+}
+
+// Octree-visibility accounting for cached replays (last completed frame).
+// drawn excludes absorbed; absorbed = octree-culled but drawn anyway by the
+// gap-tolerant merge (they're frustum-clipped, so this costs ~nothing).
+extern "C" void gfx_dlcache_get_vis_stats(uint32_t* drawn, uint32_t* culled, uint32_t* absorbed) {
+    if (drawn) *drawn = g_DlCacheFrameVisDrawn;
+    if (culled) *culled = g_DlCacheFrameVisCulled;
+    if (absorbed) *absorbed = g_DlCacheFrameVisAbsorbed;
 }
 
 extern "C" void gfx_dlcache_get_stats(uint32_t* entries, uint32_t* bad, uint32_t* segments, uint32_t* tris,
@@ -2998,12 +3185,24 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_dp_set_texture_image(C0(21, 3), C0(19, 2), C0(0, 10), 0, seg_addr(cmd->words.w1));
                 break;
             }
-            case G_SETTIMG_FB_EXT:
+            case G_SETTEXINFO_EXT: {
+                gfx_dp_set_texture_info(C0(0, 8), C0(8, 8), C1(20, 12), C1(0, 20));
+                break;
+            }
+            case G_SETTIMG_FB_EXT: {
                 gfx_flush();
                 gfx_rapi->select_texture_fb(cmd->words.w1);
                 rdp.textures_changed[0] = false;
                 rdp.textures_changed[1] = false;
+
+                // clear the external tex key
+                {
+                    const uint32_t tile = gfx_lod_tile_offset(0);
+                    LoadedTexture& tex = rdp.loaded_texture[rdp.texture_tile[tile].tmem];
+                    tex.ext_key = 0;
+                }
                 break;
+            }
             case G_SETGRAYSCALE_EXT:
                 rdp.grayscale = cmd->words.w1;
                 break;
@@ -3318,6 +3517,10 @@ extern "C" void gfx_run(Gfx* commands) {
 
     g_DlCacheFrameSegments = 0;
     g_DlCacheFrameTris = 0;
+    g_DlCacheFrameDraws = 0;
+    g_DlCacheFrameVisDrawn = 0;
+    g_DlCacheFrameVisCulled = 0;
+    g_DlCacheFrameVisAbsorbed = 0;
 
     // puts("New frame");
 

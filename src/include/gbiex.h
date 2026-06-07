@@ -74,6 +74,13 @@
 	_g->words.w1 = _SHIFTL(0x06, 24, 8) | _SHIFTL((c), 14, 10) | _SHIFTL((d), 2, 10);       \
 }
 
+#define	gDPLoadTLUT07(pkt, a, b)				             \
+{                                                            \
+	Gfx *_g = (Gfx *)pkt;                                    \
+	_g->words.w0 = _SHIFTL(G_LOADTLUT2, 24, 8);              \
+	_g->words.w1 = _SHIFTL((a), 16, 16) | _SHIFTL((b), 0, 16); \
+}
+
 /**
  * Like gDPSetPrimColor, but is useful when the input colour is already in
  * RGBA format. It avoids unnecessary bitshifting and masking.
@@ -208,6 +215,12 @@
 // by the SDL_GPU backend (light glares, the overexposure flash). w1 = weight
 // 0-255 (0 resets). No-op on the GL backend and when HDR is inactive.
 #define G_SETDAZZLE_EXT              0x48
+// External-texture support (ported from rafccq/port-ext-textures; renumbered
+// from upstream's 0x46/0x47, which this fork already uses for the dlcache
+// bracket above). G_SETTEXINFO_EXT tags the following SETTIMG with the game
+// texture number so the renderer can substitute a PNG from data/ext_tex.
+#define G_LOADTLUT2                  0x49
+#define G_SETTEXINFO_EXT             0x4a
 
 /* G_EXTRAGEOMETRYMODE flags */
 
@@ -228,6 +241,13 @@
 /* Extra texture filtering mode */
 
 #define G_TF_BLUR_EXT (1 << G_MDSFT_TEXTFILT)
+
+/* Texture Info Types */
+
+#define G_TEXTYPE_NONE        0x00
+#define G_TEXTYPE_GENERAL     0x01
+#define G_TEXTYPE_FONT        0x02
+#define G_TEXTYPE_MODEL       0x03
 
 /* Extended command macros */
 
@@ -369,5 +389,24 @@
 #define gSPTextureRectangleEXT gSPTextureRectangle
 
 #endif // PLATFORM_N64
+
+#define gSetTexInfoEXT(pkt, cmd, type, id, texnum, idmask)        \
+{                                                                 \
+    Gfx *_g = (Gfx *)(pkt);                                       \
+                                                                  \
+    _g->words.w0 = _SHIFTL(cmd, 24, 8) | _SHIFTL(idmask, 8, 8)    \
+		| _SHIFTL(type, 0, 8);                                    \
+    _g->words.w1 = _SHIFTL(id, 20, 12) | _SHIFTL(texnum, 0, 20);  \
+}
+
+#define gsSetTexInfoEXT(cmd, type, id, texnum, idmask) \
+{                                                      \
+    _SHIFTL(cmd, 24, 8) | _SHIFTL(idmask, 8, 8)        \
+		| _SHIFTL(type, 0, 8),                         \
+    _SHIFTL(id, 20, 12) | _SHIFTL(texnum, 0, 20)       \
+}
+
+#define gDPSetTextureInfoEXT(pkt, type, id, texnum, idmask) gSetTexInfoEXT(pkt, G_SETTEXINFO_EXT, type, id, texnum, idmask)
+#define gsDPSetTextureInfoEXT(type, id, texnum, idmask)     gsSetTexInfoEXT(G_SETTEXINFO_EXT, type, id, texnum, idmask)
 
 #endif

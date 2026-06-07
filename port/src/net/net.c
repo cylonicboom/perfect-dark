@@ -2085,6 +2085,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
 			case SVC_COOP_CLAIM: rc = netmsgSvcCoopClaimRead(&cl->in, cl); break;
+			case SVC_PAINT_STATE: rc = netmsgSvcPaintStateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -2755,6 +2756,16 @@ void netEndFrame(void)
 			if (g_MpSetup.scenario == MPSCENARIO_KINGOFTHEHILL
 					&& (g_NetTick % NET_HEARTBEAT_INTERVAL) == 0u) {
 				netmsgSvcKohStateWrite(&g_NetMsgRel);
+			}
+
+			// Paint the Map: broadcast owned-room ownership on change
+			// (g_MpPaintDirty, raised by paintSetRoomOwner on the host) plus a
+			// 1s keep-alive at a free phase offset (35) so dropped packets and
+			// mid-match joiners heal.
+			if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM
+					&& (g_MpPaintDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 35u)) {
+				g_MpPaintDirty = 0;
+				netmsgSvcPaintStateWrite(&g_NetMsgRel);
 			}
 
 			// Scoreboard heartbeat: SVC_SCORE only fires on kill events
@@ -5841,6 +5852,7 @@ s32 netConsoleCommand(const char *line)
 					g_BgOctreeStats.nodesculled);
 			sysLogPrintf(LOG_CHAT, "OCTREE: batches drawn=%d culled=%d",
 					g_BgOctreeStats.batchesdrawn, g_BgOctreeStats.batchesculled);
+			bgOctreeLogRoomInfo();
 		} else if (strcmp(arg, "forcecull") == 0 || strcmp(arg, "cull") == 0) {
 			g_BgOctreeForceCullAll = !g_BgOctreeForceCullAll;
 			sysLogPrintf(LOG_CHAT, "OCTREE: force-cull-all %s",
@@ -5907,14 +5919,25 @@ s32 netConsoleCommand(const char *line)
 		extern int gfx_dlcache_get_frontface(void);
 		extern void gfx_dlcache_set_cullmode(int mode);
 		extern int gfx_dlcache_get_cullmode(void);
+		extern void gfx_dlcache_set_gap_tris(int tris);
+		extern int gfx_dlcache_get_gap_tris(void);
+		extern int gfx_dlcache_get_frame_draws(void);
+		extern void gfx_dlcache_get_vis_stats(u32 *drawn, u32 *culled, u32 *absorbed);
 		extern void gfx_dlcache_get_stats(u32 *entries, u32 *bad, u32 *segments, u32 *tris, u32 *reasons);
 		if (strcmp(arg, "stats") == 0) {
 			u32 entries = 0, bad = 0, segments = 0, tris = 0, reasons = 0;
+			u32 visdrawn = 0, visculled = 0, visabsorbed = 0;
 			gfx_dlcache_get_stats(&entries, &bad, &segments, &tris, &reasons);
+			gfx_dlcache_get_vis_stats(&visdrawn, &visculled, &visabsorbed);
 			sysLogPrintf(LOG_CHAT, "DLCACHE: %s  cached=%u bad=%u  front=%s",
 					g_DlCacheEnabled ? "ON" : "OFF", entries, bad,
 					gfx_dlcache_get_frontface() ? "CCW" : "CW");
-			sysLogPrintf(LOG_CHAT, "DLCACHE: replayed last frame: batches=%u tris=%u", segments, tris);
+			sysLogPrintf(LOG_CHAT, "DLCACHE: replayed last frame: batches=%u tris=%u draws=%d (gap=%d)",
+					segments, tris, gfx_dlcache_get_frame_draws(), gfx_dlcache_get_gap_tris());
+			if (visdrawn || visculled || visabsorbed) {
+				sysLogPrintf(LOG_CHAT, "DLCACHE: octree at replay: drawn=%u culled=%u absorbed=%u",
+						visdrawn, visculled, visabsorbed);
+			}
 			if (reasons) {
 				// GFX_DLC_ABORT_* bits (gfx_api.h): why leaves fell back to legacy.
 				sysLogPrintf(LOG_CHAT, "DLCACHE: bad reasons:%s%s%s%s%s",
@@ -5950,6 +5973,17 @@ s32 netConsoleCommand(const char *line)
 					mode == 1 ? "OFF (draw both faces)" :
 					mode == 2 ? "force BACK" :
 					mode == 3 ? "force FRONT" : "auto (per-segment)");
+		} else if (strncmp(arg, "gap", 3) == 0) {
+			// /dlcache gap <tris> — octree interop: max octree-culled hole (in
+			// tris) absorbed into a merged cached draw instead of splitting it.
+			// 0 = split on every hole (legacy). Bigger = fewer draws, more
+			// offscreen tris shaded. Default 256.
+			if (arg[3] == ' ' && arg[4]) {
+				gfx_dlcache_set_gap_tris(atoi(arg + 4));
+			}
+			sysLogPrintf(LOG_CHAT, "DLCACHE: cull-gap absorb = %d tris (%s)",
+					gfx_dlcache_get_gap_tris(),
+					gfx_dlcache_get_gap_tris() ? "small octree holes merge through" : "legacy split-on-every-hole");
 		} else {
 			bool on;
 			if (!arg[0]) {
@@ -5994,6 +6028,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /octree portal                   cull to room's doorway footprint vs viewport (default on)");
 		sysLogPrintf(LOG_CHAT, "  /dlcache [on|off|stats|clear|ff]  cache static room geometry on the GPU");
 		sysLogPrintf(LOG_CHAT, "  /dlcache cull [auto|off|back|front] cached backface-cull mode (debug missing rooms)");
+		sysLogPrintf(LOG_CHAT, "  /dlcache gap [tris]              octree-hole absorb size for merged cached draws");
 		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");

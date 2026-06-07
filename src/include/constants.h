@@ -2997,6 +2997,7 @@
 // unused there (the options field itself is u64 on every build).
 // ---------------------------------------------------------------------------
 #define MPOPTION_NODOORS                0x0000000100000000ULL // options bit 32: lift doors stay open
+#define MPOPTION_OWNEDROOMSPAWN         0x0000000200000000ULL // options bit 33: Paint the Map — respawn into team-owned territory
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1
@@ -3037,6 +3038,9 @@
 #define MPSCENARIO_POPACAP          3
 #define MPSCENARIO_KINGOFTHEHILL    4
 #define MPSCENARIO_CAPTURETHECASE   5
+#ifndef PLATFORM_N64
+#define MPSCENARIO_PAINTROOM        6 // port-only: team room-painting ("Paint the Map")
+#endif
 
 #define MPSETUPMENU_ADVSETUP 1
 #define MPSETUPMENU_GENERAL  2

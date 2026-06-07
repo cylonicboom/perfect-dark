@@ -4198,6 +4198,66 @@ u32 netmsgSvcKohStateRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+// SVC_PAINT_STATE: "Paint the Map" — the server broadcasts the full set of rooms
+// it currently owns and which team owns each. Rooms are only ever (re)painted, so
+// a room absent from the list is simply unpainted; applying the present entries
+// idempotently is enough (no removals to replay). Sent on change and as a 1s
+// keep-alive, so a dropped packet or a mid-match joiner heals within a second.
+u32 netmsgSvcPaintStateWrite(struct netbuf *dst)
+{
+	s32 roomcount = 0;
+	const u8 *owner = paintGetRoomOwner(&roomcount);
+	u16 count = 0;
+	s32 i;
+
+	netbufWriteU8(dst, SVC_PAINT_STATE);
+
+	if (owner) {
+		for (i = 1; i < roomcount; i++) {
+			if (owner[i] != 0) {
+				count++;
+			}
+		}
+	}
+
+	netbufWriteU16(dst, count);
+
+	if (owner) {
+		for (i = 1; i < roomcount; i++) {
+			if (owner[i] != 0) {
+				netbufWriteU16(dst, (u16)i);
+				netbufWriteU8(dst, owner[i]);
+			}
+		}
+	}
+
+	return dst->error;
+}
+
+u32 netmsgSvcPaintStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u16 count = netbufReadU16(src);
+	u16 i;
+
+	for (i = 0; i < count; i++) {
+		const u16 roomnum = netbufReadU16(src);
+		const u8 owner = netbufReadU8(src);
+
+		if (src->error) {
+			break;
+		}
+
+		if (srccl->state >= CLSTATE_GAME && g_MpSetup.scenario == MPSCENARIO_PAINTROOM
+				&& owner <= MAX_TEAMS) {
+			// paintSetRoomOwner sanitizes the room number and applies the
+			// highlight; on a client it never raises the broadcast flag.
+			paintSetRoomOwner(roomnum, owner);
+		}
+	}
+
+	return src->error;
+}
+
 // SVC_EXPLOSION: server notifies clients of an explosion visual at a world
 // position. Used when a timer-detonated networked prop (phoenix secondary,
 // grenade, etc.) explodes — the weapon's propExplode runs server-side only,

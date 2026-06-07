@@ -82,9 +82,12 @@
 #include "headless.h"
 #include "game/prop.h"
 #include "game/mplayer/scenarios.h"
+#include "video.h"
+#include "input.h"
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
+extern bool gfx_external_textures_enabled;
 
 void rngSetSeed(u32 seed);
 void rngCosmeticSetSeed(u64 seed); // cosmetic RNG stream (rngcosmetic_c.c)
@@ -694,6 +697,11 @@ void mainTick(void)
 	}
 
 	if (g_MainChangeToStageNum < 0) {
+		if (inputKeyJustPressed(VK_F2) && inputGetKeyModState() & KM_SHIFT) {
+			bool enabled = videoGetExternalTextures();
+			videoSetExternalTextures(!enabled);
+		}
+
 		frametimeCalculate();
 		profileReset();
 		profileSetMarker(PROFILE_MAINTICK_START);

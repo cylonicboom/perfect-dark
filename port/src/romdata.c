@@ -76,6 +76,10 @@ static u32 romDataSegSize;
 static u8 *segRomBase;
 static u32 segRomBaseSize;
 
+// file num currently being preprocessed; read by ext_tex.c to key embedded
+// model textures by their owning file (rafccq/port-ext-textures)
+s32 loadingFileNum;
+
 enum loadsource {
 	SRC_UNLOADED = 0,
 	SRC_ROM,
@@ -1033,6 +1037,7 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 
 void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *outSize)
 {
+	loadingFileNum = fileNum;
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
 		sysLogPrintf(LOG_ERROR, "romdataFilePreprocess: invalid file num %d", fileNum);
 		return;
@@ -1166,7 +1171,7 @@ u32 romdataFileGetEstimatedSize(const u32 size, const u32 loadtype)
 {
 #ifdef PLATFORM_64BIT
 	switch (loadtype) {
-	case LOADTYPE_BG:	   return (u32)(size * 1.1f);
+	case LOADTYPE_BG:	 return (u32)(size * 1.1f);
 	case LOADTYPE_TILES: return (u32)(size * 1.1f);
 	case LOADTYPE_LANG:  return (u32)(size * 1.3f);
 	case LOADTYPE_SETUP: return (u32)(size * 1.5f);
@@ -1175,6 +1180,10 @@ u32 romdataFileGetEstimatedSize(const u32 size, const u32 loadtype)
 	case LOADTYPE_GUN: return (u32)(size * 1.7f);
 	default:
 		sysLogPrintf(LOG_WARNING, "romdataFileGetEstimatedSize: wrong loadtype %d", loadtype);
+	}
+#else
+	if (loadtype == LOADTYPE_MODEL) {
+		return (u32)(size * 1.1f);
 	}
 #endif
 	return size;

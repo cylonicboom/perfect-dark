@@ -130,6 +130,7 @@ void bgBuildRoomOctree(s32 roomnum);
 void bgFreeRoomOctree(s32 roomnum);
 s32 bgOctreeMarkCurrentRoom(void); // /octree mark — returns marked room or -1
 void bgOctreeUnmarkAll(void);      // /octree unmark
+void bgOctreeLogRoomInfo(void);    // /octree stats — log current room's octree state + why it isn't culled
 #endif
 
 #endif

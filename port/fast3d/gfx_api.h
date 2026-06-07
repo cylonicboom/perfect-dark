@@ -45,6 +45,7 @@ extern float gfx_hdr_dazzle;
 extern int gfx_wireframe_wire_color_enabled; // 0 = natural/textured wires
 extern float gfx_wireframe_wire_color[3];    // flat wire colour, 0..1 RGB
 extern float gfx_wireframe_line_width;        // wire thickness in pixels
+extern bool gfx_external_textures_enabled;   // data/ext_tex PNG substitution (rafccq/port-ext-textures)
 
 void gfx_init(const struct GfxInitSettings *settings);
 void gfx_destroy(void);

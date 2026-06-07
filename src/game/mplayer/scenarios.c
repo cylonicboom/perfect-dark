@@ -26,6 +26,7 @@
 #include "game/pad.h"
 #include "game/propobj.h"
 #include "game/options.h"
+#include "game/bg.h"
 #include "bss.h"
 #include "lib/vi.h"
 #include "lib/snd.h"
@@ -176,6 +177,9 @@ MenuItemHandlerResult menuhandlerMpSlowMotion(s32 operation, struct menuitem *it
 #include "scenarios/kingofthehill.inc"
 #include "scenarios/hackthatmac.inc"
 #include "scenarios/popacap.inc"
+#ifndef PLATFORM_N64
+#include "scenarios/paintroom.inc"
+#endif
 
 // Define the scenario callbacks
 struct mpscenario g_MpScenarios[] = {
@@ -253,6 +257,25 @@ struct mpscenario g_MpScenarios[] = {
 		ctcIsRoomHighlighted,
 		ctcHighlightRoom,
 	},
+#ifndef PLATFORM_N64
+	{
+		&g_MpPaintOptionsMenuDialog,
+		paintInit,
+		NULL,                    // numpropsfunc
+		paintInitProps,
+		paintTick,
+		NULL,                    // tickchrfunc
+		paintRenderHud,
+		paintCalculatePlayerScore,
+		NULL,                    // radarextrafunc
+		NULL,                    // radarchrfunc
+		NULL,                    // highlightpropfunc
+		paintChooseSpawnLocation,
+		NULL,                    // maxteamsfunc
+		paintIsRoomHighlighted,
+		paintHighlightRoom,
+	},
+#endif
 };
 
 struct mpscenariooverview g_MpScenarioOverviews[] = {
@@ -263,6 +286,13 @@ struct mpscenariooverview g_MpScenarioOverviews[] = {
 	{ L_MPMENU_249, L_MPMENU_256, MPFEATURE_SCENARIO_PAC, false }, // "Pop a Cap", "Pop"
 	{ L_MPMENU_250, L_MPMENU_257, MPFEATURE_SCENARIO_KOH, true  }, // "King of the Hill", "Hill"
 	{ L_MPMENU_251, L_MPMENU_258, MPFEATURE_SCENARIO_CTC, true  }, // "Capture the Case", "Capture"
+#ifndef PLATFORM_N64
+	// Port-only "Paint the Map". The name/short-name strings have no entry in
+	// the ROM language banks, so scenarioGetNameText() returns a literal for
+	// this scenario instead of langGet()-ing these placeholder ids. Always
+	// unlocked (require feature 0) and team-only.
+	{ L_MPMENU_246, L_MPMENU_253, 0,                      true  }, // "Paint the Map", "Paint"
+#endif
 };
 
 /**
@@ -292,15 +322,33 @@ MenuDialogHandlerResult mpOptionsMenuDialog(s32 operation, struct menudialogdef 
 	return 0;
 }
 
+/**
+ * Resolve a scenario's display name. Port-only scenarios (Paint the Map) have
+ * no entry in the ROM language banks, so they can't go through langGet — return
+ * a literal for those and the bank string for the original six. Behaviour is
+ * identical to langGet on N64 / for the stock scenarios.
+ */
+char *scenarioGetNameText(s32 scenario, bool wantshort)
+{
+#ifndef PLATFORM_N64
+	if (scenario == MPSCENARIO_PAINTROOM) {
+		return wantshort ? (char *)"Paint" : (char *)"Paint the Map";
+	}
+#endif
+
+	return langGet(wantshort ? g_MpScenarioOverviews[scenario].shortname
+			: g_MpScenarioOverviews[scenario].name);
+}
+
 char *mpMenuTextScenarioShortName(struct menuitem *item)
 {
-	sprintf(g_StringPointer, "%s\n", langGet(g_MpScenarioOverviews[g_MpSetup.scenario].shortname));
+	sprintf(g_StringPointer, "%s\n", scenarioGetNameText(g_MpSetup.scenario, true));
 	return g_StringPointer;
 }
 
 char *mpMenuTextScenarioName(struct menuitem *item)
 {
-	sprintf(g_StringPointer, "%s\n", langGet(g_MpScenarioOverviews[g_MpSetup.scenario].name));
+	sprintf(g_StringPointer, "%s\n", scenarioGetNameText(g_MpSetup.scenario, false));
 	return g_StringPointer;
 }
 
@@ -342,7 +390,7 @@ MenuItemHandlerResult scenarioScenarioMenuHandler(s32 operation, struct menuitem
 			if (challengeIsFeatureUnlocked(g_MpScenarioOverviews[i].requirefeature)
 					&& (teamgame || g_MpScenarioOverviews[i].teamonly == false)) {
 				if (count == data->list.value) {
-					return (uintptr_t)langGet(g_MpScenarioOverviews[i].name);
+					return (uintptr_t)scenarioGetNameText(i, false);
 				}
 
 				count++;
@@ -382,9 +430,17 @@ MenuItemHandlerResult scenarioScenarioMenuHandler(s32 operation, struct menuitem
 	case MENUOP_GETOPTGROUPCOUNT:
 		data->list.value = 2;
 
+#ifndef PLATFORM_N64
+		// Paint the Map is always-unlocked and team-only, so the Teamwork
+		// group always has at least one entry in a team game.
+		if (!teamgame) {
+			data->list.value--;
+		}
+#else
 		if (!teamgame || (!challengeIsFeatureUnlocked(MPFEATURE_SCENARIO_KOH) && !challengeIsFeatureUnlocked(MPFEATURE_SCENARIO_CTC))) {
 			data->list.value--;
 		}
+#endif
 		break;
 	case MENUOP_GETOPTGROUPTEXT:
 		return (uintptr_t)langGet(groups[data->list.value].textid);
@@ -503,7 +559,7 @@ void scenarioCreateMatchStartHudmsgs(void)
 #endif
 	}
 
-	sprintf(scenarioname, "%s\n", langGet(g_MpScenarioOverviews[g_MpSetup.scenario].name));
+	sprintf(scenarioname, "%s\n", scenarioGetNameText(g_MpSetup.scenario, false));
 
 	for (i = 0; i < g_MpNumChrs; i++) {
 		if (g_MpAllChrPtrs[i]->aibot == NULL) {

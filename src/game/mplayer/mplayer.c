@@ -1065,6 +1065,16 @@ void mpApplyLimits(void)
 	} else {
 		lvSetMpTeamScoreLimit(mpCalculateTeamScoreLimit() + 1);
 	}
+
+#ifndef PLATFORM_N64
+	// Paint the Map is decided by floor coverage at the time limit, so the
+	// score / team-score limits must not end it early — numpoints tracks the
+	// live owned-room count for ranking, which would otherwise trip the limit.
+	if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM) {
+		lvSetMpScoreLimit(0);
+		lvSetMpTeamScoreLimit(0);
+	}
+#endif
 }
 
 /**

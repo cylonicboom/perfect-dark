@@ -86,6 +86,7 @@ static s32 texFilter2D = true;
 static s32 texDetail = false;
 static s32 texMipmapFilter = MIPMAP_LINEAR;
 static u32 texAnisotropicFilter = 4;
+static s32 texExternal = false;
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -148,6 +149,7 @@ s32 videoInit(void)
 	gfx_current_native_aspect = 320.f / 220.f;
 	gfx_framebuffers_enabled = (bool)vidFramebuffers;
 	gfx_detail_textures_enabled = (bool)texDetail;
+	gfx_external_textures_enabled = (bool)texExternal;
 	gfx_msaa_level = vidMSAA;
 
 	struct GfxInitSettings set = {
@@ -583,6 +585,11 @@ f32 videoGetOverexposureScale(void)
 	return vidOverexposureScale;
 }
 
+s32 videoGetExternalTextures(void)
+{
+	return texExternal;
+}
+
 void videoSetWindowOffset(s32 x, s32 y)
 {
 	gfx_current_game_window_viewport.x = x;
@@ -681,6 +688,14 @@ void videoSetGlareBrightness(f32 bright)
 void videoSetOverexposureScale(f32 scale)
 {
 	vidOverexposureScale = (scale < 0.f ? 0.f : (scale > 1.f ? 1.f : scale));
+}
+
+void videoSetExternalTextures(s32 external)
+{
+	texExternal = !!external;
+	gfx_external_textures_enabled = (bool)texExternal;
+	// drop cached imports so the toggle takes effect on already-seen textures
+	videoResetTextureCache();
 }
 
 s32 videoCreateFramebuffer(u32 w, u32 h, s32 upscale, s32 autoresize)
@@ -904,4 +919,5 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.AnisotropicFilter", &texAnisotropicFilter, 0, 16);
 	configRegisterFloat("Video.GlareBrightness", &vidGlareBrightness, 0.f, 1.f);
 	configRegisterFloat("Video.OverexposureScale", &vidOverexposureScale, 0.f, 1.f);
+	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
 }

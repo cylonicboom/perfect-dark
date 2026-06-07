@@ -76,11 +76,16 @@ beyond dev testing). **The 80-byte block has 1 spare bit (639/640)** — the
 next saved field needs `MPSETUP_BLOCKSIZE` enlarged + a version-aware
 `mpsetupDeserialize` + import-path tail zeroing.
 
-## Networking (`SVC_ELIM_STATE` 0x57, proto 71)
+## Networking (`SVC_ELIM_STATE` 0x57, proto 71; wire keying fixed proto 73)
 
 `{u8 lives[12], u8 teamlives[8], u16 elimmask}` — reliable, on-change
 (`g_MpElimDirty`) + 1s heartbeat at phase 25, gated on
-`normmplayerisrunning && elimlives > 0` (any scenario). Client apply
+`normmplayerisrunning && elimlives > 0` (any scenario). **The per-combatant
+slices (lives + the eliminated mask) are wire-keyed** (humans by netclient
+ID, bots by mpchr index — `netChrArrayToWire`/`FromWire`, see PORT_RACE.md /
+the net CLAUDE.md gotcha): raw local slots differ per machine, and shipping
+them raw made clients read the HOST's lives as their own (fixed at proto
+73; team pools are team-indexed and were always wire-stable). Client apply
 (`elimApplyWireState`) overwrites lives/pools/the eliminated set.
 `g_MpSetup.elimlivesmode`/`elimlives` ride `SVC_STAGE_START` and
 `CLC_ADMIN_SETUP` after the Zones fields. Proto 71 = same wire fields as 70

@@ -71,13 +71,18 @@ race; team scoring over the synthetic scores is meaningless — see Notes).
 - `mpsetupfileGetOverview` (saved-setups list label) shows "Combat" for Race
   setups (it parses only the block head) — cosmetic; they load fine.
 
-## Networking (`SVC_RACE_STATE` 0x58, proto 72)
+## Networking (`SVC_RACE_STATE` 0x58, proto 72; wire keying fixed proto 73)
 
 `{[u8 nextcp, u8 lapsdone, u8 finishpos] × 12, u8 finishcount,
 u8 humancount, u8 pitystarted, u16 pity240}` — reliable, on-change (every
 checkpoint pass / finish, `g_MpRaceDirty`) + 1s heartbeat at phase 5.
-Clients tick the finish timer locally between heartbeats; the client apply
-(`raceApplyWireState`) bounds `nextcp` against the local hillcount.
+**The per-racer slices are wire-keyed** (humans by netclient ID, bots by
+mpchr index — the SVC_SCORE convention, via `netChrArrayToWire`/`FromWire`):
+raw local slots differ per machine (`netPlayersAllocate`'s local slot-0
+swap), and shipping them raw made every client read the HOST's progress as
+its own (the proto-72 bug, fixed at 73). Clients tick the finish timer
+locally between heartbeats; the client apply (`raceApplyWireState`) bounds
+`nextcp` against the local hillcount.
 `g_MpSetup.racelaps`/`racepitytime` ride `SVC_STAGE_START` /
 `CLC_ADMIN_SETUP` after the lives fields (display + admin pushes; detection
 is host-only, no determinism concerns).

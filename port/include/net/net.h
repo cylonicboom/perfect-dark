@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 72 // 72: "Race" scenario (MPSCENARIO_RACE 8, checkpoint racing over the KoH hillpads) — new SVC_RACE_STATE (0x58: per-racer progress + finish order + finish timer), and g_MpSetup.racelaps/racepitytime u8s appended after elimlives in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_RACE.md
+#define NET_PROTOCOL_VER 73 // 73: SVC_RACE_STATE / SVC_ELIM_STATE per-combatant slices are now WIRE-KEYED (humans by netclient id, bots by mpchr index — the SVC_SCORE convention) instead of raw local slots, which differ per machine (netPlayersAllocate's local slot-0 swap) and made every client read the HOST's race progress / lives as its own. Same byte layout, different keying — mixed versions must not join.
+// 72: "Race" scenario (MPSCENARIO_RACE 8, checkpoint racing over the KoH hillpads) — new SVC_RACE_STATE (0x58: per-racer progress + finish order + finish timer), and g_MpSetup.racelaps/racepitytime u8s appended after elimlives in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_RACE.md
 // 71: Lives went GLOBAL (any scenario; Limits menu; elimlives 0 = off) and the short-lived Elimination scenario (id 8) was retired — same wire fields as 70 but gate semantics differ and id 8 no longer exists, so mixed versions must not join. See docs/PORT_ELIMINATION.md
 // 70: "Elimination" scenario (MPSCENARIO_ELIMINATION, lives-based last-standing) — new SVC_ELIM_STATE (0x57: per-combatant lives + team pools + eliminated set), and g_MpSetup.elimlivesmode/elimlives u8s appended after zonecapturetime in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_ELIMINATION.md
 // 69: "Zones" scenario (MPSCENARIO_ZONES, TS2-style territory control) — new SVC_ZONES_STATE (0x56: zone owners + team scores + score-cycle countdown), and g_MpSetup.zonescoretime/zonecapturetime u8s appended after paintclaimtime in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_ZONES.md

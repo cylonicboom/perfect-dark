@@ -4417,24 +4417,89 @@ u32 netmsgSvcZonesStateRead(struct netbuf *src, struct netclient *srccl)
 // shared pools and the eliminated set. Fixed-size payload (MAX_MPCHRS +
 // MAX_TEAMS are wire constants). Sent on change (a spent life / an
 // elimination) and as a 1s keep-alive.
+// Per-combatant wire array translation, shared by SVC_ELIM_STATE and
+// SVC_RACE_STATE. Raw g_MpAllChrPtrs/g_Vars.players slots are LOCAL-only:
+// netPlayersAllocate swaps the local player into slot 0 on every machine
+// (see the swap comment in net.c), so a per-index array written in server
+// order lands on the wrong players client-side — the classic symptom is
+// every client seeing the HOST's state as its own. The SVC_SCORE convention
+// fixes it: human slots (< MAX_PLAYERS) ride the wire keyed by NETCLIENT ID
+// (wire-stable), bot slots (>= MAX_PLAYERS) by mpchr index (deterministic on
+// both sides). Unmapped positions carry 0.
+static void netChrArrayToWire(u8 *wire, const u8 *local)
+{
+	s32 i;
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		wire[i] = 0;
+	}
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		if (i < MAX_PLAYERS) {
+			const s32 cl_id = netScoreNetIdForSlot(i);
+
+			if (cl_id >= 0 && cl_id < MAX_PLAYERS) {
+				wire[cl_id] = local[i];
+			}
+		} else {
+			wire[i] = local[i];
+		}
+	}
+}
+
+static void netChrArrayFromWire(u8 *local, const u8 *wire)
+{
+	s32 i;
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		local[i] = 0;
+	}
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		if (i < MAX_PLAYERS) {
+			const struct netclient *cl = &g_NetClients[i];
+
+			if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
+				local[cl->playernum] = wire[i];
+			}
+		} else {
+			local[i] = wire[i];
+		}
+	}
+}
+
 u32 netmsgSvcElimStateWrite(struct netbuf *dst)
 {
 	struct elimdata *elim = elimGetData();
+	u8 locallives[MAX_MPCHRS];
+	u8 localelim[MAX_MPCHRS];
+	u8 wirelives[MAX_MPCHRS];
+	u8 wireelim[MAX_MPCHRS];
 	u16 elimmask = 0;
 	s32 i;
+
+	// translate the per-combatant slices to wire keying (see netChrArrayToWire)
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		s32 lives = elim->lives[i];
+		locallives[i] = (u8)(lives < 0 ? 0 : (lives > 0xff ? 0xff : lives));
+		localelim[i] = elim->eliminated[i] ? 1 : 0;
+	}
+
+	netChrArrayToWire(wirelives, locallives);
+	netChrArrayToWire(wireelim, localelim);
 
 	netbufWriteU8(dst, SVC_ELIM_STATE);
 
 	for (i = 0; i < MAX_MPCHRS; i++) {
-		s32 lives = elim->lives[i];
-		netbufWriteU8(dst, (u8)(lives < 0 ? 0 : (lives > 0xff ? 0xff : lives)));
+		netbufWriteU8(dst, wirelives[i]);
 
-		if (elim->eliminated[i]) {
+		if (wireelim[i]) {
 			elimmask |= 1u << i;
 		}
 	}
 
 	for (i = 0; i < MAX_TEAMS; i++) {
+		// team pools are team-indexed — wire-stable as-is
 		s32 pool = elim->teamlives[i];
 		netbufWriteU8(dst, (u8)(pool < 0 ? 0 : (pool > 0xff ? 0xff : pool)));
 	}
@@ -4446,12 +4511,16 @@ u32 netmsgSvcElimStateWrite(struct netbuf *dst)
 
 u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
 {
+	u8 wirelives[MAX_MPCHRS];
+	u8 wireelim[MAX_MPCHRS];
 	u8 lives[MAX_MPCHRS];
+	u8 localelim[MAX_MPCHRS];
 	u8 teamlives[MAX_TEAMS];
+	u16 localmask = 0;
 	s32 i;
 
 	for (i = 0; i < MAX_MPCHRS; i++) {
-		lives[i] = netbufReadU8(src);
+		wirelives[i] = netbufReadU8(src);
 	}
 
 	for (i = 0; i < MAX_TEAMS; i++) {
@@ -4465,7 +4534,21 @@ u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	if (srccl->state >= CLSTATE_GAME && g_MpSetup.elimlives > 0) {
-		elimApplyWireState(lives, teamlives, elimmask);
+		// translate wire keying back to LOCAL slots before applying
+		for (i = 0; i < MAX_MPCHRS; i++) {
+			wireelim[i] = (elimmask >> i) & 1;
+		}
+
+		netChrArrayFromWire(lives, wirelives);
+		netChrArrayFromWire(localelim, wireelim);
+
+		for (i = 0; i < MAX_MPCHRS; i++) {
+			if (localelim[i]) {
+				localmask |= 1u << i;
+			}
+		}
+
+		elimApplyWireState(lives, teamlives, localmask);
 	}
 
 	return src->error;
@@ -4473,19 +4556,28 @@ u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
 
 // SVC_RACE_STATE: "Race" — authoritative per-racer checkpoint/lap progress,
 // finishing order and the post-winner finish timer. Fixed-size payload
-// (MAX_MPCHRS is a wire constant). Sent on change (a checkpoint pass / a
-// finish) and as a 1s keep-alive.
+// (MAX_MPCHRS is a wire constant); the per-racer slices are wire-keyed via
+// netChrArrayToWire (raw local slots differ across machines — without the
+// translation every client read the HOST's progress as its own). Sent on
+// change (a checkpoint pass / a finish) and as a 1s keep-alive.
 u32 netmsgSvcRaceStateWrite(struct netbuf *dst)
 {
 	struct scenariodata_race *race = raceGetData();
+	u8 wirenextcp[MAX_MPCHRS];
+	u8 wirelaps[MAX_MPCHRS];
+	u8 wirefinish[MAX_MPCHRS];
 	s32 i;
+
+	netChrArrayToWire(wirenextcp, race->nextcp);
+	netChrArrayToWire(wirelaps, race->lapsdone);
+	netChrArrayToWire(wirefinish, race->finishpos);
 
 	netbufWriteU8(dst, SVC_RACE_STATE);
 
 	for (i = 0; i < MAX_MPCHRS; i++) {
-		netbufWriteU8(dst, race->nextcp[i]);
-		netbufWriteU8(dst, race->lapsdone[i]);
-		netbufWriteU8(dst, race->finishpos[i]);
+		netbufWriteU8(dst, wirenextcp[i]);
+		netbufWriteU8(dst, wirelaps[i]);
+		netbufWriteU8(dst, wirefinish[i]);
 	}
 
 	netbufWriteU8(dst, race->finishcount);
@@ -4500,15 +4592,18 @@ u32 netmsgSvcRaceStateWrite(struct netbuf *dst)
 
 u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl)
 {
+	u8 wirenextcp[MAX_MPCHRS];
+	u8 wirelaps[MAX_MPCHRS];
+	u8 wirefinish[MAX_MPCHRS];
 	u8 nextcp[MAX_MPCHRS];
 	u8 lapsdone[MAX_MPCHRS];
 	u8 finishpos[MAX_MPCHRS];
 	s32 i;
 
 	for (i = 0; i < MAX_MPCHRS; i++) {
-		nextcp[i] = netbufReadU8(src);
-		lapsdone[i] = netbufReadU8(src);
-		finishpos[i] = netbufReadU8(src);
+		wirenextcp[i] = netbufReadU8(src);
+		wirelaps[i] = netbufReadU8(src);
+		wirefinish[i] = netbufReadU8(src);
 	}
 
 	const u8 finishcount = netbufReadU8(src);
@@ -4521,6 +4616,11 @@ u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	if (srccl->state >= CLSTATE_GAME && g_MpSetup.scenario == MPSCENARIO_RACE) {
+		// translate wire keying back to LOCAL slots before applying
+		netChrArrayFromWire(nextcp, wirenextcp);
+		netChrArrayFromWire(lapsdone, wirelaps);
+		netChrArrayFromWire(finishpos, wirefinish);
+
 		raceApplyWireState(nextcp, lapsdone, finishpos, finishcount, humancount,
 				pitystarted, pity240);
 	}

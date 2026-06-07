@@ -3249,26 +3249,46 @@ void netPlayersAllocate(void)
 {
 	s32 playernum = 0;
 
-	if (g_NetMode == NETMODE_CLIENT) {
-		// we always put the local player at index 0, even client-side
-		// which means that clientside we have to put the server's player into our slot.
-		// Skip the swap if either the local client or the host (g_NetClients[0])
-		// is a spectator. The local-spectator case has no slot to swap into. The
-		// host-spectator case is different: the host has no playernum (sentinel
-		// 0xFE) and the local client is already at slot 0 on the wire because
-		// netPlayersAllocate-on-server skipped the spectator host when assigning
-		// sequential combatant playernums. Swapping would clobber g_NetClients[0]'s
-		// sentinel with a valid slot index that doesn't match its (NULL) player.
-		if (!g_NetLocalClient->is_spectator && !g_NetClients[0].is_spectator) {
-			const s32 svplayernum = g_NetLocalClient->playernum;
+	if (g_NetMode == NETMODE_CLIENT && !g_NetLocalClient->is_spectator) {
+		// Always put the LOCAL player at local index 0 — the invariant the whole
+		// decompiled codebase assumes ("the local player is g_Vars.players[0]";
+		// ~every currentplayernum==0 / playernum!=0 idiom). Client-side that means
+		// swapping whichever combatant the server placed at playernum 0 into our
+		// old slot.
+		//
+		// HISTORY (the slot-0 bug family): this swap was originally SKIPPED when
+		// the host (g_NetClients[0]) was a spectator — the dedicated/Host-Online
+		// case — on the false premise that "the local client is already at slot
+		// 0". That's only true for whichever client landed at combatant-slot 0
+		// (the first joiner / Host-Online master); every OTHER dedicated-server
+		// client was left at its real slot N!=0, breaking the invariant and
+		// silently killing per-player features (mouse aim, contpads, HUD
+		// messages, pickup sounds, MP death music — each patched one-by-one).
+		//
+		// Generalised fix: swap with the combatant ACTUALLY holding playernum 0,
+		// not g_NetClients[0]. Under a spectator host that occupant is some other
+		// client; the pawnless spectator host keeps its 0xFE sentinel (it never
+		// matches the lookup). In P2P the occupant IS g_NetClients[0], so the
+		// behaviour there is byte-identical to before.
+		const s32 svplayernum = g_NetLocalClient->playernum;
+		struct netclient *occupant = NULL;
+		for (s32 i = 0; i < g_NetMaxClients; ++i) {
+			if (g_NetClients[i].state >= CLSTATE_LOBBY
+					&& !g_NetClients[i].is_spectator
+					&& g_NetClients[i].playernum == 0) {
+				occupant = &g_NetClients[i];
+				break;
+			}
+		}
+		if (svplayernum != 0 && occupant) {
 			g_NetLocalClient->playernum = 0;
-			g_NetClients[0].playernum = svplayernum;
+			occupant->playernum = svplayernum;
 
-			// F2 body bits arrive wire-indexed (by the host's dense playernums). The
-			// swap above moves the local client to slot 0 and the host to svplayernum,
-			// so mirror that swap in g_NetCoopBodyBits — playerChooseBodyAndHead indexes
-			// it by the LOCAL g_Vars.players[] slot, so without this the client reads the
-			// wrong player's masculine choice (its own body ends up keyed to the host's).
+			// F2 body bits arrive wire-indexed (by the host's dense playernums).
+			// The swap moves the local client to slot 0 and the occupant to
+			// svplayernum, so mirror that in g_NetCoopBodyBits — playerChooseBodyAndHead
+			// indexes it by the LOCAL g_Vars.players[] slot, so without this the
+			// client reads the wrong player's masculine choice.
 			if (svplayernum > 0 && svplayernum < MAX_PLAYERS) {
 				const u8 bit0 = (u8)((g_NetCoopBodyBits >> 0) & 1);
 				const u8 bitsv = (u8)((g_NetCoopBodyBits >> svplayernum) & 1);

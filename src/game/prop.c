@@ -43,6 +43,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "system.h" // sysLogPrintf/LOG_* for the proptick guards
 #endif
 
 s16 *g_RoomPropListChunkIndexes;
@@ -2164,6 +2165,23 @@ void propsTickPlayer(bool islastplayer)
 			} else if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON) {
 				obj = prop->obj;
 
+#ifndef PLATFORM_N64
+				// A prop typed OBJ/WEAPON with no obj is a corpse: an active
+				// prop freed without unlinking, its slot re-allocated (the
+				// union is cleared but type is not) while stale list links
+				// still reach it — the same family as the proptick walk
+				// guard. Log its identity for the root-cause hunt and skip
+				// the deref (crash was a read at obj+0x4c on a JIP client).
+				if (obj == NULL) {
+					static u32 lastwarn60 = 0;
+					if (g_Vars.lvframe60 - lastwarn60 > TICKS(60)) {
+						lastwarn60 = g_Vars.lvframe60;
+						sysLogPrintf(LOG_WARNING,
+								"proptick_guard: null obj on active prop %d type %d flags 0x%x syncid %u",
+								(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+					}
+				} else
+#endif
 				if (obj->hidden & OBJHFLAG_PROJECTILE) {
 					i++;
 				}

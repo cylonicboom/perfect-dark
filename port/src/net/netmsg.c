@@ -2973,6 +2973,9 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		// modelnum is a signed wire value used to index g_ModelStates[] and to
 		// drive a ROM model load; reject out-of-range before either.
 		if (modelnum < 0 || modelnum >= NUM_MODELS) {
+			if (prop) {
+				propFree(prop); // don't leak the bare allocation
+			}
 			return 1;
 		}
 		setupLoadModeldef(modelnum);
@@ -3022,6 +3025,9 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 	} else if (type == PROPTYPE_OBJ) {
 		const s16 modelnum = netbufReadS16(src);
 		if (modelnum < 0 || modelnum >= NUM_MODELS) {
+			if (prop) {
+				propFree(prop); // don't leak the bare allocation
+			}
 			return 1;
 		}
 		if (objtype == OBJTYPE_AUTOGUN) {
@@ -3041,6 +3047,16 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 			obj->targetteam = targetteam;
 			prop = obj->base.prop;
 		}
+	}
+
+	// A prop with no obj bound (an OBJ objtype this reader has no constructor
+	// for, or a failed weapon/model alloc) must never reach the active lists:
+	// propsTickPlayer dereferences prop->obj for OBJ/WEAPON types (client
+	// crash: read at obj+0x4c). Free the bare allocation and drop the message.
+	if (prop && !prop->obj && (type == PROPTYPE_WEAPON || type == PROPTYPE_OBJ)) {
+		sysLogPrintf(LOG_WARNING, "NET: spawn %u type %u objtype %u bound no obj; dropping", syncid, type, objtype);
+		propFree(prop);
+		return 1;
 	}
 
 	if (prop) {
@@ -3079,7 +3095,12 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		const s16 pad = netbufReadS16(src);
 		for (s32 i = 0; i < 3; ++i) {
 			for (s32 j = 0; j < 3; ++j) {
-				prop->obj->realrot[i][j] = netbufReadF32(src);
+				// consume the wire bytes regardless; only apply with an obj
+				// (this used to deref prop->obj before the check below)
+				const f32 rr = netbufReadF32(src);
+				if (prop->obj) {
+					prop->obj->realrot[i][j] = rr;
+				}
 			}
 		}
 		if (prop->obj) {

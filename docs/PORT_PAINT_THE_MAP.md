@@ -45,8 +45,16 @@ ownership each stage.
 `paintTick` (the scenario `tickfunc`, run every frame on all machines from
 `lvTick`) iterates **all** combatants `g_MpAllChrPtrs[0..g_MpNumChrs-1]` — the
 same all-chr scan KoH uses, so it covers local + remote players + bots uniformly
-(unlike `tickchrfunc`, which only reaches the local player and bots). For each
-living chr it paints `chr->prop->rooms[0]` with its team. The ownership write is
+(unlike `tickchrfunc`, which only reaches the local player and bots). Rooms are
+claimed on **entry only**: each chr's last `rooms[0]` is tracked in
+`scenariodata_paint.lastroom[12]` (reset to -1 on death, so a respawn counts as
+an entry) and a claim fires only when it changes. Continuous standing-in-room
+claiming was removed — it flipped contested rooms every frame to whoever
+iterated last in `g_MpAllChrPtrs` (the sims), so a human could never hold a
+room a sim occupied. **Kills also claim**: `paintHandleDeath` (called from
+`mpstatsRecordDeath` beside the `pacHandleDeath` hook) claims the killer's
+current room for their team — the winner of a contested-room fight takes the
+room. Suicides/unattributed deaths claim nothing. The ownership write is
 gated to the **server** (`g_NetMode != NETMODE_CLIENT`); clients receive
 ownership over the wire. Counts and each player's `numpoints` (= their team's
 owned-room count) are recomputed on every machine from the synced ownership.
@@ -67,11 +75,14 @@ never raises the dirty flag on a client).
 
 `paintCalculatePlayerScore` returns `score = numpoints` (the team's owned-room
 count), `deaths = numdeaths`, so `mpGetPlayerRankings` ranks the team with the
-most floor first. The match is **time-limited**: `mpApplyLimits` forces the score
-and team-score limits to unlimited for this scenario (`MPSCENARIO_PAINTROOM`) so a
-team owning many rooms doesn't end the round early. Teams are locked on (forced in
-`paintInit`; the teams checkbox is disabled like CTC/KoH in
-`menuhandlerMpTeamsEnabled`).
+most floor first. Because every member mirrors the same team tally,
+`mpCalculateTeamScore` has a port-only override for `MPSCENARIO_PAINTROOM` that
+returns the collective `teamcounts[teamnum]` as the team score instead of the
+member sum (which multiplied the score by the member count). The match is
+**time-limited**: `mpApplyLimits` forces the score and team-score limits to
+unlimited for this scenario (`MPSCENARIO_PAINTROOM`) so a team owning many rooms
+doesn't end the round early. Teams are locked on (forced in `paintInit`; the
+teams checkbox is disabled like CTC/KoH in `menuhandlerMpTeamsEnabled`).
 
 ## "Owned Room Spawn" option (`MPOPTION_OWNEDROOMSPAWN`, bit 33)
 

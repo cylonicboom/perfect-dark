@@ -820,6 +820,7 @@ void netClientReportPropHit(struct prop *prop, f32 damage, const struct coord *p
 // both the host tick and the client wire-apply share one code path.
 u8 *paintGetRoomOwner(s32 *roomcount_out);
 void paintSetRoomOwner(s32 roomnum, u8 owner);
+void paintHandleDeath(s32 aplayernum, s32 vplayernum); // kill claims the killer's room (mpstatsRecordDeath hook)
 extern u8 g_MpPaintDirty; // host: painted set changed this frame -> broadcast in netEndFrame
 
 #endif // _IN_NET_H

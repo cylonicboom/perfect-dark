@@ -4345,6 +4345,11 @@ struct scenariodata_paint {
 	u8 *roomowner;
 	s32 roomcount;
 	s32 teamcounts[8]; // MAX_TEAMS
+	// last seen rooms[0] per combatant (MAX_MPCHRS); -1 = none. Rooms are
+	// claimed on ENTRY (rooms[0] change) or on a kill, not by standing in
+	// them — continuous claiming let whoever iterated last in g_MpAllChrPtrs
+	// (the sims) win contested rooms every frame.
+	s16 lastroom[12];
 };
 #endif
 

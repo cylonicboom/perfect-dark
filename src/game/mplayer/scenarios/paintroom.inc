@@ -166,6 +166,10 @@ void paintInitProps(void)
 		paint->teamcounts[i] = 0;
 	}
 
+	for (i = 0; i < (s32)ARRAYCOUNT(paint->lastroom); i++) {
+		paint->lastroom[i] = -1;
+	}
+
 	g_MpPaintDirty = 0;
 }
 
@@ -224,21 +228,34 @@ void paintTick(void)
 	}
 
 	// Ownership is host-authoritative; clients receive it via SVC_PAINT_STATE.
+	// Rooms are claimed on ENTRY only (rooms[0] changed since last tick) — NOT
+	// continuously by standing in them. Continuous claiming made contested
+	// rooms flip every frame to whoever iterated last in g_MpAllChrPtrs (the
+	// sims, which sit after the humans), so a human could never hold a room a
+	// sim was standing in. Kills also claim — see paintHandleDeath.
 #ifndef PLATFORM_N64
 	if (g_NetMode != NETMODE_CLIENT)
 #endif
 	{
-		for (i = 0; i < g_MpNumChrs; i++) {
+		for (i = 0; i < g_MpNumChrs && i < (s32)ARRAYCOUNT(paint->lastroom); i++) {
 			struct chrdata *chr = g_MpAllChrPtrs[i];
 
 			if (chr && chr->prop && !chrIsDead(chr)) {
 				RoomNum room = chr->prop->rooms[0];
 				s32 team = radarGetTeamIndex(chr->team);
 
-				if (room >= 1 && room < paint->roomcount
-						&& team >= 0 && team < MAX_TEAMS) {
-					paintSetRoomOwner(room, (u8)(team + 1));
+				if (room != paint->lastroom[i]) {
+					paint->lastroom[i] = room;
+
+					if (room >= 1 && room < paint->roomcount
+							&& team >= 0 && team < MAX_TEAMS) {
+						paintSetRoomOwner(room, (u8)(team + 1));
+					}
 				}
+			} else {
+				// dead/missing: forget the room so the respawn counts as an
+				// entry even if it lands in the same room they died in
+				paint->lastroom[i] = -1;
 			}
 		}
 	}
@@ -264,6 +281,46 @@ void paintTick(void)
 		if (team >= 0 && team < MAX_TEAMS) {
 			g_MpAllChrConfigPtrs[i]->numpoints = paint->teamcounts[team];
 		}
+	}
+}
+
+/**
+ * Kill claim: a kill claims the killer's current room for the killer's team
+ * (the natural "win the contested room" rule — if several people are fighting
+ * over a room, the one who scores a kill takes it). Called from
+ * mpstatsRecordDeath (the pacHandleDeath pattern); aplayernum/vplayernum are
+ * g_MpAllChrPtrs indices. Suicides and unattributed deaths claim nothing.
+ * Host-only: clients receive ownership via SVC_PAINT_STATE.
+ */
+void paintHandleDeath(s32 aplayernum, s32 vplayernum)
+{
+	struct scenariodata_paint *paint = &g_ScenarioData.paint;
+	struct chrdata *killer;
+	RoomNum room;
+	s32 team;
+
+#ifndef PLATFORM_N64
+	if (g_NetMode == NETMODE_CLIENT) {
+		return;
+	}
+#endif
+
+	if (paint->roomowner == NULL || aplayernum < 0 || aplayernum == vplayernum
+			|| aplayernum >= g_MpNumChrs) {
+		return;
+	}
+
+	killer = g_MpAllChrPtrs[aplayernum];
+
+	if (killer == NULL || killer->prop == NULL || chrIsDead(killer)) {
+		return;
+	}
+
+	room = killer->prop->rooms[0];
+	team = radarGetTeamIndex(killer->team);
+
+	if (room >= 1 && room < paint->roomcount && team >= 0 && team < MAX_TEAMS) {
+		paintSetRoomOwner(room, (u8)(team + 1));
 	}
 }
 

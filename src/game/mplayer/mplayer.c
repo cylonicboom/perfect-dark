@@ -1241,6 +1241,16 @@ s32 mpCalculateTeamScore(s32 teamnum, s32 *result)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Paint the Map: every member's score IS the team's owned-room count
+	// (mirrored in paintTick), so summing members multiplies the team score
+	// by the member count. The team score is the one collective room tally.
+	if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM && teamexists
+			&& teamnum >= 0 && teamnum < MAX_TEAMS) {
+		teamscore = g_ScenarioData.paint.teamcounts[teamnum];
+	}
+#endif
+
 	if (teamexists) {
 		*result = teamscore;
 		return (teamscore + 0x8000) << 16 | (0xffff - teamdeaths);

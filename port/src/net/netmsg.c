@@ -3388,6 +3388,11 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 			&& prop->door->frac >= frac) {
 		prop->door->base.hidden = hidden;
 		prop->door->base.flags = flags;
+		// The door is locally open(ing) — its portal must be open. Re-assert it
+		// (idempotent): an auto door cycling on the locally-ticked close timer
+		// can have deactivated the portal out of step with the host, leaving an
+		// open door rendering into a closed portal (room behind not drawn).
+		doorActivatePortal(prop->door);
 		if (actcl) {
 			setCurrentPlayerNum(prevplayernum);
 		}
@@ -3401,6 +3406,21 @@ u32 netmsgSvcPropDoorRead(struct netbuf *src, struct netclient *srccl)
 	// this is the single source of truth for where the door sits). Applied
 	// after doorSetMode — doorStartOpen/Close inside it may touch frac.
 	prop->door->frac = frac;
+
+	// Portal reconcile: doorSetMode(OPENING) only runs doorStartOpen (the sole
+	// portal-activation site) when the LOCAL mode was IDLE/WAITING. Auto doors
+	// tick their open/close cycle on local timers that skew from the host's, so
+	// an OPENING keyframe routinely lands while the local door is CLOSING (or
+	// mid-transition) and the portal never re-activates — the door animates
+	// open but the room behind it doesn't render. Assert the invariant
+	// directly: a door that is moving or off its closed rest position has an
+	// open portal. Deactivation stays with doorFinishClose (it owns the
+	// shared-portal sibling check).
+	if (g_NetMode == NETMODE_CLIENT
+			&& (prop->door->frac > 0.f
+				|| doormode == DOORMODE_OPENING || doormode == DOORMODE_WAITING)) {
+		doorActivatePortal(prop->door);
+	}
 
 	if (actcl) {
 		setCurrentPlayerNum(prevplayernum);

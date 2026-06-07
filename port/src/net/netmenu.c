@@ -19,6 +19,10 @@
 #include "mpsetups.h"
 #include "bss.h"
 #include "game/lang.h"
+#include "game/title.h"   // titleSetNextMode / setNumPlayers (Host Online lobby reload)
+#include "game/pdmode.h"  // titleSetNextStage
+#include "game/mplayer/mplayer.h" // mpSetPaused
+#include "lib/main.h"     // mainChangeToStage
 #include "net/net.h"
 #include "net/netmaster.h"
 #include "net/playlist.h"
@@ -690,6 +694,210 @@ struct menudialogdef g_NetHostMenuDialog = {
 	NULL,
 };
 
+/* Host Online Game: the master spawns a dedicated instance for us, we connect
+ * as its auto-admin and drive the full Combat Sim hosting UI. See
+ * docs/PORT_HOSTED_SERVER.md. */
+
+extern struct menudialogdef g_NetJoiningDialog; // defined below in the join section
+
+// Auto-admin handshake progress for this session: 0 = waiting for CLSTATE_LOBBY,
+// 1 = login+take sent, 2 = hosting UI entered. Reset when a grant is accepted.
+static s32 g_NetHostOnlineStep = 0;
+static u32 g_NetHostOnlineStepTick = 0;
+
+// Reload a fresh CITRAINING world and re-enter the Combat Sim setup through the
+// existing "returning from a multiplayer match" latch (menutick.c, var80087260)
+// — the same proven path the post-match return uses, mirroring the netDisconnect
+// wasingame return (net.c). The setup menus then open over a virgin 1-player CI
+// world (frame >= 4), which is the context they were designed for. Running the
+// title-screen setup-load directly over the live connected lobby world is the
+// documented shieldhits crash class (docs/PORT_ADMIN_GUI_CONFIGURE.md) — never
+// do that.
+void netHostOnlineEnterSetup(void)
+{
+	mpSetPaused(MPPAUSEMODE_UNPAUSED);
+	g_MpSetup.chrslots = 1;
+	g_Vars.mplayerisrunning = false;
+	g_Vars.normmplayerisrunning = false;
+	g_Vars.lvmpbotlevel = 0;
+	titleSetNextStage(STAGE_CITRAINING);
+	setNumPlayers(1);
+	titleSetNextMode(TITLEMODE_SKIP);
+	mainChangeToStage(STAGE_CITRAINING);
+	var80087260 = 3; // arm the post-match menu-reopen latch (menutick.c)
+}
+
+// Status line in the wait dialog.
+static const char *menutextHostOnlineStatus(struct menuitem *item)
+{
+	static char tmp[NET_HOSTREQ_REASON_LEN + 2];
+	switch (g_NetHostRequestState) {
+	case NETHOSTREQ_REQUESTING:
+		return "Requesting a server...\n";
+	case NETHOSTREQ_GRANTED:
+		return "Server granted - connecting...\n";
+	case NETHOSTREQ_DENIED:
+	case NETHOSTREQ_ERROR:
+		snprintf(tmp, sizeof(tmp), "%s\n", g_NetHostDenyReason[0] ? g_NetHostDenyReason : "Request failed");
+		return tmp;
+	}
+	return "\n";
+}
+
+static MenuItemHandlerResult menuhandlerHostOnlineWait(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (inputKeyPressed(VK_ESCAPE)
+			|| (operation == MENUOP_SET && g_NetHostRequestState != NETHOSTREQ_REQUESTING)) {
+		netHostRequestClose();
+		menuPopDialog();
+	}
+	return 0;
+}
+
+static s32 netHostOnlineWaitDialogHandler(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_TICK) {
+		netHostRequestTick();
+
+		if (g_NetHostRequestState == NETHOSTREQ_GRANTED) {
+			netHostRequestClose();
+
+			// The instance was spawned with --password <our password>; our own
+			// join must supply it in CLC_AUTH like any other client.
+			strncpy(g_NetJoinPassword, g_NetServerPassword, NET_MAX_PASSWORD - 1);
+			g_NetJoinPassword[NET_MAX_PASSWORD - 1] = '\0';
+			strncpy(g_NetJoinAddr, g_NetHostGrantAddr, NET_MAX_ADDR);
+			g_NetJoinAddr[NET_MAX_ADDR] = '\0';
+			strncpy(g_NetAutoAdminToken, g_NetHostGrantToken, NET_MAX_PASSWORD - 1);
+			g_NetAutoAdminToken[NET_MAX_PASSWORD - 1] = '\0';
+
+			if (netStartClient(g_NetJoinAddr) == 0) {
+				g_NetHostOnlineMode = 1;
+				g_NetHostOnlineStep = 0;
+				menuPopDialog(); // this wait dialog
+				menuPushDialog(&g_NetJoiningDialog);
+			} else {
+				strcpy(g_NetHostDenyReason, "Could not connect to the server");
+				g_NetHostRequestState = NETHOSTREQ_ERROR;
+			}
+		}
+	} else if (operation == MENUOP_CLOSE) {
+		netHostRequestClose(); // no-op if already closed
+	}
+	return 0;
+}
+
+static struct menuitem g_NetHostOnlineWaitMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE,
+		(uintptr_t)&menutextHostOnlineStatus,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0, 0, 0, 0, NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"ESC to cancel\n",
+		0,
+		menuhandlerHostOnlineWait,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_NetHostOnlineWaitDialog = {
+	MENUDIALOGTYPE_SUCCESS,
+	(uintptr_t)"Host Online Game",
+	g_NetHostOnlineWaitMenuItems,
+	netHostOnlineWaitDialogHandler,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_IGNOREBACK | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+static MenuItemHandlerResult menuhandlerHostOnlineStart(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		netHostRequestOpen(g_NetServerName, g_NetMenuMaxPlayers, g_NetServerPassword);
+		menuPushDialog(&g_NetHostOnlineWaitDialog);
+	}
+	return 0;
+}
+
+// Same name/players/password controls as the local host menu (shared handlers
+// and backing globals), minus the port and spectator items — the master picks
+// the port, and the requester is a remote admin client, not a local server.
+static struct menuitem g_NetHostOnlineMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Server Name:\n",
+		(uintptr_t)&menutextHostServerName,
+		menuhandlerHostServerName,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Max Players",
+		NET_MAX_CLIENTS,
+		menuhandlerHostMaxPlayers,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Password:\n",
+		(uintptr_t)&menutextHostPassword,
+		menuhandlerHostPassword,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Request Server\n",
+		0,
+		menuhandlerHostOnlineStart,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0, 0, 0, 0, NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_NetHostOnlineMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Host Online Game",
+	g_NetHostOnlineMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	NULL,
+};
+
+static MenuItemHandlerResult menuhandlerHostOnlineGame(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		g_NetMenuMaxPlayers = g_NetMaxClients;
+		menuPushDialog(&g_NetHostOnlineMenuDialog);
+	}
+	return 0;
+}
+
 /* join */
 
 static const char *menutextJoinAddress(struct menuitem *item)
@@ -931,6 +1139,56 @@ static MenuItemHandlerResult menuhandlerJoining(s32 operation, struct menuitem *
 	return 0;
 }
 
+// Host Online Game auto-admin handshake, pumped once per frame from the Joining
+// dialog's MENUOP_TICK while connected to the granted instance. Both admin
+// lines ride the reliable ordered control channel, so `login` is always
+// processed before `take` and no SVC_ADMIN reply parsing is needed (the
+// replies are plain console text; watch the console for confirmation).
+static void netHostOnlineJoiningTick(void)
+{
+	if (!g_NetHostOnlineMode || g_NetHostOnlineStep >= 2
+			|| !g_NetLocalClient || g_NetLocalClient->state < CLSTATE_LOBBY) {
+		return;
+	}
+
+	if (g_NetHostOnlineStep == 0) {
+		char line[NET_MAX_PASSWORD + 8];
+		snprintf(line, sizeof(line), "login %s", g_NetAutoAdminToken);
+		netClientSendAdminLine(line);
+		netClientSendAdminLine("take");
+		g_NetHostOnlineStep = 1;
+		g_NetHostOnlineStepTick = g_NetTick;
+		return;
+	}
+
+	// Give the server a moment to process login+take, then enter the hosting
+	// UI through the fresh-lobby reload. The one-shot setup-load latch makes
+	// menutick.c's re-entry block run the Combat Sim setup-load (the same load
+	// menuhandlerHostStart does) on the fresh world.
+	if ((g_NetTick - g_NetHostOnlineStepTick) >= 30u) {
+		g_NetHostOnlineStep = 2;
+		menuPopDialog(); // the Joining dialog
+		g_NetHostOnlineSetupLoad = 1;
+		netHostOnlineEnterSetup();
+	}
+}
+
+static s32 netJoiningDialogHandler(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_TICK) {
+		// The session can die underneath this dialog (server rejected the
+		// auth: files/version/password mismatch — netClientEvDisconnect
+		// already logged the reason and tore the session down). Without this
+		// the dialog sat on "Joining Game..." forever.
+		if (g_NetMode == NETMODE_NONE) {
+			menuPopDialog();
+			return 0;
+		}
+		netHostOnlineJoiningTick();
+	}
+	return 0;
+}
+
 #define LOBBYLINE(n) \
 	{ MENUITEMTYPE_LABEL, (n), MENUITEMFLAG_SMALLFONT, (uintptr_t)&menutextLobbyLine, 0, NULL }
 
@@ -990,7 +1248,7 @@ struct menudialogdef g_NetJoiningDialog = {
 	MENUDIALOGTYPE_SUCCESS,
 	(uintptr_t)"Joining Game...",
 	g_NetJoiningMenuItems,
-	NULL,
+	netJoiningDialogHandler, // Host Online auto-admin handshake (no-op otherwise)
 	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_IGNOREBACK | MENUDIALOGFLAG_STARTSELECTS,
 	NULL,
 };
@@ -2034,6 +2292,23 @@ static char *menutextDetailsLine(struct menuitem *item)
 		return tmp;
 	}
 
+	// 21: server mod + local-compatibility marker (rendered between the
+	// limits row and the player list — see the items array order). The join
+	// auth rejects a mod-dir mismatch, so warn before a doomed connect;
+	// netmaster.c computes modmatch at parse time (netModDirName compare).
+	if (idx == 21) {
+		if (d->modmatch) {
+			if (!d->mod[0]) {
+				return ""; // both vanilla — nothing to report
+			}
+			snprintf(tmp, sizeof(tmp), "Mod: %s\n", d->mod);
+		} else {
+			snprintf(tmp, sizeof(tmp), "Mod: %s - mismatch, can't join\n",
+					d->mod[0] ? d->mod : "none");
+		}
+		return tmp;
+	}
+
 	// 3: "Players (N):"
 	if (idx == 3) {
 		if (!d->num_players) { return ""; }
@@ -2103,7 +2378,10 @@ static s32 netBrowserDetailsDialogHandler(s32 operation, struct menudialogdef *d
 	{ MENUITEMTYPE_LABEL, (n), MENUITEMFLAG_SMALLFONT, (uintptr_t)&menutextDetailsLine, 0, NULL }
 
 static struct menuitem g_NetBrowserDetailsMenuItems[] = {
-	DETAILLINE(0),  DETAILLINE(1),  DETAILLINE(2),  DETAILLINE(3),
+	// Display order is array order; the param (passed to menutextDetailsLine)
+	// picks the text. 21 = the mod line, rendered after the limits row.
+	DETAILLINE(0),  DETAILLINE(1),  DETAILLINE(2),  DETAILLINE(21),
+	DETAILLINE(3),
 	DETAILLINE(4),  DETAILLINE(5),  DETAILLINE(6),  DETAILLINE(7),
 	DETAILLINE(8),  DETAILLINE(9),  DETAILLINE(10), DETAILLINE(11),
 	DETAILLINE(12), DETAILLINE(13), DETAILLINE(14), DETAILLINE(15),
@@ -2534,6 +2812,14 @@ struct menuitem g_NetMenuItems[] = {
 		(uintptr_t)"Host Game\n",
 		0,
 		menuhandlerHostGame,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Host Online Game\n",
+		0,
+		menuhandlerHostOnlineGame,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

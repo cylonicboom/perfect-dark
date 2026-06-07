@@ -29,6 +29,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "mpsetups.h" // Host Online: one-shot Combat Sim setup-load on first entry
 #endif
 
 #ifndef PLATFORM_N64 // All in One Mod
@@ -228,11 +229,27 @@ void menuTick(void)
 
 #ifndef PLATFORM_N64
 				if (g_NetMode) {
+					// Host Online: one-shot Combat Sim setup-load on the first
+					// entry (the same load menuhandlerHostStart runs when hosting
+					// locally), executed HERE on the fresh CITRAINING world
+					// (frame >= 4) instead of over the live connected lobby — the
+					// documented shieldhits crash class
+					// (docs/PORT_ADMIN_GUI_CONFIGURE.md). Runs before the
+					// chrslots fixup below because mpsetupLoadCurrentFile
+					// rewrites g_MpSetup wholesale.
+					if (g_NetMode == NETMODE_CLIENT && g_NetHostOnlineMode && g_NetHostOnlineSetupLoad) {
+						g_NetHostOnlineSetupLoad = 0;
+						mpsetupCopyAllFromPak();
+						mpsetupLoadCurrentFile();
+					}
+
 					g_Vars.mpsetupmenu = MPSETUPMENU_ADVSETUP;
 					// Server: preserve bot slots (bits 8-15) so sims reappear in the
 					// lobby after a match ends. Client resets fully because it shows the
-					// join-waiting screen, not the setup menu.
-					if (g_NetMode == NETMODE_SERVER) {
+					// join-waiting screen, not the setup menu — except a Host Online
+					// admin, who drives the full setup menu like a server and keeps
+					// its sims across matches.
+					if (g_NetMode == NETMODE_SERVER || g_NetHostOnlineMode) {
 						g_MpSetup.chrslots = (g_MpSetup.chrslots & 0xff00) | 1;
 					} else {
 						g_MpSetup.chrslots = 1;
@@ -255,8 +272,10 @@ void menuTick(void)
 							g_MpNumJoined++;
 							func0f17fcb0(true);
 #ifndef PLATFORM_N64
-							if (g_NetMode == NETMODE_CLIENT) {
-								// autodump client into waiting screen while host is changing settings
+							if (g_NetMode == NETMODE_CLIENT && !g_NetHostOnlineMode) {
+								// autodump client into waiting screen while host is changing settings.
+								// A Host Online admin skips this: it IS the host — it stays in
+								// the full setup menu func0f17fcb0 just opened.
 								extern struct menudialogdef g_NetJoiningDialog;
 								menuPushDialog(&g_NetJoiningDialog);
 							}
@@ -483,6 +502,16 @@ void menuTick(void)
 
 				// Note that MPENDSCREEN also refers to coop and anti modes.
 				// Handle re-opening the endscreen by pressing B.
+#ifndef PLATFORM_N64
+				// Net: one local player — B/ESC dismissing the endscreen
+				// should advance to the lobby like Start does. The reopen
+				// below exists for N64 multi-local setups (someone else is
+				// still reading their screen); under netplay it re-pushed the
+				// scoreboard in the same frame the ESC press closed it, making
+				// ESC appear dead (only Enter/Start advanced).
+				if (g_NetMode) {
+				} else
+#endif
 				if (g_MenuData.root == MENUROOT_MPENDSCREEN) {
 					u32 buttons2 = joyGetButtonsPressedThisFrame(g_PlayerConfigsArray[i].contpad1, 0xffffffff);
 
@@ -566,13 +595,31 @@ void menuTick(void)
 
 		if (g_MenuData.prevmenuroot != -1) {
 			if (g_MenuData.prevmenuroot == -5) {
-				// Match is beginning
-				mpStartMatch();
-				menuStop();
+#ifndef PLATFORM_N64
+				if (g_NetMode == NETMODE_CLIENT && g_NetHostOnlineMode) {
+					// Host Online: a client admin can't start the match locally.
+					// Push the configured setup to the instance (CLC_ADMIN_SETUP);
+					// its mpStartMatch + SVC_STAGE_START bring everyone — us
+					// included — into the match through the normal client path.
+					// Settings first so our own name/body edits from the player
+					// setup screens reach the server before it builds the match
+					// manifest. The stamp arms the net.c watchdog that returns
+					// us to the setup if the start never arrives (push rejected).
+					netClientSettingsChanged();
+					netAdminPushStart();
+					g_NetHostOnlinePushTick = g_NetTick ? g_NetTick : 1u;
+					menuStop();
+				} else
+#endif
+				{
+					// Match is beginning
+					mpStartMatch();
+					menuStop();
 
-				if (g_Vars.modifiedfiles & MODFILE_MPSETUP) {
-					bossfileSave();
-					g_Vars.modifiedfiles &= ~MODFILE_MPSETUP;
+					if (g_Vars.modifiedfiles & MODFILE_MPSETUP) {
+						bossfileSave();
+						g_Vars.modifiedfiles &= ~MODFILE_MPSETUP;
+					}
 				}
 			} else if (g_MenuData.prevmenuroot == -6) {
 				// Match is ending

@@ -248,9 +248,31 @@ static inline s32 propRoomsEqual(const RoomNum *ra, const RoomNum *rb)
 
 /* client -> server */
 
+// Mod-dir identity for the wire: the directory NAME only ("mod_allinone").
+// fsGetModDir() returns the resolved ABSOLUTE path, which (a) differs between
+// machines (install location) and even between two processes on one machine
+// (cwd-relative vs $E resolution, slash form), so comparing it raw rejected
+// matching mods with "files differ"; and (b) leaks the local filesystem path
+// (often a username) to the server, the master and the browser. Compare and
+// advertise the basename instead.
+const char *netModDirName(void)
+{
+	const char *dir = fsGetModDir();
+	if (!dir || !dir[0]) {
+		return NULL;
+	}
+	const char *base = dir;
+	for (const char *p = dir; *p; ++p) {
+		if ((*p == '/' || *p == '\\') && p[1] != '\0') {
+			base = p + 1;
+		}
+	}
+	return base;
+}
+
 u32 netmsgClcAuthWrite(struct netbuf *dst)
 {
-	const char *modDir = fsGetModDir();
+	const char *modDir = netModDirName();
 	if (!modDir) {
 		modDir = "";
 	}
@@ -285,7 +307,8 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	if (strcasecmp(romName, g_RomName) != 0) {
-		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u has the wrong ROM, disconnecting", srccl->id);
+		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u has the wrong ROM (theirs '%s' vs ours '%s'), disconnecting",
+				srccl->id, romName, g_RomName);
 		netServerKick(srccl, DISCONNECT_FILES);
 		return src->error;
 	}
@@ -294,9 +317,12 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 		modDir = NULL;
 	}
 
-	const char *myModDir = fsGetModDir();
+	// Both sides exchange mod-dir BASENAMES (netModDirName) — never the
+	// resolved absolute path, which differs across installs/cwd forms.
+	const char *myModDir = netModDirName();
 	if ((!myModDir != !modDir) || (myModDir && modDir && strcasecmp(modDir, myModDir) != 0)) {
-		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u has the wrong mod, disconnecting", srccl->id);
+		sysLogPrintf(LOG_WARNING, "NET: CLC_AUTH: client %u has the wrong mod (theirs '%s' vs ours '%s'), disconnecting",
+				srccl->id, modDir ? modDir : "(none)", myModDir ? myModDir : "(none)");
 		netServerKick(srccl, DISCONNECT_FILES);
 		return src->error;
 	}
@@ -482,11 +508,18 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	// Authorization: must be the in-control admin, server-side, in the lobby.
+	// Both rejects also log locally — netAdminReply only SENDS to a remote
+	// admin, which made these failures invisible in the server log.
 	if (g_NetMode != NETMODE_SERVER || !srccl->is_admin || g_NetAdminController != srccl->id) {
+		sysLogPrintf(LOG_WARNING, "NET: CLC_ADMIN_SETUP from client %u rejected: not admin / not in control", srccl->id);
 		netAdminReply(srccl, "setup: not authorized (login + take control first)");
 		return 0;
 	}
 	if (g_StageNum != STAGE_CITRAINING) {
+		// Transient when the admin re-pushes while we're still reloading back
+		// to the lobby from the previous match — the client re-pushes until
+		// we're ready (Host Online retry in netStartFrame).
+		sysLogPrintf(LOG_NOTE, "NET: CLC_ADMIN_SETUP from client %u while stage 0x%02x is not the lobby - told to retry", srccl->id, (u32)g_StageNum);
 		netAdminReply(srccl, "setup: end the current match first (endmatch)");
 		return 0;
 	}
@@ -4682,7 +4715,9 @@ u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl)
 // resolves to display names locally via g_MpArenas / the scenario table.
 u32 netmsgQuerySummaryWrite(struct netbuf *dst)
 {
-	const char *modDir = fsGetModDir();
+	// Basename only — never the absolute path (see netModDirName: identity +
+	// privacy; this string reaches the master and every browsing client).
+	const char *modDir = netModDirName();
 	if (!modDir) {
 		modDir = "";
 	}

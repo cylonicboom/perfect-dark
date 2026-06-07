@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h> // strcasecmp (POSIX) — mirrors net.c/netmsg.c; MinGW gets
+                     // it transitively but the Linux dedicated build does not.
 // netenet.h must precede types.h: types.h does `#define bool s32`, and
 // netenet.h `#undef bool` afterwards. Because types.h is include-guarded, its
 // definition only runs once — so netenet.h has to come before the first time
@@ -38,10 +40,18 @@ struct netserverentry g_NetServerList[NET_BROWSER_MAX];
 s32 g_NetServerCount = 0;
 struct netserverdetails g_NetServerDetails;
 
+/* public host-request state (read by the "Host Online Game" wait dialog) */
+s32 g_NetHostRequestState = NETHOSTREQ_IDLE;
+char g_NetHostGrantAddr[NET_MAX_ADDR + 1] = "";
+char g_NetHostGrantToken[NET_MAX_PASSWORD] = "";
+char g_NetHostDenyReason[NET_HOSTREQ_REASON_LEN] = "";
+
 /* tunables */
 #define NET_MASTER_HEARTBEAT_MS 15000u // re-announce cadence; master should expire after ~3 missed (~45s)
 #define NET_BROWSER_PING_MS      5000u // re-ping each listed server this often for a live ping/count
 #define NET_BROWSER_RETRY_MS     3000u // resend LIST_REQUEST while still empty
+#define NET_HOSTREQ_RETRY_MS     3000u // resend HOST_REQUEST while unanswered
+#define NET_HOSTREQ_TIMEOUT_MS  20000u // give up (old master / unreachable) — clear error to the user
 
 /* shared resolved master address */
 static ENetAddress s_masterAddr;
@@ -343,7 +353,7 @@ static void netBrowserParseQuery(const u8 *data, s32 len, const ENetAddress *fro
 	const u8 scen = netbufReadU8(&buf);
 	const char *name = netbufReadStr(&buf);
 	(void)netbufReadStr(&buf); // rom name
-	(void)netbufReadStr(&buf); // mod dir
+	const char *mod = netbufReadStr(&buf); // mod dir basename (netModDirName)
 	if (buf.error) {
 		return;
 	}
@@ -383,6 +393,11 @@ static void netBrowserParseQuery(const u8 *data, s32 len, const ENetAddress *fro
 	d.flags = flags;
 	d.stagenum = stage;
 	d.scenario = scen;
+	// Mod compatibility marker for the Details view: the join auth rejects a
+	// mod-dir mismatch (basename compare, netmsgClcAuthRead), so compute the
+	// same comparison here and let the UI warn before a doomed connect.
+	strncpy(d.mod, mod ? mod : "", sizeof(d.mod) - 1);
+	d.modmatch = strcasecmp(d.mod, netModDirName()) == 0;
 	d.scorelimit = netbufReadU8(&buf);
 	d.timelimit = netbufReadU8(&buf);
 	d.teamscorelimit = netbufReadU16(&buf);
@@ -542,5 +557,183 @@ void netBrowserTick(void)
 			netBrowserSendQuery(&s_entryAddr[i], NET_QUERYTYPE_SUMMARY);
 			s_entryQueryMs[i] = now ? now : 1u;
 		}
+	}
+}
+
+/* client side: Host Online Game request (master spawns a dedicated instance) */
+
+// Mirrors the browser transport: a standalone non-blocking UDP socket (the
+// request happens before any g_NetHost exists), 3s retransmit, and a hard
+// timeout so an old master that drops the unknown opcode yields a clear error
+// instead of an endless spinner.
+static ENetSocket s_hostReqSock = ENET_SOCKET_NULL;
+static u32 s_hostReqSentMs = 0;
+static u32 s_hostReqStartMs = 0;
+static char s_hostReqName[NET_BROWSER_NAME_LEN] = "";
+static s32 s_hostReqMaxPlayers = 0;
+static char s_hostReqPassword[NET_MAX_PASSWORD] = "";
+static u32 s_hostReqNonce = 0;
+
+// Per-process random nonce appended to HOST_REQUEST (optional trailing field;
+// older masters ignore it). The master keys grant idempotency on (source IP,
+// nonce), so another player behind the SAME public IP (CGNAT / household NAT)
+// can no longer be handed OUR instance's admin token. Stable for the process
+// lifetime so retransmits, cancel/retry and the owner-rejoin flow keep
+// returning the same instance + token; a restarted game gets a fresh nonce
+// (the old instance reaps once empty). Not a secret — the admin token is the
+// credential; this only needs to be unique per requester, so time + ASLR
+// entropy is plenty.
+static u32 netHostRequestNonce(void)
+{
+	if (s_hostReqNonce == 0) {
+		const u64 us = sysGetMicroseconds();
+		s_hostReqNonce = (u32)us ^ (u32)(us >> 32)
+			^ (u32)((size_t)&s_hostReqNonce >> 4)
+			^ (enet_time_get() << 16);
+		if (s_hostReqNonce == 0) {
+			s_hostReqNonce = 1; // 0 is the "not generated yet" sentinel
+		}
+	}
+	return s_hostReqNonce;
+}
+
+static void netHostRequestSend(void)
+{
+	if (!netMasterResolve()) {
+		strcpy(g_NetHostDenyReason, "Could not resolve master server");
+		g_NetHostRequestState = NETHOSTREQ_ERROR;
+		return;
+	}
+
+	u8 pkt[256];
+	struct netbuf buf = { .data = pkt, .size = sizeof(pkt) };
+	netbufStartWrite(&buf);
+	netbufWriteData(&buf, NET_MASTER_MAGIC, sizeof(NET_MASTER_MAGIC) - 1);
+	netbufWriteU8(&buf, NET_MASTER_MSG_HOST_REQUEST);
+	netbufWriteU32(&buf, NET_PROTOCOL_VER);
+	netbufWriteStr(&buf, s_hostReqName);
+	netbufWriteU8(&buf, (u8)s_hostReqMaxPlayers);
+	netbufWriteStr(&buf, s_hostReqPassword);
+	// Optional trailing nonce (see netHostRequestNonce). Old masters read only
+	// the fields above and ignore the extra bytes.
+	netbufWriteU32(&buf, netHostRequestNonce());
+
+	ENetBuffer eb;
+	eb.data = buf.data;
+	eb.dataLength = buf.wp;
+	enet_socket_send(s_hostReqSock, &s_masterAddr, &eb, 1);
+
+	s_hostReqSentMs = enet_time_get();
+}
+
+void netHostRequestOpen(const char *name, s32 maxplayers, const char *password)
+{
+	if (s_hostReqSock != ENET_SOCKET_NULL) {
+		return; // already requesting
+	}
+
+	s_hostReqSock = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+	if (s_hostReqSock == ENET_SOCKET_NULL) {
+		sysLogPrintf(LOG_ERROR, "NET: host request socket create failed");
+		strcpy(g_NetHostDenyReason, "Socket create failed");
+		g_NetHostRequestState = NETHOSTREQ_ERROR;
+		return;
+	}
+	// Same socket options as the browser: clear V6ONLY so sends to the IPv4
+	// master work via v4-mapped addresses, and don't block the frame.
+	enet_socket_set_option(s_hostReqSock, ENET_SOCKOPT_IPV6_V6ONLY, 0);
+	enet_socket_set_option(s_hostReqSock, ENET_SOCKOPT_NONBLOCK, 1);
+
+	strncpy(s_hostReqName, (name && name[0]) ? name : "Hosted Game", NET_BROWSER_NAME_LEN - 1);
+	s_hostReqName[NET_BROWSER_NAME_LEN - 1] = '\0';
+	s_hostReqMaxPlayers = (maxplayers >= 2 && maxplayers <= NET_MAX_CLIENTS) ? maxplayers : NET_MAX_CLIENTS;
+	strncpy(s_hostReqPassword, password ? password : "", NET_MAX_PASSWORD - 1);
+	s_hostReqPassword[NET_MAX_PASSWORD - 1] = '\0';
+
+	g_NetHostGrantAddr[0] = '\0';
+	g_NetHostGrantToken[0] = '\0';
+	g_NetHostDenyReason[0] = '\0';
+
+	s_masterResolved = 0; // re-resolve in case Net.Master.Addr changed
+	g_NetHostRequestState = NETHOSTREQ_REQUESTING;
+	s_hostReqStartMs = enet_time_get();
+	netHostRequestSend();
+}
+
+void netHostRequestClose(void)
+{
+	if (s_hostReqSock != ENET_SOCKET_NULL) {
+		enet_socket_destroy(s_hostReqSock);
+		s_hostReqSock = ENET_SOCKET_NULL;
+	}
+	// Keep grant/deny fields: the caller acts on them after closing. Reset the
+	// state machine only if a request is still pending (cancelled mid-flight).
+	if (g_NetHostRequestState == NETHOSTREQ_REQUESTING) {
+		g_NetHostRequestState = NETHOSTREQ_IDLE;
+	}
+}
+
+void netHostRequestTick(void)
+{
+	if (s_hostReqSock == ENET_SOCKET_NULL || g_NetHostRequestState != NETHOSTREQ_REQUESTING) {
+		return;
+	}
+
+	const u32 now = enet_time_get();
+
+	for (;;) {
+		static u8 rxbuf[512];
+		ENetAddress from;
+		ENetBuffer eb;
+		memset(&from, 0, sizeof(from));
+		eb.data = rxbuf;
+		eb.dataLength = sizeof(rxbuf);
+		const int r = enet_socket_receive(s_hostReqSock, &from, &eb, 1);
+		if (r <= 0) {
+			break;
+		}
+		if (r < 6 || memcmp(rxbuf, NET_MASTER_MAGIC, sizeof(NET_MASTER_MAGIC) - 1) != 0) {
+			continue;
+		}
+
+		struct netbuf buf;
+		netbufStartReadData(&buf, rxbuf, (u32)r);
+		netbufReadSkip(&buf, 6); // magic + type
+
+		if (rxbuf[5] == NET_MASTER_MSG_HOST_GRANT) {
+			const char *addr = netbufReadStr(&buf);
+			const char *token = netbufReadStr(&buf);
+			if (buf.error || !addr || !addr[0] || !token || !token[0]) {
+				continue;
+			}
+			strncpy(g_NetHostGrantAddr, addr, NET_MAX_ADDR);
+			g_NetHostGrantAddr[NET_MAX_ADDR] = '\0';
+			strncpy(g_NetHostGrantToken, token, NET_MAX_PASSWORD - 1);
+			g_NetHostGrantToken[NET_MAX_PASSWORD - 1] = '\0';
+			g_NetHostRequestState = NETHOSTREQ_GRANTED;
+			sysLogPrintf(LOG_NOTE, "NET: host request granted: %s", g_NetHostGrantAddr);
+			return;
+		}
+
+		if (rxbuf[5] == NET_MASTER_MSG_HOST_DENY) {
+			const char *reason = netbufReadStr(&buf);
+			strncpy(g_NetHostDenyReason,
+					(!buf.error && reason && reason[0]) ? reason : "Request denied",
+					NET_HOSTREQ_REASON_LEN - 1);
+			g_NetHostDenyReason[NET_HOSTREQ_REASON_LEN - 1] = '\0';
+			g_NetHostRequestState = NETHOSTREQ_DENIED;
+			sysLogPrintf(LOG_NOTE, "NET: host request denied: %s", g_NetHostDenyReason);
+			return;
+		}
+	}
+
+	if ((now - s_hostReqStartMs) >= NET_HOSTREQ_TIMEOUT_MS) {
+		strcpy(g_NetHostDenyReason, "No response from master server");
+		g_NetHostRequestState = NETHOSTREQ_ERROR;
+		return;
+	}
+
+	if ((now - s_hostReqSentMs) >= NET_HOSTREQ_RETRY_MS) {
+		netHostRequestSend();
 	}
 }

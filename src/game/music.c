@@ -521,7 +521,13 @@ void _musicStartMpDeath(f32 arg0)
 void musicStartMpDeath(void)
 {
 #ifndef PLATFORM_N64
-	if (g_MusicDisableMpDeath || (g_NetMode && g_Vars.currentplayernum != 0)) {
+	// Only play the death sting for the LOCAL player's own death, not a remote
+	// player's death replaying locally. Keyed on isremote, not playernum 0:
+	// the local pawn sits at slot N on a dedicated/spectator-host server (no
+	// slot-0 swap), so != 0 silenced the slave's own death music (and would
+	// fire on the slot-0 remote's death). Slot-0 assumption family.
+	if (g_MusicDisableMpDeath
+			|| (g_NetMode && g_Vars.currentplayer && g_Vars.currentplayer->isremote)) {
 		return;
 	}
 #endif

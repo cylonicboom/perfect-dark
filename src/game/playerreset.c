@@ -406,6 +406,20 @@ void playerReset(void)
 		playerInitEyespy();
 	}
 
+#ifndef PLATFORM_N64
+	// rooms[] is only ever written inside the g_NumSpawnPoints > 0 branch
+	// below — a stage whose intro defines no INTROCMD_SPAWN (the CI lobby)
+	// reaches cdFindGroundInfoAtCyl with UNINITIALIZED stack rooms. At boot
+	// the garbage usually happens to terminate early, but on a dedicated
+	// instance's post-match lobby reload the leftover match data on the stack
+	// reliably formed a wild room list and the ground-find walked garbage
+	// geometry forever (caught live in gdb: roomnum=-32768 eternal spin in
+	// cdCollectGeoForCylFromList; the server wedged, deaf, after every
+	// endmatch). An empty terminated list makes the ground-find a benign
+	// no-hit instead.
+	rooms[0] = -1;
+#endif
+
 	if (g_NumSpawnPoints > 0) {
 		if (g_Vars.coopplayernum >= 0) {
 			turnanglerad = M_BADTAU - scenarioChooseSpawnLocation(30, &pos, rooms, g_Vars.currentplayer->prop);

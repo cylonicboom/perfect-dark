@@ -4109,8 +4109,9 @@ void playerTick(bool arg0)
 				if (optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex)) {
 					sp178 = -sp178;
 				}
-				// mouse control
-				if (g_Vars.currentplayernum == 0) {
+				// mouse control (netPlayerOwnsMouse: the net local pawn can
+				// sit at any slot, not just 0)
+				if (netPlayerOwnsMouse()) {
 					f32 mdx, mdy;
 					inputMouseGetScaledDelta(&mdx, &mdy);
 					if (mdx || mdy) {
@@ -6528,8 +6529,14 @@ struct sndstate *playerSndStart(s32 arg0, s16 sound, struct sndstate **handle, s
 	s32 pan = -1;
 #ifndef PLATFORM_N64
 	const struct player *pl = g_Vars.players[playernum];
-	if (g_NetMode && playernum != 0 && pl && pl->prop) {
-		// auto attenuate sounds for remote players
+	// Attenuate positionally only for REMOTE players (their actions replay
+	// locally under setCurrentPlayerNum). Keyed on isremote, not playernum 0:
+	// the local pawn can sit at any slot on a dedicated/spectator-host server
+	// (no slot-0 swap), and the old != 0 check routed the local player's own
+	// first-person sounds (weapon/ammo/shield pickups, choke) through 3D
+	// attenuation and silenced them — the slot-0 assumption family, same as
+	// the hudmsg / netPlayerOwnsMouse fixes.
+	if (g_NetMode && pl && pl->isremote && pl->prop) {
 		psGetTheoreticalVolPan(&pl->prop->pos, pl->prop->rooms, sound, &vol, &pan);
 	}
 #endif

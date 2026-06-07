@@ -104,11 +104,56 @@ static void netRestoreLocalProfile(struct mpplayerconfig *cfg)
 	cfg->controlmode = (g_NetLocalProfileBackup.controlmode == CONTROLMODE_NA)
 			? CONTROLMODE_11 : g_NetLocalProfileBackup.controlmode;
 	cfg->options = g_NetLocalProfileBackup.options;
-	cfg->contpad1 = g_NetLocalProfileBackup.contpad1;
+	// The port's LOCAL player always reads pad 0 — keyboard/mouse and the
+	// first gamepad both land there (input.c). A non-zero contpad1 in the
+	// backup is poison (a past remote-stomped or slot-indexed config that got
+	// snapshotted/saved): it routes input to a nonexistent pad (frozen pawn)
+	// or to a raw second gamepad with default bindings. Hard-pin pad 0.
+	cfg->contpad1 = 0;
 	cfg->contpad2 = g_NetLocalProfileBackup.contpad2;
 	cfg->base.mpbodynum = g_NetLocalProfileBackup.base.mpbodynum;
 	cfg->base.mpheadnum = g_NetLocalProfileBackup.base.mpheadnum;
 	memcpy(cfg->base.name, g_NetLocalProfileBackup.base.name, sizeof(cfg->base.name));
+	sysLogPrintf(LOG_NOTE, "NET: local profile restored: controlmode=%d contpad=%d/%d (backup ctrl=%d pad=%d/%d)",
+			cfg->controlmode, cfg->contpad1, cfg->contpad2,
+			g_NetLocalProfileBackup.controlmode, g_NetLocalProfileBackup.contpad1, g_NetLocalProfileBackup.contpad2);
+}
+
+// mpReset assigns slot-indexed contpads (slot i reads pad i) — correct for
+// local splitscreen, wrong under netplay where the LOCAL player can sit at any
+// slot: with a spectator host (dedicated server) there is no slot-0 swap, so a
+// client seated at slot N>=1 was left reading pad N, which doesn't exist —
+// frozen pawn, no look (the slot-0 client worked by coincidence). mpReset runs
+// AFTER netPlayersAllocate's netRestoreLocalProfile in pdmain's stage init, so
+// the heal there gets stomped; mpReset calls this per slot to re-apply the
+// local pads to our own slot. Remote slots keep the inert slot-indexed pads
+// (their configs are CONTROLMODE_NA, never read for input).
+// True when g_Vars.currentplayer is this machine's mouse owner. The vanilla
+// port gates every mouse-input site on currentplayernum == 0 (splitscreen:
+// only player 1 has the mouse) — but under netplay the single LOCAL pawn can
+// sit at ANY slot (no slot-0 swap when the host is a spectator, e.g. every
+// client of a dedicated server beyond the first), which left mouse aim dead
+// for those players while pad/keyboard (routed via contpad 0) worked.
+s32 netPlayerOwnsMouse(void)
+{
+	if (g_NetMode && g_NetLocalClient) {
+		return g_Vars.currentplayer && !g_Vars.currentplayer->isremote
+				&& !g_NetLocalClient->is_spectator;
+	}
+	return g_Vars.currentplayernum == 0;
+}
+
+void netMpConfigFixLocalPads(s32 slot)
+{
+	if (g_NetMode && g_NetLocalClient && !g_NetLocalClient->is_spectator
+			&& g_NetLocalClient->playernum == slot) {
+		// Pad 0 always — see netRestoreLocalProfile: the local player's input
+		// (keyboard/mouse + first gamepad) only ever arrives on pad 0.
+		g_PlayerConfigsArray[slot].contpad1 = 0;
+		g_PlayerConfigsArray[slot].contpad2 = g_NetLocalProfileBackup.contpad2;
+		sysLogPrintf(LOG_NOTE, "NET: mpReset local pads re-pinned: slot=%d contpad=0/%d controlmode=%d",
+				slot, g_PlayerConfigsArray[slot].contpad2, g_PlayerConfigsArray[slot].controlmode);
+	}
 }
 
 // Dedicated-server mode latches. g_NetDedicatedLatch is set by --dedicated
@@ -126,6 +171,12 @@ char g_NetJoinPassword[NET_MAX_PASSWORD] = "";
 // Admin remote control (see net.h). Empty password = admin disabled.
 char g_NetAdminPassword[NET_MAX_PASSWORD] = "";
 u32 g_NetAdminController = NET_NULL_CLIENT;
+
+// Host Online Game session state (see net.h / docs/PORT_HOSTED_SERVER.md).
+s32 g_NetHostOnlineMode = 0;
+char g_NetAutoAdminToken[NET_MAX_PASSWORD] = "";
+s32 g_NetHostOnlineSetupLoad = 0;
+u32 g_NetHostOnlinePushTick = 0;
 
 // Admin scratch match config. The admin `set` commands edit this while holding
 // control; `apply` runs it through playlistApply + mpStartMatch, and
@@ -594,8 +645,21 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 
 	const struct netplayermove *inmove_newest = &cl->inmove[cl->inmove_head];
 	if (g_NetMode == NETMODE_SERVER && pl->isremote && inmove_newest->tick) {
-		// carry some of the client inputs over to the outmove
-		move->ucmd |= (inmove_newest->ucmd & (UCMD_FIRE | UCMD_RELOAD | UCMD_AIMMODE | UCMD_EYESSHUT | UCMD_SELECT | UCMD_SELECT_DUAL));
+		// Carry some of the client inputs over to the outmove. Continuous
+		// state bits (FIRE / AIMMODE / EYESSHUT) are level-based and safe to
+		// re-OR every rebroadcast. The one-shot action bits (RELOAD / SELECT /
+		// SELECT_DUAL) must be forwarded only ONCE per received move: an idle
+		// client sends no new moves (netClientNeedMove change-detection), so a
+		// stale reload tap sitting in inmove_newest was rebroadcast
+		// indefinitely and every observer replayed that pawn reloading in a
+		// loop (most visible when spectating their viewmodel).
+		// SELECT_DUAL is HELD state (set while dual-wielding), not a tap —
+		// it stays in the level-carried set or it flaps in the rebroadcast.
+		move->ucmd |= (inmove_newest->ucmd & (UCMD_FIRE | UCMD_AIMMODE | UCMD_EYESSHUT | UCMD_SELECT_DUAL));
+		if (inmove_newest->tick != cl->oneshot_fwd_tick) {
+			move->ucmd |= (inmove_newest->ucmd & (UCMD_RELOAD | UCMD_SELECT));
+			cl->oneshot_fwd_tick = inmove_newest->tick;
+		}
 		move->crosspos[0] = inmove_newest->crosspos[0];
 		move->crosspos[1] = inmove_newest->crosspos[1];
 	}
@@ -994,6 +1058,20 @@ void netInit(void)
 	if (argnetdiag && argnetdiag[0]) {
 		strncpy(g_NetDiagPath, argnetdiag, sizeof(g_NetDiagPath) - 1);
 		g_NetDiagPath[sizeof(g_NetDiagPath) - 1] = '\0';
+	}
+
+	// --svcrate / --clcrate <ticks>: server / client state-send interval, the
+	// CLI form of the /svcrate /clcrate console commands and the
+	// Net.Server.UpdateFrames / Net.Client.UpdateFrames config keys. 1 = every
+	// tick (60Hz), 2 = every other (30Hz, ~half bandwidth), clamped 1..60.
+	// For dedicated instances with no console; overrides the config value.
+	const s32 argsvcrate = sysArgGetInt("--svcrate", -1);
+	if (argsvcrate >= 1) {
+		g_NetServerUpdateRate = (u32)(argsvcrate > 60 ? 60 : argsvcrate);
+	}
+	const s32 argclcrate = sysArgGetInt("--clcrate", -1);
+	if (argclcrate >= 1) {
+		g_NetClientUpdateRate = (u32)(argclcrate > 60 ? 60 : argclcrate);
 	}
 
 	// Initialise playlist to empty defaults; an actual load (which logs if
@@ -1734,6 +1812,9 @@ s32 netStartClient(const char *addr)
 	g_NetLocalClient->state = CLSTATE_CONNECTING;
 	netClientReadConfig(g_NetLocalClient, 0);
 	g_NetLocalProfileBackup = g_PlayerConfigsArray[0];
+	sysLogPrintf(LOG_NOTE, "NET: local profile snapshot: controlmode=%d contpad=%d/%d",
+			g_NetLocalProfileBackup.controlmode,
+			g_NetLocalProfileBackup.contpad1, g_NetLocalProfileBackup.contpad2);
 
 	g_NetMode = NETMODE_CLIENT;
 
@@ -1798,6 +1879,14 @@ s32 netDisconnect(void)
 	netKillFeedClear();
 	g_NetLobbyState.valid = 0;
 	g_NetCoopHosting = 0; // co-op hosting intent is per-session
+
+	// Host Online Game session state is per-connection: drop the auto-admin
+	// token and mode so a later plain join doesn't auto-login or reroute the
+	// Combat Sim "Begin Match" through CLC_ADMIN_SETUP.
+	g_NetHostOnlineMode = 0;
+	g_NetAutoAdminToken[0] = '\0';
+	g_NetHostOnlineSetupLoad = 0;
+	g_NetHostOnlinePushTick = 0;
 
 	// Free any packets still sitting in the lag-sim queue (they'll never be
 	// sent since the peers are gone). Keep g_NetSimLagMs / g_NetSimPacketLoss
@@ -2215,17 +2304,25 @@ void netStartFrame(void)
 		return;
 	}
 
-	++g_NetTick;
+	// R4 fix (docs/netplay-perf-review-2026.md): advance the net clock by the
+	// number of 1/60 sim steps this frame represents (diffframe60 — the same
+	// elapsed-time measure the sim and audio loops consume), NOT by 1 per
+	// netStartFrame call. With +1-per-frame, any machine sustaining <60fps
+	// loses net-ticks against real time WITHOUT BOUND while its peers run
+	// true: observed on the master-hosted headless instance at ~57fps, whose
+	// clock fell 396 ticks behind in 6.5 minutes — past the staleness window,
+	// every rebroadcast then looked stale to the clients and the
+	// stale-snapshot snap path teleported BOTH pawns continuously, while
+	// direct play between two 60fps clients stayed perfect. Tick stamps stay
+	// monotonic; consumers already tolerate gaps (moves arrive with gaps
+	// whenever the sender's frame hitches).
+	g_NetTick += (g_Vars.diffframe60 > 0) ? (u32)g_Vars.diffframe60 : 1u;
 
-	// R4 (docs/netplay-perf-review-2026.md): g_NetTick advances once per
-	// netStartFrame call (once per diffframe60>0 frame), NOT once per logical 1/60
-	// sim step. On a machine that sustains <60fps the net clock drifts slower than
-	// wall-clock while the sim runs multiple steps per frame, skewing tick-stamped
-	// moves and CSP/interp timing. DIAGNOSTIC ONLY (no behaviour change): compare
-	// the net tick against the microsecond wall clock and warn (throttled) on
-	// sustained divergence so the condition is visible instead of silent. Re-bases
-	// on session start, a backward jump, or an implausibly large step (a client
-	// adopting the server's tick value), none of which are frame-rate drift.
+	// Drift monitor (kept): compare the net tick against the microsecond wall
+	// clock and warn (throttled) on sustained divergence so any residual
+	// condition is visible instead of silent. Re-bases on session start, a
+	// backward jump, or an implausibly large step (a client adopting the
+	// server's tick value), none of which are frame-rate drift.
 	{
 		static u64 s_base_us = 0;
 		static u32 s_base_tick = 0;
@@ -2295,6 +2392,39 @@ void netStartFrame(void)
 			s_adminMenuLockHeld = false;
 		}
 	}
+
+	// Host Online Game push watchdog: "Begin Match" sent a CLC_ADMIN_SETUP
+	// (menutick.c stamps g_NetHostOnlinePushTick) and closed the menus. The
+	// server may still be mid stage-reload from the previous match when the
+	// push lands (a modded reload takes ~5s headless) — its CITRAINING gate
+	// then silently replies "end the current match first". So while we sit in
+	// CLSTATE_LOBBY with no SVC_STAGE_START, RE-PUSH every ~3s (idempotent:
+	// the server starts at most once, and once it does we leave LOBBY and the
+	// retries stop). After several failed tries (push genuinely rejected —
+	// admin control lost, server error), fall back to the setup UI instead of
+	// leaving the user stranded; the SVC_ADMIN reply text is on the console.
+	// The stamp clears the moment the match starts so a long match can't leave
+	// a stale stamp that mis-fires on the post-match return to CLSTATE_LOBBY.
+	if (isClient && g_NetHostOnlineMode && g_NetHostOnlinePushTick != 0 && g_NetLocalClient) {
+		static u32 s_hostOnlinePushTries = 0;
+		if (g_NetLocalClient->state >= CLSTATE_GAME) {
+			g_NetHostOnlinePushTick = 0; // push succeeded
+			s_hostOnlinePushTries = 0;
+		} else if (g_NetLocalClient->state == CLSTATE_LOBBY
+				&& (g_NetTick - g_NetHostOnlinePushTick) > 180u) {
+			if (s_hostOnlinePushTries < 5) {
+				++s_hostOnlinePushTries;
+				g_NetHostOnlinePushTick = g_NetTick ? g_NetTick : 1u;
+				sysLogPrintf(LOG_CHAT, "NET: match start not confirmed - re-pushing setup (try %u)", s_hostOnlinePushTries);
+				netAdminPushStart();
+			} else {
+				g_NetHostOnlinePushTick = 0;
+				s_hostOnlinePushTries = 0;
+				sysLogPrintf(LOG_CHAT, "NET: match start did not arrive - returning to setup");
+				netHostOnlineEnterSetup();
+			}
+		}
+	}
 	// Drain every event ready this frame, not just the first. enet_host_service()
 	// reads the whole socket and queues the inbound burst but hands back only the
 	// first event; the old loop processed that one and exited, leaving the rest of
@@ -2357,6 +2487,18 @@ void netStartFrame(void)
 				break;
 			default:
 				break;
+		}
+
+		// An event handler may have torn the whole session down — a client-side
+		// disconnect event (server rejected us: version/mod/password mismatch,
+		// kick, server quit) runs netClientEvDisconnect -> netDisconnect, which
+		// enet_host_destroy()s g_NetHost and NULLs it. Iterating again would
+		// hand that NULL to enet_host_check_events (AV read at
+		// &host->dispatchQueue — crashed exactly so on a Host Online mod-dir
+		// rejection). The single-event-per-frame loop this drain replaced never
+		// hit it because the destroy happened between frames.
+		if (!g_NetHost) {
+			break;
 		}
 	}
 
@@ -4522,6 +4664,19 @@ void netAdminReply(struct netclient *cl, const char *fmt, ...)
 	buf.size = sizeof(bufdata);
 	netmsgSvcAdminWrite(&buf, tmp);
 	netSend(cl, &buf, true, NETCHAN_CONTROL);
+}
+
+// Send one CLC_ADMIN command line to the server — the same wire path as the
+// console's `/admin <line>` (reliable control channel, so successive lines
+// arrive in order). Used by the Host Online auto-admin handshake.
+void netClientSendAdminLine(const char *line)
+{
+	if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+			&& g_NetLocalClient->state >= CLSTATE_AUTH) {
+		netbufStartWrite(&g_NetMsgRel);
+		netmsgClcAdminWrite(&g_NetMsgRel, line);
+		netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
+	}
 }
 
 void netAdminPushStart(void)

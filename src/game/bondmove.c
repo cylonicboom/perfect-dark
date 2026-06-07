@@ -217,9 +217,20 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 		pl->hands[h].crosspos[1] = pl->crosspos[1];
 	}
 
-	if (inmove->ucmd & UCMD_SELECT) {
+	// Weapon switch: gated like the RELOAD apply below — once per NEW move
+	// (!handled), never per frame. The server's rebroadcasts carry UCMD_SELECT
+	// for the whole switch duration (switchtoweaponnum stays set while the
+	// equip anim plays), and this block used to run every frame the newest
+	// move had the bit — restarting the equip animation continuously (reads as
+	// "the weapon constantly reloading" to observers/spectators), and forever
+	// if that move went stale (death idle, stream gap). The differs-checks
+	// also stop re-triggering when the wire repeats an already-applied or
+	// in-flight switch across consecutive moves.
+	if ((inmove->ucmd & UCMD_SELECT) && !handled) {
 		pl->gunctrl.dualwielding = (inmove->ucmd & UCMD_SELECT_DUAL) != 0;
-		if (inmove->weaponnum >= 0) {
+		if (inmove->weaponnum >= 0
+				&& inmove->weaponnum != bgunGetWeaponNum(HAND_RIGHT)
+				&& inmove->weaponnum != pl->gunctrl.switchtoweaponnum) {
 			bgunEquipWeapon(inmove->weaponnum);
 		}
 	}
@@ -1063,7 +1074,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	f32 newverta;
 #ifndef PLATFORM_N64
 	const f32 mlookscale = g_Vars.lvupdate240 ? (4.f / (f32)g_Vars.lvupdate240) : 4.f;
-	const bool allowmlook = (g_Vars.currentplayernum == 0) && (allowc1x || allowc1y);
+	// netPlayerOwnsMouse: under netplay the local pawn can sit at any slot
+	// (no slot-0 swap on spectator-host servers), so the old
+	// currentplayernum == 0 gate left mouse aim dead for those players.
+	const bool allowmlook = netPlayerOwnsMouse() && (allowc1x || allowc1y);
 	bool allowmcross = false;
 #endif
 

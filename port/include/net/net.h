@@ -410,6 +410,7 @@ struct netclient {
 	struct netplayermove inmove[NET_SNAPSHOT_COUNT];
 	u32 inmove_head; // index of newest entry in inmove[]
 	u32 inmovetick; // last inmove tick which was applied to the player
+	u32 oneshot_fwd_tick; // server: inmove tick whose one-shot ucmd bits (RELOAD/SELECT) were last forwarded into the rebroadcast — forwarding them every frame replayed a stale reload tap forever on observers
 	u8 renderbehind; // server-side: the firing client's render offset (g_NetInterpTicks) from its last applied inmove; lag-comp rewinds to inmovetick - renderbehind (proto 63)
 	u32 outmoveack; // last acked outmove tick
 	u32 forcetick; // tick on which the client's position was forced, or 0 if not forcing
@@ -484,6 +485,37 @@ s32 netSecureStrEqual(const char *secret, const char *cand);
 // currently holds control, or NET_NULL_CLIENT when nobody does.
 extern char g_NetAdminPassword[NET_MAX_PASSWORD];
 extern u32 g_NetAdminController;
+
+// Host Online Game (master-spawned dedicated instance; docs/PORT_HOSTED_SERVER.md).
+// g_NetHostOnlineMode is set from grant-accept until netDisconnect: this client
+// is the instance's auto-admin "host" and drives the full Combat Sim hosting UI.
+// The token is the per-instance admin password granted by the master; the
+// one-shot setup-load latch and the push watchdog stamp are shared with
+// menutick.c's post-match menu re-entry and the "Begin Match" interception.
+extern s32 g_NetHostOnlineMode;
+extern char g_NetAutoAdminToken[NET_MAX_PASSWORD];
+extern s32 g_NetHostOnlineSetupLoad;
+extern u32 g_NetHostOnlinePushTick;
+
+// Send one CLC_ADMIN command line to the server (the console's /admin path).
+// No-op unless connected as a client at CLSTATE_AUTH+.
+void netClientSendAdminLine(const char *line);
+
+// Re-apply the LOCAL pads to our own slot after mpReset's slot-indexed contpad
+// assignment (slot i = pad i), which is wrong for a net local player seated at
+// slot N >= 1 (spectator-host servers don't slot-0-swap). Called from mpReset
+// per combatant slot; no-op for remote slots / non-net.
+void netMpConfigFixLocalPads(s32 slot);
+
+// True when g_Vars.currentplayer should receive mouse input: under netplay
+// the single local (non-remote) pawn — which can sit at any slot — otherwise
+// local player 0 (splitscreen: only player 1 owns the mouse). Replaces the
+// raw currentplayernum == 0 gates at the mouse-input sites.
+s32 netPlayerOwnsMouse(void);
+
+// Host Online: reload a fresh CITRAINING world and re-enter the Combat Sim
+// hosting UI through the post-match latch (menutick.c). Defined in netmenu.c.
+void netHostOnlineEnterSetup(void);
 
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;

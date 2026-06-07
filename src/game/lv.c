@@ -2761,6 +2761,21 @@ void lvTick(void)
 			}
 
 #ifndef PLATFORM_N64
+			// Global Lives system: last faction standing ends the match
+			// (internally gated on the Lives setting). Polled here beside the
+			// limit checks because g_NumReasonsToEndMpMatch is recomputed
+			// from zero above — an increment made from the scenario tick
+			// would be wiped before this test.
+			if (elimShouldEndMatch()) {
+				g_NumReasonsToEndMpMatch++;
+			}
+
+			// Race: everyone finished, or the post-winner finish timer
+			// expired (internally gated on the scenario; same polling rule).
+			if (raceShouldEndMatch()) {
+				g_NumReasonsToEndMpMatch++;
+			}
+
 			if (g_NetMode == NETMODE_CLIENT) {
 				g_NumReasonsToEndMpMatch = 0;
 			}

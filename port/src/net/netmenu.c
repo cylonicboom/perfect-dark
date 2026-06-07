@@ -206,6 +206,7 @@ static MenuItemHandlerResult menuhandlerNetAdminScenario(s32 operation, struct m
 	static const char *const opts[] = {
 		"Combat", "Hold the Briefcase", "Hacker Central",
 		"Pop a Cap", "King of the Hill", "Capture the Case",
+		"Graffiti", "Zones", "Race",
 	};
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
@@ -802,23 +803,36 @@ static char *menutextLobbyLine(struct menuitem *item)
 
 	// 5: enabled options comma-separated (hidden if none)
 	if (idx == 5) {
-		static const struct { u32 flag; const char *name; } s_opts[] = {
-			{ MPOPTION_ONEHITKILLS,       "One Hit Kills"    },
-			{ MPOPTION_FASTMOVEMENT,      "Fast Movement"    },
-			{ MPOPTION_SLOWMOTION_ON,     "Slow Motion"      },
-			{ MPOPTION_NORADAR,           "No Radar"         },
-			{ MPOPTION_NOAUTOAIM,         "No Auto-Aim"      },
-			{ MPOPTION_NOPLAYERHIGHLIGHT, "No Highlight"     },
-			{ MPOPTION_FRIENDLYFIRE,      "Friendly Fire"    },
-			{ MPOPTION_SPAWNWITHWEAPON,   "Start w/Weapon"   },
-			{ MPOPTION_KILLSSCORE,        "Kills Score"      },
-			{ MPOPTION_NODRUGBLUR,        "No Drug Blur"     },
-			{ MPOPTION_CONTROLLERS_ONLY,  "Controllers Only" },
-			{ MPOPTION_NOCULL,            "No Room Culling"  },
-			{ MPOPTION_NOOMLIMIT,         "No Draw Limit"    },
-			{ MPOPTION_HOSTSPECTATOR,     "Host Spectator"   },
-			{ MPOPTION_GOLDENEYE,         "GoldenEye Style"  },
-			{ MPOPTION_TEAMSENABLED,      "Teams"            },
+		// flag is u64: the Classic options live in the high 32 bits of
+		// ls->options (a u32 flag would mask them to 0).
+		static const struct { u64 flag; const char *name; } s_opts[] = {
+			{ MPOPTION_ONEHITKILLS,         "One Hit Kills"    },
+			{ MPOPTION_FASTMOVEMENT,        "Fast Movement"    },
+			{ MPOPTION_SLOWMOTION_ON,       "Slow Motion"      },
+			{ MPOPTION_NORADAR,             "No Radar"         },
+			{ MPOPTION_NOAUTOAIM,           "No Auto-Aim"      },
+			{ MPOPTION_NOPLAYERHIGHLIGHT,   "No Highlight"     },
+			{ MPOPTION_FRIENDLYFIRE,        "Friendly Fire"    },
+			{ MPOPTION_SPAWNWITHWEAPON,     "Start w/Weapon"   },
+			{ MPOPTION_KILLSSCORE,          "Kills Score"      },
+			{ MPOPTION_NODRUGBLUR,          "No Drug Blur"     },
+			{ MPOPTION_CONTROLLERS_ONLY,    "Controllers Only" },
+			{ MPOPTION_HOSTSPECTATOR,       "Host Spectator"   },
+			{ MPOPTION_GOLDENEYE,           "GoldenEye Style"  },
+			{ MPOPTION_NODOORS,             "No Doors"         },
+			{ MPOPTION_CLASSIC_SNAPLEAN,    "Snap Lean"        },
+			{ MPOPTION_CLASSIC_NOCROUCHACC, "No Crouch Acc"    },
+			{ MPOPTION_CLASSIC_RELOAD,      "Classic Reloads"  },
+			{ MPOPTION_CLASSIC_LEDGEWALL,   "Ledge Walls"      },
+			{ MPOPTION_CLASSIC_SIGHT,       "Classic Xhair"    },
+			{ MPOPTION_CLASSIC_HIDESIGHT,   "Hide Xhair"       },
+			{ MPOPTION_CLASSIC_GEHUD,       "GE HUD"           },
+			{ MPOPTION_CLASSIC_NOSECONDARY, "No Secondary"     },
+			{ MPOPTION_CLASSIC_NOMIDCROUCH, "No Mid-Crouch"    },
+			{ MPOPTION_CLASSIC_NODUALWIELD, "No Dual Wield"    },
+			{ MPOPTION_CLASSIC_IFRAMES,     "I-Frames"         },
+			{ MPOPTION_CLASSIC_NOBLUR,      "No Blur"          },
+			{ MPOPTION_TEAMSENABLED,        "Teams"            },
 		};
 		char opts[220];
 		opts[0] = '\0';
@@ -1566,6 +1580,7 @@ static const char *netBrowserScenarioName(u8 scenario)
 	static const char *const names[] = {
 		"Combat", "Hold the Briefcase", "Hacker Central",
 		"Pop-A-Cap", "King of the Hill", "Capture the Case",
+		"Graffiti", "Zones", "Race",
 	};
 	return (scenario < (u8)(sizeof(names) / sizeof(names[0]))) ? names[scenario] : "?";
 }

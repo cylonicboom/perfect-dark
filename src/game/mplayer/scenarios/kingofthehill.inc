@@ -163,64 +163,8 @@ struct menuitem g_KohOptionsMenuItems[] = {
 		MPOPTION_NOAUTOAIM,
 		menuhandlerMpCheckboxOption,
 	},
-#ifndef PLATFORM_N64
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Start Armed",
-		MPOPTION_SPAWNWITHWEAPON,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Drug Blur",
-		MPOPTION_NODRUGBLUR,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR,
-		L_OPTIONS_257, // "Friendly Fire"
-		MPOPTION_FRIENDLYFIRE,
-		menuhandlerMpDisplayTeam,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Player on Radar",
-		MPOPTION_NOPLAYERONRADAR,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Room Culling",
-		MPOPTION_NOCULL,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Draw Slot Limit",
-		MPOPTION_NOOMLIMIT,
-		menuhandlerMpCheckboxOption,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"GoldenEye Style",
-		MPOPTION_GOLDENEYE,
-		menuhandlerMpCheckboxOption,
-	},
-#endif
+	// Port-only options live on the "More Options" / "Classic Options"
+	// sibling pages (setup.c), shared by every scenario.
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,

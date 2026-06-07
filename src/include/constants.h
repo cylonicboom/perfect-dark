@@ -32,9 +32,9 @@
 #define MAX_PROPSPERROOMCHUNK  7
 #define MAX_ROOMPROPLISTCHUNKS 256
 // Capacity of g_Vars.onscreenprops (and the parallel depths[] / roomnumsbyprop[]
-// buffers). 200 on N64; raised on the port so disabling portal culling (No Room
-// Culling cheat / MPOPTION_NOCULL / /octree bigroom) can flag many more props
-// on-screen without overflowing those buffers in propsSort.
+// buffers). 200 on N64; raised on the port so disabling portal culling
+// (/octree bigroom) can flag many more props on-screen without overflowing
+// those buffers in propsSort.
 #ifdef PLATFORM_N64
 #define MAX_ONSCREEN_PROPS 200
 #else
@@ -490,12 +490,31 @@
 #define CHEAT_RCP45                  41
 #define CHEAT_DUALWIELDALLGUNS       42
 // Port-only debug/testing cheats — always unlocked, no mission completion required
-#define CHEAT_NOCULL                 43
-#define CHEAT_NODRAWLIMIT            44
+// CHEAT_NOCULL / CHEAT_NODRAWLIMIT are RETIRED (replaced by the /octree commands,
+// see docs/PORT_OCTREE.md). The defines and their g_Cheats[] rows are kept as dead
+// placeholders so indices 45+ (and saved enabled-bank bits) don't shift.
+#define CHEAT_NOCULL                 43 // retired
+#define CHEAT_NODRAWLIMIT            44 // retired
 #define CHEAT_GOLDENEYE              45
 #define CHEAT_WIREFRAME              46
 #define CHEAT_MIRROR                 47
 #define CHEAT_TONALINVERSION         48
+// Classic Options — the GoldenEye Style rule set broken into individually
+// toggleable cheats (Extended Options > Experiments > Classic Options).
+// Each behaviour is active when CHEAT_GOLDENEYE (master) OR its own cheat is
+// active — see classicOptionActive() in cheats.c.
+#define CHEAT_CLASSIC_SNAPLEAN       49
+#define CHEAT_CLASSIC_NOCROUCHACC    50
+#define CHEAT_CLASSIC_RELOAD         51
+#define CHEAT_CLASSIC_LEDGEWALL      52
+#define CHEAT_CLASSIC_SIGHT          53
+#define CHEAT_CLASSIC_HIDESIGHT      54
+#define CHEAT_CLASSIC_GEHUD          55
+#define CHEAT_CLASSIC_NOSECONDARY    56
+#define CHEAT_CLASSIC_NOMIDCROUCH    57
+#define CHEAT_CLASSIC_NODUALWIELD    58
+#define CHEAT_CLASSIC_IFRAMES        59
+#define CHEAT_CLASSIC_NOBLUR         60
 
 #define CHEATFLAG_TIMED           0
 #define CHEATFLAG_ALWAYSON        1
@@ -2961,18 +2980,10 @@
 // propagates the setting to every client; each client gates its own input
 // reads against the bit.
 #define MPOPTION_CONTROLLERS_ONLY       0x08000000
-// Disables portal-based room culling in multiplayer: marks every room onscreen
-// each frame so nothing is back-face culled by the portal graph. Useful for
-// maps where room visibility culls areas a player can physically see through a
-// gap or window. Performance cost scales with room count — use with caution on
-// large maps. PLATFORM_N64 ignores this bit (N64 portal culling is mandatory).
-#define MPOPTION_NOCULL                 0x10000000
-// Removes the 60-room draw-slot cap in multiplayer. Normally bgSetRoomOnscreen
-// merges all rooms beyond slot 59 into a single draw call, so maps with many
-// simultaneously-visible rooms render incorrectly. This option removes the cap
-// so every room gets its own slot. Requires MPOPTION_NOCULL to be meaningful
-// (the portal graph naturally keeps visible-room counts well under 60).
-#define MPOPTION_NOOMLIMIT              0x20000000
+// Bits 0x10000000 / 0x20000000 are RESERVED (do not reuse): they were the
+// retired MPOPTION_NOCULL / MPOPTION_NOOMLIMIT options (No Room Culling /
+// No Draw Slot Limit), replaced by the /octree commands (docs/PORT_OCTREE.md).
+// Saved setups and playlists from older builds may still carry these bits.
 // Host spectator mode: when set, the host does not occupy a player slot. The
 // host's netclient is allocated as a spectator (no mpchr, no scoring, no kill
 // feed) and instead drives a 1-4 panel observer view (per-player first-person,
@@ -2998,6 +3009,24 @@
 // ---------------------------------------------------------------------------
 #define MPOPTION_NODOORS                0x0000000100000000ULL // options bit 32: lift doors stay open
 #define MPOPTION_OWNEDROOMSPAWN         0x0000000200000000ULL // options bit 33: Graffiti — respawn into team-owned territory
+
+// Classic Options — the GoldenEye Style rule set broken into individually
+// selectable per-match options (Combat Sim "Classic Options" carousel page).
+// Each behaviour is active when MPOPTION_GOLDENEYE (master) OR its own bit is
+// set — see classicOptionActive() in cheats.c. Menu rows use
+// menuhandlerMpCheckboxPortOption (param3 = BIT >> 32).
+#define MPOPTION_CLASSIC_SNAPLEAN       0x0000000400000000ULL // options bit 34: snap lean (no interpolation)
+#define MPOPTION_CLASSIC_NOCROUCHACC    0x0000000800000000ULL // options bit 35: no crouch accuracy bonus
+#define MPOPTION_CLASSIC_RELOAD         0x0000001000000000ULL // options bit 36: lower-and-raise reloads
+#define MPOPTION_CLASSIC_LEDGEWALL      0x0000002000000000ULL // options bit 37: invisible-wall ledges
+#define MPOPTION_CLASSIC_SIGHT          0x0000004000000000ULL // options bit 38: classic crosshair on every weapon
+#define MPOPTION_CLASSIC_HIDESIGHT      0x0000008000000000ULL // options bit 39: hide crosshair unless aiming
+#define MPOPTION_CLASSIC_GEHUD          0x0000010000000000ULL // options bit 40: GE arc health/shield HUD + damage flash
+#define MPOPTION_CLASSIC_NOSECONDARY    0x0000020000000000ULL // options bit 41: no secondary weapon functions
+#define MPOPTION_CLASSIC_NOMIDCROUCH    0x0000040000000000ULL // options bit 42: no mid-crouch (full crouch only)
+#define MPOPTION_CLASSIC_NODUALWIELD    0x0000080000000000ULL // options bit 43: no dual-wield
+#define MPOPTION_CLASSIC_IFRAMES        0x0000100000000000ULL // options bit 44: damage i-frames + fire lockout
+#define MPOPTION_CLASSIC_NOBLUR         0x0000200000000000ULL // options bit 45: no blur/dizzy effects
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1
@@ -3040,6 +3069,20 @@
 #define MPSCENARIO_CAPTURETHECASE   5
 #ifndef PLATFORM_N64
 #define MPSCENARIO_PAINTROOM        6 // port-only: team room-painting ("Graffiti", formerly "Paint the Map")
+#define MPSCENARIO_ZONES            7 // port-only: TS2-style multi-hill territory control ("Zones")
+#define MPSCENARIO_RACE             8 // port-only: checkpoint racing over the KoH hillpads ("Race") — a HI-BIT scenario, see below
+// NOTE: the mpsetups wad stores the scenario as a 3-bit field mid-stream and
+// blocks are never re-encoded, so the field can't widen — ids 8-15 ride a
+// version-gated TAIL high-bit instead (v10; first used by the short-lived
+// Elimination scenario's v8). At parse time a hi-bit scenario's low 3 bits
+// dispatch as scenario&7, so ids 8-15 are only safe when (id&7) names a row
+// with no initfunc side effects and a NULL readsavefunc (the 32-bit save
+// slot is then captured raw in g_ScenarioSaveSlotRaw and re-applied once the
+// hi-bit is read — see mpsetupfileLoadWad). 8 aliases Combat (safe); free
+// safe ids: 9 (HTB), 10 (HTM), 11 (PAC), 13 (CTC), 14 (Graffiti); 12 (KoH)
+// and 15 (Zones) alias rows WITH readsavefuncs — using them would clobber
+// that scenario's saved slot. ALSO: the 80-byte setup block is now 100% full
+// (640/640 bits) — any further saved field needs MPSETUP_BLOCKSIZE enlarged.
 #endif
 
 #define MPSETUPMENU_ADVSETUP 1

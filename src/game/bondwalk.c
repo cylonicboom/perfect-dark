@@ -357,10 +357,11 @@ void bwalkAdjustCrouchPos(s32 value)
 	}
 
 #ifndef PLATFORM_N64
-	// GoldenEye Style: skip the mid (DUCK) position. A single input goes
-	// STAND <-> SQUAT directly using the original input direction to pick
-	// the destination.
-	if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK && goldeneyeStyleActive()) {
+	// Classic "No Mid-Crouch": skip the mid (DUCK) position. A single input
+	// goes STAND <-> SQUAT directly using the original input direction to
+	// pick the destination.
+	if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK
+			&& classicOptionActive(CHEAT_CLASSIC_NOMIDCROUCH, MPOPTION_CLASSIC_NOMIDCROUCH)) {
 		g_Vars.currentplayer->crouchpos = (value < 0) ? CROUCHPOS_SQUAT : CROUCHPOS_STAND;
 	}
 #endif
@@ -1243,7 +1244,7 @@ void bwalkUpdateVertical(void)
 			// knockback (explosion, recoil) keeps falling instead of
 			// snapping back.
 			if (g_Vars.currentplayer->isfalling == false
-					&& goldeneyeStyleActive()
+					&& classicOptionActive(CHEAT_CLASSIC_LEDGEWALL, MPOPTION_CLASSIC_LEDGEWALL)
 					&& ((g_Vars.currentplayer->bondprevpos.y - g_Vars.currentplayer->vv_height)
 							- g_Vars.currentplayer->vv_ground) > 60.0f) {
 				// Restore start-of-tick pose AND nudge the player a few
@@ -1903,8 +1904,8 @@ void bwalk0f0c69b8(void)
 		}
 
 #ifndef PLATFORM_N64
-		if (goldeneyeStyleActive()) {
-			// GoldenEye-style snap lean: raise the per-frame lean speed cap
+		if (classicOptionActive(CHEAT_CLASSIC_SNAPLEAN, MPOPTION_CLASSIC_SNAPLEAN)) {
+			// Classic snap lean: raise the per-frame lean speed cap
 			// so each frame applies ~50% of the remaining delta. Reaches
 			// near-target in ~3 frames instead of the vanilla 8-10 ramp,
 			// without the visual pop of a true 1-frame snap.

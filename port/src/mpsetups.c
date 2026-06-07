@@ -29,7 +29,7 @@ MP Setup File Format
 	[preset_m{sizeof(struct mpweaponpreset)}]
  */
 
-#define MPSETUP_VERSION 6 // v6: portoptions folded into the high 32 bits of g_MpSetup.options (64-bit inline; tail word removed)
+#define MPSETUP_VERSION 10 // v10: + scenario high bit (1 bit tail — scenarios 8-15, e.g. Race; block now 100% FULL). v9: + global Lives mode/count (5 bits). v7: + paintclaimtime (4 bits). v6: portoptions folded into options' high 32 bits
 
 #define MPSETUP_EXPORTDIR "$S/exported/"
 #define MPSETUP_FILENAME "mpsetups"

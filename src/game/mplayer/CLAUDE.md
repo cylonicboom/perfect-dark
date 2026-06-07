@@ -16,7 +16,7 @@ Owns multiplayer session setup, bot allocation, scoring, and per-scenario logic.
 
 ## Conventions
 
-- `#ifndef PLATFORM_N64` wraps port-only net options added to scenario menus (e.g., No Room Culling, No Draw Slot Limit in `combat.inc`).
+- `#ifndef PLATFORM_N64` wraps port-only net options added to scenario menus (e.g., the Static Spawn dropdowns in `holdthebriefcase.inc`/`hackthatmac.inc`); the shared port options live on the "More Options" / "Classic Options" sibling pages in `setup.c`.
 - `g_NetMode != NETMODE_CLIENT` guards server-only score and state writes in `mplayer.c` death handling.
 - `.inc` files define static arrays and functions scoped to `scenarios.c`'s translation unit — treat them as part of that file.
 

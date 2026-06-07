@@ -179,6 +179,9 @@ MenuItemHandlerResult menuhandlerMpSlowMotion(s32 operation, struct menuitem *it
 #include "scenarios/popacap.inc"
 #ifndef PLATFORM_N64
 #include "scenarios/paintroom.inc"
+#include "scenarios/zones.inc"
+#include "scenarios/elimination.inc"
+#include "scenarios/race.inc"
 #endif
 
 // Define the scenario callbacks
@@ -275,6 +278,50 @@ struct mpscenario g_MpScenarios[] = {
 		paintIsRoomHighlighted,
 		paintHighlightRoom,
 	},
+	{
+		&g_MpZonesOptionsMenuDialog,
+		zonesInit,
+		NULL,                    // numpropsfunc
+		zonesInitProps,
+		zonesTick,
+		NULL,                    // tickchrfunc
+		zonesRenderHud,
+		zonesCalculatePlayerScore,
+		zonesRadarExtra,
+		NULL,                    // radarchrfunc
+		NULL,                    // highlightpropfunc
+		NULL,                    // spawnfunc
+		NULL,                    // maxteamsfunc
+		zonesIsRoomHighlighted,
+		zonesHighlightRoom,
+		NULL,                    // unk3c
+		zonesReadSave,
+		zonesWriteSave,
+	},
+	{
+		&g_MpRaceOptionsMenuDialog,
+		raceInit,
+		NULL,                    // numpropsfunc
+		raceInitProps,
+		raceTick,
+		NULL,                    // tickchrfunc
+		raceRenderHud,
+		raceCalculatePlayerScore,
+		raceRadarExtra,
+		NULL,                    // radarchrfunc
+		NULL,                    // highlightpropfunc
+		raceChooseSpawnLocation,
+		NULL,                    // maxteamsfunc
+		raceIsRoomHighlighted,
+		raceHighlightRoom,
+		NULL,                    // unk3c
+		// readsavefunc is deliberately NULL: at parse time this scenario's
+		// wad id reads as Combat (the real id 8 rides the v10 tail high-bit),
+		// so the save slot arrives via the g_ScenarioSaveSlotRaw capture +
+		// raceApplySaveSlot instead. The write side dispatches normally.
+		NULL,
+		raceWriteSave,
+	},
 #endif
 };
 
@@ -292,6 +339,13 @@ struct mpscenariooverview g_MpScenarioOverviews[] = {
 	// returns a literal for this scenario instead of langGet()-ing these
 	// placeholder ids. Always unlocked (require feature 0) and team-only.
 	{ L_MPMENU_246, L_MPMENU_253, 0,                      true  }, // "Graffiti", "Graffiti"
+	// Port-only "Zones" (TS2-style territory control). Same literal-name
+	// arrangement as Graffiti. Always unlocked and team-only.
+	{ L_MPMENU_246, L_MPMENU_253, 0,                      true  }, // "Zones", "Zones"
+	// Port-only "Race" (checkpoint racing over the KoH hillpads). NOT
+	// team-only — it's a free-for-all race. (Listed under the Teamwork group
+	// header in team games purely because groups are index-ranged; cosmetic.)
+	{ L_MPMENU_246, L_MPMENU_253, 0,                      false }, // "Race", "Race"
 #endif
 };
 
@@ -333,6 +387,14 @@ char *scenarioGetNameText(s32 scenario, bool wantshort)
 #ifndef PLATFORM_N64
 	if (scenario == MPSCENARIO_PAINTROOM) {
 		return (char *)"Graffiti";
+	}
+
+	if (scenario == MPSCENARIO_ZONES) {
+		return (char *)"Zones";
+	}
+
+	if (scenario == MPSCENARIO_RACE) {
+		return (char *)"Race";
 	}
 #endif
 
@@ -476,13 +538,25 @@ MenuItemHandlerResult menuhandlerMpOpenOptions(s32 operation, struct menuitem *i
  *
  * Used by KOH to read the mphilltime.
  */
+#ifndef PLATFORM_N64
+// Last raw scenario save slot consumed by the default branch below. Needed
+// because hi-bit scenarios (8+) parse as scenario&7 mid-stream, so their slot
+// is consumed before the real scenario id is known — mpsetupfileLoadWad
+// re-applies it from here once the v10 tail high-bit has been read.
+u32 g_ScenarioSaveSlotRaw = 0;
+#endif
+
 void scenarioReadSave(struct savebuffer *buffer, u8 version)
 {
 	if (g_MpScenarios[g_MpSetup.scenario].readsavefunc) {
 		g_MpScenarios[g_MpSetup.scenario].readsavefunc(buffer, version);
 	} else {
 		u8 sz = version > 0 ? 32 : 8;
+#ifndef PLATFORM_N64
+		g_ScenarioSaveSlotRaw = savebufferReadBits(buffer, sz);
+#else
 		savebufferReadBits(buffer, sz);
+#endif
 	}
 }
 
@@ -538,6 +612,12 @@ void scenarioInitProps(void)
 	if (g_MpScenarios[g_MpSetup.scenario].initpropsfunc) {
 		g_MpScenarios[g_MpSetup.scenario].initpropsfunc();
 	}
+
+#ifndef PLATFORM_N64
+	// Global Lives system: per-match reset, every stage load, host and
+	// client alike (the scenario-independent counterpart of an initprops).
+	elimReset();
+#endif
 }
 
 /**
@@ -597,6 +677,11 @@ void scenarioTick(void)
 		if (g_MpScenarios[g_MpSetup.scenario].tickfunc) {
 			g_MpScenarios[g_MpSetup.scenario].tickfunc();
 		}
+
+#ifndef PLATFORM_N64
+		// Global Lives system upkeep (internally gated on the Lives setting)
+		elimTick();
+#endif
 	}
 }
 
@@ -646,6 +731,26 @@ Gfx *scenarioRenderHud(Gfx *gdl)
 			gdl = g_MpScenarios[g_MpSetup.scenario].hudfunc(gdl);
 #endif
 		}
+
+#ifndef PLATFORM_N64
+		// Global Lives HUD (any scenario, internally gated on the Lives
+		// setting): same framing the scenario hudfunc path uses — set up
+		// independently because the active scenario may have no hudfunc
+		// (Combat) and state-setting twice is harmless.
+		if (g_MpSetup.elimlives > 0
+				&& g_MpSetup.paused != MPPAUSEMODE_GAMEOVER && g_NumReasonsToEndMpMatch == 0) {
+			gDPSetTextureFilter(gdl++, G_TF_POINT);
+			gDPSetColorDither(gdl++, G_CD_DISABLE);
+			gSPClearGeometryMode(gdl++, G_ZBUFFER);
+			gDPPipeSync(gdl++);
+			gDPSetTexturePersp(gdl++, G_TP_NONE);
+			gDPSetCycleType(gdl++, G_CYC_FILL);
+			gDPSetRenderMode(gdl++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+			gDPPipelineMode(gdl++, G_PM_1PRIMITIVE);
+
+			gdl = elimRenderHud(gdl);
+		}
+#endif
 
 		playercount = PLAYERCOUNT();
 
@@ -882,6 +987,14 @@ void scenarioReset(void)
 	case MPSCENARIO_KINGOFTHEHILL:
 		g_ScenarioData.koh.hillcount = 0;
 		break;
+#ifndef PLATFORM_N64
+	case MPSCENARIO_ZONES:
+		g_ScenarioData.zones.hillcount = 0;
+		break;
+	case MPSCENARIO_RACE:
+		g_ScenarioData.race.hillcount = 0;
+		break;
+#endif
 	case MPSCENARIO_CAPTURETHECASE:
 		for (i = 0; i < ARRAYCOUNT(g_ScenarioData.ctc.spawnpadsperteam); i++) {
 			g_ScenarioData.ctc.spawnpadsperteam[i].homepad = -1;
@@ -928,6 +1041,14 @@ void scenarioReset(void)
 				if (g_MpSetup.scenario == MPSCENARIO_KINGOFTHEHILL) {
 					kohAddHill(cmd);
 				}
+#ifndef PLATFORM_N64
+				else if (g_MpSetup.scenario == MPSCENARIO_ZONES) {
+					zonesAddHill(cmd);
+				}
+				else if (g_MpSetup.scenario == MPSCENARIO_RACE) {
+					raceAddHill(cmd);
+				}
+#endif
 				cmd += 2;
 				break;
 			case INTROCMD_WEAPON:

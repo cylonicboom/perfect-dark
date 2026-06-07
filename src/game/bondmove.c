@@ -146,9 +146,10 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 	}
 
 	if (inmove->ucmd & UCMD_DUCK) {
-		// GoldenEye Style: collapse remote DUCK input to full SQUAT so
-		// remote players' crouches mirror what their local input did.
-		pl->crouchpos = goldeneyeStyleActive() ? CROUCHPOS_SQUAT : CROUCHPOS_DUCK;
+		// Classic "No Mid-Crouch": collapse remote DUCK input to full SQUAT
+		// so remote players' crouches mirror what their local input did.
+		pl->crouchpos = classicOptionActive(CHEAT_CLASSIC_NOMIDCROUCH, MPOPTION_CLASSIC_NOMIDCROUCH)
+				? CROUCHPOS_SQUAT : CROUCHPOS_DUCK;
 	} else if (inmove->ucmd & UCMD_SQUAT) {
 		pl->crouchpos = CROUCHPOS_SQUAT;
 	} else {
@@ -1952,10 +1953,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 										g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
 									} else {
 										g_Vars.currentplayer->crouchpos--;
-										// GoldenEye Style: cycle only
+										// Classic "No Mid-Crouch": cycle only
 										// STAND <-> SQUAT, skip mid.
 										if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK
-												&& goldeneyeStyleActive()) {
+												&& classicOptionActive(CHEAT_CLASSIC_NOMIDCROUCH, MPOPTION_CLASSIC_NOMIDCROUCH)) {
 											g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
 										}
 									}
@@ -1964,9 +1965,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								if (crouchsample) {
 									if (g_Vars.currentplayer->crouchpos == CROUCHPOS_DUCK) {
 										g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
-									} else if (goldeneyeStyleActive()) {
-										// GoldenEye Style: no mid-crouch.
-										// Treat half-crouch button as a full
+									} else if (classicOptionActive(CHEAT_CLASSIC_NOMIDCROUCH, MPOPTION_CLASSIC_NOMIDCROUCH)) {
+										// Classic "No Mid-Crouch":
+										// treat half-crouch button as a full
 										// crouch toggle (STAND -> SQUAT).
 										g_Vars.currentplayer->crouchpos =
 												(g_Vars.currentplayer->crouchpos == CROUCHPOS_SQUAT)
@@ -1991,9 +1992,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								} else if (crouchsample & BUTTON_FULL_CROUCH) {
 									g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
 								} else if (crouchsample & BUTTON_HALF_CROUCH) {
-									// GoldenEye Style: collapse mid-crouch
-									// to full squat.
-									g_Vars.currentplayer->crouchpos = goldeneyeStyleActive()
+									// Classic "No Mid-Crouch": collapse
+									// mid-crouch to full squat.
+									g_Vars.currentplayer->crouchpos =
+											classicOptionActive(CHEAT_CLASSIC_NOMIDCROUCH, MPOPTION_CLASSIC_NOMIDCROUCH)
 											? CROUCHPOS_SQUAT : CROUCHPOS_DUCK;
 								}
 							}

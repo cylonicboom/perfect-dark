@@ -1653,13 +1653,13 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 	}
 
 #ifndef PLATFORM_N64
-	// Hide-unless-aiming gate (per-player option OR GoldenEye Style mode).
+	// Hide-unless-aiming gate (per-player option OR the Classic option).
 	// sighton == true when the player is in the gun-aim state (R held in
 	// classic controls, or scope-aim mode). Skipping the whole draw when
 	// not aiming gives a clean look and matches GoldenEye 007's HUD.
 	if (!sighton
 			&& (PLAYER_EXTCFG().crosshairhideunlessaiming
-				|| goldeneyeStyleActive())) {
+				|| classicOptionActive(CHEAT_CLASSIC_HIDESIGHT, MPOPTION_CLASSIC_HIDESIGHT))) {
 		return gdl;
 	}
 
@@ -1692,7 +1692,8 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 #ifndef PLATFORM_N64
 	// Force classic plus-sign reticle for every weapon when either:
 	//   1. The per-player "Force Classic Crosshair" option is on, or
-	//   2. MPOPTION_GOLDENEYE is set on the active Combat Sim match.
+	//   2. The Classic "Classic Crosshair" option (or GE Style master) is
+	//      active (cheat or Combat Sim option).
 	// Includes SIGHT_ZOOM weapons (MagSec 4, AR34, etc.) — sightDrawZoom
 	// ends by calling sightDrawDefault for the under-bracket reticle, so
 	// without this override their visible crosshair stays default even
@@ -1703,7 +1704,7 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 	// Color comes from the existing SIGHT_COLOUR macro.
 	if (sight != SIGHT_NONE
 			&& (PLAYER_EXTCFG().crosshairforceclassic
-				|| goldeneyeStyleActive())) {
+				|| classicOptionActive(CHEAT_CLASSIC_SIGHT, MPOPTION_CLASSIC_SIGHT))) {
 		sight = SIGHT_CLASSIC;
 	}
 

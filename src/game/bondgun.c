@@ -1610,7 +1610,7 @@ s32 bgunTickIncReload(struct handweaponinfo *info, s32 handnum, struct hand *han
 				if (info->definition->ammos[func->ammoindex]->reload_animation
 						&& info->weaponnum != WEAPON_COMBATKNIFE
 #ifndef PLATFORM_N64
-						&& !goldeneyeStyleActive()
+						&& !classicOptionActive(CHEAT_CLASSIC_RELOAD, MPOPTION_CLASSIC_RELOAD)
 #endif
 				) {
 					bgunStartAnimation(info->definition->ammos[func->ammoindex]->reload_animation, handnum, hand);
@@ -3399,9 +3399,9 @@ static u8 mpSlotFlagsForWeapon(s32 weaponnum)
 /**
  * Reusable gate for "this weapon's secondary function is disabled."
  *
- * Driven by MPOPTION_GOLDENEYE (Combat Sim GoldenEye Style forces every
- * weapon to primary-only) and by per-slot FNFLAG_SECONDARY_DISABLED bits
- * on saved Custom presets. Designed as a single choke point so future
+ * Driven by the Classic "No Secondary Functions" option (GoldenEye Style
+ * master or its individual toggle) and by per-slot FNFLAG_SECONDARY_DISABLED
+ * bits on saved Custom presets. Designed as a single choke point so future
  * weapon-loadout options can OR additional conditions in here.
  *
  * Used by:
@@ -3412,7 +3412,7 @@ static u8 mpSlotFlagsForWeapon(s32 weaponnum)
  */
 bool bgunSecondaryFunctionDisabled(s32 weaponnum)
 {
-	if (goldeneyeStyleActive()) {
+	if (classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)) {
 		return true;
 	}
 	if (mpSlotFlagsForWeapon(weaponnum) & FNFLAG_SECONDARY_DISABLED) {
@@ -3447,8 +3447,8 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
 /**
  * Reusable gate for "dual wielding is disabled."
  *
- * Currently driven by MPOPTION_GOLDENEYE (Combat Sim GoldenEye Style
- * forces single-wield only). Same pattern as bgunSecondaryFunctionDisabled
+ * Driven by the Classic "No Dual Wield" option (GoldenEye Style master or
+ * its individual toggle). Same pattern as bgunSecondaryFunctionDisabled
  * — single choke point so future weapon-loadout options that ban
  * per-weapon dual-wield can plug in here.
  *
@@ -3459,15 +3459,16 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
  */
 bool bgunDualWieldDisabled(void)
 {
-	if (goldeneyeStyleActive()) {
+	if (classicOptionActive(CHEAT_CLASSIC_NODUALWIELD, MPOPTION_CLASSIC_NODUALWIELD)) {
 		return true;
 	}
 	return false;
 }
 
 /**
- * Returns true when the current player is inside the GoldenEye Style
- * i-frame window (TICKS(18) ~ 300ms after the last damage event).
+ * Returns true when the current player is inside the Classic "Damage
+ * Invulnerability" i-frame window (TICKS(18) ~ 300ms after the last damage
+ * event). Part of the GoldenEye Style rule set, individually toggleable.
  *
  * Used to block firing while invulnerable: bgunSetState refuses new
  * ATTACK / ATTACKEMPTY transitions, and bgunTickInc force-cancels any
@@ -3475,7 +3476,7 @@ bool bgunDualWieldDisabled(void)
  */
 bool bgunCurrentPlayerInIframe(void)
 {
-	if (!goldeneyeStyleActive()) {
+	if (!classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES)) {
 		return false;
 	}
 	if (!g_Vars.currentplayer->prop || !g_Vars.currentplayer->prop->chr) {
@@ -5600,7 +5601,7 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	// Decrease spread if double crouched
 	if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT
 #ifndef PLATFORM_N64
-			&& !goldeneyeStyleActive()
+			&& !classicOptionActive(CHEAT_CLASSIC_NOCROUCHACC, MPOPTION_CLASSIC_NOCROUCHACC)
 #endif
 	) {
 		spread *= 0.5f;
@@ -12380,15 +12381,16 @@ s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromac
 	const bool extcontrols = PLAYER_EXTCFG().extcontrols || g_Vars.currentplayer->isremote;
 	bool docontinue;
 
-	// GoldenEye Style: refuse to enter a secondary function via the
-	// dedicated alt-fire button OR the active-menu function-toggle path.
-	// Covers weapons like RCP120 / AR34 / Laptop / Dragon whose secondary
-	// is activated via `invertgunfunc` / `activatesecondary` rather than
-	// the standard CHANGEFUNC state (which `bgunSetState` already gates).
+	// Classic "No Secondary Functions": refuse to enter a secondary function
+	// via the dedicated alt-fire button OR the active-menu function-toggle
+	// path. Covers weapons like RCP120 / AR34 / Laptop / Dragon whose
+	// secondary is activated via `invertgunfunc` / `activatesecondary` rather
+	// than the standard CHANGEFUNC state (which `bgunSetState` already gates).
 	// `!bgunIsUsingSecondaryFunction()` checks the direction so the
 	// player can still toggle BACK to primary if they were somehow in
-	// secondary when GE activated.
-	if (goldeneyeStyleActive() && !bgunIsUsingSecondaryFunction()) {
+	// secondary when the option activated.
+	if (classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)
+			&& !bgunIsUsingSecondaryFunction()) {
 		return USETIMER_STOP;
 	}
 #endif
@@ -13598,10 +13600,10 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	}
 
 #ifndef PLATFORM_N64
-	// GoldenEye Style also hides the small red/yellow primary/secondary
-	// indicator square next to the ammo counter — paired with the
-	// function-name overlay gate below for a clean minimal HUD.
-	if (!goldeneyeStyleActive())
+	// Classic "No Secondary Functions" also hides the small red/yellow
+	// primary/secondary indicator square next to the ammo counter — paired
+	// with the function-name overlay gate below for a clean minimal HUD.
+	if (!classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY))
 #endif
 	{
 		gdl = textSetPrimColour(gdl, fncolour);
@@ -13683,11 +13685,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 
 		if (func
 #ifndef PLATFORM_N64
-				// GoldenEye Style hides the primary/secondary function
-				// name overlay ("Single Shot", "Burst Fire", etc.) to
-				// match GE's minimal HUD. The weapon name above it is
-				// left visible.
-				&& !goldeneyeStyleActive()
+				// Classic "No Secondary Functions" hides the
+				// primary/secondary function name overlay ("Single Shot",
+				// "Burst Fire", etc.) to match GE's minimal HUD. The
+				// weapon name above it is left visible.
+				&& !classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)
 #endif
 		) {
 			langGet(func->name);

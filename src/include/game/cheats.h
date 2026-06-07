@@ -30,11 +30,21 @@ MenuItemHandlerResult cheatMenuHandleBuddyCheckbox(s32 operation, struct menuite
 MenuItemHandlerResult cheatMenuHandleTurnOffAllCheats(s32 operation, struct menuitem *item, union handlerdata *data);
 
 #ifndef PLATFORM_N64
+// Confirm dialog whose "Unlock" option calls gamefileUnlockEverything().
+// Referenced by the Extended Options > Experiments menu (optionsmenu.c).
+extern struct menudialogdef g_CheatsConfirmUnlockMenuDialog;
+
 // Returns true if GoldenEye Style behaviour should be active right now:
 // either the Combat Sim MP option (`MPOPTION_GOLDENEYE`) is set in an
 // active match, or the gameplay cheat `CHEAT_GOLDENEYE` is enabled. The
 // cheat path works in any mode (single-player, training, etc.).
 bool goldeneyeStyleActive(void);
+
+// Per-behaviour Classic Options gate: true when the GoldenEye Style master
+// (cheat or MP option) OR the behaviour's own cheat / MP option bit is
+// active. Every former goldeneyeStyleActive() gate site routes through this
+// with its CHEAT_CLASSIC_* / MPOPTION_CLASSIC_* pair.
+bool classicOptionActive(s32 cheat_id, u64 mpoption);
 
 // Wireframe cheat (CHEAT_WIREFRAME) backdrop colour, RGB. Set via the
 // `/wireframe RRGGBB` console command; defaults to black. Read by sky.c to

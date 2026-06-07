@@ -70,8 +70,8 @@ Low-word port bits in use on `port-net-predict`:
 
 | Bit | Symbol | Used by |
 |---|---|---|
-| `0x10000000` | `MPOPTION_NOCULL` | `docs/PORT_NO_CULLING.md` |
-| `0x20000000` | `MPOPTION_NOOMLIMIT` | `docs/PORT_NO_CULLING.md` |
+| `0x10000000` | *(reserved — retired `MPOPTION_NOCULL`)* | `docs/PORT_NO_CULLING.md` (retired; do not reuse) |
+| `0x20000000` | *(reserved — retired `MPOPTION_NOOMLIMIT`)* | `docs/PORT_NO_CULLING.md` (retired; do not reuse) |
 | `0x40000000` | `MPOPTION_HOSTSPECTATOR` | `docs/PORT_HOST_SPECTATOR.md` |
 | `0x80000000` | `MPOPTION_GOLDENEYE` | `docs/PORT_GOLDENEYE.md` |
 
@@ -80,6 +80,8 @@ High-word bits (32-63) in use:
 | Bit | Symbol | Used by |
 |---|---|---|
 | `0x0000000100000000` | `MPOPTION_NODOORS` | `docs/PORT_NODOORS.md` |
+| `0x0000000200000000` | `MPOPTION_OWNEDROOMSPAWN` | `docs/PORT_GRAFFITI.md` |
+| bits 34-45 | `MPOPTION_CLASSIC_*` (12 bits) | `docs/PORT_GOLDENEYE.md` (Classic Options) |
 
 **Adding a new port-only MP option:** claim the next free high-word bit, written with a `ULL` suffix (e.g. `0x0000000200000000ULL`). It then flows automatically over the wire (the 64-bit `options` is serialized in `SVC_STAGE_START` / `CLC_ADMIN_SETUP` / `SVC_LOBBY_STATE`) and to the mpsetups.bin wad (the inline 64-bit `options` write). Plumb it through the same choke points as `MPOPTION_NODOORS` — search the codebase for it as the worked example. Three gotchas:
 

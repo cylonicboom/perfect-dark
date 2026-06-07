@@ -3068,7 +3068,8 @@ static u32 playerLerpRGBA(u32 colA, u32 colB, f32 t)
  * 7 = top endpoint (yellow/cyan, depletes first). The right side
  * mirrors x around `viewright`.
  *
- * Replaces the default PD shield-bar when MPOPTION_GOLDENEYE is active.
+ * Replaces the default PD shield-bar when the Classic "GoldenEye HUD"
+ * option (or the GoldenEye Style master) is active.
  * Caller (menu.c:5533) has already set up 2D HUD render state via
  * func0f0d49c8, so we can draw HUD rectangles directly.
  */
@@ -3184,7 +3185,7 @@ Gfx *playerRenderHealthBar(Gfx *gdl)
 	Mtxf *addr;
 
 #ifndef PLATFORM_N64
-	if (goldeneyeStyleActive()) {
+	if (classicOptionActive(CHEAT_CLASSIC_GEHUD, MPOPTION_CLASSIC_GEHUD)) {
 		return playerRenderHealthBarGE(gdl);
 	}
 #endif
@@ -5470,6 +5471,15 @@ Gfx *playerRenderHud(Gfx *gdl)
 								&& g_NumReasonsToEndMpMatch == 0) {
 							canrestart = true;
 						}
+
+#ifndef PLATFORM_N64
+						// Global Lives system: out of lives = no respawn
+						// (returns true while Lives is Off). Server-
+						// authoritative — net clients only send UCMD_RESPAWN.
+						if (canrestart && !elimChrCanRespawn(chr)) {
+							canrestart = false;
+						}
+#endif
 
 						if (canrestart) {
 							g_Vars.currentplayer->dostartnewlife = true;

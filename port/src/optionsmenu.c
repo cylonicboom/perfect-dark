@@ -10,6 +10,7 @@
 #include "game/menu.h"
 #include "game/gamefile.h"
 #include "game/player.h"
+#include "game/cheats.h"
 #include "lib/joy.h"
 #include "video.h"
 #include "input.h"
@@ -2351,6 +2352,234 @@ static MenuItemHandlerResult menuhandlerOpenBindsMenu(s32 operation, struct menu
 	return 0;
 }
 
+// Experiments > Classic Options: the GoldenEye Style rule set broken into
+// individually toggleable cheats. Row 0 is the CHEAT_GOLDENEYE master ("all
+// of them"); the rest are the per-behaviour CHEAT_CLASSIC_* cheats. These
+// are real cheats (enabled banks, cheatCheckboxMenuHandler) so they persist
+// with the save data and activate at stage start like the Cheats menu did.
+struct menuitem g_ExtendedClassicMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_GOLDENEYE,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_SNAPLEAN,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_NOCROUCHACC,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_RELOAD,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_LEDGEWALL,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_SIGHT,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_HIDESIGHT,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_GEHUD,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_NOSECONDARY,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_NOMIDCROUCH,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_NODUALWIELD,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_IFRAMES,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_NOBLUR,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedClassicMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Classic Options",
+	g_ExtendedClassicMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// Extended Options > Experiments: the port-added cheats relocated out of the
+// original Cheats > Gameplay menu (they stay cheats under the hood — only
+// the menu moved), plus the Classic Options sub-menu and an explicit
+// Unlock All Content trigger (formerly a side-effect of the retired
+// No Room Culling cheat).
+struct menuitem g_ExtendedExperimentsMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_WIREFRAME,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_MIRROR,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_TONALINVERSION,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Classic Options\n",
+		0,
+		(void *)&g_ExtendedClassicMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Unlock All Content\n",
+		0,
+		(void *)&g_CheatsConfirmUnlockMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedExperimentsMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Experiments",
+	g_ExtendedExperimentsMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
 struct menuitem g_ExtendedMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -2399,6 +2628,14 @@ struct menuitem g_ExtendedMenuItems[] = {
 		(uintptr_t)"Key Bindings\n",
 		0,
 		menuhandlerOpenBindsMenu,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Experiments\n",
+		0,
+		(void *)&g_ExtendedExperimentsMenuDialog,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

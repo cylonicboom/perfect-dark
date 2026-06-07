@@ -4196,6 +4196,13 @@ struct mpsetup {
 	u8 ctcteambase[4]; // 0 = Random; 1..4 = spawnpadsperteam[N-1] in CTC (port-only)
 	u8 htbstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HoldTheBriefcase (port-only)
 	u8 htmstaticpad;  // 0 = Random; 1..N = padnums[N-1] in HackThatMac (port-only)
+	u8 paintclaimtime; // Graffiti: seconds (0-10) in a room before it can be claimed; 0 = instant on entry (port-only)
+	u8 zonescoretime; // Zones: seconds (5-60) per score cycle — each cycle every team scores +1 per zone owned (port-only)
+	u8 zonecapturetime; // Zones: seconds (0-10) in a zone before it flips; 0 = instant on entry (port-only)
+	u8 elimlivesmode; // global Lives: 0 = Solo (per combatant), 1 = Team (shared pool; needs teams) (port-only)
+	u8 elimlives; // global Lives (Limits menu): 0 = Off, 1-9 = lives. Solo: per combatant; Team: the team's TOTAL shared pool (port-only)
+	u8 racelaps; // Race: laps to finish, 1-10 (port-only)
+	u8 racepitytime; // Race: seconds after the first finisher before the match force-ends, 0-120; 0 = end with the winner (port-only)
 	// Used to restore the non-player bits of chrslots upon entering Combat
 	// Simulator, after playing Co-Op/Counter-Op with a human sim.
 	u16 storedbotbits;
@@ -4350,6 +4357,64 @@ struct scenariodata_paint {
 	// them — continuous claiming let whoever iterated last in g_MpAllChrPtrs
 	// (the sims) win contested rooms every frame.
 	s16 lastroom[12];
+	// per-combatant time (lvupdate240 units) spent in lastroom, for the
+	// timed-claim option (mpsetup.paintclaimtime > 0). Paused KoH-style
+	// while another team is also in the room; reset on room change, death
+	// and claim.
+	s32 claimtime240[12];
+};
+
+// Port-only "Zones" scenario state (TS2-style territory control): every KoH
+// hillpad on the stage is an active zone simultaneously; standing in a zone
+// flips it to your team, and a repeating score cycle awards each team +1 per
+// zone owned. Owners/scores are host-authoritative (SVC_ZONES_STATE).
+struct scenariodata_zones {
+	s16 hillcount;        // number of zones on this stage (the KoH hillpads)
+	s16 hillpads[9];      // pad numbers (same INTROCMD_HILL source as koh.hillpads)
+	RoomNum hillrooms[9]; // each zone's room (highlight + occupancy test)
+	struct coord zonepos[9]; // each zone pad's position (radar dots)
+	u8 owners[9];         // owning team +1 per zone; 0 = neutral
+	s32 cycle240;         // time left in the current score cycle (lvupdate240 units)
+	s32 teamscores[8];    // accumulated team scores (MAX_TEAMS)
+	// per-combatant capture tracking (MAX_MPCHRS), the Graffiti pattern:
+	s16 lastzone[12];        // zone index the chr was last seen in; -1 = none
+	s32 capturetime240[12];  // time held in lastzone; paused while contested
+};
+
+// Port-only "Race" scenario state: checkpoint racing over the KoH hillpads
+// in stage-data order (1..N, looping; a lap = touching all N). First to the
+// configured lap count wins; the match ends when every human has finished or
+// the post-winner "Finish Timer" expires. Progress is host-authoritative
+// (SVC_RACE_STATE). Bots don't race (they just fight).
+struct scenariodata_race {
+	s16 hillcount;          // number of checkpoints (the KoH hillpads)
+	s16 hillpads[9];        // pad numbers (same INTROCMD_HILL source as koh.hillpads)
+	RoomNum hillrooms[9];   // each checkpoint's room (the touch test)
+	struct coord hillpos[9]; // each checkpoint pad's position (radar arrow/dot)
+	u8 nextcp[12];          // next checkpoint index per combatant (MAX_MPCHRS)
+	u8 lapsdone[12];        // completed laps per combatant
+	u8 finishpos[12];       // 0 = still racing; 1..N = finishing position
+	u8 finishcount;         // humans finished so far
+	u8 humancount;          // human combatants at seed time (bots don't race)
+	u8 initdone;            // seeded (lazily, on the first tick with chrs present)
+	u8 pitystarted;         // first finisher crossed — the finish timer is running
+	s32 pity240;            // finish-timer remaining (lvupdate240 units)
+};
+
+// Port-only global Lives system state (the co-op F3 lives system as a
+// scenario-independent Combat Sim "limit"; formerly the Elimination
+// scenario). Each death spends a life (Solo: per combatant; Team: one shared
+// per-team pool of exactly the Lives setting); out of lives = no respawn
+// (eliminated); last faction standing ends the match. Host-authoritative
+// (SVC_ELIM_STATE). Deliberately NOT a scenariodata union member — lives run
+// alongside ANY scenario, and the union slot belongs to the active one.
+// Instance: g_ElimData (elimination.inc).
+struct elimdata {
+	s32 lives[12];     // Solo mode: remaining deaths per combatant (MAX_MPCHRS)
+	s32 teamlives[8];  // Team mode: shared remaining pool per team (MAX_TEAMS)
+	u8 eliminated[12]; // latched: dead with no lives left — can never respawn
+	u8 initdone;       // lives seeded (lazily, on the first tick with chrs present)
+	u8 startfactions;  // distinct factions at seed time; end-check needs >= 2
 };
 #endif
 
@@ -4362,6 +4427,8 @@ struct scenariodata {
 		struct scenariodata_ctc ctc;
 #ifndef PLATFORM_N64
 		struct scenariodata_paint paint;
+		struct scenariodata_zones zones;
+		struct scenariodata_race race;
 #endif
 	};
 };

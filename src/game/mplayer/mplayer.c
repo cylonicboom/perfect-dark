@@ -776,6 +776,13 @@ void func0f187fec(void)
 	g_MpSetup.timelimit = 9;
 	g_MpSetup.scorelimit = 9;
 	g_MpSetup.teamscorelimit = 19;
+
+#ifndef PLATFORM_N64
+	// Global Lives system: a limit like the above, default Off. Covers both
+	// boot defaults (mpInit) and the Limits menu's Restore Defaults.
+	g_MpSetup.elimlives = 0;
+	g_MpSetup.elimlivesmode = 0;
+#endif
 }
 
 void mpPlayerSetDefaults(s32 playernum, bool autonames)
@@ -901,7 +908,12 @@ void mpInit(bool resetplayers)
 		| MPOPTION_PAC_SHOWONRADAR;
 
 #ifndef PLATFORM_N64
-	g_MpSetup.options |= MPOPTION_FRIENDLYFIRE;
+	g_MpSetup.options |= MPOPTION_FRIENDLYFIRE | MPOPTION_OWNEDROOMSPAWN;
+	g_MpSetup.zonescoretime = 10;
+	g_MpSetup.zonecapturetime = 0;
+	g_MpSetup.racelaps = 3;
+	g_MpSetup.racepitytime = 30;
+	// elimlives / elimlivesmode default via func0f187fec below
 #endif
 
 	g_Vars.mphilltime = 10;
@@ -1075,6 +1087,24 @@ void mpApplyLimits(void)
 		lvSetMpScoreLimit(0);
 		lvSetMpTeamScoreLimit(0);
 	}
+
+	// Zones: every member's numpoints mirrors the team's accumulated total
+	// (the Graffiti pattern), so the per-player score limit would trip at the
+	// team value — force it unlimited and let the team score limit / time
+	// limit end the match.
+	if (g_MpSetup.scenario == MPSCENARIO_ZONES) {
+		lvSetMpScoreLimit(0);
+	}
+
+	// Race: the score is a synthetic ranking value (finish position /
+	// course progress), so the score limits must not end it early — the
+	// race end condition (raceShouldEndMatch) and the time limit do.
+	if (g_MpSetup.scenario == MPSCENARIO_RACE) {
+		lvSetMpScoreLimit(0);
+		lvSetMpTeamScoreLimit(0);
+	}
+	// (the global Lives system needs no limit overrides — it adds its own
+	// match-end condition via elimShouldEndMatch and leaves scoring alone)
 #endif
 }
 
@@ -1249,6 +1279,13 @@ s32 mpCalculateTeamScore(s32 teamnum, s32 *result)
 	if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM && teamexists
 			&& teamnum >= 0 && teamnum < MAX_TEAMS) {
 		teamscore = g_ScenarioData.paint.teamcounts[teamnum];
+	}
+
+	// Zones: same member-mirroring arrangement — the team score is the one
+	// accumulated cycle-award total.
+	if (g_MpSetup.scenario == MPSCENARIO_ZONES && teamexists
+			&& teamnum >= 0 && teamnum < MAX_TEAMS) {
+		teamscore = g_ScenarioData.zones.teamscores[teamnum];
 	}
 #endif
 
@@ -4490,6 +4527,15 @@ void mpApplyConfig(struct mpconfigfull *config)
 
 	g_MpSetup = config->config.setup;
 
+#ifndef PLATFORM_N64
+	// The whole-struct copy above sources from challenge/preset config data
+	// that predates the port-only fields — whatever bytes sit there are
+	// garbage. Lives are GLOBAL (not scenario-gated), so a garbage value
+	// would silently enable them in challenges; force them off.
+	g_MpSetup.elimlives = 0;
+	g_MpSetup.elimlivesmode = 0;
+#endif
+
 #if VERSION >= VERSION_PAL_FINAL
 	g_MpSetup.chrslots = chrslots;
 #endif
@@ -4670,6 +4716,11 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 	g_MpSetup.kohstatichill = 0;
 	g_MpSetup.htbstaticpad = 0;
 	g_MpSetup.htmstaticpad = 0;
+	g_MpSetup.paintclaimtime = 0;
+	g_MpSetup.elimlivesmode = 0;
+	g_MpSetup.elimlives = 0;
+	g_MpSetup.racelaps = 3;
+	g_MpSetup.racepitytime = 30;
 	for (i = 0; i < (s32)ARRAYCOUNT(g_MpSetup.ctcteambase); i++) {
 		g_MpSetup.ctcteambase[i] = 0;
 	}
@@ -4682,6 +4733,44 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 		}
 		g_MpSetup.htbstaticpad = savebufferReadBits(buffer, 6);
 		g_MpSetup.htmstaticpad = savebufferReadBits(buffer, 6);
+	}
+	if (version >= 7) {
+		g_MpSetup.paintclaimtime = savebufferReadBits(buffer, 4);
+	}
+	if (version == 8) {
+		// v8 only: the retired Elimination-scenario high-bit (the scenario
+		// was generalised into the global Lives system before release).
+		// Consume and discard — a set bit loads as Combat.
+		savebufferReadBits(buffer, 1);
+	}
+	if (version >= 9) {
+		// v9 tail: global Lives system (Limits menu) — mode + count.
+		g_MpSetup.elimlivesmode = savebufferReadBits(buffer, 1);
+		g_MpSetup.elimlives = savebufferReadBits(buffer, 4);
+
+		if (g_MpSetup.elimlives > 9) {
+			g_MpSetup.elimlives = 9;
+		}
+	}
+	if (version >= 10) {
+		// v10 tail: scenario high bit. Scenarios 8-15 store (id & 7) in the
+		// 3-bit mid-stream field (blocks are never re-encoded, so that field
+		// can't widen) and the 4th bit here. When set, the scenarioInit() and
+		// scenarioReadSave() that already ran above dispatched on the masked
+		// id (8 -> Combat: no initfunc, default slot consume) — fix up the
+		// id, re-init, and re-apply the captured save slot for the real
+		// scenario.
+		if (savebufferReadBits(buffer, 1)) {
+			g_MpSetup.scenario |= 8;
+
+			if (version > 0) {
+				scenarioInit();
+			}
+
+			if (g_MpSetup.scenario == MPSCENARIO_RACE) {
+				raceApplySaveSlot(g_ScenarioSaveSlotRaw);
+			}
+		}
 	}
 	if (version == 5) {
 		// v5 stored the port-only options (NODOORS) in a separate 32-bit tail
@@ -4765,6 +4854,18 @@ void mpsetupfileSaveWad(struct savebuffer *buffer)
 	}
 	savebufferOr(buffer, g_MpSetup.htbstaticpad, 6);
 	savebufferOr(buffer, g_MpSetup.htmstaticpad, 6);
+	savebufferOr(buffer, g_MpSetup.paintclaimtime, 4); // v7
+	// v9: global Lives (mode + count). v8's 1-bit scenario high-bit slot was
+	// retired with the Elimination scenario (read side discards it for
+	// version == 8 files); these bits start at the same offset.
+	savebufferOr(buffer, g_MpSetup.elimlivesmode & 1, 1);
+	savebufferOr(buffer, g_MpSetup.elimlives, 4);
+	// v10: scenario high bit (scenarios 8-15, e.g. Race — see load side).
+	savebufferOr(buffer, (g_MpSetup.scenario >> 3) & 1, 1);
+	// NOTE: the 80-byte setup block is now 100% full (640/640 bits). The
+	// next saved field needs MPSETUP_BLOCKSIZE enlarged + a version-aware
+	// mpsetupDeserialize (old files read 80-byte blocks) + import-path tail
+	// zeroing.
 #endif
 }
 

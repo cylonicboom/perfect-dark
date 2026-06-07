@@ -4362,7 +4362,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	// host, since lastdamagetick60 is stamped locally and never synced. The host
 	// already gated the hit before broadcasting. See review doc (H-3).
 	if (g_NetMode != NETMODE_CLIENT
-			&& goldeneyeStyleActive()
+			&& classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES)
 			&& chr->lastdamagetick60 != 0
 			&& ((u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60) < (u32)TICKS(18)) {
 		netDiagLogf("dmg_block",
@@ -4495,11 +4495,11 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	makedizzy = race != RACE_DRCAROLL && gsetHasFunctionFlags(gset, FUNCFLAG_MAKEDIZZY);
 
 #ifndef PLATFORM_N64
-	// GoldenEye Style: no dizzy / blur effects. Clamping `makedizzy`
-	// here disables both the player-dizzy block (~4860 — blur accum +
-	// FOV bobbing on screen) and the chr-dizzy paths further down,
+	// Classic "No Blur Effects": no dizzy / blur effects. Clamping
+	// `makedizzy` here disables both the player-dizzy block (~4860 — blur
+	// accum + FOV bobbing on screen) and the chr-dizzy paths further down,
 	// without having to scatter gates at every downstream site.
-	if (goldeneyeStyleActive()) {
+	if (classicOptionActive(CHEAT_CLASSIC_NOBLUR, MPOPTION_CLASSIC_NOBLUR)) {
 		makedizzy = false;
 	}
 #endif
@@ -4960,19 +4960,21 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 					chr->lastattacker = (aprop ? aprop->chr : NULL);
 
 #ifndef PLATFORM_N64
-					// Start the GE i-frame window now that damage was
-					// actually applied (bondhealth has decreased). Bump
-					// to 1 if lvframe60 happens to be 0 so the "never
-					// damaged" sentinel isn't re-armed.
+					// Classic options, split per behaviour:
 					//
-					// The flash only re-stamps when the previous one
-					// has fully ended (>= 8 frames ago) AND the chr is
-					// not still in its i-frame window. The chrDamage
-					// top-of-function gate already filters most repeat
-					// damage during i-frames, but this guard makes it
-					// explicit at the trigger site so chained calls
-					// can't restack the flash mid-fade.
-					if (goldeneyeStyleActive()) {
+					// "GoldenEye HUD" stamps the damage flash (rendered
+					// inside playerRenderHealthBarGE, so the flash is a
+					// GEHUD cosmetic). The flash only re-stamps when the
+					// previous one has fully ended (>= 8 frames ago) AND
+					// the chr is not still in its i-frame window. The
+					// chrDamage top-of-function gate already filters most
+					// repeat damage during i-frames, but this guard makes
+					// it explicit at the trigger site so chained calls
+					// can't restack the flash mid-fade. (With i-frames
+					// off, lastdamagetick60 stays 0 and iframe_done is
+					// always true.) Must run BEFORE the i-frame stamp
+					// below so it reads the previous window.
+					if (classicOptionActive(CHEAT_CLASSIC_GEHUD, MPOPTION_CLASSIC_GEHUD)) {
 						const u32 prev_flash_age = (u32)g_Vars.lvframe60 - (u32)g_Vars.currentplayer->damageflashstart60;
 						const u32 prev_iframe_age = (u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60;
 						const bool flash_done = (prev_flash_age >= 8);
@@ -4980,6 +4982,13 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 						if (flash_done && iframe_done) {
 							g_Vars.currentplayer->damageflashstart60 = (s32)g_Vars.lvframe60;
 						}
+					}
+
+					// "Damage Invulnerability" starts the i-frame window
+					// now that damage was actually applied (bondhealth has
+					// decreased). Bump to 1 if lvframe60 happens to be 0
+					// so the "never damaged" sentinel isn't re-armed.
+					if (classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES)) {
 						chr->lastdamagetick60 = g_Vars.lvframe60 ? (s32)g_Vars.lvframe60 : 1;
 						netDiagLogf("dmg_player",
 								"chrnum=%d sid=%u dmg=%.2f hp=%.3f stamp=%d",
@@ -5156,9 +5165,10 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 #endif
 
 #ifndef PLATFORM_N64
-				// Start the GE i-frame window for this sim/chr now
-				// that real damage was applied to chr->damage.
-				if (goldeneyeStyleActive()) {
+				// Classic "Damage Invulnerability": start the i-frame
+				// window for this sim/chr now that real damage was
+				// applied to chr->damage.
+				if (classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES)) {
 					chr->lastdamagetick60 = g_Vars.lvframe60 ? (s32)g_Vars.lvframe60 : 1;
 					netDiagLogf("dmg_sim",
 							"chrnum=%d sid=%u dmg=%.2f chrdmg=%.2f stamp=%d",
@@ -8850,6 +8860,12 @@ void chrTickDead(struct chrdata *chr)
 			chr->fadealpha = 0;
 
 			if (aibot) {
+#ifndef PLATFORM_N64
+				// Global Lives system: a bot out of lives stays down — leave
+				// the (faded-out) corpse in place rather than deleting the
+				// chr, so g_MpBotChrPtrs / g_MpAllChrPtrs stay valid.
+				if (elimChrCanRespawn(chr))
+#endif
 				botSpawn(chr, true);
 			} else {
 				chr->hidden |= CHRHFLAG_DELETING;
@@ -10533,14 +10549,14 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 	u8 normalshoot = true;
 
 #ifndef PLATFORM_N64
-	// GoldenEye Style: bots / NPCs can't fire while inside their own
-	// i-frame window. Same TICKS(18) cooldown as the chrDamage gate.
-	// The check uses u32 subtraction so a stale stamp (e.g. recycled
+	// Classic "Damage Invulnerability": bots / NPCs can't fire while inside
+	// their own i-frame window. Same TICKS(18) cooldown as the chrDamage
+	// gate. The check uses u32 subtraction so a stale stamp (e.g. recycled
 	// chrslot whose lastdamagetick60 is ahead of lvframe60) wraps to a
 	// huge unsigned value and correctly fails the < TICKS(18) check.
 	// Human players already get fire lockout via bgunCurrentPlayerInIframe
 	// at the bondgun.c bgunTickInc path — this gate is the bot-side mirror.
-	if (goldeneyeStyleActive()
+	if (classicOptionActive(CHEAT_CLASSIC_IFRAMES, MPOPTION_CLASSIC_IFRAMES)
 			&& chr->lastdamagetick60 != 0
 			&& ((u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60) < (u32)TICKS(18)) {
 		return;

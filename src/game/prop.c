@@ -78,10 +78,10 @@ void propsSort(void)
 	while (prop != g_Vars.pausedprops) {
 		if ((prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) == (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) {
 #ifndef PLATFORM_N64
-			// With portal culling disabled (No Room Culling / MPOPTION_NOCULL /
-			// /octree bigroom) far more props can be flagged on-screen than the
-			// buffers hold. Stop one short of the cap so the NULL terminator
-			// written below (onscreenprops[count]) stays in bounds.
+			// With portal culling disabled (/octree bigroom) far more props
+			// can be flagged on-screen than the buffers hold. Stop one short
+			// of the cap so the NULL terminator written below
+			// (onscreenprops[count]) stays in bounds.
 			if (count >= MAX_ONSCREEN_PROPS - 1) {
 				break;
 			}

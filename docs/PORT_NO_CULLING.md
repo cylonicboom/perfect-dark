@@ -1,4 +1,24 @@
-# Port-only Rendering Feature: No Room Culling / No Draw Slot Limit
+# Port-only Rendering Feature: No Room Culling / No Draw Slot Limit (RETIRED)
+
+> **RETIRED (2026-06).** The user-facing cheats (`CHEAT_NOCULL 43` / `CHEAT_NODRAWLIMIT 44`)
+> and MP options (`MPOPTION_NOCULL 0x10000000` / `MPOPTION_NOOMLIMIT 0x20000000`) were
+> removed — the `/octree` commands (especially `/octree bigroom`, [`PORT_OCTREE.md`](PORT_OCTREE.md))
+> superseded them with actual frustum culling instead of brute-force rendering.
+> What remains:
+> - `bool g_BgNoCull` / `bool g_BgNoDrawSlotLimit` (bg.c) still exist and still gate the same
+>   rendering behaviour described below; they are now driven solely by `g_BgOctreeBigRoom`
+>   in `bgTickPortals`.
+> - The grown 256-entry `g_BgDrawSlots[]` table, the `MAX_ONSCREEN_PROPS` raise and the
+>   `PD_BIG_POOL_SCALE` pool multiplier all remain (bigroom needs them).
+> - The cheat *indices* 43/44 are retired-but-reserved: their `g_Cheats[]` rows stay as dead
+>   placeholders so indices 45+ and saved enabled-bank bits don't shift. MP-option bits
+>   28/29 are likewise reserved (stale saved setups may still carry them; nothing reads them).
+> - `CHEAT_NOCULL`'s `gamefileUnlockEverything()` activation side-effect became an explicit
+>   "Unlock All Content" item (Extended Options > Experiments — and the pre-existing
+>   "Unlock Everything" entry in the Cheats menu).
+>
+> The body below is the original design doc, kept for the description of the draw-slot
+> mechanics that `g_BgNoCull`/`g_BgNoDrawSlotLimit` still implement.
 
 Two port-only options that disable the N64's portal-based room culling and the 60-room draw-slot cap. Useful for debugging visibility bugs and capturing wide-vista screenshots. Exposed both as a Combat Sim MP option (per-match) and as a cheat (per-session). Implemented entirely under `#ifndef PLATFORM_N64` — the N64 build is unchanged.
 

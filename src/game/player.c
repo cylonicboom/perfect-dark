@@ -6550,6 +6550,55 @@ f32 playerGetZoomFovMult(s32 playernum)
 	return g_PlayerExtCfg[playernum % MAX_LOCAL_PLAYERS].fovzoommult;
 }
 
+// tan(fovy/2) with fovy in degrees — the codebase has no tanf (camera.c idiom)
+static f32 playerTanHalfFovY(f32 fovy)
+{
+	f32 half = fovy * (M_PI / 360.0f);
+	return sinf(half) / cosf(half);
+}
+
+/**
+ * Map a vanilla (60-based) weapon zoom FOV onto the player's base FOV.
+ *
+ * When "FOV affects zoom" is enabled (fovzoommult != 1, where mult is
+ * basefov/60), the mapping is done in tan space so the zoom level produces
+ * exactly the same on-screen magnification relative to the player's world FOV
+ * as it does relative to 60 on the N64 — i.e. zoom is relative to the world
+ * FOV rather than a linearly scaled absolute target:
+ *
+ *   tan(out/2) = tan(in/2) * tan(base/2) / tan(30deg)
+ *
+ * ADJUST_ZOOM_FOV(60) still maps to exactly the base FOV (no zoom).
+ */
+f32 playerAdjustZoomFovY(f32 fovy, s32 playernum)
+{
+	f32 mult = playerGetZoomFovMult(playernum);
+
+	if (mult != 1.0f && fovy > 0.0f) {
+		f32 t = playerTanHalfFovY(fovy) * playerTanHalfFovY(60.0f * mult) / playerTanHalfFovY(60.0f);
+		return 2.0f * atan2f(t, 1.0f) * (180.0f / M_PI);
+	}
+
+	return fovy;
+}
+
+/**
+ * Inverse of playerAdjustZoomFovY — maps a stored zoom FOV back into vanilla
+ * 60-based zoom space (used by the zoom "X" HUD readout so its numbers match
+ * the N64 convention at any base FOV).
+ */
+f32 playerUnadjustZoomFovY(f32 fovy, s32 playernum)
+{
+	f32 mult = playerGetZoomFovMult(playernum);
+
+	if (mult != 1.0f && fovy > 0.0f) {
+		f32 t = playerTanHalfFovY(fovy) * playerTanHalfFovY(60.0f) / playerTanHalfFovY(60.0f * mult);
+		return 2.0f * atan2f(t, 1.0f) * (180.0f / M_PI);
+	}
+
+	return fovy;
+}
+
 s32 playerGetCount(void)
 {
 	s32 count = 0;

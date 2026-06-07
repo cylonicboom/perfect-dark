@@ -139,6 +139,7 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 	.fovy = 60.f, \
 	.fovzoommult = 1.f, \
 	.fovzoom = true, \
+	.gunfovy = 60.f, \
 	.mouseaimmode = MOUSEAIM_CLASSIC, \
 	.mouseaimspeedx = 0.7f, \
 	.mouseaimspeedy = 0.7f, \

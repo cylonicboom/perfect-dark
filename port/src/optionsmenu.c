@@ -1691,6 +1691,22 @@ static MenuItemHandlerResult menuhandlerFieldOfView(s32 operation, struct menuit
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerGunFieldOfView(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_PlayerExtCfg[g_ExtMenuPlayer].gunfovy + 0.5f;
+		break;
+	case MENUOP_SET:
+		if (data->slider.value >= 15) {
+			g_PlayerExtCfg[g_ExtMenuPlayer].gunfovy = data->slider.value;
+		}
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerCrosshairSway(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -1959,6 +1975,14 @@ struct menuitem g_ExtendedGameMenuItems[] = {
 		(uintptr_t)"Vert FOV",
 		170,
 		menuhandlerFieldOfView,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Gun FOV",
+		170,
+		menuhandlerGunFieldOfView,
 	},
 	{
 		MENUITEMTYPE_SLIDER,

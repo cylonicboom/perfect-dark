@@ -276,6 +276,22 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 	zoomfov = currentPlayerGetGunZoomFov();
 	zoominfovy = g_Vars.currentplayer->zoominfovy;
 
+#ifndef PLATFORM_N64
+	// ADJUST_ZOOM_FOV is tan-space relative to the base FOV — map the values
+	// back into vanilla 60-based zoom space so the X readout (and its ==60
+	// no-zoom check) matches the N64 numbers at any base FOV.
+	if (playerGetZoomFovMult(g_Vars.currentplayerstats->mpindex) != 1.0f) {
+		zoomfov = playerUnadjustZoomFovY(zoomfov, g_Vars.currentplayerstats->mpindex);
+		zoominfovy = playerUnadjustZoomFovY(zoominfovy, g_Vars.currentplayerstats->mpindex);
+
+		// the inverse mapping round-trips through atan, so kill the float
+		// fuzz to keep the no-zoom check below exact
+		if (zoomfov > 59.99f && zoomfov < 60.01f) {
+			zoomfov = 60.0f;
+		}
+	}
+#endif
+
 	if (zoomfov == 0.0f || zoomfov == 60.0f) {
 		if (weaponnum == WEAPON_SNIPERRIFLE) {
 			curzoom = 1.0f;
@@ -283,7 +299,17 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 			return gdl;
 		}
 	} else {
+#ifndef PLATFORM_N64
+		// remapped values above are in 60-based space; with "FOV affects
+		// zoom" off the stored targets are absolute, so keep the base ratio
+		if (playerGetZoomFovMult(g_Vars.currentplayerstats->mpindex) != 1.0f) {
+			maxzoom = 60.0f / zoomfov;
+		} else {
+			maxzoom = PLAYER_DEFAULT_FOV / zoomfov;
+		}
+#else
 		maxzoom = PLAYER_DEFAULT_FOV / zoomfov;
+#endif
 		curzoom = maxzoom - 1.0f / (zoomfov / zoominfovy) + 1;
 	}
 

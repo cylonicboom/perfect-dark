@@ -571,6 +571,26 @@ Gfx *vi0000aca4(Gfx *gdl, f32 znear, f32 zfar)
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+// Same as vi0000aca4 but with an explicit fovy instead of g_ViBackData->fovy.
+// Used by bgunRender to draw the first-person gun/hand models at their own
+// FOV (Gun FOV slider) so a high world FOV doesn't warp the viewmodel.
+Gfx *viPerspectiveFov(Gfx *gdl, f32 fovy, f32 znear, f32 zfar)
+{
+	u16 scale;
+	Mtxf tmp;
+	Mtx *mtx = gfxAllocateMatrix();
+
+	guPerspectiveF(tmp.m, &scale, fovy, g_ViBackData->aspect, znear, zfar, 1);
+	guMtxF2L(tmp.m, mtx);
+
+	gSPMatrix(gdl++, OS_K0_TO_PHYSICAL(mtx), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
+	gSPPerspNormalize(gdl++, scale);
+
+	return gdl;
+}
+#endif
+
 Gfx *vi0000ad5c(Gfx *gdl, Vp *vp)
 {
 	vp[g_ViBackIndex].vp.vscale[0] = g_ViBackData->viewx * 2;

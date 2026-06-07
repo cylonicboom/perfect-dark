@@ -130,7 +130,7 @@ struct menudialogdef g_MpPaintOptionsMenuDialog = {
 	(uintptr_t)"Paint Options\n",
 	g_MpPaintOptionsMenuItems,
 	mpOptionsMenuDialog,
-	MENUDIALOGFLAG_MPLOCKABLE,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
 	&g_ExtGameOptionsMenuDialog,
 };
 

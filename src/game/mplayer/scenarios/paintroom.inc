@@ -1,5 +1,5 @@
 /**
- * Paint the Map (port-only, MPSCENARIO_PAINTROOM)
+ * Graffiti (port-only, MPSCENARIO_PAINTROOM; formerly "Paint the Map")
  *
  * A team game inspired by Splatoon / Tony Hawk graffiti: whenever a living
  * combatant stands in a room, that room's floor is tinted their team's colour.
@@ -127,7 +127,7 @@ struct menuitem g_MpPaintOptionsMenuItems[] = {
 
 struct menudialogdef g_MpPaintOptionsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
-	(uintptr_t)"Paint Options\n",
+	(uintptr_t)"Graffiti Options\n",
 	g_MpPaintOptionsMenuItems,
 	mpOptionsMenuDialog,
 	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,

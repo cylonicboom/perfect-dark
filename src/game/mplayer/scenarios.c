@@ -287,11 +287,11 @@ struct mpscenariooverview g_MpScenarioOverviews[] = {
 	{ L_MPMENU_250, L_MPMENU_257, MPFEATURE_SCENARIO_KOH, true  }, // "King of the Hill", "Hill"
 	{ L_MPMENU_251, L_MPMENU_258, MPFEATURE_SCENARIO_CTC, true  }, // "Capture the Case", "Capture"
 #ifndef PLATFORM_N64
-	// Port-only "Paint the Map". The name/short-name strings have no entry in
-	// the ROM language banks, so scenarioGetNameText() returns a literal for
-	// this scenario instead of langGet()-ing these placeholder ids. Always
-	// unlocked (require feature 0) and team-only.
-	{ L_MPMENU_246, L_MPMENU_253, 0,                      true  }, // "Paint the Map", "Paint"
+	// Port-only "Graffiti" (formerly "Paint the Map"). The name/short-name
+	// strings have no entry in the ROM language banks, so scenarioGetNameText()
+	// returns a literal for this scenario instead of langGet()-ing these
+	// placeholder ids. Always unlocked (require feature 0) and team-only.
+	{ L_MPMENU_246, L_MPMENU_253, 0,                      true  }, // "Graffiti", "Graffiti"
 #endif
 };
 
@@ -323,7 +323,7 @@ MenuDialogHandlerResult mpOptionsMenuDialog(s32 operation, struct menudialogdef 
 }
 
 /**
- * Resolve a scenario's display name. Port-only scenarios (Paint the Map) have
+ * Resolve a scenario's display name. Port-only scenarios (Graffiti) have
  * no entry in the ROM language banks, so they can't go through langGet — return
  * a literal for those and the bank string for the original six. Behaviour is
  * identical to langGet on N64 / for the stock scenarios.
@@ -332,7 +332,7 @@ char *scenarioGetNameText(s32 scenario, bool wantshort)
 {
 #ifndef PLATFORM_N64
 	if (scenario == MPSCENARIO_PAINTROOM) {
-		return wantshort ? (char *)"Paint" : (char *)"Paint the Map";
+		return (char *)"Graffiti";
 	}
 #endif
 
@@ -431,7 +431,7 @@ MenuItemHandlerResult scenarioScenarioMenuHandler(s32 operation, struct menuitem
 		data->list.value = 2;
 
 #ifndef PLATFORM_N64
-		// Paint the Map is always-unlocked and team-only, so the Teamwork
+		// Graffiti is always-unlocked and team-only, so the Teamwork
 		// group always has at least one entry in a team game.
 		if (!teamgame) {
 			data->list.value--;

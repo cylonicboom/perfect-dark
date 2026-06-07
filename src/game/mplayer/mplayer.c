@@ -1067,7 +1067,7 @@ void mpApplyLimits(void)
 	}
 
 #ifndef PLATFORM_N64
-	// Paint the Map is decided by floor coverage at the time limit, so the
+	// Graffiti is decided by floor coverage at the time limit, so the
 	// score / team-score limits must not end it early — numpoints tracks the
 	// live owned-room count for ranking, which would otherwise trip the limit.
 	if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM) {
@@ -1242,7 +1242,7 @@ s32 mpCalculateTeamScore(s32 teamnum, s32 *result)
 	}
 
 #ifndef PLATFORM_N64
-	// Paint the Map: every member's score IS the team's owned-room count
+	// Graffiti: every member's score IS the team's owned-room count
 	// (mirrored in paintTick), so summing members multiplies the team score
 	// by the member count. The team score is the one collective room tally.
 	if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM && teamexists

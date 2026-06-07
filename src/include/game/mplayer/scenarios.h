@@ -15,7 +15,7 @@ struct mpscenariooverview {
 };
 
 #ifndef PLATFORM_N64
-extern struct mpscenariooverview g_MpScenarioOverviews[7]; // +1 port-only: Paint the Map
+extern struct mpscenariooverview g_MpScenarioOverviews[7]; // +1 port-only: Graffiti
 #else
 extern struct mpscenariooverview g_MpScenarioOverviews[6];
 #endif

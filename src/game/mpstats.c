@@ -257,7 +257,7 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 	}
 
 #ifndef PLATFORM_N64
-	// Paint the Map: a kill claims the killer's current room for their team
+	// Graffiti: a kill claims the killer's current room for their team
 	// (paintHandleDeath no-ops on clients; ownership rides SVC_PAINT_STATE)
 	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_PAINTROOM) {
 		paintHandleDeath(aplayernum, vplayernum);

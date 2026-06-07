@@ -2758,7 +2758,7 @@ void netEndFrame(void)
 				netmsgSvcKohStateWrite(&g_NetMsgRel);
 			}
 
-			// Paint the Map: broadcast owned-room ownership on change
+			// Graffiti: broadcast owned-room ownership on change
 			// (g_MpPaintDirty, raised by paintSetRoomOwner on the host) plus a
 			// 1s keep-alive at a free phase offset (35) so dropped packets and
 			// mid-match joiners heal.

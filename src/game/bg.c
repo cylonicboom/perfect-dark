@@ -214,13 +214,15 @@ bool g_BgOctreeForceCullAll = false; // debug: cull everything (/octree forcecul
 bool g_BgOctreeMarkAll = false;      // debug: treat every loaded room as octree-enabled (/octree markall)
 bool g_BgOctreeBigRoom = false;      // /octree bigroom: portal culling off + octree-cull every room (whole level as one space)
 bool g_BgOctreePortalCull = true;    // /octree portal: cull octree nodes against each room's portal-clipped draw-slot box (vs the full viewport)
-bool g_BgOctreeAutoOutdoor = false;  // /octree auto: octree-cull every ROOMFLAG_OUTDOORS room automatically (level-data driven, no manual /octree mark)
+bool g_BgOctreeAutoOutdoor = true;   // /octree auto (DEFAULT ON): octree-cull every ROOMFLAG_OUTDOORS room automatically (level-data driven, no manual /octree mark)
 struct bgoctreestats g_BgOctreeStats;
 
 // Display-list cache master toggle (/dlcache on|off). When on, non-octree,
 // non-dyntex room leaves are bracketed for GPU-resident caching in the renderer.
+// DEFAULT ON since the 2026-06 validation rounds (GL + SDL_GPU, incl. the
+// octree gap-tolerant interop); /dlcache off remains the live escape hatch.
 // See docs/PORT_DLCACHE.md.
-bool g_DlCacheEnabled = false;
+bool g_DlCacheEnabled = true;
 
 // Set by bgCullBeginPass for the duration of one room's render pass; read by the
 // LEAF case of bgRenderRoomPass via bgEmitLeafCulled. NULL = cull inactive (the

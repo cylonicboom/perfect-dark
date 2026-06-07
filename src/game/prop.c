@@ -2129,6 +2129,17 @@ void propsTickPlayer(bool islastplayer)
 	done = false;
 	if (1);
 	for (prop = g_Vars.activeprops; !done; ) {
+#ifndef PLATFORM_N64
+		// Corrupt-walk guard (client AV family: read at +0x30 = prop->next
+		// with prop NULL): a prop freed AND re-allocated mid-walk has its
+		// next reset to NULL by propAllocate, so the walk steps onto NULL
+		// one hop later. Abort the walk for this frame instead of crashing;
+		// the paired guard at the bottom logs the prop whose link is corrupt.
+		if (prop == NULL) {
+			sysLogPrintf(LOG_WARNING, "proptick_guard: walk reached NULL prop; aborting tick walk");
+			break;
+		}
+#endif
 		op = TICKOP_NONE;
 		savednext = prop->next;
 		done = savednext == g_Vars.pausedprops;
@@ -2437,6 +2448,21 @@ void propsTickPlayer(bool islastplayer)
 				propExecuteTickOperation(prop, op);
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// Paired with the NULL-prop guard at the loop top: a live walk never
+		// yields a NULL next without done (the list terminates at
+		// g_Vars.pausedprops, and done is recomputed alongside next). A NULL
+		// next here means THIS prop was freed/recycled during its own tick —
+		// log its identity so the freeing culprit can finally be named, and
+		// end the walk for this frame.
+		if (!done && next == NULL) {
+			sysLogPrintf(LOG_WARNING,
+					"proptick_guard: prop %d type %d flags 0x%x syncid %u has NULL next after tick (op %d); aborting tick walk",
+					(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid, op);
+			break;
+		}
+#endif
 
 		prop = next;
 	}

@@ -4338,7 +4338,7 @@ struct scenariodata_ctc {
 };
 
 #ifndef PLATFORM_N64
-// Port-only "Paint the Map" scenario state. roomowner is a per-stage array
+// Port-only "Graffiti" scenario state. roomowner is a per-stage array
 // (MEMPOOL_STAGE, size roomcount) holding the owning team +1 per room
 // (0 = unpainted); teamcounts caches the live owned-room tally per team.
 struct scenariodata_paint {

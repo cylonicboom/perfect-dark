@@ -4239,7 +4239,7 @@ u32 netmsgSvcKohStateRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
-// SVC_PAINT_STATE: "Paint the Map" — the server broadcasts the full set of rooms
+// SVC_PAINT_STATE: "Graffiti" — the server broadcasts the full set of rooms
 // it currently owns and which team owns each. Rooms are only ever (re)painted, so
 // a room absent from the list is simply unpainted; applying the present entries
 // idempotently is enough (no removals to replay). Sent on change and as a 1s

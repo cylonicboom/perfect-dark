@@ -1,4 +1,4 @@
-# Port-only Combat Sim mode: "Paint the Map" (`MPSCENARIO_PAINTROOM`)
+# Port-only Combat Sim mode: "Graffiti" (`MPSCENARIO_PAINTROOM`; formerly "Paint the Map")
 
 A team game inspired by Splatoon / Tony Hawk graffiti. While a living combatant
 stands in a room, that room's floor is tinted their team's colour. Rooms are

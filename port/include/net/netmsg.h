@@ -46,7 +46,7 @@
 #define SVC_COOP_LIVES   0x52 // co-op: "N lives remaining" respawn notification (F3 lives mutator); shown to the recipient's local player
 #define SVC_TIMESCALE    0x53 // global sim timescale: slow-motion/boost engaged flag + boost timer; clients halve the pinned sim step in lockstep with the server
 #define SVC_COOP_CLAIM   0x54 // co-op drop-in: a client claims (or releases, clientid=NET_NULL_CLIENT) a pre-allocated dormant co-op slot mid-mission
-#define SVC_PAINT_STATE  0x55 // "Paint the Map" scenario: per-room team ownership (full owned-room list; on-change + 1s heartbeat)
+#define SVC_PAINT_STATE  0x55 // "Graffiti" scenario: per-room team ownership (full owned-room list; on-change + 1s heartbeat)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing

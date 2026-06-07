@@ -661,7 +661,7 @@ MenuItemHandlerResult menuhandlerMpTeamsEnabled(s32 operation, struct menuitem *
 		}
 
 #ifndef PLATFORM_N64
-		// Paint the Map is team-based — keep teams locked on like CTC/KoH.
+		// Graffiti is team-based — keep teams locked on like CTC/KoH.
 		if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM) {
 			return true;
 		}

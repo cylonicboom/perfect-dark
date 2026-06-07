@@ -19386,17 +19386,14 @@ void doorsCheckAutomatic(void)
 	s16 propnums[256];
 
 #ifndef PLATFORM_N64
-	// Client-side door prediction: let the LOCAL player open automatic doors
-	// locally instead of waiting a full RTT for the host's SVC_PROP_DOOR (very
-	// visible at high ping — walk into a closed door, pause ~350ms, it opens). The
-	// host stays authoritative: doorSetMode only broadcasts on the server, and the
-	// host's SVC_PROP_DOOR reconciles (netmsgSvcPropDoorRead skips the stale
-	// confirming OPEN keyframe so it can't slam a predicted-open door shut or replay
-	// the open sound). Only AUTOMATIC + UNLOCKED doors are predicted (checked below)
-	// — the host opens those too, so a misprediction can't strand a door. Remote
-	// players are NOT predicted here: their pawn is interpolated/lagged and the host
-	// drives their doors over the wire.
-	if (g_NetMode == NETMODE_CLIENT && g_Vars.currentplayer->isremote) {
+	// Automatic doors are NOT predicted on clients: the locally-ticked
+	// open/wait/close cycle interleaving with the host's keyframes proved too
+	// fiddly (reopen-during-close, portal/timer skew), and with the host-side
+	// reported-position swap below the host opens them promptly anyway — the
+	// remaining delay is ~one-way latency, which is acceptable. Clients are
+	// driven purely by SVC_PROP_DOOR. Manual (Use-button) doors keep their
+	// prediction in currentPlayerInteract.
+	if (g_NetMode == NETMODE_CLIENT) {
 		return;
 	}
 
@@ -19469,12 +19466,6 @@ void doorsCheckAutomatic(void)
 
 				if (canopen) {
 					doorsRequestMode(door, DOORMODE_OPENING);
-#ifndef PLATFORM_N64
-					if (g_NetMode == NETMODE_CLIENT) {
-						netDiagLogf("door_predict", "sid=%u frac=%.2f mode=%d",
-								(unsigned)doorprop->syncid, door->frac, (s32)door->mode);
-					}
-#endif
 				}
 			}
 		}

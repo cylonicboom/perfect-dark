@@ -19399,6 +19399,26 @@ void doorsCheckAutomatic(void)
 	if (g_NetMode == NETMODE_CLIENT && g_Vars.currentplayer->isremote) {
 		return;
 	}
+
+	// Host: a remote pawn's pos here is the INTERPOLATED (lagged) one, so the
+	// proximity test trails the client's predicted open by the interp delay — at
+	// speed the client reaches a door the host hasn't opened yet and gets
+	// CSP-corrected back out of it ("door animates open but stays solid").
+	// Evaluate the automatic-door check at the client's latest reported position
+	// instead (the currentPlayerInteract / pickup pos-swap pattern), restored at
+	// the end of the function.
+	struct coord autosavedpos;
+	bool autoposswapped = false;
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->client && g_Vars.currentplayer->prop) {
+		struct netclient *cl = g_Vars.currentplayer->client;
+		const struct netplayermove *m = &cl->inmove[cl->inmove_head];
+		if (m->tick) {
+			autosavedpos = g_Vars.currentplayer->prop->pos;
+			g_Vars.currentplayer->prop->pos = m->pos;
+			autoposswapped = true;
+		}
+	}
 #endif
 
 	roomGetProps(g_Vars.currentplayer->prop->rooms, propnums, 256);
@@ -19461,6 +19481,12 @@ void doorsCheckAutomatic(void)
 
 		propnumptr++;
 	}
+
+#ifndef PLATFORM_N64
+	if (autoposswapped) {
+		g_Vars.currentplayer->prop->pos = autosavedpos;
+	}
+#endif
 }
 
 void func0f08c424(struct doorobj *door, Mtxf *matrix)

@@ -2827,18 +2827,30 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 				if (want == cur) {
 					continue;
 				}
-				// Mismatch: delete old, spawn new
+				// Mismatch: free the old held weapon CLEANLY, then spawn the new.
+				// Previously this only marked the old prop OBJHFLAG_DELETING and
+				// nulled weapons_held[h], leaving it ATTACHED to the chr's child
+				// chain as a "dead" child until func0f0706f8 reaped it on a later
+				// tick. That lingering orphan window was the root of the client
+				// prop-list corruption family: a prop's ->next is dual-use (active
+				// list vs. child sibling chain), so a re-link / re-activate of the
+				// orphan bridged the two chains into a cycle (the propsheal /
+				// chrheal hangs). Freeing it here — during message processing, not
+				// inside a prop/child walk — is safe and removes the window:
+				// objFreePermanently -> objFree -> objDetach (parent is still the
+				// chr) unlinks it from the child chain, then propDelist/propFree.
+				// It also frees the weapon slot so chrGiveWeapon below doesn't have
+				// to force-recycle one (the earlier embedded-flag crash path).
 				if (chr->weapons_held[h]) {
-					if (chr->weapons_held[h]->obj) {
-						// Clear any active muzzle flash before orphaning this prop —
-						// otherwise its gunfire-visible flag survives on the deleted
-						// weapon and renders a stuck flash after a weapon swap (the
-						// SVC_CHR_FIRE 'off' targets the NEW held prop, not this one).
-						weaponSetGunfireVisible(chr->weapons_held[h], false,
-								chr->prop ? chr->prop->rooms[0] : 0);
-						chr->weapons_held[h]->obj->hidden |= OBJHFLAG_DELETING;
-					}
+					struct prop *oldwp = chr->weapons_held[h];
 					chr->weapons_held[h] = NULL;
+					if (oldwp->obj) {
+						// Clear any active muzzle flash first so its gunfire-visible
+						// flag can't survive on a recycled slot.
+						weaponSetGunfireVisible(oldwp, false,
+								chr->prop ? chr->prop->rooms[0] : 0);
+						objFreePermanently(oldwp->obj, true);
+					}
 				}
 				if (want >= 0) {
 					const s32 modelnum = playermgrGetModelOfWeapon(want);

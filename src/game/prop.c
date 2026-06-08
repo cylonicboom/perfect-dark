@@ -492,6 +492,19 @@ void propsHealActiveList(void)
 
 void propReparent(struct prop *mover, struct prop *adopter)
 {
+#ifndef PLATFORM_N64
+	// Never double-link a prop into a child chain. mover->next is dual-use (the
+	// active/paused list when active, the child sibling chain when attached); if
+	// mover is already attached somewhere and we overwrite mover->next below
+	// without unlinking it first, its old predecessor keeps pointing at it and
+	// the chain becomes a cycle (the client weapon-child corruption family).
+	// Detach-before-attach makes reparent idempotent. No-op in the normal
+	// fresh-prop path (parent == NULL); only fires on a stray double-reparent.
+	if (mover->parent) {
+		propDetach(mover);
+	}
+#endif
+
 	mover->parent = adopter;
 
 	if (adopter->child) {

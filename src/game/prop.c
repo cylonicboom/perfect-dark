@@ -429,30 +429,63 @@ void propsHealActiveList(void)
 			}
 			return;
 		}
-		// Pre-tick corpse reap (BEFORE the cycle cap, so corpses don't inflate the
-		// iteration count). A listed OBJ/WEAPON/DOOR/EXPLOSION/SMOKE prop whose
+		// Pre-tick corpse handling (BEFORE the cycle cap, so corpses don't inflate
+		// the iteration count). A listed OBJ/WEAPON/DOOR/EXPLOSION/SMOKE prop whose
 		// union pointer (prop->obj/->explosion/... alias offset 0x48) is NULL is a
-		// freed-but-still-listed corpse. The per-tick-walk reaps (propsTickPlayer/
-		// propsTick) fire too late: a ticking projectile's COLLISION examines
+		// freed-but-still-listed corpse. A ticking projectile's COLLISION examines
 		// room-list props (propIsOfCdType: obj->unkgeo) and AVs on a corpse before
-		// its own tick reaps it. Reaping here — at lvTick top, before any tick OR
-		// collision this frame — closes that: propExecuteTickOperation(TICKOP_FREE)
-		// propDeregisterRooms (so collision can't reach it) + propDelist + propFree
-		// (the regen check short-circuits on a NULL union). deadnext is captured
-		// first so the walk advances even if the corpse's own links are corrupt.
+		// its own tick reaps it — so first make it collision-safe by deregistering
+		// its rooms (no-op if already deregistered).
+		//
+		// CRITICAL: do NOT propFree here. A corpse may ALREADY be in the freelist
+		// (a free-without-delist left it there while still active-list-referenced);
+		// propFree-ing it again double-frees -> prop->next = g_Vars.freeprops which
+		// is itself -> a SELF-LOOP that hangs roomsTickLighting (this exact bug was
+		// caused by an earlier version of this block that called
+		// propExecuteTickOperation(TICKOP_FREE) here). So:
+		//   - if the corpse is CORRUPT — self-loop (next==self) or its back-link
+		//     disagrees with our walk (prev) — it's already freed: just UNLINK it
+		//     from the active chain via OUR trusted prev (propDelist can't, it
+		//     trusts the corpse's own NULL/self prev/next) and leave the slot in
+		//     the freelist;
+		//   - if the corpse is CONSISTENT (links match our walk, not in the
+		//     freelist yet), leave it for the per-tick-walk reap to free properly
+		//     — we've already deregistered its rooms so this frame is collision-safe.
 		if (prop->obj == NULL
 				&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON
 					|| prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_EXPLOSION
 					|| prop->type == PROPTYPE_SMOKE)) {
 			struct prop *deadnext = prop->next;
-			static u32 lastwarn60f = 0;
-			if (g_Vars.lvframe60 - lastwarn60f > TICKS(60)) {
-				lastwarn60f = g_Vars.lvframe60;
-				sysLogPrintf(LOG_WARNING,
-						"propsheal: reap corpse prop %d type %d flags 0x%x syncid %u (pre-tick)",
-						(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+			propDeregisterRooms(prop);
+			if (deadnext == prop || prop->prev != prev) {
+				static u32 lastwarn60f = 0;
+				if (g_Vars.lvframe60 - lastwarn60f > TICKS(60)) {
+					lastwarn60f = g_Vars.lvframe60;
+					sysLogPrintf(LOG_WARNING,
+							"propsheal: unlink corrupt corpse prop %d type %d flags 0x%x syncid %u (selfloop=%d)",
+							(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid,
+							(deadnext == prop));
+				}
+				if (deadnext == prop) {
+					deadnext = NULL; // self-loop: terminate the active list here
+				}
+				if (prev) {
+					prev->next = deadnext;
+					if (deadnext == NULL) {
+						g_Vars.activepropstail = prev;
+					}
+				} else {
+					g_Vars.activeprops = deadnext;
+					if (deadnext == NULL) {
+						g_Vars.activepropstail = g_Vars.pausedprops;
+					}
+				}
+				prop = deadnext;
+				continue;
 			}
-			propExecuteTickOperation(prop, TICKOP_FREE);
+			// Consistent corpse — leave it for the tick-walk reap (rooms already
+			// deregistered above, so collision is safe this frame).
+			prev = prop;
 			prop = deadnext;
 			continue;
 		}

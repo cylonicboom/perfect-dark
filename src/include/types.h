@@ -4356,12 +4356,12 @@ struct scenariodata_paint {
 	// claimed on ENTRY (rooms[0] change) or on a kill, not by standing in
 	// them — continuous claiming let whoever iterated last in g_MpAllChrPtrs
 	// (the sims) win contested rooms every frame.
-	s16 lastroom[12];
+	s16 lastroom[MAX_MPCHRS];
 	// per-combatant time (lvupdate240 units) spent in lastroom, for the
 	// timed-claim option (mpsetup.paintclaimtime > 0). Paused KoH-style
 	// while another team is also in the room; reset on room change, death
 	// and claim.
-	s32 claimtime240[12];
+	s32 claimtime240[MAX_MPCHRS];
 };
 
 // Port-only "Zones" scenario state (TS2-style territory control): every KoH
@@ -4377,8 +4377,8 @@ struct scenariodata_zones {
 	s32 cycle240;         // time left in the current score cycle (lvupdate240 units)
 	s32 teamscores[8];    // accumulated team scores (MAX_TEAMS)
 	// per-combatant capture tracking (MAX_MPCHRS), the Graffiti pattern:
-	s16 lastzone[12];        // zone index the chr was last seen in; -1 = none
-	s32 capturetime240[12];  // time held in lastzone; paused while contested
+	s16 lastzone[MAX_MPCHRS];        // zone index the chr was last seen in; -1 = none
+	s32 capturetime240[MAX_MPCHRS];  // time held in lastzone; paused while contested
 };
 
 // Port-only "Race" scenario state: checkpoint racing over the KoH hillpads
@@ -4391,9 +4391,9 @@ struct scenariodata_race {
 	s16 hillpads[9];        // pad numbers (same INTROCMD_HILL source as koh.hillpads)
 	RoomNum hillrooms[9];   // each checkpoint's room (the touch test)
 	struct coord hillpos[9]; // each checkpoint pad's position (radar arrow/dot)
-	u8 nextcp[12];          // next checkpoint index per combatant (MAX_MPCHRS)
-	u8 lapsdone[12];        // completed laps per combatant
-	u8 finishpos[12];       // 0 = still racing; 1..N = finishing position
+	u8 nextcp[MAX_MPCHRS];          // next checkpoint index per combatant
+	u8 lapsdone[MAX_MPCHRS];        // completed laps per combatant
+	u8 finishpos[MAX_MPCHRS];       // 0 = still racing; 1..N = finishing position
 	u8 finishcount;         // humans finished so far
 	u8 humancount;          // human combatants at seed time (bots don't race)
 	u8 initdone;            // seeded (lazily, on the first tick with chrs present)
@@ -4410,9 +4410,9 @@ struct scenariodata_race {
 // alongside ANY scenario, and the union slot belongs to the active one.
 // Instance: g_ElimData (elimination.inc).
 struct elimdata {
-	s32 lives[12];     // Solo mode: remaining deaths per combatant (MAX_MPCHRS)
-	s32 teamlives[8];  // Team mode: shared remaining pool per team (MAX_TEAMS)
-	u8 eliminated[12]; // latched: dead with no lives left — can never respawn
+	s32 lives[MAX_MPCHRS];     // Solo mode: remaining deaths per combatant
+	s32 teamlives[MAX_TEAMS];  // Team mode: shared remaining pool per team
+	u8 eliminated[MAX_MPCHRS]; // latched: dead with no lives left — can never respawn
 	u8 initdone;       // lives seeded (lazily, on the first tick with chrs present)
 	u8 startfactions;  // distinct factions at seed time; end-check needs >= 2
 };

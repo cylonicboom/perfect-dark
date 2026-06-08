@@ -1987,11 +1987,49 @@ static MenuItemHandlerResult menuhandlerRaphnetAutoBackup(s32 operation, struct 
 	return 0;
 }
 
+// Result popup so the outcome of a pak operation is visible in-game.
+static char g_CpakResultMsg[64] = "";
+
+static struct menuitem g_CpakResultMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)g_CpakResultMsg,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		(uintptr_t)"OK\n",
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_CpakResultMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Controller Pak",
+	g_CpakResultMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+static void cpakShowResult(const char *action, CpakResult res)
+{
+	snprintf(g_CpakResultMsg, sizeof(g_CpakResultMsg), "%s: %s\n", action, cpakResultText(res));
+	sysLogPrintf(res == CPAK_OK ? LOG_NOTE : LOG_WARNING, "Controller Pak %s", g_CpakResultMsg);
+	menuPushDialog(&g_CpakResultMenuDialog);
+}
+
 static MenuItemHandlerResult menuhandlerCpakBackup(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
-		CpakResult res = cpakPhysicalBackup();
-		sysLogPrintf(res == CPAK_OK ? LOG_NOTE : LOG_WARNING, "Controller Pak backup: %s", cpakResultText(res));
+		cpakShowResult("Backup", cpakPhysicalBackup());
 	}
 	return 0;
 }
@@ -1999,8 +2037,7 @@ static MenuItemHandlerResult menuhandlerCpakBackup(s32 operation, struct menuite
 static MenuItemHandlerResult menuhandlerCpakImport(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
-		CpakResult res = cpakImportPhysical(0);
-		sysLogPrintf(res == CPAK_OK ? LOG_NOTE : LOG_WARNING, "Controller Pak import: %s", cpakResultText(res));
+		cpakShowResult("Import", cpakImportPhysical(0));
 	}
 	return 0;
 }

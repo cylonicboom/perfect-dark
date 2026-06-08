@@ -107,15 +107,41 @@ raphnet_dev *raphnetOpen(void)
 	}
 
 	struct hid_device_info *list = hid_enumerate(RAPHNET_VID, 0x0);
-	struct hid_device_info *cur = list;
+	struct hid_device_info *cur;
+	struct hid_device_info *best = NULL;
 	hid_device *handle = NULL;
+	s32 bestscore = -1;
 
-	while (cur) {
-		handle = hid_open_path(cur->path);
-		if (handle) {
-			break;
+	/*
+	 * Raphnet adapters expose several HID interfaces; the raw/control interface
+	 * (which speaks the raphnetraw protocol) is NOT the gamepad interface.
+	 * Prefer a vendor-defined usage page, then the highest interface number
+	 * (the gamepad is usually interface 0).
+	 */
+	for (cur = list; cur; cur = cur->next) {
+		s32 score = (cur->interface_number > 0) ? cur->interface_number : 0;
+		if (cur->usage_page >= 0xff00) {
+			score += 100;
 		}
-		cur = cur->next;
+		sysLogPrintf(LOG_NOTE, "raphnet: found PID %04x if %d usage_page %04x",
+				cur->product_id, cur->interface_number, cur->usage_page);
+		if (score > bestscore) {
+			bestscore = score;
+			best = cur;
+		}
+	}
+
+	if (best) {
+		handle = hid_open_path(best->path);
+		if (handle) {
+			sysLogPrintf(LOG_NOTE, "raphnet: opened PID %04x interface %d",
+					best->product_id, best->interface_number);
+		}
+	}
+
+	// fall back to the first interface that will open
+	for (cur = list; cur && !handle; cur = cur->next) {
+		handle = hid_open_path(cur->path);
 	}
 
 	if (list) {
@@ -123,7 +149,7 @@ raphnet_dev *raphnetOpen(void)
 	}
 
 	if (!handle) {
-		sysLogPrintf(LOG_NOTE, "raphnet: no adapter found (VID %04x)", RAPHNET_VID);
+		sysLogPrintf(LOG_WARNING, "raphnet: no adapter found / could not open (VID %04x)", RAPHNET_VID);
 		return NULL;
 	}
 

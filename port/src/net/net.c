@@ -1129,6 +1129,29 @@ s32 netStartServer(u16 port, s32 maxclients)
 		g_SpectatorPanelCount = 0;
 	}
 
+	// Combatant-capacity cap (NET_MAX_CLIENTS = MAX_PLAYERS + 1). The host
+	// always holds client slot 0; whether it can host MAX_PLAYERS *remote*
+	// combatants depends on whether IT is a combatant:
+	//   - spectator host (dedicated set above; listen Host-Spectator sets
+	//     is_spectator after this in menuhandlerHostStart, so it's still 0
+	//     here and caps at MAX_PLAYERS — acceptable, that path is WIP): takes
+	//     no combatant slot, so allow the full NET_MAX_CLIENTS (host + 8).
+	//   - combatant host (normal listen): counts as one of MAX_PLAYERS, so the
+	//     server caps at MAX_PLAYERS clients (host + 7 remotes) — unchanged
+	//     from before this slot was added.
+	// netPlayersAllocate also hard-caps combatant playernums at MAX_PLAYERS as
+	// a belt-and-suspenders against g_PlayerConfigsArray / g_Vars.players
+	// (both MAX_PLAYERS-sized, playernum-indexed) overflowing.
+	{
+		const s32 clientcap = g_NetLocalClient->is_spectator ? NET_MAX_CLIENTS : MAX_PLAYERS;
+		if (g_NetMaxClients > clientcap) {
+			g_NetMaxClients = clientcap;
+		}
+		if (g_NetMaxClients < 1) {
+			g_NetMaxClients = 1;
+		}
+	}
+
 	g_NetMode = NETMODE_SERVER;
 
 	g_NetTick = 0;
@@ -3328,6 +3351,23 @@ void netPlayersAllocate(void)
 		}
 
 		if (g_NetMode == NETMODE_SERVER) {
+			// Overflow safety net (NET_MAX_CLIENTS = MAX_PLAYERS + 1): never
+			// hand out a combatant playernum >= MAX_PLAYERS. g_PlayerConfigsArray
+			// and g_Vars.players are MAX_PLAYERS-sized and indexed by playernum,
+			// so a mis-configured g_NetMaxClients must not let a 9th combatant
+			// slip through and corrupt slot 8. The netStartServer cap should make
+			// this unreachable; if it ever fires, park the client as a spectator
+			// (no pawn) instead of overflowing. Logged so it can't hide.
+			if (playernum >= MAX_PLAYERS) {
+				sysLogPrintf(LOG_WARNING,
+						"NET: combatant overflow (id %d) — parking as spectator (playernum cap %d)",
+						cl->id, MAX_PLAYERS);
+				cl->is_spectator = 1;
+				cl->playernum = NET_PLAYERNUM_SPECTATOR;
+				cl->config = NULL;
+				cl->player = NULL;
+				continue;
+			}
 			// on the server allocate players sequentially (spectators were
 			// skipped above so playernum stays a dense [0..g_NetNumClients) range
 			// of combatants only)

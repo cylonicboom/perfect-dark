@@ -28,11 +28,54 @@
 
 #define RAPHNET_VID 0x289b
 
+/* raphnetraw request opcodes (src/requests.h in raphnet/pj64raphnetraw) */
+#define RQ_GCN64_RAW_SI_COMMAND 0x80
+
+/* N64 controller-pak (mempak) SI commands */
+#define N64_EXPANSION_READ  0x02
+#define N64_EXPANSION_WRITE 0x03
+
+/* HID feature-report size used by modern (bio-capable) adapters, plus the
+ * leading report-id byte. */
+#define RAPHNET_REPORT_SIZE 63
+#define RAPHNET_BUF_SIZE    (RAPHNET_REPORT_SIZE + 1)
+
 struct raphnet_dev {
 	hid_device *handle;
 };
 
 static s32 g_RaphnetInited = 0;
+
+/*
+ * N64 controller-pak address CRC5 (verbatim from src/lib/ultra/io/crc.c). The
+ * 16-bit pak address is (block << 5) | crc5(block); the adapter forwards it to
+ * the controller unchanged, so we must pre-compute the CRC exactly as libultra
+ * does.
+ */
+static u8 raphnetAddrCrc(u16 inaddr)
+{
+	u32 crc = 0;
+	u32 mask;
+	u32 addr = inaddr;
+
+	for (mask = 0x400; mask != 0; mask >>= 1) {
+		crc *= 2;
+		if (addr & mask) {
+			crc = (crc & 0x20) ? (crc ^ 20) : (crc + 1);
+		} else if (crc & 0x20) {
+			crc ^= 21;
+		}
+	}
+
+	for (s32 i = 0; i < 5; i++) {
+		crc <<= 1;
+		if (crc & 0x20) {
+			crc ^= 21;
+		}
+	}
+
+	return crc & 0x1f;
+}
 
 s32 raphnetInit(void)
 {
@@ -97,19 +140,84 @@ void raphnetClose(raphnet_dev *dev)
 }
 
 /*
- * Issue one raphnetraw request and read the reply. The report layout and
- * opcodes are firmware-specific and must be filled in before the read/write
- * paths can talk to real hardware. Returns the reply length, or < 0 on error.
+ * Send one raphnetraw command as a HID feature report and poll for the reply.
+ * Mirrors gcn64_exchange(): report-id byte 0, then the command bytes; the reply
+ * is ready once the device echoes the command byte back. `reply` receives the
+ * payload with the report-id byte stripped (so reply[0] is the command echo).
+ * Returns the reply length, or < 0 on error.
  */
-static int raphnetRawExchange(raphnet_dev *dev, const u8 *req, int reqlen, u8 *reply, int replymax)
+static int gcn64Exchange(hid_device *handle, const u8 *cmd, int cmdlen, u8 *reply, int replymax)
 {
-	(void)dev;
-	(void)req;
-	(void)reqlen;
-	(void)reply;
-	(void)replymax;
-	/* TODO(raphnet): implement using the gc_n64_usb-v3 raphnetraw protocol. */
+	u8 buf[RAPHNET_BUF_SIZE];
+
+	if (cmdlen + 1 > (int)sizeof(buf)) {
+		return -1;
+	}
+
+	memset(buf, 0, sizeof(buf));
+	buf[0] = 0; // report id (device exposes a single report)
+	memcpy(buf + 1, cmd, cmdlen);
+
+	if (hid_send_feature_report(handle, buf, sizeof(buf)) < 0) {
+		return -1;
+	}
+
+	// Poll until the device returns a report echoing our command byte.
+	for (s32 attempt = 0; attempt < 200; attempt++) {
+		memset(buf, 0, sizeof(buf));
+		buf[0] = 0;
+		int r = hid_get_feature_report(handle, buf, sizeof(buf));
+		if (r < 0) {
+			return -1;
+		}
+		if (r >= 2 && buf[1] == cmd[0]) {
+			int len = r - 1; // strip report-id byte
+			if (len > replymax) {
+				len = replymax;
+			}
+			memcpy(reply, buf + 1, len);
+			return len;
+		}
+	}
+
 	return -1;
+}
+
+// Issue a raw N64 SI command on `channel`. Returns the number of reply bytes.
+static int raphnetRawSiCommand(hid_device *handle, u8 channel, const u8 *tx, u8 txlen, u8 *rx, int maxrx)
+{
+	u8 cmd[3 + 64];
+	u8 rep[3 + 64];
+
+	if (txlen > 64) {
+		return -1;
+	}
+
+	cmd[0] = RQ_GCN64_RAW_SI_COMMAND;
+	cmd[1] = channel;
+	cmd[2] = txlen;
+	memcpy(cmd + 3, tx, txlen);
+
+	int n = gcn64Exchange(handle, cmd, 3 + txlen, rep, sizeof(rep));
+	if (n < 3) {
+		return -1;
+	}
+
+	// rep: [cmd echo][channel][rx_len][rx data...]
+	int rxlen = rep[2];
+	if (rxlen > maxrx) {
+		rxlen = maxrx;
+	}
+	if (rxlen > 0 && rx) {
+		memcpy(rx, rep + 3, rxlen);
+	}
+	return rxlen;
+}
+
+// Build the 16-bit pak address for `block` (32-byte unit), CRC5 in the low bits.
+static u16 raphnetPakAddr(u16 block)
+{
+	return (u16)((block << 5) | raphnetAddrCrc(block));
 }
 
 s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k)
@@ -117,16 +225,21 @@ s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k)
 	if (!dev || !dev->handle) {
 		return -1;
 	}
-	/*
-	 * Pseudocode for when raphnetRawExchange() is implemented:
-	 *   for (addr = 0; addr < 0x8000; addr += 32)
-	 *       issue N64 cmd 0x02 (read mempak) for `addr`, copy 32 bytes back.
-	 */
-	if (raphnetRawExchange(dev, NULL, 0, NULL, 0) < 0) {
-		sysLogPrintf(LOG_WARNING, "raphnet: raw protocol not configured; cannot read pak");
-		return -1;
+
+	for (u16 block = 0; block < MEMPAK_SIZE / 32; block++) {
+		u16 addr = raphnetPakAddr(block);
+		u8 tx[3] = { N64_EXPANSION_READ, (u8)(addr >> 8), (u8)(addr & 0xff) };
+		u8 rx[33];
+
+		int n = raphnetRawSiCommand(dev->handle, 0, tx, sizeof(tx), rx, sizeof(rx));
+		if (n < 32) {
+			sysLogPrintf(LOG_WARNING, "raphnet: read failed at block %u (got %d)", block, n);
+			return -1;
+		}
+
+		memcpy(buf32k + block * 32, rx, 32);
 	}
-	(void)buf32k;
+
 	return 0;
 }
 
@@ -135,11 +248,26 @@ s32 raphnetWritePak(raphnet_dev *dev, const u8 *buf32k)
 	if (!dev || !dev->handle) {
 		return -1;
 	}
-	/* Writing to a physical cartridge with an unverified protocol could corrupt
-	 * it, so refuse until raphnetRawExchange() is implemented. */
-	sysLogPrintf(LOG_WARNING, "raphnet: raw protocol not configured; refusing to write pak");
-	(void)buf32k;
-	return -1;
+
+	for (u16 block = 0; block < MEMPAK_SIZE / 32; block++) {
+		u16 addr = raphnetPakAddr(block);
+		u8 tx[3 + 32];
+		u8 rx[4];
+
+		tx[0] = N64_EXPANSION_WRITE;
+		tx[1] = (u8)(addr >> 8);
+		tx[2] = (u8)(addr & 0xff);
+		memcpy(tx + 3, buf32k + block * 32, 32);
+
+		// The controller computes and returns the data CRC; one reply byte.
+		int n = raphnetRawSiCommand(dev->handle, 0, tx, sizeof(tx), rx, sizeof(rx));
+		if (n < 1) {
+			sysLogPrintf(LOG_WARNING, "raphnet: write failed at block %u (got %d)", block, n);
+			return -1;
+		}
+	}
+
+	return 0;
 }
 
 #endif /* PD_ENABLE_RAPHNET */

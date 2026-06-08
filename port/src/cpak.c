@@ -99,6 +99,37 @@ CpakResult cpakPhysicalBackup(void)
 	return res;
 }
 
+CpakResult cpakImportPhysical(s32 channel)
+{
+	if (!g_RaphnetEnabled) {
+		return CPAK_ERR_DISABLED;
+	}
+
+	raphnet_dev *dev = raphnetOpen();
+	if (!dev) {
+		return CPAK_ERR_NODEVICE;
+	}
+
+	static u8 buf[MEMPAK_SIZE];
+	CpakResult res = CPAK_OK;
+
+	if (raphnetReadPak(dev, buf) != 0) {
+		res = CPAK_ERR_IO;
+	} else {
+		// Persist the raw dump as the channel's pak file, then load it: the
+		// loader detects the big-endian image and converts it to native format.
+		char path[FS_MAXPATH + 1];
+		snprintf(path, sizeof(path), "$S/cpak%d.mpk", (int)channel + 1);
+		res = cpakWriteImage(path, buf);
+		if (res == CPAK_OK && mempakLoadFile(channel, path) != 0) {
+			res = CPAK_ERR_IO;
+		}
+	}
+
+	raphnetClose(dev);
+	return res;
+}
+
 CpakResult cpakPhysicalRestore(const char *path)
 {
 	if (!g_RaphnetEnabled) {

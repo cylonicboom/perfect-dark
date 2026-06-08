@@ -1995,6 +1995,15 @@ static MenuItemHandlerResult menuhandlerCpakBackup(s32 operation, struct menuite
 	}
 	return 0;
 }
+
+static MenuItemHandlerResult menuhandlerCpakImport(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		CpakResult res = cpakImportPhysical(0);
+		sysLogPrintf(res == CPAK_OK ? LOG_NOTE : LOG_WARNING, "Controller Pak import: %s", cpakResultText(res));
+	}
+	return 0;
+}
 #endif
 
 struct menuitem g_ExtendedControllerPakMenuItems[] = {
@@ -2030,6 +2039,14 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		(uintptr_t)"Backup Physical Pak to File",
 		0,
 		menuhandlerCpakBackup,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Import Physical Pak to Pak 1",
+		0,
+		menuhandlerCpakImport,
 	},
 #endif
 	{

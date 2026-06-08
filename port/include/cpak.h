@@ -32,6 +32,13 @@ typedef enum {
 /* Read the physical Controller Pak and dump it to $S/mempak_<timestamp>.mpk. */
 CpakResult cpakPhysicalBackup(void);
 
+/*
+ * Read the physical Controller Pak via the adapter and install it as the live
+ * virtual pak for `channel` ($S/cpak<N>.mpk), converting from the pak's native
+ * big-endian format. Read-only with respect to the physical cartridge.
+ */
+CpakResult cpakImportPhysical(s32 channel);
+
 /* Back up the current physical pak, then write `path`'s 32KB image to it. */
 CpakResult cpakPhysicalRestore(const char *path);
 

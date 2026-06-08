@@ -16,6 +16,7 @@
 
 extern struct stagemusic g_StageTracks[];
 extern struct stageallocation g_StageAllocations8Mb[];
+extern s32 g_NetDedicatedMode; // 1 = headless dedicated server (no video/render)
 
 #define PARSE_STAGE_FLOAT(sec, name, v, min, max) \
 	p = modConfigParseFloatValue(p, token, &v); \
@@ -418,6 +419,21 @@ s32 modConfigLoad(const char *fname)
 
 s32 modTextureLoad(u16 num, void *dst, u32 dstSize)
 {
+#ifndef PLATFORM_N64
+	// The headless dedicated server never renders (video init is skipped), so
+	// loading the mod's external textures is pure waste — and worse, on a
+	// video-skipped build the texture memory pools aren't sized for a heavy
+	// external set (e.g. the AIO mod), so stage load EXHAUSTS a pool and
+	// WEDGES before netStartServer ever binds the port, leaving joining
+	// clients stuck on "Connecting..." against a server that never listens.
+	// Skip exactly like the "no mod textures dir" path below (-1 = not loaded;
+	// the caller falls back to the ROM texture, which a headless server also
+	// never renders).
+	if (g_NetDedicatedMode == 1) {
+		return -1;
+	}
+#endif
+
 	static s32 dirExists = -1;
 	if (dirExists < 0) {
 		dirExists = (fsFileSize(MOD_TEXTURES_DIR) >= 0);

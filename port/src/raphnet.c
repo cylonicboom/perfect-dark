@@ -162,21 +162,27 @@ static int gcn64Exchange(hid_device *handle, const u8 *cmd, int cmdlen, u8 *repl
 		return -1;
 	}
 
-	// Poll until the device returns a report echoing our command byte.
-	for (s32 attempt = 0; attempt < 200; attempt++) {
+	/*
+	 * Poll until the device returns a non-empty result. While the command is
+	 * still being processed the adapter returns an empty report (<= 1 byte, the
+	 * report id); a real reply has res_len = bytes - 1 > 0. (Matches
+	 * gcn64_exchange/gcn64_poll_result in raphnet/pj64raphnetraw.)
+	 */
+	for (s32 attempt = 0; attempt < 1000; attempt++) {
+		int r, reslen;
 		memset(buf, 0, sizeof(buf));
 		buf[0] = 0;
-		int r = hid_get_feature_report(handle, buf, sizeof(buf));
+		r = hid_get_feature_report(handle, buf, sizeof(buf));
 		if (r < 0) {
 			return -1;
 		}
-		if (r >= 2 && buf[1] == cmd[0]) {
-			int len = r - 1; // strip report-id byte
-			if (len > replymax) {
-				len = replymax;
+		reslen = r - 1;
+		if (reslen > 0) {
+			if (reslen > replymax) {
+				reslen = replymax;
 			}
-			memcpy(reply, buf + 1, len);
-			return len;
+			memcpy(reply, buf + 1, reslen);
+			return reslen;
 		}
 	}
 

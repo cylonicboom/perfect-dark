@@ -2500,9 +2500,8 @@ struct menudialogdef g_ExtendedClassicMenuDialog = {
 
 // Extended Options > Experiments: the port-added cheats relocated out of the
 // original Cheats > Gameplay menu (they stay cheats under the hood — only
-// the menu moved), plus the Classic Options sub-menu and an explicit
-// Unlock All Content trigger (formerly a side-effect of the retired
-// No Room Culling cheat).
+// the menu moved), plus the Classic Options sub-menu. (The "Unlock All
+// Content" item was removed — the Cheats menu already has it.)
 struct menuitem g_ExtendedExperimentsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -2543,22 +2542,6 @@ struct menuitem g_ExtendedExperimentsMenuItems[] = {
 		(uintptr_t)"Classic Options\n",
 		0,
 		(void *)&g_ExtendedClassicMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Unlock All Content\n",
-		0,
-		(void *)&g_CheatsConfirmUnlockMenuDialog,
-	},
-	{
-		MENUITEMTYPE_SEPARATOR,
-		0,
-		0,
-		0,
-		0,
-		NULL,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

@@ -7161,6 +7161,12 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		MPOPTION_SPAWNWITHWEAPON,
 		menuhandlerMpCheckboxOption,
 	},
+	// "No Drug Blur" (MPOPTION_NODRUGBLUR) is N64-only here on the port: it's
+	// superseded by the "No Blur Effects" Classic Option (Extended > Experiments
+	// > Classic Options), which disables ALL blur, not just the drug blur. The
+	// option bit is kept for mpsetup save compatibility; it's just no longer
+	// toggleable from this menu on the port.
+#ifdef PLATFORM_N64
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -7169,6 +7175,7 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		MPOPTION_NODRUGBLUR,
 		menuhandlerMpCheckboxOption,
 	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,

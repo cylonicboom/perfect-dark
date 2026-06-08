@@ -23,6 +23,15 @@
 | 10 | `projectileFree` propobj.c:1027 | AV read -1 (garbage `obj->projectile`) | crash | corrupt slot force-recycled by `weaponCreate`; PROJECTILE union ptr garbage | pool range-check in `objFreeProjectile` (5900b442f) | guarded |
 | 11 | `propIsOfCdType` prop.c:3488 | AV read 0x50 (NULL `obj`, `obj->unkgeo`) | crash | a ticking projectile's COLLISION examines a null-union OBJ/WEAPON **corpse** via a ROOM prop list — the per-tick-walk reaps fire too late (corpse seen before its own tick) | **reap corpses PRE-TICK in `propsHealActiveList`** (bab0b2fcd) | reaped early |
 
+| 12 | `roomsTickLighting` dlights.c:1461 | HANG (self-loop) | hang | **regression** — the #11 pre-tick reap `propFree`d a corpse that was already in the freelist → double-free → `next==self` → infinite walk | heal UNLINKS corpses via trusted `prev` instead of `propFree` (8b2bacb9f) | fixed (regression) |
+
+> **#12 LESSON (important):** a "corpse" (`prop->obj == NULL`) may **already be in the
+> freelist** (a free-without-delist put it there while still active-list-referenced).
+> Calling `propFree`/`propExecuteTickOperation(TICKOP_FREE)` on it **double-frees** it
+> (`prop->next = freeprops`, which is itself → self-loop hang). The heal now **unlinks**
+> corpses from the active chain via its own trusted `prev` (and severs `next==self`),
+> never re-frees them. Detect already-freed via `next==self` OR `prop->prev != walk_prev`.
+
 > **#11 was real progress:** `propsheal=0` (no cycle that run), `proptick_guard` fired
 > **363×** (corpses reaped), ran ~1083 log lines before dying. The corpse handling is
 > now consolidated at the single pre-everything point (lvTick-top heal): a corpse can

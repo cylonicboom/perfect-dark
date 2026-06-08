@@ -169,6 +169,15 @@ static void mempakFormatBlank(s32 channel)
 	/* directory pages are already zero == 16 empty entries */
 }
 
+/*
+ * DexDrive ".n64" container: a 0x1040-byte header (starting with the ASCII
+ * magic "123-456-STD") followed by the raw 32KB pak image. This is what tools
+ * like pj64raphnetraw export.
+ */
+#define MEMPAK_DEXDRIVE_SIZE   (0x1040 + MEMPAK_SIZE)
+#define MEMPAK_DEXDRIVE_HDRLEN 0x1040
+static const char MEMPAK_DEXDRIVE_MAGIC[] = "123-456-STD";
+
 s32 mempakLoadFile(s32 channel, const char *path)
 {
 	if (channel < 0 || channel >= MAXCONTROLLERS) {
@@ -181,16 +190,32 @@ s32 mempakLoadFile(s32 channel, const char *path)
 
 	FILE *fp = fsFileOpenRead(path);
 	if (fp) {
-		size_t n = fread(g_MempakBuf[channel], 1, MEMPAK_SIZE, fp);
+		// Read the whole file up front so the container format can be detected.
+		static u8 filebuf[MEMPAK_DEXDRIVE_SIZE];
+		size_t n = fread(filebuf, 1, sizeof(filebuf), fp);
 		fsFileFree(fp);
+
+		const u8 *image = NULL;
 		if (n == MEMPAK_SIZE) {
+			// raw 32KB pak image (.mpk)
+			image = filebuf;
+		} else if (n == MEMPAK_DEXDRIVE_SIZE
+				&& memcmp(filebuf, MEMPAK_DEXDRIVE_MAGIC, sizeof(MEMPAK_DEXDRIVE_MAGIC) - 1) == 0) {
+			// DexDrive .n64 container: skip the header to reach the pak image
+			image = filebuf + MEMPAK_DEXDRIVE_HDRLEN;
+		}
+
+		if (image) {
+			memcpy(g_MempakBuf[channel], image, MEMPAK_SIZE);
 			g_MempakPresent[channel] = 1;
 			return 0;
 		}
-		sysLogPrintf(LOG_WARNING, "mempak: `%s` is not a %d-byte pak image, reformatting", path, MEMPAK_SIZE);
+
+		sysLogPrintf(LOG_WARNING, "mempak: `%s` (%u bytes) is not a recognised pak image, reformatting",
+				path, (u32)n);
 	}
 
-	/* No file (or a bad one): create and persist a fresh blank pak. */
+	/* No file (or an unrecognised one): create and persist a fresh blank pak. */
 	mempakFormatBlank(channel);
 	mempakFlush(channel);
 	return 0;

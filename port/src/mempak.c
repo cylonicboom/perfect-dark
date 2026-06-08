@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <PR/os_internal.h>
 #include <PR/rcp.h>
 #include "controller.h"
@@ -10,6 +11,10 @@
 #include "fs.h"
 #include "system.h"
 #include "mempak.h"
+#ifdef PD_ENABLE_RAPHNET
+#include "raphnet.h"
+#include "cpak.h"
+#endif
 
 /* from src/game/pak.c */
 void pakCalculateChecksum(u8 *start, u8 *end, u16 *checksum);
@@ -28,6 +33,13 @@ static u8   g_MempakBuf[MAXCONTROLLERS][MEMPAK_SIZE];
 static u8   g_MempakPresent[MAXCONTROLLERS];
 static u8   g_MempakDirty[MAXCONTROLLERS];
 static char g_MempakPath[MAXCONTROLLERS][FS_MAXPATH + 1];
+
+#ifdef PD_ENABLE_RAPHNET
+static u8   g_MempakPhysical[MAXCONTROLLERS];           // live physical-pak mode
+static u8   g_MempakPhysDirty[MAXCONTROLLERS];          // PD note changed, needs write-back
+static u8   g_PhysicalBE[MAXCONTROLLERS][MEMPAK_SIZE];  // authoritative big-endian image (== cartridge)
+static raphnet_dev *g_RaphnetDev[MAXCONTROLLERS];
+#endif
 
 static int mempakValidChannel(int channel)
 {
@@ -89,6 +101,11 @@ s32 __osContRamWrite(OSMesgQueue *mq, int channel, u16 address, u8 *buffer, int 
 	}
 	memcpy(g_MempakBuf[channel] + (u32)address * BLOCKSIZE, buffer, BLOCKSIZE);
 	g_MempakDirty[channel] = 1;
+#ifdef PD_ENABLE_RAPHNET
+	if (g_MempakPhysical[channel]) {
+		g_MempakPhysDirty[channel] = 1;
+	}
+#endif
 	return 0;
 }
 
@@ -425,5 +442,236 @@ static int mempakImportBigEndian(s32 channel)
 	g_MempakDirty[channel] = 1;
 	return 1;
 }
+
+#ifdef PD_ENABLE_RAPHNET
+
+/* ---- live physical pak access (read at start, write PD note back on save) ----
+ *
+ * Only Perfect Dark's own note is ever written back; every other game's note
+ * and all filesystem metadata in g_PhysicalBE are left byte-for-byte untouched.
+ * The pak's original contents are backed up to a file before live mode starts.
+ *
+ * EXPERIMENTAL: writes to physical hardware and cannot be tested here.
+ */
+
+extern char g_PakNoteGameName[];
+extern char g_PakNoteExtName[];
+
+static void wbe16(u8 *p, u16 v) { p[0] = (u8)(v >> 8); p[1] = (u8)v; }
+static void wbe32(u8 *p, u32 v) { p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v; }
+
+/* Convert Perfect Dark's note file headers from native to big-endian, in place,
+ * recomputing the (byte-based) checksums and storing them big-endian. */
+static void mempakConvertPdNoteHeadersToBE(u8 *body, int len)
+{
+	int off = 0;
+
+	while (off + (int)sizeof(struct pakfileheader) <= len) {
+		struct pakfileheader *h = (struct pakfileheader *)(body + off);
+		u32 filetype = h->filetype;
+		u32 bodylen = h->bodylen;
+		u32 filelen = h->filelen;
+		u32 w1, w2;
+		u16 sum[2];
+
+		if (filelen == 0) {
+			break;
+		}
+
+		w1 = (filetype << 23) | ((bodylen & 0x7ff) << 12) | (filelen & 0xfff);
+		w2 = (((u32)h->deviceserial & 0x1fff) << 19) | (((u32)h->fileid & 0x7f) << 12)
+				| (((u32)h->generation & 0x1ff) << 3) | ((h->occupied & 1) << 2)
+				| ((h->writecompleted & 1) << 1) | (h->version & 1);
+
+		wbe32(body + off + 8, w1);
+		wbe32(body + off + 12, w2);
+
+		if (off + 16 + (int)bodylen <= len) {
+			pakCalculateChecksum(body + off + 16, body + off + 16 + bodylen, sum);
+			wbe16(body + off + 4, sum[0]);
+			wbe16(body + off + 6, sum[1]);
+		}
+		pakCalculateChecksum(body + off + 8, body + off + 16, sum);
+		wbe16(body + off + 0, sum[0]);
+		wbe16(body + off + 2, sum[1]);
+
+		if (filetype & PAKFILETYPE_TERMINATOR) {
+			break;
+		}
+
+		off += filelen;
+	}
+}
+
+/* Find Perfect Dark's note in a big-endian pak image and return its ordered
+ * page list (page numbers), or 0 if not present. */
+static int mempakBeFindPdPages(const u8 *be, u8 *pages)
+{
+	const u8 *dir = be + 24 * BLOCKSIZE;
+	const u8 *inode = be + 8 * BLOCKSIZE;
+	s32 e;
+
+	for (e = 0; e < 16; e++) {
+		const u8 *d = dir + e * 32;
+		if (mempakRdBe32(d) == (u32)ROM_GAMECODE && mempakRdBe16(d + 4) == (u16)ROM_COMPANYCODE) {
+			s32 page = mempakRdBe16(d + 6) & 0xff;
+			s32 n = 0;
+			s32 guard = 0;
+			while (page >= 5 && page < MEMPAK_NUM_PAGES && n < MEMPAK_NUM_PAGES && guard < MEMPAK_NUM_PAGES) {
+				u16 next = mempakRdBe16(inode + page * 2);
+				pages[n++] = (u8)page;
+				if (next == 1 || next == 3) {
+					break;
+				}
+				page = next & 0xff;
+				guard++;
+			}
+			return n;
+		}
+	}
+	return 0;
+}
+
+static void mempakBackupOriginal(s32 channel)
+{
+	char path[FS_MAXPATH + 1];
+	char stamp[32];
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+
+	if (tm) {
+		strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", tm);
+	} else {
+		snprintf(stamp, sizeof(stamp), "backup");
+	}
+	snprintf(path, sizeof(path), "$S/mempak_%s.mpk", stamp);
+
+	FILE *fp = fsFileOpenWrite(path);
+	if (fp) {
+		fwrite(g_PhysicalBE[channel], 1, MEMPAK_SIZE, fp);
+		fsFileFree(fp);
+		sysLogPrintf(LOG_NOTE, "mempak: backed up physical pak to %s", fsFullPath(path));
+	}
+}
+
+s32 mempakOpenPhysical(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
+{
+	if (channel < 0 || channel >= MAXCONTROLLERS) {
+		return PFS_ERR_NOPACK;
+	}
+
+	// Already live: just re-mount. PD re-probes paks periodically, and
+	// re-reading the cartridge here would clobber unsaved in-memory changes.
+	if (g_MempakPhysical[channel] && g_RaphnetDev[channel]) {
+		return mempakInitPak(queue, pfs, channel, arg3);
+	}
+
+	if (!g_RaphnetDev[channel]) {
+		raphnetInit();
+		g_RaphnetDev[channel] = raphnetOpen();
+	}
+	if (!g_RaphnetDev[channel]) {
+		return PFS_ERR_NOPACK;
+	}
+
+	if (raphnetReadPak(g_RaphnetDev[channel], g_PhysicalBE[channel]) != 0) {
+		raphnetClose(g_RaphnetDev[channel]);
+		g_RaphnetDev[channel] = NULL;
+		return PFS_ERR_NOPACK;
+	}
+
+	mempakBackupOriginal(channel);
+
+	// load the image into the working buffer and convert it to native order
+	memcpy(g_MempakBuf[channel], g_PhysicalBE[channel], MEMPAK_SIZE);
+	g_MempakPresent[channel] = 1;
+	g_MempakPath[channel][0] = '\0'; // live: persisted to the cartridge, not a file
+
+	if (!mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 0)) {
+		if (!(mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 1) && mempakImportBigEndian(channel))) {
+			sysLogPrintf(LOG_WARNING, "mempak: physical pak on channel %d is not readable", channel);
+			return PFS_ERR_NOPACK;
+		}
+	}
+
+	g_MempakPhysical[channel] = 1;
+	g_MempakPhysDirty[channel] = 0;
+	return mempakInitPak(queue, pfs, channel, arg3);
+}
+
+static void mempakPhysicalWriteback(s32 channel)
+{
+	static u8 note[MEMPAK_SIZE];
+	u8 pages[MEMPAK_NUM_PAGES];
+	OSPfs pfs;
+	OSPfsState state;
+	s32 fileno = -1;
+	s32 notebytes;
+	s32 npages;
+	s32 i;
+
+	if (!g_RaphnetDev[channel]) {
+		return;
+	}
+
+	if (mempakInitPak(NULL, &pfs, channel, NULL) != 0) {
+		return;
+	}
+
+	if (osPfsFindFile(&pfs, ROM_COMPANYCODE, ROM_GAMECODE, (u8 *)g_PakNoteGameName, (u8 *)g_PakNoteExtName, &fileno) != 0
+			|| fileno < 0) {
+		return; // no PD note to write back yet
+	}
+
+	if (osPfsFileState(&pfs, fileno, &state) != 0) {
+		return;
+	}
+
+	notebytes = state.file_size;
+	if (notebytes <= 0 || notebytes > (s32)sizeof(note) || (notebytes % BLOCKSIZE) != 0) {
+		return;
+	}
+
+	if (osPfsReadWriteFile(&pfs, fileno, PFS_READ, 0, notebytes, note) != 0) {
+		return;
+	}
+
+	mempakConvertPdNoteHeadersToBE(note, notebytes);
+
+	npages = mempakBeFindPdPages(g_PhysicalBE[channel], pages);
+	if (npages * 256 < notebytes) {
+		// PD note was (re)allocated to a different size/location than the pak
+		// holds; a fresh allocation on the cartridge isn't supported yet.
+		sysLogPrintf(LOG_WARNING, "mempak: cannot write PD note back (pak allocation mismatch)");
+		return;
+	}
+
+	for (i = 0; i < npages && i * 256 < notebytes; i++) {
+		u8 *dst = g_PhysicalBE[channel] + pages[i] * 256;
+		const u8 *src = note + i * 256;
+		if (memcmp(dst, src, 256) != 0) {
+			s32 b;
+			memcpy(dst, src, 256);
+			for (b = 0; b < 8; b++) {
+				if (raphnetWriteBlock(g_RaphnetDev[channel], (u16)(pages[i] * 8 + b), dst + b * 32) != 0) {
+					sysLogPrintf(LOG_WARNING, "mempak: physical write failed at page %d", pages[i]);
+					return;
+				}
+			}
+		}
+	}
+}
+
+void mempakTick(void)
+{
+	for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
+		if (g_MempakPhysical[i] && g_MempakPhysDirty[i]) {
+			g_MempakPhysDirty[i] = 0;
+			mempakPhysicalWriteback(i);
+		}
+	}
+}
+
+#endif /* PD_ENABLE_RAPHNET */
 
 #endif /* PD_ENABLE_CPAK */

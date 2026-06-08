@@ -27,6 +27,9 @@ s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k);
 /* Write the full 32KB Controller Pak image from `buf32k`. Returns 0 on success. */
 s32 raphnetWritePak(raphnet_dev *dev, const u8 *buf32k);
 
+/* Write a single 32-byte block (`block` is a 0..1023 index). Returns 0 on success. */
+s32 raphnetWriteBlock(raphnet_dev *dev, u16 block, const u8 *data32);
+
 void raphnetClose(raphnet_dev *dev);
 void raphnetShutdown(void);
 

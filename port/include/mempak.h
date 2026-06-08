@@ -44,4 +44,21 @@ s32 mempakIsPresent(s32 channel);
 /** Flush any dirty buffers to their .mpk files (e.g. on shutdown). */
 void mempakFlushAll(void);
 
+#ifdef PD_ENABLE_RAPHNET
+/**
+ * Read the physical Controller Pak on `channel` via the Raphnet adapter and use
+ * it as the live pak (converting from big-endian). A timestamped backup of the
+ * pak's original contents is written before live mode begins. Returns 0 on
+ * success, or a PFS_ERR_* code (e.g. PFS_ERR_NOPACK if no adapter/pak).
+ */
+s32 mempakOpenPhysical(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3);
+
+/**
+ * Per-frame hook: if a live physical pak has pending changes, write Perfect
+ * Dark's note back to the cartridge (only PD's note pages are touched). Safe to
+ * call every frame; does nothing unless a write is pending.
+ */
+void mempakTick(void);
+#endif
+
 #endif

@@ -209,6 +209,11 @@ void osContGetReadData(OSContPad *pad)
 			pad->errnum = 0;
 		}
 	}
+
+#ifdef PD_ENABLE_RAPHNET
+	// once-per-frame, quiescent point: flush any pending physical pak write-back
+	mempakTick();
+#endif
 }
 
 s32 osContStartQuery(OSMesgQueue *mq)
@@ -425,6 +430,17 @@ s32 osPfsIsPlug(OSMesgQueue *queue, u8 *pattern)
 
 s32 osPfsInitPak(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
 {
+#ifdef PD_ENABLE_RAPHNET
+	// Live physical pak through the adapter. The adapter exposes a single
+	// controller port, mapped to player 1 / channel 0.
+	if (g_RaphnetEnabled && channel == 0) {
+		if (mempakOpenPhysical(queue, pfs, channel, arg3) == 0) {
+			return 0;
+		}
+		// no adapter or unreadable pak: fall through to the virtual pak
+	}
+#endif
+
 	if (g_VirtualPakEnabled && channel >= 0 && channel < MAXCONTROLLERS && inputControllerConnected(channel)) {
 		char path[32];
 		snprintf(path, sizeof(path), "$S/cpak%d.mpk", channel + 1);

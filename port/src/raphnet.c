@@ -275,6 +275,24 @@ s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k)
 	return 0;
 }
 
+s32 raphnetWriteBlock(raphnet_dev *dev, u16 block, const u8 *data32)
+{
+	if (!dev || !dev->handle) {
+		return -1;
+	}
+
+	u16 addr = raphnetPakAddr(block);
+	u8 tx[3 + 32];
+	u8 rx[4];
+
+	tx[0] = N64_EXPANSION_WRITE;
+	tx[1] = (u8)(addr >> 8);
+	tx[2] = (u8)(addr & 0xff);
+	memcpy(tx + 3, data32, 32);
+
+	return raphnetRawSiCommand(dev->handle, 0, tx, sizeof(tx), rx, sizeof(rx)) < 1 ? -1 : 0;
+}
+
 s32 raphnetWritePak(raphnet_dev *dev, const u8 *buf32k)
 {
 	if (!dev || !dev->handle) {

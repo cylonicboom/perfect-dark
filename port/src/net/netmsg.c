@@ -69,6 +69,17 @@ static inline u32 netbufReadHidden(struct netbuf *buf)
 		hidden = (hidden & 0x0fffffff) | (ownerplayernum << 28);
 	}
 
+	// Strip OBJHFLAG_EMBEDDED: an embedment (knife/mine stuck in a chr/surface)
+	// is host-side heap state (struct embedment, aliased with obj->projectile in
+	// the 0x48 union) that is NEVER serialized. If the client kept the flag, the
+	// union pointer would be stale/garbage and objFreeEmbedmentOrProjectile would
+	// dereference it when a weapon slot is recycled (read-at-~0xff crash:
+	// weaponCreate -> objFreePermanently -> objFree, via SVC_PROP_SPAWN). The
+	// client can't reconstruct the embedment anyway, so drop the flag — the weapon
+	// just renders as a normal prop. Genuinely-embedded LOCAL projectiles (client
+	// physics) allocate their own valid embedment and never pass through here.
+	hidden &= ~OBJHFLAG_EMBEDDED;
+
 	return hidden;
 }
 

@@ -2398,6 +2398,17 @@ void lvTick(void)
 	s32 j;
 	s32 i;
 
+#ifndef PLATFORM_N64
+	// Heal a corrupted active-prop chain BEFORE any unbounded walk this frame
+	// (lightingTick/roomsTickLighting below, propsTick, and lvRender's
+	// propsTickPlayer): a netplay client can relink a freed prop into a ->next
+	// cycle that otherwise hangs the game. No-op on a healthy list. Gated to
+	// netplay (the corruption is client-side; cheap, harmless on the host).
+	if (g_NetMode != NETMODE_NONE) {
+		propsHealActiveList();
+	}
+#endif
+
 	lvCheckPauseStateChanged();
 
 #if VERSION >= VERSION_NTSC_1_0

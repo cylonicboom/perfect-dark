@@ -386,6 +386,110 @@ void propDelist(struct prop *prop)
 	prop->backgroundedframes = 0;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Corruption recovery for netplay clients. The active+paused prop chain is
+ * walked unbounded (to NULL) by several consumers — roomsTickLighting
+ * (dlights.c), propsRenderBeams (propobj.c) and the per-frame prop ticks. A
+ * client-side free/recycle bug can relink a freed prop back into the chain so
+ * its ->next forms a CYCLE: gdb on a hung client showed a syncid=0
+ * client-allocated weapon whose ->next pointed back at the list head, making a
+ * 56-node ring. Every unbounded walk then spins forever (hang) — a separate
+ * failure mode from the null-obj corpse that propsTickPlayer reaps.
+ *
+ * Called once per frame from lvTick BEFORE any walk. Detects a cycle (iteration
+ * cap) or an out-of-pool link, then uses Floyd's to find the exact back-edge so
+ * it severs ONLY the wrap (no orphaned props in the common tail->head case) and
+ * logs the culprit prop (id/type/syncid) so the creating free/activate can be
+ * hunted. Best-effort: on the degenerate out-of-pool case it severs at the last
+ * good node, which may orphan a few props (leaked until stage reset) — strictly
+ * better than a hang. Healthy lists return after one cheap walk.
+ */
+void propsHealActiveList(void)
+{
+	struct prop *prop = g_Vars.activeprops;
+	struct prop *prev = NULL;
+	struct prop *const poolstart = g_Vars.props;
+	struct prop *const poolend = g_Vars.props + g_Vars.maxprops;
+	const s32 cap = g_Vars.maxprops + 16;
+	s32 i = 0;
+	bool cycle = false;
+
+	while (prop) {
+		if (prop < poolstart || prop >= poolend) {
+			sysLogPrintf(LOG_WARNING,
+					"propsheal: out-of-pool active link %p after prop %d; severing",
+					(void *)prop, prev ? (s32)(prev - g_Vars.props) : -1);
+			if (prev) {
+				prev->next = NULL;
+				g_Vars.activepropstail = prev;
+			} else {
+				g_Vars.activeprops = NULL;
+				g_Vars.activepropstail = g_Vars.pausedprops;
+			}
+			return;
+		}
+		if (++i > cap) {
+			cycle = true;
+			break;
+		}
+		prev = prop;
+		prop = prop->next;
+	}
+
+	if (!cycle) {
+		return; // terminated at NULL within the cap — healthy
+	}
+
+	// A cycle exists and every node in it is in-pool (the range check above
+	// would have severed an out-of-pool link first). Locate the exact back-edge
+	// with Floyd's tortoise/hare so we break only the wrap and name the culprit.
+	{
+		struct prop *slow = g_Vars.activeprops;
+		struct prop *fast = g_Vars.activeprops;
+		struct prop *entry;
+		struct prop *back;
+
+		do {
+			slow = slow->next;
+			fast = fast->next ? fast->next->next : NULL;
+		} while (fast && slow != fast);
+
+		if (fast == NULL) {
+			// Shouldn't happen (the cap proved a cycle); fall back to severing
+			// at the last good node so the chain still terminates.
+			if (prev) {
+				prev->next = NULL;
+				g_Vars.activepropstail = prev;
+			}
+			sysLogPrintf(LOG_WARNING,
+					"propsheal: cycle detected but Floyd bailed; severed at prop %d",
+					prev ? (s32)(prev - g_Vars.props) : -1);
+			return;
+		}
+
+		entry = g_Vars.activeprops;
+		while (entry != slow) {
+			entry = entry->next;
+			slow = slow->next;
+		}
+
+		back = entry;
+		while (back->next != entry) {
+			back = back->next;
+		}
+
+		sysLogPrintf(LOG_WARNING,
+				"propsheal: active-list CYCLE healed — back-edge prop %d (type %d syncid %u flags 0x%x) -> entry prop %d (type %d syncid %u); severing",
+				(s32)(back - g_Vars.props), back->type, back->syncid, back->flags,
+				(s32)(entry - g_Vars.props), entry->type, entry->syncid);
+
+		back->next = NULL;
+		g_Vars.activepropstail = back;
+	}
+}
+#endif
+
 void propReparent(struct prop *mover, struct prop *adopter)
 {
 	mover->parent = adopter;

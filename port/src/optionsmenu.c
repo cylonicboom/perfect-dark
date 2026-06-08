@@ -1975,6 +1975,18 @@ static MenuItemHandlerResult menuhandlerRaphnetEnabled(s32 operation, struct men
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerRaphnetAutoBackup(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_RaphnetAutoBackup;
+	case MENUOP_SET:
+		g_RaphnetAutoBackup = data->checkbox.value;
+		break;
+	}
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerCpakBackup(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
@@ -2013,10 +2025,21 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		menuhandlerRaphnetEnabled,
 	},
 	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Auto-backup on Write",
+		0,
+		menuhandlerRaphnetAutoBackup,
+	},
+	// NB: selectable labels need a trailing "\n" - textMeasure only adds a
+	// line's height when it sees a newline, so without it the row collapses to
+	// a few pixels. (Checkboxes use a fixed height, so they don't need it.)
+	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Backup Pak to File",
+		(uintptr_t)"Backup Pak to File\n",
 		0,
 		menuhandlerCpakBackup,
 	},
@@ -2024,19 +2047,16 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Import from Adapter",
+		(uintptr_t)"Import from Adapter\n",
 		0,
 		menuhandlerCpakImport,
 	},
 #endif
-	// trailing spacer so the last action row isn't clipped by the box edge;
-	// press B to close. The dialog is kept short because the in-game options
-	// area only fits a few rows before the engine compresses/clips overflow.
 	{
-		MENUITEMTYPE_SEPARATOR,
+		MENUITEMTYPE_SELECTABLE,
 		0,
-		0,
-		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
 		0,
 		NULL,
 	},

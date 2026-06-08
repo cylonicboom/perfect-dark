@@ -68,6 +68,9 @@ void propsSort(void)
 {
 	s32 count = 0;
 	struct prop *prop = g_Vars.activeprops;
+#ifndef PLATFORM_N64
+	struct prop *prev = NULL; // last valid prop; names a corrupt ->next in the guard below
+#endif
 	s32 swapindex;
 	f32 depth;
 	s32 i;
@@ -76,6 +79,33 @@ void propsSort(void)
 
 	// Populate onscreenprops with the list of props
 	while (prop != g_Vars.pausedprops) {
+#ifndef PLATFORM_N64
+		// Corrupt-walk guard (client AV family, same as the propsTickPlayer
+		// guard): a prop freed AND recycled mid-frame can leave a dangling
+		// ->next, so this render walk steps onto a NULL/garbage pointer and
+		// crashes reading prop->flags below (observed in a hosted match: read
+		// at 0x1, truncated pointers in the registers). Validate prop is a
+		// live pool pointer; if not, log the PREVIOUS prop (whose ->next is the
+		// bad link) and abort this frame's sort instead of dereferencing it.
+		if (prop == NULL || prop < g_Vars.props
+				|| prop >= g_Vars.props + g_Vars.maxprops) {
+			static u32 lastwarn60 = 0;
+			if (g_Vars.lvframe60 - lastwarn60 > TICKS(60)) {
+				lastwarn60 = g_Vars.lvframe60;
+				if (prev) {
+					sysLogPrintf(LOG_WARNING,
+							"propssort_guard: prop %d (type %d flags 0x%x syncid %u) has corrupt next %p; aborting sort",
+							(s32)(prev - g_Vars.props), prev->type, prev->flags,
+							prev->syncid, (void *)prop);
+				} else {
+					sysLogPrintf(LOG_WARNING,
+							"propssort_guard: activeprops head corrupt (%p); aborting sort",
+							(void *)prop);
+				}
+			}
+			break;
+		}
+#endif
 		if ((prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) == (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) {
 #ifndef PLATFORM_N64
 			// With portal culling disabled (/octree bigroom) far more props
@@ -91,6 +121,9 @@ void propsSort(void)
 			count++;
 		}
 
+#ifndef PLATFORM_N64
+		prev = prop;
+#endif
 		prop = prop->next;
 	}
 

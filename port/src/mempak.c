@@ -5,9 +5,14 @@
 #include <PR/os_internal.h>
 #include <PR/rcp.h>
 #include "controller.h"
+#include "types.h"
+#include "constants.h"
 #include "fs.h"
 #include "system.h"
 #include "mempak.h"
+
+/* from src/game/pak.c */
+void pakCalculateChecksum(u8 *start, u8 *end, u16 *checksum);
 
 /*
  * RAM-backed implementation of the four Controller Pak hardware primitives the
@@ -170,6 +175,24 @@ static void mempakFormatBlank(s32 channel)
 }
 
 /*
+ * Validate the pack-ID checksum at block 1, interpreting the 14 leading u16s as
+ * either little-endian (our native virtual-pak format) or big-endian (a real N64
+ * pak, e.g. a DexDrive dump). Used to detect which byte order an image is in.
+ */
+static int mempakIdChecksumOK(const u8 *id, int bigendian)
+{
+	u32 sum = 0;
+	for (s32 i = 0; i < 28; i += 2) {
+		sum += bigendian ? ((id[i] << 8) | id[i + 1]) : (id[i] | (id[i + 1] << 8));
+	}
+	u16 stored = bigendian ? ((id[28] << 8) | id[29]) : (id[28] | (id[29] << 8));
+	return (u16)sum == stored;
+}
+
+/* Defined below: rebuild a big-endian real-hardware pak as a native LE image. */
+static int mempakImportBigEndian(s32 channel);
+
+/*
  * DexDrive ".n64" container: a 0x1040-byte header (starting with the ASCII
  * magic "123-456-STD") followed by the raw 32KB pak image. This is what tools
  * like pj64raphnetraw export.
@@ -208,11 +231,24 @@ s32 mempakLoadFile(s32 channel, const char *path)
 		if (image) {
 			memcpy(g_MempakBuf[channel], image, MEMPAK_SIZE);
 			g_MempakPresent[channel] = 1;
-			return 0;
-		}
 
-		sysLogPrintf(LOG_WARNING, "mempak: `%s` (%u bytes) is not a recognised pak image, reformatting",
-				path, (u32)n);
+			if (mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 0)) {
+				// native little-endian virtual pak: use directly
+				return 0;
+			}
+			if (mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 1)
+					&& mempakImportBigEndian(channel)) {
+				// real-hardware (big-endian) pak: converted to native format
+				sysLogPrintf(LOG_NOTE, "mempak: imported big-endian pak `%s` to native format", path);
+				mempakFlush(channel);
+				return 0;
+			}
+
+			sysLogPrintf(LOG_WARNING, "mempak: `%s` is not a valid pak image, reformatting", path);
+		} else {
+			sysLogPrintf(LOG_WARNING, "mempak: `%s` (%u bytes) is not a recognised pak image, reformatting",
+					path, (u32)n);
+		}
 	}
 
 	/* No file (or an unrecognised one): create and persist a fresh blank pak. */
@@ -248,6 +284,146 @@ s32 mempakInitPak(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
 	}
 
 	return 0;
+}
+
+/* ---- big-endian (real N64 / DexDrive) pak import ----
+ *
+ * Real Controller Paks store all multi-byte values big-endian, whereas this
+ * native (PC) build is little-endian. Perfect Dark's note *bodies* are written
+ * with a byte-oriented, MSB-first bit packer (savebuffer), so they are
+ * endian-independent; only the PFS metadata and the fixed 16-byte file headers
+ * differ. We therefore rebuild the pak natively: parse the big-endian
+ * directory/inode chains to recover each note's bytes, convert Perfect Dark's
+ * file headers, then re-create every note through the (little-endian) engine so
+ * all metadata and checksums are regenerated correctly. Other games' notes are
+ * preserved byte-for-byte (their bodies are copied verbatim).
+ *
+ * EXPERIMENTAL: validated by reasoning but not yet against real hardware.
+ */
+
+static u16 mempakRdBe16(const u8 *p) { return (p[0] << 8) | p[1]; }
+static u32 mempakRdBe32(const u8 *p) { return ((u32)p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
+
+/* Convert Perfect Dark's note body file headers from big-endian to native, in place. */
+static void mempakConvertPdNoteHeaders(u8 *body, int len)
+{
+	int off = 0;
+
+	while (off + (int)sizeof(struct pakfileheader) <= len) {
+		u8 *h = body + off;
+		u32 w1 = mempakRdBe32(h + 8);   // filetype:9, bodylen:11, filelen:12
+		u32 w2 = mempakRdBe32(h + 12);  // deviceserial:13, fileid:7, generation:9, occupied:1, writecompleted:1, version:1
+		u32 bodylen = (w1 >> 12) & 0x7ff;
+		u32 filelen = w1 & 0xfff;
+		u32 filetype = (w1 >> 23) & 0x1ff;
+		struct pakfileheader *hdr = (struct pakfileheader *)h;
+
+		if (filelen == 0) {
+			break;
+		}
+
+		// repack the two bitfield words in native (little-endian) order
+		hdr->filetype = filetype;
+		hdr->bodylen = bodylen;
+		hdr->filelen = filelen;
+		hdr->deviceserial = (w2 >> 19) & 0x1fff;
+		hdr->fileid = (w2 >> 12) & 0x7f;
+		hdr->generation = (w2 >> 3) & 0x1ff;
+		hdr->occupied = (w2 >> 2) & 1;
+		hdr->writecompleted = (w2 >> 1) & 1;
+		hdr->version = w2 & 1;
+
+		// recompute checksums over the now-native bytes (body bytes are unchanged)
+		if (off + 16 + (int)bodylen <= len) {
+			pakCalculateChecksum(h + 16, h + 16 + bodylen, hdr->bodysum);
+		}
+		pakCalculateChecksum(h + 8, h + 16, hdr->headersum);
+
+		if (filetype & PAKFILETYPE_TERMINATOR) {
+			break;
+		}
+
+		off += filelen;
+	}
+}
+
+static int mempakImportBigEndian(s32 channel)
+{
+	static u8 src[MEMPAK_SIZE];
+	static u8 notebody[MEMPAK_SIZE];
+	const u8 *dir;
+	const u8 *inode;
+	OSPfs pfs;
+	s32 e;
+
+	memcpy(src, g_MempakBuf[channel], MEMPAK_SIZE);
+
+	// only standard single-bank 32KB paks are supported (banks at id+0x1a)
+	if (src[BLOCKSIZE + 0x1a] != 1) {
+		return 0;
+	}
+
+	dir = src + 24 * BLOCKSIZE;   // dir_table  = page 3
+	inode = src + 8 * BLOCKSIZE;  // inode_table = page 1
+
+	// start from a fresh native pak; notes are re-created through the engine
+	mempakFormatBlank(channel);
+	if (mempakInitPak(NULL, &pfs, channel, NULL) != 0) {
+		return 0;
+	}
+
+	for (e = 0; e < 16; e++) {
+		const u8 *d = dir + e * 32;
+		u32 game = mempakRdBe32(d + 0);
+		u16 company = mempakRdBe16(d + 4);
+		s32 page = mempakRdBe16(d + 6) & 0xff;
+		s32 notelen = 0;
+		s32 guard = 0;
+		s32 fileno = -1;
+		u8 name[PFS_FILE_NAME_LEN];
+		u8 ext[PFS_FILE_EXT_LEN];
+
+		if (game == 0 || company == 0) {
+			continue;
+		}
+
+		memcpy(ext, d + 0xc, PFS_FILE_EXT_LEN);
+		memcpy(name, d + 0x10, PFS_FILE_NAME_LEN);
+
+		// follow the inode page chain to gather the note's pages in order
+		while (page >= 5 && page < MEMPAK_NUM_PAGES && guard < MEMPAK_NUM_PAGES
+				&& notelen + 256 <= (s32)sizeof(notebody)) {
+			u16 next = mempakRdBe16(inode + page * 2);
+			memcpy(notebody + notelen, src + page * 256, 256);
+			notelen += 256;
+			if (next == 1) {            // PFS_PAGE_LAST
+				break;
+			}
+			if (next == 3) {            // free page - chain is broken
+				break;
+			}
+			page = next & 0xff;
+			guard++;
+		}
+
+		if (notelen == 0) {
+			continue;
+		}
+
+		// Perfect Dark's own note needs its file headers converted to native order
+		if (game == (u32)ROM_GAMECODE && company == (u16)ROM_COMPANYCODE) {
+			mempakConvertPdNoteHeaders(notebody, notelen);
+		}
+
+		if (osPfsAllocateFile(&pfs, company, game, name, ext, notelen, &fileno) == 0 && fileno >= 0) {
+			osPfsReadWriteFile(&pfs, fileno, PFS_WRITE, 0, notelen, notebody);
+		} else {
+			sysLogPrintf(LOG_WARNING, "mempak: could not import note %d during big-endian conversion", e);
+		}
+	}
+
+	g_MempakDirty[channel] = 1;
+	return 1;
 }
 
 #endif /* PD_ENABLE_CPAK */

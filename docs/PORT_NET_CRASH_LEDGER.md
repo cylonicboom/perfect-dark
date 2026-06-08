@@ -20,7 +20,14 @@
 | 7 | `objFreeEmbedmentOrProjectile` propobj.c:2403 | AV read 0xff | crash | client kept `OBJHFLAG_EMBEDDED` (host-only embedment, unserialized) → garbage union ptr, freed in `weaponCreate` recycle | strip flag in `netbufReadHidden` (82dafd81f) | **fixed (source)** |
 | 8 | `chrTick`/`func0f0706f8` chr.c:3028 | HANG | hang | chr **child-chain** cycle (separate list) | **chrHealChildList** per-tick (b300a019a) | healed |
 | 9 | `explosionTick` explosions.c:1028 | AV read 0x3d4 (NULL `prop->explosion`) | crash | EXPLOSION corpse ticked by `propsTick` (lvTick walk had no reap) | reap in `propsTick` (aa37a077d) | reaped |
-| 10 | `projectileFree` propobj.c:1027 | AV read -1 (garbage `obj->projectile`) | crash | corrupt slot force-recycled by `weaponCreate`; PROJECTILE union ptr garbage | pool range-check in `objFreeProjectile` (this commit) | guarded |
+| 10 | `projectileFree` propobj.c:1027 | AV read -1 (garbage `obj->projectile`) | crash | corrupt slot force-recycled by `weaponCreate`; PROJECTILE union ptr garbage | pool range-check in `objFreeProjectile` (5900b442f) | guarded |
+| 11 | `propIsOfCdType` prop.c:3488 | AV read 0x50 (NULL `obj`, `obj->unkgeo`) | crash | a ticking projectile's COLLISION examines a null-union OBJ/WEAPON **corpse** via a ROOM prop list — the per-tick-walk reaps fire too late (corpse seen before its own tick) | **reap corpses PRE-TICK in `propsHealActiveList`** (bab0b2fcd) | reaped early |
+
+> **#11 was real progress:** `propsheal=0` (no cycle that run), `proptick_guard` fired
+> **363×** (corpses reaped), ran ~1083 log lines before dying. The corpse handling is
+> now consolidated at the single pre-everything point (lvTick-top heal): a corpse can
+> no longer be seen by ANY tick / collision / render walk this frame, and it's
+> `propDeregisterRooms`'d so room-list consumers (collision) can't reach it either.
 
 ## Root-cause fixes landed (not just guards)
 - **aff12448c** — `propsTickPlayer` REAPS null-obj corpses (TICKOP_FREE) instead of skipping.

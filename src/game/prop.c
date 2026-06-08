@@ -2333,7 +2333,25 @@ void propsTickPlayer(bool islastplayer)
 					if (objrestore) {
 						objwirepos = prop->pos;
 					}
-					op = objTickPlayer(prop);
+					// Zombie guard: a typed OBJ/WEAPON/DOOR prop whose union
+					// pointer (prop->obj) is NULL is a freed-but-still-listed
+					// corpse (proptick walk / null-obj scoring guard family).
+					// objTickPlayer's very first deref (obj->model at +0x20)
+					// crashes on it — the 2nd hosted-client crash. Skip the
+					// tick + log the prop id (the scoring guard above only
+					// protected its own deref, not the tick dispatch).
+					if (prop->obj == NULL) {
+						static u32 lastwarn60b = 0;
+						if (g_Vars.lvframe60 - lastwarn60b > TICKS(60)) {
+							lastwarn60b = g_Vars.lvframe60;
+							sysLogPrintf(LOG_WARNING,
+									"proptick_guard: skip null-obj tick prop %d type %d flags 0x%x syncid %u",
+									(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+						}
+						op = TICKOP_NONE;
+					} else {
+						op = objTickPlayer(prop);
+					}
 					if (objrestore && op != TICKOP_FREE && prop->obj) {
 						prop->pos = objwirepos;
 						// objTickPlayer rebuilt the obj's collision geometry from the

@@ -429,6 +429,33 @@ void propsHealActiveList(void)
 			}
 			return;
 		}
+		// Pre-tick corpse reap (BEFORE the cycle cap, so corpses don't inflate the
+		// iteration count). A listed OBJ/WEAPON/DOOR/EXPLOSION/SMOKE prop whose
+		// union pointer (prop->obj/->explosion/... alias offset 0x48) is NULL is a
+		// freed-but-still-listed corpse. The per-tick-walk reaps (propsTickPlayer/
+		// propsTick) fire too late: a ticking projectile's COLLISION examines
+		// room-list props (propIsOfCdType: obj->unkgeo) and AVs on a corpse before
+		// its own tick reaps it. Reaping here — at lvTick top, before any tick OR
+		// collision this frame — closes that: propExecuteTickOperation(TICKOP_FREE)
+		// propDeregisterRooms (so collision can't reach it) + propDelist + propFree
+		// (the regen check short-circuits on a NULL union). deadnext is captured
+		// first so the walk advances even if the corpse's own links are corrupt.
+		if (prop->obj == NULL
+				&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON
+					|| prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_EXPLOSION
+					|| prop->type == PROPTYPE_SMOKE)) {
+			struct prop *deadnext = prop->next;
+			static u32 lastwarn60f = 0;
+			if (g_Vars.lvframe60 - lastwarn60f > TICKS(60)) {
+				lastwarn60f = g_Vars.lvframe60;
+				sysLogPrintf(LOG_WARNING,
+						"propsheal: reap corpse prop %d type %d flags 0x%x syncid %u (pre-tick)",
+						(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+			}
+			propExecuteTickOperation(prop, TICKOP_FREE);
+			prop = deadnext;
+			continue;
+		}
 		if (++i > cap) {
 			cycle = true;
 			break;

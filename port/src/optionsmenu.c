@@ -14,6 +14,10 @@
 #include "video.h"
 #include "input.h"
 #include "config.h"
+#ifdef PD_ENABLE_CPAK
+#include "system.h"
+#include "cpak.h"
+#endif
 
 static s32 g_ExtMenuPlayer = 0;
 static struct menudialogdef *g_ExtNextDialog = NULL;
@@ -1945,6 +1949,126 @@ static MenuItemHandlerResult menuhandlerOpenBindsMenu(s32 operation, struct menu
 	return 0;
 }
 
+#ifdef PD_ENABLE_CPAK
+static MenuItemHandlerResult menuhandlerVirtualPakEnabled(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_VirtualPakEnabled;
+	case MENUOP_SET:
+		g_VirtualPakEnabled = data->checkbox.value;
+		break;
+	}
+	return 0;
+}
+
+#ifdef PD_ENABLE_RAPHNET
+static MenuItemHandlerResult menuhandlerRaphnetEnabled(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_RaphnetEnabled;
+	case MENUOP_SET:
+		g_RaphnetEnabled = data->checkbox.value;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerRaphnetAutoBackup(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_RaphnetAutoBackup;
+	case MENUOP_SET:
+		g_RaphnetAutoBackup = data->checkbox.value;
+		break;
+	}
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerCpakBackup(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		CpakResult res = cpakPhysicalBackup();
+		sysLogPrintf(res == CPAK_OK ? LOG_NOTE : LOG_WARNING, "Controller Pak backup: %s", cpakResultText(res));
+	}
+	return 0;
+}
+#endif
+
+struct menuitem g_ExtendedControllerPakMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Virtual Controller Pak",
+		0,
+		menuhandlerVirtualPakEnabled,
+	},
+#ifdef PD_ENABLE_RAPHNET
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Raphnet Physical Pak",
+		0,
+		menuhandlerRaphnetEnabled,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Auto-backup Pak on Write",
+		0,
+		menuhandlerRaphnetAutoBackup,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Backup Physical Pak to File",
+		0,
+		menuhandlerCpakBackup,
+	},
+#endif
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedControllerPakMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Controller Pak Options",
+	g_ExtendedControllerPakMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+#endif /* PD_ENABLE_CPAK */
+
 struct menuitem g_ExtendedMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -1978,6 +2102,16 @@ struct menuitem g_ExtendedMenuItems[] = {
 		0,
 		menuhandlerOpenControllerMenu,
 	},
+#ifdef PD_ENABLE_CPAK
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Controller Pak\n",
+		0,
+		(void *)&g_ExtendedControllerPakMenuDialog,
+	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

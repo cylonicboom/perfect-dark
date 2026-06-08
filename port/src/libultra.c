@@ -12,6 +12,10 @@
 #include "video.h"
 #include "audio.h"
 #include "fs.h"
+#ifdef PD_ENABLE_CPAK
+#include "mempak.h"
+#include "cpak.h"
+#endif
 
 #define EEPROM_SIZE (EEP16K_MAXBLOCKS * 8)
 #define EEPROM_FNAME "eeprom.bin"
@@ -331,6 +335,8 @@ s32 osEepromLongWrite(OSMesgQueue *mq, u8 address, u8 *buffer, int nbytes)
 
 /* Pfs */
 
+#ifndef PD_ENABLE_CPAK
+
 s32 osPfsIsPlug(OSMesgQueue *queue, u8 *pattern)
 {
 	if (pattern) {
@@ -394,6 +400,43 @@ s32 osPfsReadWriteFile(OSPfs* pfs, s32 fileNo, u8 flag, int offset, int size, u8
 {
 	return PFS_ERR_NOPACK;
 }
+
+#else /* PD_ENABLE_CPAK */
+
+/*
+ * Controller Pak support enabled. osPfsIsPlug/osPfsInitPak are provided here
+ * (backed by the in-memory Virtual Pak image), while the rest of the osPfs*
+ * filesystem API comes from the real decomp engine compiled into the port.
+ */
+
+s32 osPfsIsPlug(OSMesgQueue *queue, u8 *pattern)
+{
+	if (pattern) {
+		*pattern = 0;
+		for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
+			// a slot holds either a rumble pak or a controller pak, as on console
+			if (inputRumbleSupported(i) || (g_VirtualPakEnabled && inputControllerConnected(i))) {
+				*pattern |= 1 << i;
+			}
+		}
+	}
+	return 0;
+}
+
+s32 osPfsInitPak(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
+{
+	if (g_VirtualPakEnabled && channel >= 0 && channel < MAXCONTROLLERS && inputControllerConnected(channel)) {
+		char path[32];
+		snprintf(path, sizeof(path), "$S/cpak%d.mpk", channel + 1);
+		mempakLoadFile(channel, path);
+		return mempakInitPak(queue, pfs, channel, arg3);
+	}
+
+	// no virtual pak here: fall back to rumble-pak detection, as before
+	return inputRumbleSupported(channel) ? PFS_ERR_DEVICE : PFS_ERR_NOPACK;
+}
+
+#endif /* PD_ENABLE_CPAK */
 
 /* Gbpak */
 

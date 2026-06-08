@@ -2386,6 +2386,23 @@ void func0f06ab60(struct defaultobj *obj, struct coord *arg1, Mtxf *arg2, RoomNu
 void objFreeProjectile(struct defaultobj *obj)
 {
 	if (obj->hidden & OBJHFLAG_PROJECTILE) {
+#ifndef PLATFORM_N64
+		// Defensive: a corrupted / force-recycled weapon slot can hold a garbage
+		// obj->projectile (observed 0xffffffffffffffff) with OBJHFLAG_PROJECTILE
+		// still set — projectileFree then derefs it (read-at-(-1) crash via
+		// weaponCreate's force-recycle of a full slot, the same class as the
+		// embedded-union crash). obj->projectile is always a pointer INTO the
+		// g_Projectiles pool, so reject anything outside it: clear the flag and
+		// skip the free rather than dereference a wild pointer. Valid pointers
+		// (incl. NULL) are unaffected.
+		if (obj->projectile != NULL
+				&& (obj->projectile < g_Projectiles
+					|| obj->projectile >= g_Projectiles + g_MaxProjectiles)) {
+			obj->projectile = NULL;
+			obj->hidden &= ~OBJHFLAG_PROJECTILE;
+			return;
+		}
+#endif
 		projectileFree(obj->projectile);
 		obj->projectile = NULL;
 

@@ -2024,14 +2024,6 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		menuhandlerRaphnetAutoBackup,
 	},
 	{
-		MENUITEMTYPE_SEPARATOR,
-		0,
-		0,
-		0,
-		0,
-		NULL,
-	},
-	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
@@ -2040,14 +2032,6 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		menuhandlerCpakBackup,
 	},
 #endif
-	{
-		MENUITEMTYPE_SEPARATOR,
-		0,
-		0,
-		0,
-		0,
-		NULL,
-	},
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

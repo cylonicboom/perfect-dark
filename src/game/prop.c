@@ -2333,22 +2333,35 @@ void propsTickPlayer(bool islastplayer)
 					if (objrestore) {
 						objwirepos = prop->pos;
 					}
-					// Zombie guard: a typed OBJ/WEAPON/DOOR prop whose union
+					// Zombie REAP: a typed OBJ/WEAPON/DOOR prop whose union
 					// pointer (prop->obj) is NULL is a freed-but-still-listed
-					// corpse (proptick walk / null-obj scoring guard family).
-					// objTickPlayer's very first deref (obj->model at +0x20)
-					// crashes on it — the 2nd hosted-client crash. Skip the
-					// tick + log the prop id (the scoring guard above only
-					// protected its own deref, not the tick dispatch).
+					// corpse. Root cause (the proptick/propssort/propsbeams
+					// guard family): objFree(obj, /*freeprop=*/false) — used by
+					// the OBJHFLAG_DELETING reaper (propobj.c:11125), bot/player
+					// pickups, and objTestForPickup — sets obj->prop->obj = NULL
+					// and DEFERS the actual propDelist/propFree to the caller
+					// honouring the returned TICKOP_FREE. If that TICKOP_FREE is
+					// ever dropped, the prop is left listed with obj==NULL, and
+					// objTickPlayer's first deref (obj->model at +0x20) crashes
+					// on it. The earlier version of this guard set TICKOP_NONE,
+					// which merely SKIPPED the tick — so the corpse lingered
+					// frame after frame until a different walk (propsRenderBeams
+					// cycle hang, propsSort) tripped on it. Reaping it instead
+					// (TICKOP_FREE) restores the "no null-obj props in the active
+					// list" invariant on the very next tick: propExecuteTick-
+					// Operation's regen check short-circuits on prop->obj==NULL
+					// and falls straight to propDeregisterRooms/propDelist/
+					// propFree — the same path (incl. the harmless double
+					// deregister) the normal DELETING reaper already takes.
 					if (prop->obj == NULL) {
 						static u32 lastwarn60b = 0;
 						if (g_Vars.lvframe60 - lastwarn60b > TICKS(60)) {
 							lastwarn60b = g_Vars.lvframe60;
 							sysLogPrintf(LOG_WARNING,
-									"proptick_guard: skip null-obj tick prop %d type %d flags 0x%x syncid %u",
+									"proptick_guard: reap null-obj prop %d type %d flags 0x%x syncid %u",
 									(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
 						}
-						op = TICKOP_NONE;
+						op = TICKOP_FREE;
 					} else {
 						op = objTickPlayer(prop);
 					}
@@ -2432,6 +2445,23 @@ void propsTickPlayer(bool islastplayer)
 				} else if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR) {
 					obj = prop->obj;
 
+#ifndef PLATFORM_N64
+					// Zombie REAP (background path): mirror the foreground null-obj
+					// reap above. The background obj-tick derefs obj->type at
+					// g_PausableObjs[obj->type] below with no null check, so a
+					// freed-but-still-listed corpse here crashes BEFORE
+					// objTickPlayer ever runs. Reap it the same way (TICKOP_FREE).
+					if (obj == NULL) {
+						static u32 lastwarn60c = 0;
+						if (g_Vars.lvframe60 - lastwarn60c > TICKS(60)) {
+							lastwarn60c = g_Vars.lvframe60;
+							sysLogPrintf(LOG_WARNING,
+									"proptick_guard: reap null-obj bg prop %d type %d flags 0x%x syncid %u",
+									(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+						}
+						op = TICKOP_FREE;
+					} else
+#endif
 					if (!g_PausableObjs[obj->type]) {
 						op = objTickPlayer(prop);
 					} else if (prop->timetoregen <= 0) {

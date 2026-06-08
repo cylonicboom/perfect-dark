@@ -3245,10 +3245,18 @@ u32 netSend(struct netclient *dstcl, struct netbuf *buf, const s32 reliable, con
 	return ret;
 }
 
+// The combatant netPlayersAllocate swapped the local client's slot 0 with on a
+// client (NULL = no swap, e.g. the first joiner who is already at slot 0).
+// netSyncIdsAllocate reads it to mirror the swap in the player PROP SYNCIDS —
+// the player swap and the syncid swap MUST agree, or prop-targeted player
+// messages (SVC_CHR_DISARM, ...) resolve to the wrong pawn. Set every call.
+static struct netclient *s_netSlot0SwapOccupant = NULL;
+
 void netPlayersAllocate(void)
 {
 	s32 playernum = 0;
 
+	s_netSlot0SwapOccupant = NULL;
 	if (g_NetMode == NETMODE_CLIENT && !g_NetLocalClient->is_spectator) {
 		// Always put the LOCAL player at local index 0 — the invariant the whole
 		// decompiled codebase assumes ("the local player is g_Vars.players[0]";
@@ -3283,6 +3291,7 @@ void netPlayersAllocate(void)
 		if (svplayernum != 0 && occupant) {
 			g_NetLocalClient->playernum = 0;
 			occupant->playernum = svplayernum;
+			s_netSlot0SwapOccupant = occupant; // netSyncIdsAllocate mirrors this in the syncids
 
 			// F2 body bits arrive wire-indexed (by the host's dense playernums).
 			// The swap moves the local client to slot 0 and the occupant to
@@ -3457,13 +3466,22 @@ void netSyncIdsAllocate(void)
 			netDisconnect();
 			return;
 		}
-		// Skip the swap when the host is a spectator — they have no prop on
-		// the wire, so g_NetClients[0].player is NULL and there's nothing to
-		// swap with. The local client is already at slot 0 in this case
-		// (netPlayersAllocate doesn't remap it).
-		if (g_NetClients[0].player && g_NetClients[0].player->prop) {
-			const u16 sid = g_NetClients[0].player->prop->syncid;
-			g_NetClients[0].player->prop->syncid = g_NetLocalClient->player->prop->syncid;
+		// Mirror the netPlayersAllocate player swap in the PROP SYNCIDS. Syncids
+		// were assigned above by g_Vars.props index = the player's LOCAL slot,
+		// but the server keyed each player's prop by its SERVER slot, so the
+		// local player's prop (now at local slot 0) must take the syncid the
+		// server gave it. Swap with the SAME occupant netPlayersAllocate swapped
+		// slots with — P2P: the host (== g_NetClients[0]); dedicated/spectator
+		// host: the combatant that held playernum 0 (g_NetClients[0] is the
+		// pawnless spectator there, so the old g_NetClients[0] keying skipped
+		// this swap and left the local player's prop with the WRONG syncid —
+		// prop-targeted player messages like SVC_CHR_DISARM then resolved to the
+		// wrong pawn or to nothing). NULL occupant = no player swap = no syncid
+		// swap (the first joiner is already at slot 0).
+		if (s_netSlot0SwapOccupant && s_netSlot0SwapOccupant->player
+				&& s_netSlot0SwapOccupant->player->prop) {
+			const u16 sid = s_netSlot0SwapOccupant->player->prop->syncid;
+			s_netSlot0SwapOccupant->player->prop->syncid = g_NetLocalClient->player->prop->syncid;
 			g_NetLocalClient->player->prop->syncid = sid;
 		}
 	}

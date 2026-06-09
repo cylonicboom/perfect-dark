@@ -511,33 +511,109 @@ static void mempakConvertPdNoteHeadersToBE(u8 *body, int len)
 	}
 }
 
-/* Find Perfect Dark's note in a big-endian pak image and return its ordered
- * page list (page numbers), or 0 if not present. */
-static int mempakBeFindPdPages(const u8 *be, u8 *pages)
+/*
+ * Convert one __OSInodeUnit (a page reference) from native to big-endian, in
+ * place. A "free" (3) or "last" (1) marker is stored in the native low byte and
+ * must be byteswapped; a real page reference is [bank][page] in byte order,
+ * which is identical in both endians (for single-bank paks bank is 0).
+ */
+static void mempakUnitToBE(u8 *p)
 {
-	const u8 *dir = be + 24 * BLOCKSIZE;
-	const u8 *inode = be + 8 * BLOCKSIZE;
+	u16 v = p[0] | (p[1] << 8);
+	if (v == 1 || v == 3) {
+		u8 t = p[0];
+		p[0] = p[1];
+		p[1] = t;
+	}
+}
+
+/* Find Perfect Dark's note in a native pak image and return its ordered page
+ * list, or 0 if not present. */
+static int mempakLeFindPdPages(const u8 *le, u8 *pages)
+{
+	const u8 *dir = le + 24 * BLOCKSIZE;
+	const u8 *inode = le + 8 * BLOCKSIZE;
 	s32 e;
 
 	for (e = 0; e < 16; e++) {
 		const u8 *d = dir + e * 32;
-		if (mempakRdBe32(d) == (u32)ROM_GAMECODE && mempakRdBe16(d + 4) == (u16)ROM_COMPANYCODE) {
-			s32 page = mempakRdBe16(d + 6) & 0xff;
+		u32 game = d[0] | (d[1] << 8) | (d[2] << 16) | ((u32)d[3] << 24);
+		u16 company = d[4] | (d[5] << 8);
+		if (game == (u32)ROM_GAMECODE && company == (u16)ROM_COMPANYCODE) {
+			s32 page = d[7]; // start_page .inode_t.page (byte 1 of the unit at offset 6)
 			s32 n = 0;
 			s32 guard = 0;
 			while (page >= 5 && page < MEMPAK_NUM_PAGES && n < MEMPAK_NUM_PAGES && guard < MEMPAK_NUM_PAGES) {
-				u16 next = mempakRdBe16(inode + page * 2);
+				u16 v = inode[page * 2] | (inode[page * 2 + 1] << 8);
 				pages[n++] = (u8)page;
-				if (next == 1 || next == 3) {
+				if (v == 1 || v == 3) {
 					break;
 				}
-				page = next & 0xff;
+				page = inode[page * 2 + 1];
 				guard++;
 			}
 			return n;
 		}
 	}
 	return 0;
+}
+
+/*
+ * Build a complete big-endian pak image from the native working buffer:
+ *  - keep the cartridge's original ID page (constant, valid big-endian);
+ *  - convert Perfect Dark's note file headers native -> big-endian;
+ *  - byteswap the inode page references and directory fields.
+ * Other games' note bodies are already big-endian (copied verbatim on import),
+ * so they pass through unchanged. This handles a freshly allocated PD note as
+ * well as an in-place rewrite.
+ */
+static void mempakExportToBE(s32 channel, u8 *out)
+{
+	static u8 note[MEMPAK_SIZE];
+	u8 pages[MEMPAK_NUM_PAGES];
+	OSPfs pfs;
+	OSPfsState state;
+	s32 fileno = -1;
+	s32 i;
+
+	memcpy(out, g_MempakBuf[channel], MEMPAK_SIZE);
+
+	// convert Perfect Dark's note headers (read linearly via the engine, then
+	// scatter back into the per-page layout)
+	if (mempakInitPak(NULL, &pfs, channel, NULL) == 0
+			&& osPfsFindFile(&pfs, ROM_COMPANYCODE, ROM_GAMECODE, (u8 *)g_PakNoteGameName, (u8 *)g_PakNoteExtName, &fileno) == 0
+			&& fileno >= 0
+			&& osPfsFileState(&pfs, fileno, &state) == 0) {
+		s32 notebytes = state.file_size;
+		if (notebytes > 0 && notebytes <= (s32)sizeof(note) && (notebytes % BLOCKSIZE) == 0
+				&& osPfsReadWriteFile(&pfs, fileno, PFS_READ, 0, notebytes, note) == 0) {
+			s32 npages = mempakLeFindPdPages(g_MempakBuf[channel], pages);
+			mempakConvertPdNoteHeadersToBE(note, notebytes);
+			for (i = 0; i < npages && i * 256 < notebytes; i++) {
+				memcpy(out + pages[i] * 256, note + i * 256, 256);
+			}
+		}
+	}
+
+	// keep the cartridge's original ID page (page 0 = blocks 0-7)
+	memcpy(out, g_PhysicalBE[channel], 8 * BLOCKSIZE);
+
+	// byteswap inode page references (main table + mirror), data pages only
+	for (i = 5; i < MEMPAK_NUM_PAGES; i++) {
+		mempakUnitToBE(out + 8 * BLOCKSIZE + i * 2);
+		mempakUnitToBE(out + 16 * BLOCKSIZE + i * 2);
+	}
+
+	// byteswap directory entry fields
+	for (i = 0; i < 16; i++) {
+		u8 *d = out + 24 * BLOCKSIZE + i * 32;
+		u8 t;
+		t = d[0]; d[0] = d[3]; d[3] = t;   // game_code u32
+		t = d[1]; d[1] = d[2]; d[2] = t;
+		t = d[4]; d[4] = d[5]; d[5] = t;   // company_code u16
+		mempakUnitToBE(d + 6);             // start_page
+		t = d[0xa]; d[0xa] = d[0xb]; d[0xb] = t; // data_sum u16
+	}
 }
 
 static void mempakBackupOriginal(s32 channel)
@@ -560,6 +636,37 @@ static void mempakBackupOriginal(s32 channel)
 		fsFileFree(fp);
 		sysLogPrintf(LOG_NOTE, "mempak: backed up physical pak to %s", fsFullPath(path));
 	}
+}
+
+/* Find Perfect Dark's note in a big-endian pak image (the physical cartridge)
+ * and return its ordered page list, or 0 if not present. Used by the fast
+ * PD-save-only read + write-back paths, which operate on the raw cartridge
+ * image rather than the native (little-endian) virtual buffer. */
+static int mempakBeFindPdPages(const u8 *be, u8 *pages)
+{
+	const u8 *dir = be + 24 * BLOCKSIZE;   // dir_table  = page 3
+	const u8 *inode = be + 8 * BLOCKSIZE;  // inode_table = page 1
+	s32 e;
+
+	for (e = 0; e < 16; e++) {
+		const u8 *d = dir + e * 32;
+		if (mempakRdBe32(d) == (u32)ROM_GAMECODE && mempakRdBe16(d + 4) == (u16)ROM_COMPANYCODE) {
+			s32 page = mempakRdBe16(d + 6) & 0xff;
+			s32 n = 0;
+			s32 guard = 0;
+			while (page >= 5 && page < MEMPAK_NUM_PAGES && n < MEMPAK_NUM_PAGES && guard < MEMPAK_NUM_PAGES) {
+				u16 next = mempakRdBe16(inode + page * 2);
+				pages[n++] = (u8)page;
+				if (next == 1 || next == 3) {  // PFS_PAGE_LAST / free
+					break;
+				}
+				page = next & 0xff;
+				guard++;
+			}
+			return n;
+		}
+	}
+	return 0;
 }
 
 // Number of 32-byte blocks in the metadata region (pack ID + inode table + its
@@ -671,7 +778,11 @@ s32 mempakOpenPhysical(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
 	return mempakInitPak(queue, pfs, channel, arg3);
 }
 
-static void mempakPhysicalWriteback(s32 channel)
+// Fast-mode write-back: PD's note already exists on the cartridge, so write only
+// its data pages back -- to the cartridge's own page list (from the real
+// directory we read at boot) -- never touching the directory, inode, or any
+// other game's pages. Creating a brand-new note needs the full-read safe path.
+static void mempakPhysicalWritebackPdOnly(s32 channel)
 {
 	static u8 note[MEMPAK_SIZE];
 	u8 pages[MEMPAK_NUM_PAGES];
@@ -682,28 +793,20 @@ static void mempakPhysicalWriteback(s32 channel)
 	s32 npages;
 	s32 i;
 
-	if (!g_RaphnetDev[channel]) {
-		return;
-	}
-
 	if (mempakInitPak(NULL, &pfs, channel, NULL) != 0) {
 		return;
 	}
-
 	if (osPfsFindFile(&pfs, ROM_COMPANYCODE, ROM_GAMECODE, (u8 *)g_PakNoteGameName, (u8 *)g_PakNoteExtName, &fileno) != 0
 			|| fileno < 0) {
-		return; // no PD note to write back yet
+		return; // no PD note resident in the virtual buffer
 	}
-
 	if (osPfsFileState(&pfs, fileno, &state) != 0) {
 		return;
 	}
-
 	notebytes = state.file_size;
 	if (notebytes <= 0 || notebytes > (s32)sizeof(note) || (notebytes % BLOCKSIZE) != 0) {
 		return;
 	}
-
 	if (osPfsReadWriteFile(&pfs, fileno, PFS_READ, 0, notebytes, note) != 0) {
 		return;
 	}
@@ -712,9 +815,9 @@ static void mempakPhysicalWriteback(s32 channel)
 
 	npages = mempakBeFindPdPages(g_PhysicalBE[channel], pages);
 	if (npages * 256 < notebytes) {
-		// PD note was (re)allocated to a different size/location than the pak
-		// holds; a fresh allocation on the cartridge isn't supported yet.
-		sysLogPrintf(LOG_WARNING, "mempak: cannot write PD note back (pak allocation mismatch)");
+		// The note grew beyond what the cartridge's existing PD note holds;
+		// reallocating needs the full image -- re-enable "Back up Pak on Boot".
+		sysLogPrintf(LOG_WARNING, "mempak: PD note grew; enable Back up Pak on Boot to reallocate");
 		return;
 	}
 
@@ -731,6 +834,48 @@ static void mempakPhysicalWriteback(s32 channel)
 				}
 			}
 		}
+	}
+}
+
+static void mempakPhysicalWriteback(s32 channel)
+{
+	static u8 newbe[MEMPAK_SIZE];
+	u8 *cart = g_PhysicalBE[channel];
+	s32 blk;
+	s32 written = 0;
+
+	if (!g_RaphnetDev[channel]) {
+		return;
+	}
+
+	if (!g_RaphnetBootBackup) {
+		// Fast mode only ever read PD's own note off the cartridge, so the full
+		// image isn't in memory -- a whole-image export here would erase other
+		// games' directory/inode entries. Write back only PD's note pages.
+		mempakPhysicalWritebackPdOnly(channel);
+		return;
+	}
+
+	// Build the full big-endian image the cartridge should now hold, then write
+	// only the blocks that changed (a fresh PD note touches its pages plus the
+	// inode/directory; an in-place save touches just a few blocks).
+	mempakExportToBE(channel, newbe);
+
+	for (blk = 0; blk < MEMPAK_SIZE / BLOCKSIZE; blk++) {
+		u8 *cur = cart + blk * BLOCKSIZE;
+		u8 *nw = newbe + blk * BLOCKSIZE;
+		if (memcmp(cur, nw, BLOCKSIZE) != 0) {
+			if (raphnetWriteBlock(g_RaphnetDev[channel], (u16)blk, nw) != 0) {
+				sysLogPrintf(LOG_WARNING, "mempak: physical write failed at block %d", blk);
+				return;
+			}
+			memcpy(cur, nw, BLOCKSIZE);
+			written++;
+		}
+	}
+
+	if (written) {
+		sysLogPrintf(LOG_NOTE, "mempak: wrote %d block(s) to physical pak", written);
 	}
 }
 

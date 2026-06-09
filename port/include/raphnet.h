@@ -24,6 +24,11 @@ raphnet_dev *raphnetOpen(void);
 /* Read the full 32KB Controller Pak image into `buf32k`. Returns 0 on success. */
 s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k);
 
+/* Read a single 32-byte block (`block` is a 0..1023 index) into `out32`. Returns
+ * 0 on success. Used by the fast PD-save-only boot path to fetch just the
+ * metadata region + Perfect Dark's note pages instead of the whole pak. */
+s32 raphnetReadBlock(raphnet_dev *dev, u16 block, u8 *out32);
+
 /* Write the full 32KB Controller Pak image from `buf32k`. Returns 0 on success. */
 s32 raphnetWritePak(raphnet_dev *dev, const u8 *buf32k);
 

@@ -19,6 +19,10 @@ s32 g_VirtualPakEnabled = 0;
 #ifdef PD_ENABLE_RAPHNET
 s32 g_RaphnetEnabled = 0;
 s32 g_RaphnetAutoBackup = 0;
+// Default ON (safe): on boot, read the whole physical pak and write a timestamped
+// safety backup. When OFF, the game reads only Perfect Dark's own note (far fewer
+// USB transfers, dramatically faster boot) and makes no backup.
+s32 g_RaphnetBootBackup = 1;
 #endif
 
 PD_CONSTRUCTOR static void cpakConfigInit(void)
@@ -27,6 +31,7 @@ PD_CONSTRUCTOR static void cpakConfigInit(void)
 #ifdef PD_ENABLE_RAPHNET
 	configRegisterInt("ControllerPak.RaphnetEnabled", &g_RaphnetEnabled, 0, 1);
 	configRegisterInt("ControllerPak.RaphnetAutoBackup", &g_RaphnetAutoBackup, 0, 1);
+	configRegisterInt("ControllerPak.RaphnetBootBackup", &g_RaphnetBootBackup, 0, 1);
 #endif
 }
 

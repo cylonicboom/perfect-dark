@@ -20,6 +20,7 @@ extern s32 g_VirtualPakEnabled;
 #ifdef PD_ENABLE_RAPHNET
 extern s32 g_RaphnetEnabled;
 extern s32 g_RaphnetAutoBackup;
+extern s32 g_RaphnetBootBackup;
 
 /* Status codes returned by the physical-pak operations below. */
 typedef enum {

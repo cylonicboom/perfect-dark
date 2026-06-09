@@ -2575,6 +2575,10 @@ static MenuItemHandlerResult menuhandlerVirtualPakEnabled(s32 operation, struct 
 		return g_VirtualPakEnabled;
 	case MENUOP_SET:
 		g_VirtualPakEnabled = data->checkbox.value;
+		// Persist immediately. configSave normally only runs on a clean exit
+		// (atexit), so without this a crash/force-kill would lose the toggle and
+		// the pak would silently stop auto-mounting on the next launch.
+		configSave(CONFIG_PATH);
 		break;
 	}
 	return 0;
@@ -2588,6 +2592,7 @@ static MenuItemHandlerResult menuhandlerRaphnetEnabled(s32 operation, struct men
 		return g_RaphnetEnabled;
 	case MENUOP_SET:
 		g_RaphnetEnabled = data->checkbox.value;
+		configSave(CONFIG_PATH);
 		break;
 	}
 	return 0;
@@ -2600,6 +2605,7 @@ static MenuItemHandlerResult menuhandlerRaphnetAutoBackup(s32 operation, struct 
 		return g_RaphnetAutoBackup;
 	case MENUOP_SET:
 		g_RaphnetAutoBackup = data->checkbox.value;
+		configSave(CONFIG_PATH);
 		break;
 	}
 	return 0;
@@ -2652,10 +2658,70 @@ static MenuItemHandlerResult menuhandlerCpakBackup(s32 operation, struct menuite
 	return 0;
 }
 
-static MenuItemHandlerResult menuhandlerCpakImport(s32 operation, struct menuitem *item, union handlerdata *data)
+// "Yes" on the red confirmation: actually disable the boot backup.
+static MenuItemHandlerResult menuhandlerCpakConfirmDisableBackup(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
-		cpakShowResult("Import", cpakImportPhysical(0));
+		g_RaphnetBootBackup = 0;
+		configSave(CONFIG_PATH);
+		menuPopDialog();
+	}
+	return 0;
+}
+
+static struct menuitem g_CpakDisableBackupMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LESSLEFTPADDING,
+		(uintptr_t)"Disable the boot backup?\n\nThe game will read only its own Perfect\nDark save from the pak (much faster boot)\nand will NOT back the pak up first.\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_SELECTABLE_CENTRE,
+		(uintptr_t)"No\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SELECTABLE_CENTRE,
+		(uintptr_t)"Yes\n",
+		0,
+		menuhandlerCpakConfirmDisableBackup,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+static struct menudialogdef g_CpakDisableBackupDialog = {
+	MENUDIALOGTYPE_DANGER,
+	(uintptr_t)"Disable Boot Backup\n",
+	g_CpakDisableBackupMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+static MenuItemHandlerResult menuhandlerRaphnetBootBackup(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_RaphnetBootBackup;
+	case MENUOP_SET:
+		if (data->checkbox.value == 0) {
+			// Disabling the safety backup is risky, so confirm via a red dialog.
+			// Leave the global unchanged here; the dialog's "Yes" applies it, so
+			// the checkbox stays ticked unless the user actually confirms.
+			menuPushDialog(&g_CpakDisableBackupDialog);
+		} else {
+			g_RaphnetBootBackup = 1;
+			configSave(CONFIG_PATH);
+		}
+		break;
 	}
 	return 0;
 }
@@ -2687,6 +2753,14 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		0,
 		menuhandlerRaphnetAutoBackup,
 	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Back up Pak on Boot",
+		0,
+		menuhandlerRaphnetBootBackup,
+	},
 	// NB: selectable labels need a trailing "\n" - textMeasure only adds a
 	// line's height when it sees a newline, so without it the row collapses to
 	// a few pixels. (Checkboxes use a fixed height, so they don't need it.)
@@ -2697,14 +2771,6 @@ struct menuitem g_ExtendedControllerPakMenuItems[] = {
 		(uintptr_t)"Backup Pak to File\n",
 		0,
 		menuhandlerCpakBackup,
-	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Import from Adapter\n",
-		0,
-		menuhandlerCpakImport,
 	},
 #endif
 	{

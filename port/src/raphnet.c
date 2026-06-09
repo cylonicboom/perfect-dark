@@ -252,24 +252,32 @@ static u16 raphnetPakAddr(u16 block)
 	return (u16)((block << 5) | raphnetAddrCrc(block));
 }
 
-s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k)
+s32 raphnetReadBlock(raphnet_dev *dev, u16 block, u8 *out32)
 {
 	if (!dev || !dev->handle) {
 		return -1;
 	}
 
-	for (u16 block = 0; block < MEMPAK_SIZE / 32; block++) {
-		u16 addr = raphnetPakAddr(block);
-		u8 tx[3] = { N64_EXPANSION_READ, (u8)(addr >> 8), (u8)(addr & 0xff) };
-		u8 rx[33];
+	u16 addr = raphnetPakAddr(block);
+	u8 tx[3] = { N64_EXPANSION_READ, (u8)(addr >> 8), (u8)(addr & 0xff) };
+	u8 rx[33];
 
-		int n = raphnetRawSiCommand(dev->handle, 0, tx, sizeof(tx), rx, sizeof(rx));
-		if (n < 32) {
-			sysLogPrintf(LOG_WARNING, "raphnet: read failed at block %u (got %d)", block, n);
+	int n = raphnetRawSiCommand(dev->handle, 0, tx, sizeof(tx), rx, sizeof(rx));
+	if (n < 32) {
+		sysLogPrintf(LOG_WARNING, "raphnet: read failed at block %u (got %d)", block, n);
+		return -1;
+	}
+
+	memcpy(out32, rx, 32);
+	return 0;
+}
+
+s32 raphnetReadPak(raphnet_dev *dev, u8 *buf32k)
+{
+	for (u16 block = 0; block < MEMPAK_SIZE / 32; block++) {
+		if (raphnetReadBlock(dev, block, buf32k + block * 32) != 0) {
 			return -1;
 		}
-
-		memcpy(buf32k + block * 32, rx, 32);
 	}
 
 	return 0;

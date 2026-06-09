@@ -206,8 +206,10 @@ static int mempakIdChecksumOK(const u8 *id, int bigendian)
 	return (u16)sum == stored;
 }
 
-/* Defined below: rebuild a big-endian real-hardware pak as a native LE image. */
-static int mempakImportBigEndian(s32 channel);
+/* Defined below: rebuild a big-endian real-hardware pak as a native LE image.
+ * When `pdonly` is set, only Perfect Dark's own note is imported (used by the
+ * fast PD-save-only boot path, where other games' pages were never read). */
+static int mempakImportBigEndian(s32 channel, int pdonly);
 
 /*
  * DexDrive ".n64" container: a 0x1040-byte header (starting with the ASCII
@@ -254,7 +256,7 @@ s32 mempakLoadFile(s32 channel, const char *path)
 				return 0;
 			}
 			if (mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 1)
-					&& mempakImportBigEndian(channel)) {
+					&& mempakImportBigEndian(channel, 0)) {
 				// real-hardware (big-endian) pak: converted to native format
 				sysLogPrintf(LOG_NOTE, "mempak: imported big-endian pak `%s` to native format", path);
 				mempakFlush(channel);
@@ -364,7 +366,7 @@ static void mempakConvertPdNoteHeaders(u8 *body, int len)
 	}
 }
 
-static int mempakImportBigEndian(s32 channel)
+static int mempakImportBigEndian(s32 channel, int pdonly)
 {
 	static u8 src[MEMPAK_SIZE];
 	static u8 notebody[MEMPAK_SIZE];
@@ -401,6 +403,12 @@ static int mempakImportBigEndian(s32 channel)
 		u8 ext[PFS_FILE_EXT_LEN];
 
 		if (game == 0 || company == 0) {
+			continue;
+		}
+
+		// fast PD-save-only mode: other games' pages were never read off the
+		// cartridge, so skip every note that isn't Perfect Dark's.
+		if (pdonly && !(game == (u32)ROM_GAMECODE && company == (u16)ROM_COMPANYCODE)) {
 			continue;
 		}
 
@@ -554,6 +562,58 @@ static void mempakBackupOriginal(s32 channel)
 	}
 }
 
+// Number of 32-byte blocks in the metadata region (pack ID + inode table + its
+// mirror + the directory: pages 0..4). Reading these locates PD's note.
+#define MEMPAK_META_BLOCKS 40
+
+/*
+ * Fast boot path: instead of reading the whole 32KB pak over USB (1024 separate
+ * block transfers), read only the metadata region and Perfect Dark's own note
+ * pages, then rebuild a native virtual pak containing just PD's note. Other
+ * games' notes are intentionally absent from the working image -- the write-back
+ * path only ever touches PD's note, so they remain untouched on the cartridge.
+ */
+static s32 mempakReadPdOnly(s32 channel)
+{
+	raphnet_dev *dev = g_RaphnetDev[channel];
+	u8 *be = g_PhysicalBE[channel];
+	u8 pages[MEMPAK_NUM_PAGES];
+	s32 npages;
+	s32 i, b;
+
+	memset(be, 0, MEMPAK_SIZE);
+
+	// 1) metadata region (blocks 0..39): pack ID, inode table + mirror, directory
+	for (b = 0; b < MEMPAK_META_BLOCKS; b++) {
+		if (raphnetReadBlock(dev, (u16)b, be + b * BLOCKSIZE) != 0) {
+			return -1;
+		}
+	}
+
+	// must be a readable big-endian standard pak before we trust the directory
+	if (!mempakIdChecksumOK(be + BLOCKSIZE, 1)) {
+		return -1;
+	}
+
+	// 2) find PD's note and 3) read only its pages (8 blocks / 256 bytes each)
+	npages = mempakBeFindPdPages(be, pages);
+	for (i = 0; i < npages; i++) {
+		s32 base = pages[i] * 8;
+		for (b = 0; b < 8; b++) {
+			if (raphnetReadBlock(dev, (u16)(base + b), be + (base + b) * BLOCKSIZE) != 0) {
+				return -1;
+			}
+		}
+	}
+
+	// 4) rebuild a native virtual pak holding only PD's note
+	memcpy(g_MempakBuf[channel], be, MEMPAK_SIZE);
+	g_MempakPresent[channel] = 1;
+	g_MempakPath[channel][0] = '\0'; // live: persisted to the cartridge, not a file
+
+	return mempakImportBigEndian(channel, 1) ? 0 : -1;
+}
+
 s32 mempakOpenPhysical(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
 {
 	if (channel < 0 || channel >= MAXCONTROLLERS) {
@@ -574,22 +634,34 @@ s32 mempakOpenPhysical(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
 		return PFS_ERR_NOPACK;
 	}
 
-	if (raphnetReadPak(g_RaphnetDev[channel], g_PhysicalBE[channel]) != 0) {
-		raphnetClose(g_RaphnetDev[channel]);
-		g_RaphnetDev[channel] = NULL;
-		return PFS_ERR_NOPACK;
-	}
+	if (g_RaphnetBootBackup) {
+		// SAFE MODE: read the whole pak, write a timestamped safety backup, then
+		// convert the full image (every game's note) to the native format.
+		if (raphnetReadPak(g_RaphnetDev[channel], g_PhysicalBE[channel]) != 0) {
+			raphnetClose(g_RaphnetDev[channel]);
+			g_RaphnetDev[channel] = NULL;
+			return PFS_ERR_NOPACK;
+		}
 
-	mempakBackupOriginal(channel);
+		mempakBackupOriginal(channel);
 
-	// load the image into the working buffer and convert it to native order
-	memcpy(g_MempakBuf[channel], g_PhysicalBE[channel], MEMPAK_SIZE);
-	g_MempakPresent[channel] = 1;
-	g_MempakPath[channel][0] = '\0'; // live: persisted to the cartridge, not a file
+		// load the image into the working buffer and convert it to native order
+		memcpy(g_MempakBuf[channel], g_PhysicalBE[channel], MEMPAK_SIZE);
+		g_MempakPresent[channel] = 1;
+		g_MempakPath[channel][0] = '\0'; // live: persisted to the cartridge, not a file
 
-	if (!mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 0)) {
-		if (!(mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 1) && mempakImportBigEndian(channel))) {
-			sysLogPrintf(LOG_WARNING, "mempak: physical pak on channel %d is not readable", channel);
+		if (!mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 0)) {
+			if (!(mempakIdChecksumOK(g_MempakBuf[channel] + BLOCKSIZE, 1) && mempakImportBigEndian(channel, 0))) {
+				sysLogPrintf(LOG_WARNING, "mempak: physical pak on channel %d is not readable", channel);
+				return PFS_ERR_NOPACK;
+			}
+		}
+	} else {
+		// FAST MODE: read only the metadata region + Perfect Dark's note pages
+		// and skip the safety backup -- dramatically fewer USB transfers.
+		if (mempakReadPdOnly(channel) != 0) {
+			raphnetClose(g_RaphnetDev[channel]);
+			g_RaphnetDev[channel] = NULL;
 			return PFS_ERR_NOPACK;
 		}
 	}

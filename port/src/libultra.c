@@ -420,7 +420,18 @@ s32 osPfsIsPlug(OSMesgQueue *queue, u8 *pattern)
 		*pattern = 0;
 		for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
 			// a slot holds either a rumble pak or a controller pak, as on console
-			if (inputRumbleSupported(i) || (g_VirtualPakEnabled && inputControllerConnected(i))) {
+			s32 haspak = inputRumbleSupported(i) || (g_VirtualPakEnabled && inputControllerConnected(i));
+#ifdef PD_ENABLE_RAPHNET
+			// The Raphnet adapter exposes a single physical Controller Pak on
+			// channel 0, independent of any SDL gamepad being connected. Report it
+			// as plugged whenever adapter mode is on so the boot pak-scan
+			// (pakstocheck) auto-mounts it via osPfsInitPak -> mempakOpenPhysical,
+			// instead of only loading on a manual menu "Import from Adapter".
+			if (g_RaphnetEnabled && i == 0) {
+				haspak = 1;
+			}
+#endif
+			if (haspak) {
 				*pattern |= 1 << i;
 			}
 		}

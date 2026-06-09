@@ -377,6 +377,41 @@ if(NOT EXTRA_LIBRARIES)
 endif()
 list(APPEND LIBS "${EXTRA_LIBRARIES}")
 
+# Controller Pak support
+#   PD_ENABLE_CPAK    - Virtual Pak: live, file-backed N64 Controller Paks (.mpk). No deps.
+#   PD_ENABLE_RAPHNET - physical Controller Pak backup via a Raphnet USB adapter (hidapi).
+#                       Implies PD_ENABLE_CPAK.
+option(PD_ENABLE_CPAK    "Controller Pak support: Virtual Pak (.mpk files)" OFF)
+option(PD_ENABLE_RAPHNET "Raphnet physical Controller Pak transfer (hidapi)" OFF)
+if(PD_ENABLE_RAPHNET)
+  set(PD_ENABLE_CPAK ON)
+endif()
+set(SRC_CPAK "")
+if(PD_ENABLE_CPAK)
+  add_definitions(-DPD_ENABLE_CPAK=1)
+  # so port/src/mempak.c can find the engine's controller.h
+  include_directories("${CMAKE_SOURCE_DIR}/src/lib/ultra/io")
+  # reuse the real decomp PFS engine against the in-memory pak image; the four
+  # hardware primitives it needs are supplied by port/src/mempak.c
+  set(SRC_CPAK
+    src/lib/ultra/io/contpfs.c
+    src/lib/ultra/io/pfsallocatefile.c
+    src/lib/ultra/io/pfsreadwritefile.c
+    src/lib/ultra/io/pfsdeletefile.c
+    src/lib/ultra/io/pfsfindfile.c
+    src/lib/ultra/io/pfsfreeblocks.c
+    src/lib/ultra/io/pfsnumfiles.c
+    src/lib/ultra/io/pfsfilestate.c
+    src/lib/ultra/io/pfsresizefile.c
+    src/lib/ultra/io/pfschecker.c
+  )
+endif()
+if(PD_ENABLE_RAPHNET)
+  find_package(hidapi REQUIRED)
+  add_definitions(-DPD_ENABLE_RAPHNET=1)
+  list(APPEND LIBS hidapi::hidapi)
+endif()
+
 # Sources
 
 file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")
@@ -447,6 +482,7 @@ set(SRC
   ${SRC_LIB_ULTRA_AUDIO}
   ${SRC_LIB_GU}
   ${SRC_LIB}
+  ${SRC_CPAK}
 )
 
 if(WIN32)

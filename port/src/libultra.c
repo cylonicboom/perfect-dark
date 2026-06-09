@@ -12,6 +12,10 @@
 #include "video.h"
 #include "audio.h"
 #include "fs.h"
+#ifdef PD_ENABLE_CPAK
+#include "mempak.h"
+#include "cpak.h"
+#endif
 
 #define EEPROM_SIZE (EEP16K_MAXBLOCKS * 8)
 #define EEPROM_FNAME "eeprom.bin"
@@ -205,6 +209,11 @@ void osContGetReadData(OSContPad *pad)
 			pad->errnum = 0;
 		}
 	}
+
+#ifdef PD_ENABLE_RAPHNET
+	// once-per-frame, quiescent point: flush any pending physical pak write-back
+	mempakTick();
+#endif
 }
 
 s32 osContStartQuery(OSMesgQueue *mq)
@@ -331,6 +340,8 @@ s32 osEepromLongWrite(OSMesgQueue *mq, u8 address, u8 *buffer, int nbytes)
 
 /* Pfs */
 
+#ifndef PD_ENABLE_CPAK
+
 s32 osPfsIsPlug(OSMesgQueue *queue, u8 *pattern)
 {
 	if (pattern) {
@@ -394,6 +405,65 @@ s32 osPfsReadWriteFile(OSPfs* pfs, s32 fileNo, u8 flag, int offset, int size, u8
 {
 	return PFS_ERR_NOPACK;
 }
+
+#else /* PD_ENABLE_CPAK */
+
+/*
+ * Controller Pak support enabled. osPfsIsPlug/osPfsInitPak are provided here
+ * (backed by the in-memory Virtual Pak image), while the rest of the osPfs*
+ * filesystem API comes from the real decomp engine compiled into the port.
+ */
+
+s32 osPfsIsPlug(OSMesgQueue *queue, u8 *pattern)
+{
+	if (pattern) {
+		*pattern = 0;
+		for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
+			// a slot holds either a rumble pak or a controller pak, as on console
+			s32 haspak = inputRumbleSupported(i) || (g_VirtualPakEnabled && inputControllerConnected(i));
+#ifdef PD_ENABLE_RAPHNET
+			// The Raphnet adapter exposes a single physical Controller Pak on
+			// channel 0, independent of any SDL gamepad being connected. Report it
+			// as plugged whenever adapter mode is on so the boot pak-scan
+			// (pakstocheck) auto-mounts it via osPfsInitPak -> mempakOpenPhysical,
+			// instead of only loading on a manual menu "Import from Adapter".
+			if (g_RaphnetEnabled && i == 0) {
+				haspak = 1;
+			}
+#endif
+			if (haspak) {
+				*pattern |= 1 << i;
+			}
+		}
+	}
+	return 0;
+}
+
+s32 osPfsInitPak(OSMesgQueue *queue, OSPfs *pfs, s32 channel, s32 *arg3)
+{
+#ifdef PD_ENABLE_RAPHNET
+	// Live physical pak through the adapter. The adapter exposes a single
+	// controller port, mapped to player 1 / channel 0.
+	if (g_RaphnetEnabled && channel == 0) {
+		if (mempakOpenPhysical(queue, pfs, channel, arg3) == 0) {
+			return 0;
+		}
+		// no adapter or unreadable pak: fall through to the virtual pak
+	}
+#endif
+
+	if (g_VirtualPakEnabled && channel >= 0 && channel < MAXCONTROLLERS && inputControllerConnected(channel)) {
+		char path[32];
+		snprintf(path, sizeof(path), "$S/cpak%d.mpk", channel + 1);
+		mempakLoadFile(channel, path);
+		return mempakInitPak(queue, pfs, channel, arg3);
+	}
+
+	// no virtual pak here: fall back to rumble-pak detection, as before
+	return inputRumbleSupported(channel) ? PFS_ERR_DEVICE : PFS_ERR_NOPACK;
+}
+
+#endif /* PD_ENABLE_CPAK */
 
 /* Gbpak */
 

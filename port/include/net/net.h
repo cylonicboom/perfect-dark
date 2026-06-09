@@ -696,6 +696,7 @@ void netAdminReply(struct netclient *cl, const char *fmt, ...);
 // configs and push them to the server (CLC_ADMIN_SETUP), which then starts the
 // match and broadcasts it to all clients. On a listen host it just starts.
 void netAdminPushStart(void);
+bool netAdminAutoEndForRestart(void); // auto-end in-progress match on a setup push (one-click restart)
 
 // Client-side: load the Combat Sim setup file + prime the Combat Sim menu so the
 // admin can configure the match via the normal built-in menu before pushing it.

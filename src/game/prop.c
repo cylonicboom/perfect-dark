@@ -1829,10 +1829,35 @@ void propExecuteTickOperation(struct prop *prop, s32 op)
 			}
 		} else {
 			// Prop doesn't regen, so free it
-			propDeregisterRooms(prop);
-			propDelist(prop);
-			propDisable(prop);
-			propFree(prop);
+#ifndef PLATFORM_N64
+			// ROOT FIX (crash ledger #16): this branch bare-propFrees WITHOUT objFree,
+			// so it skips ALL of objFree's reference-clearing — the obj-pool slot's
+			// back-pointer (g_WeaponSlots), the model, AND wallhitsFreeByProp /
+			// invRemoveProp / chrClearReferences / projectilesUnrefOwner /
+			// shieldhitsRemoveByProp / objFreeEmbedmentOrProjectile. The design assumes
+			// the caller already ran objFree(freeprop=false) first (the DELETING path
+			// does). But on a netplay client a dropped gun's fadeout reaches here
+			// locally (objTickPlayer ungated) with its obj link STILL INTACT — so every
+			// one of those refs is left dangling: orphaned weapon slots that saturate
+			// the pool (NULL weaponCreate crash / host-prop eviction / void) AND a
+			// freed-prop pointer left in a wallhit chain (wallhitFree later walks off
+			// the end -> NULL deref at 0x90). Route the intact-link case through the
+			// FULL objFreePermanently teardown. The already-detached DELETING case has
+			// prop->obj == NULL, so it falls through to the bare free below unchanged.
+			// Gated to netplay; SP/N64 byte-identical (they hit this at trivial churn,
+			// so the dangling refs stayed harmless until stage end).
+			if (g_NetMode != NETMODE_NONE
+					&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+					&& prop->obj && prop->obj->prop == prop) {
+				objFreePermanently(prop->obj, true);
+			} else
+#endif
+			{
+				propDeregisterRooms(prop);
+				propDelist(prop);
+				propDisable(prop);
+				propFree(prop);
+			}
 		}
 	} else if (op == TICKOP_DISABLE) {
 		propDeregisterRooms(prop);

@@ -10946,6 +10946,16 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 									psCreate(NULL, projectileobj->base.prop, func->soundnum, -1,
 											-1, 0, 0, PSTYPE_NONE, NULL, -1, NULL, -1, -1, -1, -1);
 								}
+
+#ifndef PLATFORM_N64
+								// Sim/NPC-fired projectiles: broadcast the spawn so clients
+								// see them. The player gun path (bondgun.c) does this; this
+								// chr-fire path never did, so sim rockets/grenades were
+								// invisible on clients (they still detonated via the
+								// syncid-gated SVC_EXPLOSION). Fully launched here
+								// (bgun0f09ebcc above set pos/velocity/mtx).
+								netSyncSpawnProjectile(projectileobj->base.prop);
+#endif
 							}
 						}
 					} else {

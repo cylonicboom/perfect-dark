@@ -188,6 +188,9 @@ u32 netmsgSvcPlayerStatsWrite(struct netbuf *dst, struct netclient *actcl);
 u32 netmsgSvcPlayerStatsRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPropSpawnWrite(struct netbuf *dst, struct prop *prop);
 u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl);
+#ifndef PLATFORM_N64
+void netSyncSpawnProjectile(struct prop *prop); // sim/chr-fired projectile spawn broadcast (server)
+#endif
 u32 netmsgSvcPropMoveWrite(struct netbuf *dst, struct prop *prop, struct coord *initrot);
 u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPropDamageWrite(struct netbuf *dst, struct prop *prop, f32 damage, struct coord *pos, s32 weaponnum, s32 playernum);

@@ -258,6 +258,18 @@ void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly)
 				 */
 				obj = prop->obj;
 
+#ifndef PLATFORM_N64
+				// On a netplay client a freed-but-still-room-listed prop (obj==NULL
+				// corpse — the prop-list corruption family; the per-frame heal reaps
+				// corpses from the ACTIVE list but not from ROOM lists, so they reach
+				// this room walk) makes the @bug above deref NULL->type at offset 3
+				// (observed AV read at 0x3, hit via the respawn room-load). Skip it.
+				if (obj == NULL) {
+					propnumptr++;
+					continue;
+				}
+#endif
+
 				if (obj->type == OBJTYPE_TINTEDGLASS) {
 					propUnpause(prop);
 				}
@@ -5580,6 +5592,16 @@ bool bgTestHitInRoom(struct coord *frompos, struct coord *topos, s32 roomnum, st
 	}
 
 	numbatches = g_Rooms[roomnum].numvtxbatches;
+
+#ifndef PLATFORM_N64
+	// Defensive: a corrupt g_Rooms entry (client-side prop/heap corruption — see
+	// the crash ledger Family A; this walk crashed during a blood-splat ray-cast)
+	// can yield an absurd batch count; bail rather than walk off the vtxbatches
+	// array. Real rooms have at most a few hundred batches.
+	if (numbatches < 0 || numbatches > 0xffff) {
+		return false;
+	}
+#endif
 
 	for (i = 0; i < numbatches; batch++, i++) {
 #ifndef PLATFORM_N64

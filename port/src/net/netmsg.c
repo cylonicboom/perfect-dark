@@ -527,11 +527,19 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 		return 0;
 	}
 	if (g_StageNum != STAGE_CITRAINING) {
-		// Transient when the admin re-pushes while we're still reloading back
-		// to the lobby from the previous match — the client re-pushes until
-		// we're ready (Host Online retry in netStartFrame).
-		sysLogPrintf(LOG_NOTE, "NET: CLC_ADMIN_SETUP from client %u while stage 0x%02x is not the lobby - told to retry", srccl->id, (u32)g_StageNum);
-		netAdminReply(srccl, "setup: end the current match first (endmatch)");
+		// A match is still in progress (or we're mid-reload back to the lobby).
+		// AUTO-END it so the admin's "Begin Match" is a one-click restart instead of
+		// requiring a manual `endmatch`: the dedicated server's vote/advance return to
+		// the CITRAINING lobby is suppressed while an admin holds control, so nothing
+		// else brings g_StageNum back. netAdminAutoEndForRestart is throttled, so the
+		// Host-Online push watchdog's ~3s re-pushes during the reload don't restart it;
+		// the re-push that lands once we reach CITRAINING falls through to commit+start.
+		if (netAdminAutoEndForRestart()) {
+			sysLogPrintf(LOG_NOTE, "NET: CLC_ADMIN_SETUP from client %u while stage 0x%02x != lobby - auto-ending match to restart", srccl->id, (u32)g_StageNum);
+			netAdminReply(srccl, "setup: ending current match, restarting...");
+		} else {
+			netAdminReply(srccl, "setup: still ending match, will start shortly...");
+		}
 		return 0;
 	}
 
@@ -1001,6 +1009,24 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 			// so don't dereference cfg->base.team here. The settings.team value
 			// the spectator brought into the lobby stays as-is.
 			if (ncl->config) {
+#ifndef PLATFORM_N64
+				// Hosted-game team fix: a combatant whose server-side config team was
+				// never assigned carries the 0xff "no team" sentinel — the dedicated /
+				// Host-Online host never runs the challenge/lobby menu that would force
+				// it (CLC_SETTINGS doesn't carry team; team is server-authoritative).
+				// That syncs back as "no team": in challenges there's no Team Red so the
+				// human side can't win (match fails), and it also trips
+				// menuGetTeamTitlebarColours. Normalize an unset combatant to Team 0
+				// (Red) — challenges put ALL humans on Red anyway, and 0xff is never a
+				// valid team. Persisted to the config so the server's own team scoring /
+				// win-condition agrees with what the client renders. (Listen hosts set
+				// team via the local menu, so config is already valid — this is a no-op
+				// there. Proper per-player team assignment for non-challenge hosted team
+				// games is a separate gap; everyone-Red is at least a valid state.)
+				if (ncl->config->base.team == 0xff) {
+					ncl->config->base.team = 0;
+				}
+#endif
 				ncl->settings.team = ncl->config->base.team;
 			}
 			netbufWriteU8(dst, ncl->id);
@@ -1217,6 +1243,24 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		struct netclient *ncl = &g_NetClients[i];
 		if (ncl->state) {
 			u32 playernum = 0;
+#ifndef PLATFORM_N64
+			// Dedicated / spectator-host servers: g_NetClients[0] is the SPECTATOR
+			// HOST (playernum 0xFE), NOT a combatant, and netPlayersAllocate does NO
+			// slot-0 swap (the local client keeps its server playernum — see
+			// s_netSlot0SwapOccupant, NULL for the first joiner). The P2P swap below
+			// would then hand the LOCAL client playernum 0xFE — rejected by the
+			// < MAX_PLAYERS guard, so the master ends up with NO TEAM (the "challenge
+			// has no Team Red, match auto-fails" bug) — and would smear the spectator
+			// host's team over a real slot. When slot 0 isn't a combatant, skip the
+			// swap entirely: each client's team goes straight to its own playernum,
+			// and spectators (>= MAX_PLAYERS) fall out via the guard.
+			if (g_NetClients[0].playernum >= MAX_PLAYERS) {
+				if (ncl->playernum < MAX_PLAYERS) {
+					g_PlayerConfigsArray[ncl->playernum].base.team = ncl->settings.team;
+				}
+				continue;
+			}
+#endif
 			if (ncl->id == 0) {
 				playernum = g_NetLocalClient->playernum;
 			} else if (ncl == g_NetLocalClient) {
@@ -3040,6 +3084,22 @@ u32 netmsgSvcPropSpawnWrite(struct netbuf *dst, struct prop *prop)
 	return dst->error;
 }
 
+#ifndef PLATFORM_N64
+// Broadcast a freshly-fired projectile's spawn (+ an initial move) to clients. The PLAYER
+// gun paths (bondgun.c) already do this inline, but the chr/sim fire path (chraction.c)
+// never did — so sim/NPC-fired rockets/grenades were INVISIBLE on clients (they still
+// detonated, because their host-side prop has a syncid (propAllocate) and propExplode's
+// SVC_EXPLOSION is syncid-gated). Server-only; only while in an active match.
+void netSyncSpawnProjectile(struct prop *prop)
+{
+	if (g_NetMode == NETMODE_SERVER && prop && prop->syncid
+			&& g_NetLocalClient && g_NetLocalClient->state == CLSTATE_GAME) {
+		netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
+		netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);
+	}
+}
+#endif
+
 u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 msgflags = netbufReadU8(src);
@@ -3081,6 +3141,33 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		struct modeldef *modeldef = g_ModelStates[modelnum].modeldef;
 		struct model *model = modelmgrInstantiateModelWithoutAnim(modeldef);
 		struct weaponobj *weapon = weaponCreate(prop == NULL, model == NULL, modeldef);
+		if (weapon == NULL) {
+			// projdiag (temporary): the rocket/weapon spawn was DROPPED because the
+			// 50-slot weapon pool is full. If this floods pd.log, slot saturation
+			// (not rendering) is why no rockets appear.
+			{
+				static u32 s_projDropFrame = 0;
+				if (g_Vars.lvframe60 - s_projDropFrame > 4) {
+					s_projDropFrame = g_Vars.lvframe60;
+					sysLogPrintf(LOG_WARNING, "projdiag: SPAWN DROPPED (weapon slots full) weaponnum=%d", weaponnum);
+				}
+			}
+			// weaponCreate exhausted all 50 slots with NON-recyclable entries
+			// (in-flight projectiles + held weapons are excluded from the recycle
+			// scan), so it returned NULL — the `*weapon = tmp` below would write
+			// through NULL (observed write-at-0x0 crash). This happens when the
+			// client's syncid-0 projectile pool floods (see the weaponslots census:
+			// synced=0 local=48 proj=41). Drop this spawn gracefully; the prop-
+			// reconcile heartbeat re-sends it once the pool drains. Free the bare
+			// prop + model so neither leaks (mirrors the modelnum bail above).
+			if (model) {
+				modelmgrFreeModel(model);
+			}
+			if (prop) {
+				propFree(prop);
+			}
+			return 1;
+		}
 		struct weaponobj tmp = {
 			256,                    // extrascale
 			0,                      // hidden2
@@ -3242,6 +3329,17 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 
 	// just in case
 	prop->pos = pos;
+
+	// projdiag (temporary): a projectile spawn was successfully CREATED on the
+	// client. If this appears but you still see no rocket, it lives but isn't
+	// rendered (or is freed almost immediately — see the FREE diag). Throttled.
+	if (prop && prop->obj && (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
+		static u32 s_projOkFrame = 0;
+		if (g_Vars.lvframe60 - s_projOkFrame > 4) {
+			s_projOkFrame = g_Vars.lvframe60;
+			sysLogPrintf(LOG_WARNING, "projdiag: SPAWN ok projectile syncid=%u type=%d active=%d", prop->syncid, prop->type, prop->active);
+		}
+	}
 
 	return src->error;
 }
@@ -3640,6 +3738,16 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 		}
 	} else if (prop && prop->obj && prop->active
 			&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+		// projdiag (temporary): host freed a synced projectile. If "SPAWN ok" and
+		// this FREE land within a frame or two of each other, the rocket is created
+		// and removed before it ever renders (lag-batched lifecycle). Throttled.
+		if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
+			static u32 s_projFreeFrame = 0;
+			if (g_Vars.lvframe60 - s_projFreeFrame > 4) {
+				s_projFreeFrame = g_Vars.lvframe60;
+				sysLogPrintf(LOG_WARNING, "projdiag: client FREE projectile syncid=%u", prop->syncid);
+			}
+		}
 		objFreePermanently(prop->obj, true);
 	}
 
@@ -4719,6 +4827,18 @@ u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	// projdiag (Phase 2a, temporary): the host's authoritative blast reached this
+	// client. If sim rockets log this but player rockets don't, the host isn't
+	// broadcasting player-rocket explosions; if both log but only sims visibly
+	// explode, it's a client-side render/position issue. Throttled (~7/sec).
+	{
+		static u32 s_svcExpFrame = 0;
+		if (g_Vars.lvframe60 - s_svcExpFrame > 8) {
+			s_svcExpFrame = g_Vars.lvframe60;
+			sysLogPrintf(LOG_WARNING, "projdiag: client recv SVC_EXPLOSION exptype=%d room=%d", exptype, room);
+		}
+	}
+
 	RoomNum rooms[2] = { room, -1 };
 	explosionCreateComplex(NULL, &pos, rooms, exptype, 0);
 	return src->error;
@@ -4755,8 +4875,36 @@ u32 netmsgQuerySummaryWrite(struct netbuf *dst)
 
 	netbufWriteU32(dst, NET_PROTOCOL_VER);
 	netbufWriteU8(dst, flags);
-	netbufWriteU8(dst, (u8)g_NetNumClients);
-	netbufWriteU8(dst, (u8)g_NetMaxClients);
+	// Report COMBATANTS in game, NOT raw g_NetNumClients. g_NetNumClients counts the
+	// dedicated / Host-Online spectator host too (it sits on its own client slot),
+	// so an empty dedicated server advertised "1/N" forever — a browser "zombie"
+	// (always 1 player) AND, worse, the master's empty-instance reaper never saw 0
+	// clients so idle instances were never reaped. Count only connected combatants
+	// (spectators carry playernum == NET_PLAYERNUM_SPECTATOR; the host also sits
+	// outside the 0..g_NetMaxClients slot range). This block is shared with the
+	// master heartbeat (netMasterTick), so it fixes the browser AND the reaper.
+	{
+		s32 ncombatants = 0;
+		for (s32 i = 0; i < g_NetMaxClients; i++) {
+			if (g_NetClients[i].state >= CLSTATE_LOBBY
+					&& g_NetClients[i].playernum != NET_PLAYERNUM_SPECTATOR) {
+				ncombatants++;
+			}
+		}
+		netbufWriteU8(dst, (u8)ncombatants);
+	}
+	// Report the COMBATANT cap, not the raw client cap. On a dedicated / Host-Online
+	// (or listen host-spectator) server g_NetMaxClients = NET_MAX_CLIENTS (9) includes
+	// the host's own HIDDEN client slot, so the browser showed "X/9" and the host
+	// could appear to host 9 players — subtract the spectator host so it reads the
+	// true 8 player slots. Combatant (listen) hosts are unaffected (host is a player).
+	{
+		s32 maxcombatants = g_NetMaxClients;
+		if (g_NetLocalClient && g_NetLocalClient->is_spectator && maxcombatants > 0) {
+			maxcombatants -= 1;
+		}
+		netbufWriteU8(dst, (u8)maxcombatants);
+	}
 	netbufWriteU8(dst, (u8)g_BotCount);
 	netbufWriteU8(dst, g_MpSetup.stagenum);
 	netbufWriteU8(dst, g_MpSetup.scenario);
@@ -4778,12 +4926,15 @@ u32 netmsgQueryDetailsWrite(struct netbuf *dst)
 
 	s32 numclients = 0;
 	for (s32 i = 0; i < g_NetMaxClients; i++) {
-		if (g_NetClients[i].state >= CLSTATE_LOBBY) { numclients++; }
+		if (g_NetClients[i].state >= CLSTATE_LOBBY
+				&& g_NetClients[i].playernum != NET_PLAYERNUM_SPECTATOR) { numclients++; }
 	}
 	netbufWriteU8(dst, (u8)numclients);
 	for (s32 i = 0; i < g_NetMaxClients; i++) {
 		const struct netclient *cl = &g_NetClients[i];
-		if (cl->state < CLSTATE_LOBBY) { continue; }
+		// Skip spectators (incl. the dedicated/Host-Online host) so the scoreboard
+		// matches the combatant count above — no phantom 0-score player row.
+		if (cl->state < CLSTATE_LOBBY || cl->playernum == NET_PLAYERNUM_SPECTATOR) { continue; }
 		s16 score = 0, deaths = 0;
 		u8 team = cl->settings.team;
 		if (cl->playernum < MAX_MPCHRS && g_MpAllChrConfigPtrs[cl->playernum]) {

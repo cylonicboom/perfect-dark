@@ -2365,8 +2365,10 @@ void netStartFrame(void)
 				s_base_tick = g_NetTick;
 			} else if ((drift > 30 || drift < -30) && (g_NetTick - s_last_warn_tick) >= 60u) {
 				s_last_warn_tick = g_NetTick;
-				netDiagLogf("tickdrift", "net=%lld wall=%lld drift=%lld",
-						(long long)dtick, (long long)elapsed_ticks, (long long)drift);
+				extern f32 videoGetAverageFPS(void);
+				netDiagLogf("tickdrift", "net=%lld wall=%lld drift=%lld fps=%.1f",
+						(long long)dtick, (long long)elapsed_ticks, (long long)drift,
+						(double)videoGetAverageFPS());
 				sysLogPrintf(LOG_WARNING | LOGFLAG_NOCON,
 						"NET: tick clock drift %lld ticks vs wall clock (sustained <60fps?)",
 						(long long)drift);
@@ -2435,7 +2437,11 @@ void netStartFrame(void)
 			s_hostOnlinePushTries = 0;
 		} else if (g_NetLocalClient->state == CLSTATE_LOBBY
 				&& (g_NetTick - g_NetHostOnlinePushTick) > 180u) {
-			if (s_hostOnlinePushTries < 5) {
+			if (s_hostOnlinePushTries < 12) {
+				// Patience covers the manual/auto endmatch + the headless stage
+				// reload (~5s) before giving up. The server auto-ends the current
+				// match on the first push (netAdminAutoEndForRestart), so the re-push
+				// that lands once it reaches the CITRAINING lobby starts the match.
 				++s_hostOnlinePushTries;
 				g_NetHostOnlinePushTick = g_NetTick ? g_NetTick : 1u;
 				sysLogPrintf(LOG_CHAT, "NET: match start not confirmed - re-pushing setup (try %u)", s_hostOnlinePushTries);
@@ -3211,6 +3217,48 @@ void netEndFrame(void)
 					yrot, (s32)animnum, animspeed,
 					chr->actiontype, chr->maxdamage - chr->damage);
 			}
+		}
+		// Client weapon-slot census (Open #2 instrumentation). Is the 50-slot
+		// g_WeaponSlots pool riding near full? synced = host-tracked props (mirror
+		// the server); local = syncid-0 client-side weapons (sim hand-weapons +
+		// client-physics drops). If occ approaches max here, the client is forcing
+		// weaponCreate's recycle path — the saturation precondition the crash family
+		// rides on. This tells us whether the A1/B reducers are actually needed.
+		if (g_NetMode == NETMODE_CLIENT && g_WeaponSlots && g_MaxWeaponSlots > 0) {
+			s32 occ = 0;
+			s32 synced = 0;
+			s32 held = 0;
+			s32 deadheld = 0; // held by a dead chr (corpse) — B's target
+			s32 proj = 0;     // projectile-flagged (rockets/grenades in flight)
+			s32 projdead = 0; // proj slots whose prop is NOT active = freed corpse
+			                  // still referenced by the slot (free-without-clear).
+			                  // Distinguishes "live projectiles accumulating" from
+			                  // "corpse flood" — decides the fix direction.
+			for (s32 i = 0; i < g_MaxWeaponSlots; ++i) {
+				struct prop *wp = g_WeaponSlots[i].base.prop;
+				if (!wp) {
+					continue;
+				}
+				occ++;
+				if (wp->syncid) {
+					synced++;
+				}
+				if (g_WeaponSlots[i].base.hidden & OBJHFLAG_PROJECTILE) {
+					proj++;
+					if (!wp->active) {
+						projdead++;
+					}
+				}
+				if (wp->parent) {
+					held++;
+					if (wp->parent->type == PROPTYPE_CHR && wp->parent->chr
+							&& chrIsDead(wp->parent->chr)) {
+						deadheld++;
+					}
+				}
+			}
+			netDiagLogf("weaponslots", "occ=%d max=%d synced=%d local=%d held=%d deadheld=%d proj=%d projdead=%d",
+				occ, g_MaxWeaponSlots, synced, occ - synced, held, deadheld, proj, projdead);
 		}
 #endif
 	}
@@ -4755,6 +4803,32 @@ void netClientSendAdminLine(const char *line)
 		netmsgClcAdminWrite(&g_NetMsgRel, line);
 		netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 	}
+}
+
+// Auto-end the current match when an admin pushes a setup (CLC_ADMIN_SETUP) while a
+// match is still in progress, so "Begin Match" is a ONE-CLICK RESTART instead of
+// requiring a manual `endmatch`. The dedicated server's normal vote/advance return
+// to the CITRAINING lobby is suppressed while an admin holds control, so nothing
+// else brings g_StageNum back — drive it here (mirrors the `endmatch` command).
+// THROTTLED: the Host-Online push watchdog re-pushes every ~3s and the headless
+// stage reload takes a few seconds; without the throttle each re-push would restart
+// the reload and it'd never finish. Returns true if it kicked off an end this call.
+bool netAdminAutoEndForRestart(void)
+{
+	static u32 s_lastTick = 0;
+	// ~15s guard (900 ticks @60Hz) comfortably exceeds a headless modded reload, so
+	// re-pushes arriving during the reload are ignored; once g_StageNum reaches
+	// CITRAINING the caller commits + starts instead of calling this.
+	if (s_lastTick != 0 && (g_NetTick - s_lastTick) < 900u) {
+		return false;
+	}
+	s_lastTick = g_NetTick;
+	mainEndStage();
+	mpSetPaused(MPPAUSEMODE_UNPAUSED);
+	titleSetNextStage(STAGE_CITRAINING);
+	titleSetNextMode(TITLEMODE_SKIP);
+	mainChangeToStage(STAGE_CITRAINING);
+	return true;
 }
 
 void netAdminPushStart(void)

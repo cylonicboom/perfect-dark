@@ -24,6 +24,95 @@
 | 11 | `propIsOfCdType` prop.c:3488 | AV read 0x50 (NULL `obj`, `obj->unkgeo`) | crash | a ticking projectile's COLLISION examines a null-union OBJ/WEAPON **corpse** via a ROOM prop list — the per-tick-walk reaps fire too late (corpse seen before its own tick) | **reap corpses PRE-TICK in `propsHealActiveList`** (bab0b2fcd) | reaped early |
 
 | 12 | `roomsTickLighting` dlights.c:1461 | HANG (self-loop) | hang | **regression** — the #11 pre-tick reap `propFree`d a corpse that was already in the freelist → double-free → `next==self` → infinite walk | heal UNLINKS corpses via trusted `prev` instead of `propFree` (8b2bacb9f) | fixed (regression) |
+| 13 | `objFreeEmbedmentOrProjectile` propobj.c:2420 | AV read -1 (garbage `obj->embedment`) | crash | **Family B sibling of #7/#10** — `weaponCreate` force-recycles a full slot (`objFreePermanently` from a `SVC_PROP_SPAWN`); the slot held `OBJHFLAG_EMBEDDED` + a wild `obj->embedment` (0xffff…ffff). The PROJECTILE branch below was pool-range-guarded (#10) but the EMBEDDED branch was not, so `obj->embedment->projectile` derefs -1 | pool-range guard mirroring `objFreeProjectile`: reject `obj->embedment` outside `g_Embedments[..g_MaxEmbedments)`, clear flag + skip | guarded |
+
+| 14 | `menuGetTeamTitlebarColours` menu.c:2542 | AV read ~stack+0xbf4 (`team=0xff`) | crash | **NOT a prop/weapon crash** — the team-titlebar dialog (`MENUROOT_MPSETUP`+TEAMSENABLED, the Host-Online hosting UI rendered over the live match) indexes an 8-entry stack `colours[]` table with `g_PlayerConfigsArray[g_MpPlayerNum].base.team`, which is the `0xff` "no team" sentinel on a Host-Online client → reads ~team*12 off the stack | clamp out-of-range team to row 0 (`#ifndef PLATFORM_N64`, menu.c) | **fixed (source)** |
+
+| 15 | `bg0f1612e4`/`bgTestHitInRoom` bg.c:5471 | AV read `0xbd955c75` (garbage `batch`) | crash | **Family A corruption surfacing in a blood-splat ray-cast.** `propsTickPlayer → splatTickChr → splatsCreate → splat0f149274 → bgTestHitInRoom`: `batch = g_Rooms[roomnum].vtxbatches` is a **truncated/garbage pointer** (high 32 bits zero, `0xbc00xxxx`/`0xbd95xxxx` signature) — client-side prop/heap corruption. `proptick_guard` fired the same tick (WEAPON prop 40 freed mid-walk). **occ=50 this run** (saturation real on long matches; local grew 15→32, held 10→21 = dead sims' lingering hand-weapons) | (1) **B**: dead sims drop weapons in chr-state sync (`chrIsDead → want=-1`, netmsg.c) to cut the local-weapon climb; (2) `numbatches` sanity guard in `bgTestHitInRoom`; (3) census `deadheld`/`proj` breakdown | mitigated (root = open Family A) |
+
+| 16 | `netmsgSvcPropSpawnRead` netmsg.c:3125 | AV **write** at 0x0 | crash | `weaponCreate` returned **NULL** (`*weapon = tmp` writes through it) — all 50 slots are NON-recyclable: census `occ=48 synced=0 local=48 proj=41`. In-flight projectiles + held weapons are excluded from `weaponCreate`'s recycle scan, so a pool full of syncid-0 projectiles → NULL → NULL write | guard the NULL return (free bare prop+model, drop the spawn — reconcile re-sends); root is the projectile/corpse flood | guarded (crash) + root open |
+
+> **#16 ROOT FIX — orphaned weapon-slot reaper (`weaponSlotsReapOrphans`).** The `projdead`
+> census (next run: `projdead=14-19` of `proj=26`) confirmed the pool fills with **freed
+> projectile props still referenced by their weapon slot** — a free that cleared the prop
+> but not `g_WeaponSlots[i].base.prop` (back-pointer). Since both projectile *creation*
+> paths are client-gated, these are host-projectiles freed locally without releasing the
+> slot. Fix: per-frame, release any weapon slot whose prop's union no longer points back
+> (`prop->obj != &slot.base`) — free the (never-freed) model, clear the slot — so
+> `weaponCreate` can reuse it. Runs **server + client** (`weaponSlotsReapOrphans`, gated
+> `NETMODE != NONE`, called next to `propsHealActiveList` in `lvTick`): the headless server
+> hits the same orphan accumulation (silently fails to spawn drops/projectiles when its pool
+> saturates, then streams that to everyone). **No proto bump** — drop-in server replacement.
+> NEVER touches the freed prop (no propFree/propDelist). The free-without-clear *generator*
+> stays open, but this heals it like `propsHealActiveList` heals the active-list cycle.
+> **VERIFIED 2026-06-09 (client E57BCD80, idle client, ~10 min 8-sim match):** `projdead=0`
+> on every census line (was 14-19), `occ=50` peaks now `synced=45-47`/`proj=0-5` (healthy,
+> was `synced=0`/`proj=41`), `proptick_guard=0` (was 832-932), no crash, clean disconnect.
+> Reaping the orphan slots eliminated the whole cascade (saturation→NULL→eviction→void→list
+> corruption) — the orphans were the upstream propagator. **The verified runs were against
+> the NEW VPS server (`pd-server.x86_64` with the server-side reaper already deployed), so
+> the result validates the COMBINED client+server fix — "client-side alone suffices" is NOT
+> isolated/claimed.** The server-side reaper keeps the host's own pool clean (likely why the
+> active-play `occ` peaked at only 34, not 50 — the host streams less churn).
+> **ACTIVE-PLAY VERIFIED 2026-06-09 (E57BCD80, ~10 min, 147 respawns):** still `projdead=0`
+> every line, `proptick_guard=0`, no crash; `occ` peaked at only **34** (didn't reach the
+> cap). The death/respawn path that previously spiked corruption stayed clean. **This run was
+> against the NEW VPS server (server-side reaper deployed) — so client + server reaper
+> together.** **Hosted Combat-Sim client crash family considered RESOLVED via the reaper
+> heal.** The free-without-clear *generator* is still open but fully healed (find it later
+> for a true root fix).
+
+> **#16 — the saturation source is PROJECTILES, not dead-sim weapons (revises #15's B).**
+> `deadheld=0` every census ⇒ B (dead-sim hand-weapons) was the wrong target. The pool
+> hog is `proj=26→41` syncid-0 projectile slots, and `synced→0` (host props evicted by
+> force-recycle, projectiles excluded so they remain). **Both projectile *creation*
+> paths are already client-gated** (`bgunCreateFiredProjectile` :5071, `bgunCreateThrownProjectile`
+> :4787 both `return` on `NETMODE_CLIENT`) — so the client does NOT make these; they are
+> **freed host-projectiles turned into syncid-0 corpses** (`propFree` clears syncid but the
+> g_WeaponSlots slot still references them) and/or live synced projectiles that never free.
+> `netmsgSvcPropFreeRead` is already double-free-guarded (`prop->active`), so the corpse is
+> a **free-without-clear** (a `propFree`/heal-unlink that leaves `base.prop` set), the
+> client's local `projectileTick` (runs for movement — gating it would freeze tracers, the
+> reported symptom) racing the host's free, or genuine non-freeing. Added census `projdead`
+> (proj slots with `!prop->active`) to decide corpse-flood vs live-flood. `932`
+> `proptick_guard` hits/run = heavy active-list corruption; the void/"rooms stopped loading"
+> is the room system starved once sync collapses (`synced=0`). **Root still open**; next
+> log's `projdead` directs the fix.
+
+> **#15 — saturation IS real on long runs (revises #14).** The short run behind #14
+> showed occ≤21, but a ~59s match hit **occ=50** with **local=32, held=21** — dead sims'
+> syncid-0 hand-weapons accumulate (the host's chr-state keeps reporting a weapon for a
+> corpse, so the client never frees the local one). That refills the 50-slot pool and
+> forces `weaponCreate`'s recycle path, feeding Family-A corruption that truncated a
+> `g_Rooms[].vtxbatches` pointer and crashed the splat ray-cast. **B** (force a dead chr
+> to hold nothing in the chr-state sync) attacks the accumulation; the `weaponslots`
+> census now logs `deadheld`/`proj` to show the local-weapon composition and confirm B's
+> effect. The `bgTestHitInRoom` guard is a backstop (can't portably validate a truncated
+> pointer — the repo has a 32-bit build — but catches a garbage `numbatches`). The
+> underlying Family-A "something frees a listed prop mid-walk" root stays OPEN.
+
+> **#14 — and the measurement that reframes Open #2.** The `master.csv` netdiag from this
+> run (proto 74, the C1 instrumentation build) shows the client is **not** overloaded:
+> `weaponslots occ` peaks at **21/50** (never near saturation — the force-recycle path
+> isn't even reached), `tickdrift … fps=60.0` with a **constant** `drift=-47` (a benign
+> one-time clock offset from a stage-load hitch, NOT ongoing per-frame loss — net then
+> tracks wall 1:1 at a steady 60fps), and **zero** `propsheal`/`proptick_guard` lines.
+> So the ledger's central "client runs behind → weapon-slot saturation → force-recycle"
+> theory is **DISPROVEN for this session**: there was no saturation, no fps deficit, no
+> prop-list corruption that run. The crashes are specific bugs, not load symptoms —
+> #14 is the team-colour OOB (now fixed), #13 was a corrupt slot (Family A, guarded).
+> **Open #2's load-reduction work (A1/B) was therefore NOT implemented** — the census
+> proved it unnecessary. The "bullet trails freeze then crash" symptom = the MPSETUP
+> menu opening over the match (freezing the background view), then #14 firing in its
+> dialog render (`disconnect,wasingame=0` = died in the menu, not gameplay).
+
+> **#13:** identical backtrace to the documented Family B chain
+> (`netStartFrame → netClientEvReceive → netmsgSvcPropSpawnRead → weaponCreate →
+> objFreePermanently → objFree → objFreeEmbedmentOrProjectile`). Log showed the usual
+> systemic condition right before death: sustained drift (`tickdrift … drift=-46`),
+> sim chrs dying (`hp=-0 act=4/5`), full weapon churn → 50 slots saturate → force-recycle.
+> This closes the last un-guarded sub-step of `objFree`'s union handling (model/geo
+> frees are still unhardened — see Open #2). Fix is the same shape as 5900b442f.
 
 > **#12 LESSON (important):** a "corpse" (`prop->obj == NULL`) may **already be in the
 > freelist** (a free-without-delist put it there while still active-list-referenced).
@@ -37,6 +126,35 @@
 > now consolidated at the single pre-everything point (lvTick-top heal): a corpse can
 > no longer be seen by ANY tick / collision / render walk this frame, and it's
 > `propDeregisterRooms`'d so room-list consumers (collision) can't reach it either.
+
+## #16 GENERATOR ROOT-CAUSED + fixed at source (2026-06-09)
+
+Found by inspection (not the tripwire — the `projdead` corpses are dropped guns, which
+narrowed it). **`propExecuteTickOperation`'s non-regen `TICKOP_FREE` branch (prop.c:1830-1836)
+bare-`propFree`s the prop without `objFree`** — so the weaponobj's `base.prop` back-pointer is
+never cleared and the model leaks = the orphan-slot generator. It's ORIGINAL decompiled code,
+so it only *manifests* in netplay: on a client `objTickPlayer` runs a **dropped gun's fadeout
+locally** (not gated), fadeout returns `TICKOP_FREE`, this branch orphans the g_WeaponSlots
+slot; under 8-sim dropped-gun churn the orphans (projectile-flagged, excluded from
+`weaponCreate`'s recycle scan) saturate the pool → the NULL-`weaponCreate` crash / host-prop
+eviction / void. SP/N64 hit the same path but at trivial churn the orphan sits harmless till
+stage end. The dedicated server ticks/fades dropped guns too → same generator.
+
+**FIX (final form):** the bare propFree skips ALL of `objFree`'s reference-clearing, not just
+the weaponobj backref — also `wallhitsFreeByProp` / `invRemoveProp` / `chrClearReferences` /
+`projectilesUnrefOwner` / `shieldhitsRemoveByProp` / embedment + the model. (A first cut that
+only cleared the backref+model fixed the slot orphan — verified `orphan_reap=0`, `projdead=0`,
+9-min run — but then crashed in **`wallhitFree` (wallhit.c:173), ledger #17**: a wall-hit decal
+left pointing at the freed prop, so `wallhitsTick`→`wallhitFree` walked `prop->opawallhits` off
+the end → NULL deref at 0x90.) The complete fix **routes the intact-link case through
+`objFreePermanently`** (the full teardown) instead of partially replicating it; the already-
+detached DELETING case (`prop->obj == NULL`) falls through to the original bare free. Gated
+`g_NetMode != NETMODE_NONE`; SP/N64 byte-identical. `weaponSlotsReapOrphans` stays as a backstop
+and logs `orphan_reap` if anything else bare-frees a weapon (should stay silent). Client
+`EC84E5D8` + `pd-server.x86_64` rebuilt. This is the true root behind the #16/#17 cascade (and
+likely fed much of the broader Family-A corruption via recycled-prop type confusion).
+
+| 17 | `wallhitFree` wallhit.c:173 | AV read 0x90 (NULL `iter`) | crash | a wall-hit decal whose `objprop` points at a prop freed via the bare-propFree path (refs not cleared) — `wallhitFree`'s unlink walk runs off `prop->opawallhits` since the wallhit isn't in it | same root as #16; final fix routes the free through `objFreePermanently` (clears wallhits too) | fixed (source) |
 
 ## Root-cause fixes landed (not just guards)
 - **aff12448c** — `propsTickPlayer` REAPS null-obj corpses (TICKOP_FREE) instead of skipping.
@@ -81,8 +199,11 @@ heal logs:
 ## Open / next steps (priority)
 1. **Synced-weapon + explosion cycle source** — use the next `propsheal` line
    (it names the back-edge prop id/type/syncid) to pin the explode→free→relink path.
-2. **Reduce client load** so slots stop saturating: `Net.Server.Relevancy=1`,
-   consider an SVC send-rate cap; investigate the `-44` drift / sub-60fps directly.
+2. ~~**Reduce client load** so slots stop saturating~~ — **ANSWERED BY MEASUREMENT (see #14).**
+   The C1 `weaponslots` census proved the client does NOT saturate (occ ≤ 21/50) and runs
+   at a steady 60fps; the `-47` drift is a benign constant offset, not sub-60fps loss. No
+   load-reduction (A1/B) was needed. The crashes are specific corruption/OOB bugs, not a
+   load breakdown — keep hardening individual sites (A3) + fixing root bugs as they surface.
 3. **Decide guard philosophy**: the heal+reap now make Families A/B *survivable*
    (recover + log, don't die). If runtime confirms "logs fire but no crash/hang", that
    is a viable shipping state while the generators are hunted one by one.

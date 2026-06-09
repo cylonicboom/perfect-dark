@@ -2406,6 +2406,13 @@ void lvTick(void)
 	// netplay (the corruption is client-side; cheap, harmless on the host).
 	if (g_NetMode != NETMODE_NONE) {
 		propsHealActiveList();
+		// Server + client: release weapon slots orphaned by freed projectile/weapon
+		// props (prop freed, slot back-pointer not cleared) so weaponCreate can reuse
+		// them instead of saturating the 50-slot pool -> NULL return (the client
+		// SVC_PROP_SPAWN crash; the server silently failing to spawn drops) and
+		// force-recycling out live host props (sync collapse / void). Self-gates to
+		// netplay. (crash ledger #16 / census projdead)
+		weaponSlotsReapOrphans();
 	}
 #endif
 

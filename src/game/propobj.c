@@ -2416,6 +2416,23 @@ void objFreeEmbedmentOrProjectile(struct prop *prop)
 		struct defaultobj *obj = prop->obj;
 
 		if (obj->hidden & OBJHFLAG_EMBEDDED) {
+#ifndef PLATFORM_N64
+			// Defensive: a force-recycled / corrupted weapon slot can hold a
+			// garbage obj->embedment (observed 0xffffffffffffffff) with
+			// OBJHFLAG_EMBEDDED still set; dereferencing it (->projectile below,
+			// or embedmentFree's ->flags) crashes (read-at-(-1), via weaponCreate's
+			// force-recycle of a full slot — the same class as objFreeProjectile's
+			// guard above). obj->embedment is always a pointer INTO g_Embedments,
+			// so reject anything outside it: clear the flag and skip rather than
+			// dereference a wild pointer. Valid pointers (incl. NULL) are unaffected.
+			if (obj->embedment != NULL
+					&& (obj->embedment < g_Embedments
+						|| obj->embedment >= g_Embedments + g_MaxEmbedments)) {
+				obj->embedment = NULL;
+				obj->hidden &= ~OBJHFLAG_EMBEDDED;
+				return;
+			}
+#endif
 			if (obj->embedment) {
 				if (obj->embedment->projectile) {
 					projectileFree(obj->embedment->projectile);
@@ -2447,8 +2464,20 @@ void objFree(struct defaultobj *obj, bool freeprop, bool canregen)
 		struct weaponobj *weapon = (struct weaponobj *) obj;
 
 		if (weapon->dualweapon) {
-			weapon->dualweapon->dualweapon = NULL;
-			weapon->dualweapon = NULL;
+#ifndef PLATFORM_N64
+			// Defensive (client force-recycle of a corrupt slot): dualweapon must
+			// point INTO g_WeaponSlots. A wild value (prop-list corruption, the same
+			// class as the objFreeEmbedmentOrProjectile read-at-(-1) crash) would
+			// crash the back-reference write below — clear it without dereferencing.
+			if (weapon->dualweapon < g_WeaponSlots
+					|| weapon->dualweapon >= g_WeaponSlots + g_MaxWeaponSlots) {
+				weapon->dualweapon = NULL;
+			} else
+#endif
+			{
+				weapon->dualweapon->dualweapon = NULL;
+				weapon->dualweapon = NULL;
+			}
 		}
 
 		if (weapon->weaponnum == WEAPON_PROXIMITYMINE) {
@@ -2479,6 +2508,13 @@ void objFree(struct defaultobj *obj, bool freeprop, bool canregen)
 		if (g_Vars.normmplayerisrunning
 				&& weapon->weaponnum == WEAPON_SKROCKET
 				&& obj->projectile
+#ifndef PLATFORM_N64
+				// Same defensive range-check: obj->projectile must point into
+				// g_Projectiles (a corrupt recycled slot's union can be garbage,
+				// and this read precedes the objFreeEmbedmentOrProjectile guard).
+				&& obj->projectile >= g_Projectiles
+				&& obj->projectile < g_Projectiles + g_MaxProjectiles
+#endif
 				&& obj->projectile->ownerprop) {
 			s32 i;
 
@@ -4307,6 +4343,17 @@ bool propExplode(struct prop *prop, s32 exptype)
 		netmsgSvcExplosionWrite(&g_NetMsgRel, exptype,
 				net_useparentpos ? &net_exppos : &prop->pos,
 				net_useparentpos ? net_exprooms : prop->rooms);
+	} else if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
+		// projdiag (Phase 2a, temporary): the CLIENT reached propExplode for a synced
+		// prop — i.e. it locally detonated a projectile. The comment above asserts
+		// propExplode is server-only; if this appears in pd.log for player rockets, the
+		// client self-detonates (and should show a local blast). Throttled (~7/sec).
+		static u32 s_projDiagExpFrame = 0;
+		if (g_Vars.lvframe60 - s_projDiagExpFrame > 8) {
+			s_projDiagExpFrame = g_Vars.lvframe60;
+			sysLogPrintf(LOG_WARNING, "projdiag: client propExplode syncid=%u exptype=%d proptype=%d",
+					prop->syncid, exptype, prop->type);
+		}
 	}
 #endif
 
@@ -11169,6 +11216,24 @@ s32 objTickPlayer(struct prop *prop)
 			// 3× at 3, etc. — the "host physics 2× speed" report).
 			fulltick = (projectile->ownerprop == g_Vars.currentplayer->prop);
 		}
+
+#ifndef PLATFORM_N64
+		// CLIENT: fly EVERY synced projectile once per frame. The owner gate above
+		// only fullticks a projectile owned by THIS machine's currentplayer — but on
+		// a client the owners of synced projectiles are SIMS and REMOTE players,
+		// never the local currentplayer, so projectileTick (below, gated on fulltick)
+		// never ran: the rocket/grenade/mine froze invisibly at the muzzle and never
+		// flew or detonated ("no rockets visible" on a dedicated server). The host
+		// owns the authoritative lifecycle (spawn / free / explosion); the client
+		// just needs to run the flight locally to render it. Anchor to the primary
+		// local pawn's iteration so it advances exactly once per frame (not Nx for
+		// split-screen / spectator panels).
+		if (g_NetMode == NETMODE_CLIENT && prop->syncid
+				&& g_NetLocalClient && g_Vars.currentplayer
+				&& g_Vars.currentplayer == g_NetLocalClient->player) {
+			fulltick = true;
+		}
+#endif
 	}
 
 	if (model->anim) {
@@ -18346,6 +18411,51 @@ struct weaponobj *weaponCreate(bool musthaveprop, bool musthavemodel, struct mod
 		return tmp;
 	}
 
+#ifndef PLATFORM_N64
+	// CLIENT force-recycle victim preference (net churn reduction). When the 50
+	// slots are full and we must recycle a live one, prefer a slot that is NOT a
+	// synced prop (syncid 0 = a client-local weapon — a client-physics drop / stuck
+	// projectile). Recycling a SYNCED weapon the host still tracks desyncs the client
+	// and makes the host's prop-reconcile re-spawn it next heartbeat => MORE churn,
+	// the opposite of the goal. A syncid-0 slot is cheap to drop. This only fires
+	// when such a candidate exists; otherwise it falls through to the vanilla
+	// selection below unchanged (server / N64 never enter this branch). Mirrors the
+	// vanilla `usable` test: skip projectiles/regen/heldrocket and held (parented,
+	// non-embedded) weapons; prefer an off-screen victim.
+	if (g_NetMode == NETMODE_CLIENT) {
+		s32 localoff = -1;
+		s32 localany = -1;
+		s32 j;
+		for (j = 0; j < g_MaxWeaponSlots; j++) {
+			struct weaponobj *w = &g_WeaponSlots[j];
+			if (w->base.prop == NULL || w->base.prop->syncid != 0) {
+				continue;
+			}
+			if ((w->base.hidden & OBJHFLAG_PROJECTILE)
+					|| (w->base.hidden2 & OBJH2FLAG_CANREGEN)
+					|| (w->base.flags & OBJFLAG_HELDROCKET)) {
+				continue;
+			}
+			if (w->base.prop->parent && (w->base.hidden & OBJHFLAG_EMBEDDED) == 0) {
+				continue; // held in a hand — leave it (mirrors vanilla `usable`)
+			}
+			if (localany < 0) {
+				localany = j;
+			}
+			if ((w->base.prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ONANYSCREENTHISTICK | PROPFLAG_ONANYSCREENPREVTICK)) == 0) {
+				localoff = j;
+				break;
+			}
+		}
+		s32 pick = (localoff >= 0) ? localoff : localany;
+		if (pick >= 0) {
+			objFreePermanently(&g_WeaponSlots[pick].base, true);
+			g_NextWeaponSlot = (pick + 1) % g_MaxWeaponSlots;
+			return &g_WeaponSlots[pick];
+		}
+	}
+#endif
+
 	if (sp40 >= 0) {
 		if (g_WeaponSlots[sp40].base.prop) {
 			objFreePermanently(&g_WeaponSlots[sp40].base, true);
@@ -18387,6 +18497,70 @@ struct weaponobj *func0f08a364(void)
 {
 	return weaponCreate(false, false, NULL);
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Port-only (netplay server + client): reap ORPHANED weapon slots.
+ *
+ * A projectile/weapon prop freed by a path that clears the prop but not this
+ * weaponobj's back-pointer leaves g_WeaponSlots[i].base.prop referencing a prop
+ * whose union no longer points back (freed => prop->obj NULL, or recycled to a
+ * different obj). Such orphan slots count as occupied AND, being projectile-flagged,
+ * are EXCLUDED from weaponCreate's recycle scan, so they accumulate (diag census
+ * projdead ~14-19 of proj ~26) until the 50-slot pool saturates: weaponCreate then
+ * returns NULL (the SVC_PROP_SPAWN write-at-0 crash) and force-recycle evicts the
+ * live host props (synced->0 => sync collapse => rooms stop loading / void). This is
+ * the open Family-A free-without-clear corruption: clients CRASH on it; the headless
+ * dedicated server silently fails to spawn drops/projectiles once its own pool
+ * saturates and then streams that to everyone — so this runs on BOTH roles.
+ *
+ * Release any slot whose back-pointer is broken so the slot is reusable. The prop is
+ * already freed / owned by something else, so NEVER touch it (no propFree/propDelist).
+ * The orphaning free skipped objFree (objFree clears base.prop), so this weaponobj's
+ * own model was never freed -> free it here (no double-free) to avoid a model-pool
+ * leak, then clear the slot.
+ */
+void weaponSlotsReapOrphans(void)
+{
+	s32 i;
+
+	// Netplay only (server + client). Single-player / N64 use the clean objFree
+	// path and never orphan a slot, so this is a no-op there anyway.
+	if (g_NetMode == NETMODE_NONE || g_WeaponSlots == NULL) {
+		return;
+	}
+
+	for (i = 0; i < g_MaxWeaponSlots; i++) {
+		struct defaultobj *obj = &g_WeaponSlots[i].base;
+		struct prop *prop = obj->prop;
+
+		// Empty slot, or a live weapon whose prop's union points back at us.
+		if (prop == NULL || prop->obj == obj) {
+			continue;
+		}
+
+		// Orphan: prop freed/recycled without releasing this slot.
+		// VERIFICATION (crash ledger #16): with the propExecuteTickOperation source
+		// fix in place this should never fire — any `orphan_reap` line means another
+		// generator still bare-frees a weapon prop. Throttled.
+		{
+			static u32 lastlog60 = 0;
+			if (lastlog60 == 0 || g_Vars.lvframe60 - lastlog60 > TICKS(30)) {
+				lastlog60 = g_Vars.lvframe60;
+				netDiagLogf("orphan_reap", "slot=%d wpn=%d", i, (s32)g_WeaponSlots[i].weaponnum);
+			}
+		}
+
+		if (obj->model) {
+			modelmgrFreeModel(obj->model);
+			obj->model = NULL;
+		}
+		obj->projectile = NULL;
+		obj->hidden = 0;
+		obj->prop = NULL;
+	}
+}
+#endif
 
 struct hatobj *hatCreate(bool musthaveprop, bool musthavemodel, struct modeldef *modeldef)
 {

@@ -265,6 +265,9 @@ void hatLoadAndApplyToChr(struct hatobj *hat, struct chrdata *chr);
 void hatAssignToChr(struct hatobj *hat, struct chrdata *chr);
 struct prop *hatCreateForChr(struct chrdata *chr, s32 modelnum, u32 flags);
 struct weaponobj *weaponCreate(bool musthaveprop, bool musthavemodel, struct modeldef *modeldef);
+#ifndef PLATFORM_N64
+void weaponSlotsReapOrphans(void);
+#endif
 struct hatobj *hatCreate(bool musthaveprop, bool musthavemodel, struct modeldef *modeldef);
 struct ammocrateobj *ammocrateAllocate(void);
 struct defaultobj *debrisAllocate(void);

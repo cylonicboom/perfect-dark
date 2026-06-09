@@ -2539,9 +2539,27 @@ void menuGetTeamTitlebarColours(u32 *top, u32 *middle, u32 *bottom)
 		{ 0x88445500, 0x48242000, 0x88445500 },
 	};
 
+#ifndef PLATFORM_N64
+	// base.team is a u8 whose "no team assigned" sentinel is 0xff. A Host-Online
+	// client driving the Combat Sim setup/hosting UI can have an unset team in its
+	// local player config; the vanilla code indexes this 8-entry stack table
+	// directly, so 0xff reads ~team*12 bytes off the stack frame (observed AV read
+	// at stack+0xbf4, RDX=0xff). Clamp an out-of-range team to row 0 (the crash
+	// site is the team-titlebar dialog in MENUROOT_MPSETUP with teams enabled).
+	{
+		u32 team = g_PlayerConfigsArray[g_MpPlayerNum].base.team;
+		if (team >= ARRAYCOUNT(colours)) {
+			team = 0;
+		}
+		*top = colours[team][0] | (*top & 0xff);
+		*middle = colours[team][1] | (*middle & 0xff);
+		*bottom = colours[team][2] | (*bottom & 0xff);
+	}
+#else
 	*top = colours[g_PlayerConfigsArray[g_MpPlayerNum].base.team][0] | (*top & 0xff);
 	*middle = colours[g_PlayerConfigsArray[g_MpPlayerNum].base.team][1] | (*middle & 0xff);
 	*bottom = colours[g_PlayerConfigsArray[g_MpPlayerNum].base.team][2] | (*bottom & 0xff);
+#endif
 }
 
 Gfx *menuApplyScissor(Gfx *gdl)

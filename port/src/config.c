@@ -10,7 +10,12 @@
 
 #define CONFIG_MAX_SECNAME 128
 #define CONFIG_MAX_KEYNAME 256
-#define CONFIG_MAX_SETTINGS 300
+// Was 300, but 4 players' full keybind lists plus the port's many Video/Net/
+// Game/Input/ControllerPak options blow past that on the merged feature build,
+// silently dropping every key registered after the 300th (configFindOrAddEntry
+// returns NULL) -- which manifested as Player 4 binds and the Controller Pak
+// options never saving. Keep generous headroom for future options.
+#define CONFIG_MAX_SETTINGS 1024
 
 typedef enum {
 	CFG_NONE,

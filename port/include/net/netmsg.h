@@ -81,6 +81,12 @@
 #define NET_QUERYTYPE_SUMMARY 0 // browser-list row only
 #define NET_QUERYTYPE_DETAILS 1 // summary + live scoreboard (players/sims)
 
+// Mod-dir identity for the wire: the BASENAME of fsGetModDir() (or NULL when
+// unmodded). Auth compares this, and the query summary / heartbeat advertise
+// it — never the resolved absolute path (differs per install/cwd; leaks the
+// local filesystem path).
+const char *netModDirName(void);
+
 // Server status payload builders. The summary block is reused verbatim by both
 // the direct query response and the master heartbeat; details appends the live
 // scoreboard. See netmsg.c.

@@ -8,6 +8,12 @@ presets, and add configured matches to the server's random rotation.
 Protocol: `CLC_ADMIN` / `SVC_ADMIN` (added in `NET_PROTOCOL_VER 33`). All client
 and server builds at v33 are required for these to interoperate.
 
+> **Host Online Game** rides this machinery end-to-end: the master spawns an
+> instance with a random `--admin-password` token and the requesting client
+> auto-runs `login <token>` + `take`, then drives the *full* Combat Sim setup
+> (pushes via the unchanged `CLC_ADMIN_SETUP`). See
+> [`PORT_HOSTED_SERVER.md`](PORT_HOSTED_SERVER.md).
+
 ## Setup
 
 Set an admin password on the server (separate from the join password; empty

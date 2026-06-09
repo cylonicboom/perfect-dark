@@ -27,6 +27,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "input.h"
+#include "net/net.h" // netPlayerOwnsMouse
 #endif
 
 u8 g_EyespyPickup = false;
@@ -952,7 +953,8 @@ void eyespyProcessInput(bool allowbuttons)
 #endif
 
 #ifndef PLATFORM_N64
-		if (g_Vars.currentplayernum == 0) {
+		// netPlayerOwnsMouse: the net local pawn can sit at any slot, not just 0
+		if (netPlayerOwnsMouse()) {
 			f32 mdx, mdy;
 			inputMouseGetScaledDelta(&mdx, &mdy);
 			if (mdx || mdy) {

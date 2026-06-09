@@ -106,7 +106,15 @@ MenuItemHandlerResult menuhandlerMpEndGame(s32 operation, struct menuitem *item,
 	if (operation == MENUOP_SET) {
 		g_Vars.currentplayer->aborted = true;
 #ifndef PLATFORM_N64
-		if (g_NetMode == NETMODE_CLIENT) {
+		if (g_NetMode == NETMODE_CLIENT && g_NetHostOnlineMode) {
+			// Host Online admin: "End Game" mirrors the local host — end the
+			// match for the WHOLE server (admin endmatch -> server mainEndStage
+			// -> SVC_STAGE_END to everyone, us included) and stay connected;
+			// the post-match flow then returns us to the Combat Sim setup via
+			// the menutick latch. The plain-client netDisconnect below would
+			// dump the admin at the main menu with the session dead.
+			netClientSendAdminLine("endmatch");
+		} else if (g_NetMode == NETMODE_CLIENT) {
 			netDisconnect();
 		} else
 #endif

@@ -36,6 +36,12 @@
 #define NET_MASTER_MSG_LIST_REQUEST  0x03 // client -> master: ask for directory
 #define NET_MASTER_MSG_LIST_RESPONSE 0x04 // master -> client: directory page
 #define NET_MASTER_MSG_REGISTER_ACK  0x05 // master -> server: optional, reports public addr
+// "Host Online Game" extension: the master spawns a dedicated instance for the
+// requester and hands back its address + a one-off admin token. Old masters
+// silently drop these opcodes (the request just times out with a clear message).
+#define NET_MASTER_MSG_HOST_REQUEST  0x06 // client -> master: u32 proto, str name, u8 maxplayers, str join_password
+#define NET_MASTER_MSG_HOST_GRANT    0x07 // master -> client: str addr ("ip:port"), str admin_token
+#define NET_MASTER_MSG_HOST_DENY     0x08 // master -> client: str reason
 
 // Browser list capacity and per-entry name length.
 #define NET_BROWSER_MAX        64
@@ -49,6 +55,15 @@
 #define NETBROWSER_REQUESTING 1 // LIST_REQUEST sent, awaiting first response
 #define NETBROWSER_LISTED     2 // have a (possibly partial) list; pinging servers
 #define NETBROWSER_ERROR      3 // socket create / master resolve failed
+
+// Host-request state (drives the "Host Online Game" wait dialog).
+#define NETHOSTREQ_IDLE       0 // socket closed
+#define NETHOSTREQ_REQUESTING 1 // HOST_REQUEST sent, retransmitting until a reply
+#define NETHOSTREQ_GRANTED    2 // grant received; addr + token below are valid
+#define NETHOSTREQ_DENIED     3 // master refused; reason below
+#define NETHOSTREQ_ERROR      4 // socket create / resolve failed, or timed out
+
+#define NET_HOSTREQ_REASON_LEN 64
 
 // One browser list row. Display + connect fields only; the parsed address and
 // ping-timing state are kept privately in netmaster.c (parallel arrays).
@@ -94,6 +109,13 @@ struct netserverdetails {
 	struct netserverdetailplayer players[NET_MAX_CLIENTS];
 	u8  num_sims;
 	struct netserverdetailsim sims[MAX_BOTS];
+	// Server's mod dir basename from the query summary ("" = vanilla), plus
+	// whether it matches ours (join auth rejects a mod-dir mismatch, so the
+	// Details view can warn before the player tries to connect). The match is
+	// computed at parse time in netmaster.c — netmenu.c can't safely include
+	// netmsg.h for netModDirName (the bool/include-order trap).
+	char mod[64];
+	u8  modmatch;
 };
 
 // Runtime config (registered in netmaster.c). g_NetMasterAddr empty disables
@@ -145,5 +167,28 @@ void netBrowserRefresh(void);
 // index is out of range or the socket is not open. The details dialog calls
 // this on open and ~1 Hz thereafter for a live scoreboard.
 s32 netBrowserQueryDetails(s32 index);
+
+/* client side (Host Online Game request) */
+
+// State machine + results for the host request (see NETHOSTREQ_*). On GRANTED,
+// addr is the instance to netStartClient() into and token is the one-off admin
+// password for the auto `/admin login`. On DENIED/ERROR, reason is displayable.
+extern s32 g_NetHostRequestState;
+extern char g_NetHostGrantAddr[NET_MAX_ADDR + 1];
+extern char g_NetHostGrantToken[NET_MAX_PASSWORD];
+extern char g_NetHostDenyReason[NET_HOSTREQ_REASON_LEN];
+
+// Open a standalone socket and send a HOST_REQUEST to the master (the browser
+// socket pattern). name/maxplayers/password describe the wanted server; the
+// request retransmits every ~3s until a reply or the ~20s timeout.
+void netHostRequestOpen(const char *name, s32 maxplayers, const char *password);
+
+// Per-frame poll while the wait dialog is open: drains the socket, parses
+// GRANT/DENY, retransmits, and times out into NETHOSTREQ_ERROR.
+void netHostRequestTick(void);
+
+// Destroy the socket. The GRANTED addr/token (and DENIED reason) survive the
+// close so the caller can act on them afterwards.
+void netHostRequestClose(void);
 
 #endif // _IN_NETMASTER_H

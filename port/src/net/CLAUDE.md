@@ -151,6 +151,10 @@ The browser measures ping by timing the summary round-trip and pulls the scorebo
 
 Port-only discovery. Servers (listen + dedicated) heartbeat to an external UDP tracker (the VPS) every ~15s via `netMasterTick` (called from `netEndFrame`), sent out of the game socket (`netSendConnectionless`) so the master sees the real `ip:port`. The in-game **Network Game → Server Browser** opens a standalone non-blocking UDP socket (`netBrowserOpen`, driven each frame by the dialog handler's `MENUOP_TICK`), asks the master for the directory (`PDMS\x01` LIST_REQUEST/RESPONSE), then direct-queries each listed server for ping + live counts, and (on the Details view) the live scoreboard. The master is a thin directory — never relays game traffic, never sees passwords. Browser state for the UI: `g_NetServerList[]`, `g_NetServerCount`, `g_NetServerDetails`, `g_NetBrowserState`. The `netmaster.h` header is deliberately ENet-free so `netmenu.c` can include it without pulling in enet.
 
+### Host Online Game (`netmaster.c` transport + `netmenu.c` flow + menutick.c hooks)
+
+Port-only "the master hosts for you": **Network Game → Host Online Game** sends a `PDMS` HOST_REQUEST (0x06; same standalone-socket pattern as the browser, 3s retransmit, 20s timeout) and the master (`pdmaster/instances.go`) spawns a dedicated instance, replying HOST_GRANT (0x07: addr + one-off admin token) or HOST_DENY (0x08: reason). The requester then `netStartClient`s into the instance, auto-sends `CLC_ADMIN "login <token>"` + `"take"` (reliable ordered — no SVC_ADMIN reply parsing) from the Joining dialog's tick, and enters the **full Combat Sim hosting UI** via a fresh-CITRAINING reload + the post-match latch (`var80087260`; never run the title-screen setup-load over the live connected lobby — the shieldhits crash class). "Begin Match" reroutes to `netAdminPushStart()` (CLC_ADMIN_SETUP) at menutick.c's `-5` sentinel; a ~10s watchdog in `netStartFrame` returns to the setup if the SVC_STAGE_START never arrives. Session flag `g_NetHostOnlineMode` (+ token/latches) clears in `netDisconnect`. **No NET_PROTOCOL_VER bump** — master-protocol opcodes only. See `docs/PORT_HOSTED_SERVER.md`.
+
 ### Join Password
 
 `g_NetServerPassword` (host, `Server.Password`/`--password`) gates joining: the client sends a trailing `str password` in `CLC_AUTH`; `netmsgClcAuthRead` string-compares and kicks a mismatch with `DISCONNECT_PASSWORD`. Only a `NET_QF_PASSWORD` flag is advertised — the password never goes on the wire as plaintext beyond the join attempt itself (and ENet is unencrypted, so this is access-gating, not strong security). The browser prompts for it before connecting to a flagged server; manual joins set `g_NetJoinPassword` first.
@@ -207,6 +211,12 @@ Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` u
 --master <addr>     master-server host/IP override (Net.Master.Addr)
 --no-advertise      don't register this server with the master
 --password <pw>     set the host join password (Server.Password)
+--svcrate <ticks>   server state-send interval (= Net.Server.UpdateFrames, the
+                    /svcrate console command): 1 = 60Hz, 2 = 30Hz/~half band-
+                    width; clamped 1..60. CLI form for dedicated instances (no
+                    console). pdmaster spawns instances with --svcrate 2.
+--clcrate <ticks>   client upstream-send interval (= Net.Client.UpdateFrames,
+                    /clcrate); clamped 1..60.
 --netdiag <path>    netplay diagnostic CSV path (alias --diag; = Net.Debug.LogPath;
                     opens at host/join, NOT a boot log — that's --log → pd.log)
 ```

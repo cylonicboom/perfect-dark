@@ -53,6 +53,7 @@
 #include "net/net.h"
 #include "net/netmsg.h"
 #include "spectator.h"
+#include "system.h" // sysLogPrintf/LOG_* for the child-list cycle heal
 #endif
 
 void rng2SetSeed(u32 seed);
@@ -2425,11 +2426,54 @@ bool chrTickBeams(struct prop *prop)
  * much of the logic is skipped, and only the logic specific to the current
  * player is executed.
  */
+#ifndef PLATFORM_N64
+// Break a cycle in a chr's child/sibling chain (prop->child -> child->next ...)
+// before the several unbounded `while (child) child = child->next` walks in
+// chrTick (and the render walks in lvRender, which run later in the same frame)
+// spin forever. A netplay client can relink a held-weapon / embedded-mine child
+// badly (the same prop-list corruption family as the active-list cycle that
+// propsHealActiveList handles — but the child chain is a separate list). Sever
+// at the last good node, log the chr, and continue. No-op on a healthy list;
+// gated to clients (the corruption is client-side) so the host/SP are untouched.
+static void chrHealChildList(struct prop *prop)
+{
+	struct prop *child = prop->child;
+	struct prop *prev = NULL;
+	struct prop *const poolstart = g_Vars.props;
+	struct prop *const poolend = g_Vars.props + g_Vars.maxprops;
+	const s32 cap = g_Vars.maxprops + 16;
+	s32 i = 0;
+
+	while (child) {
+		if (child < poolstart || child >= poolend || ++i > cap) {
+			sysLogPrintf(LOG_WARNING,
+					"chrheal: corrupt child chain on chr prop %d (child %p iter %d); severing",
+					(s32)(prop - g_Vars.props), (void *)child, i);
+			if (prev) {
+				prev->next = NULL;
+			} else {
+				prop->child = NULL;
+			}
+			return;
+		}
+		prev = child;
+		child = child->next;
+	}
+}
+#endif
+
 s32 chrTick(struct prop *prop)
 {
 	struct modelrenderdata sp210 = {0, 1, 3};
 	struct chrdata *chr = prop->chr;
 	struct model *model = chr->model;
+#ifndef PLATFORM_N64
+	// Heal a corrupted child chain before the unbounded child walks below would
+	// hang on it (gdb caught the cycle in the func0f0706f8 off-screen child walk).
+	if (g_NetMode == NETMODE_CLIENT && prop->child) {
+		chrHealChildList(prop);
+	}
+#endif
 #ifndef PLATFORM_N64
 	// Network-replicated chrs (Combat Sim sims now; campaign NPCs once online
 	// co-op lands): drive prop->pos from the interpolation buffer before ticking

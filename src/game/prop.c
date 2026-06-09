@@ -68,6 +68,9 @@ void propsSort(void)
 {
 	s32 count = 0;
 	struct prop *prop = g_Vars.activeprops;
+#ifndef PLATFORM_N64
+	struct prop *prev = NULL; // last valid prop; names a corrupt ->next in the guard below
+#endif
 	s32 swapindex;
 	f32 depth;
 	s32 i;
@@ -76,6 +79,33 @@ void propsSort(void)
 
 	// Populate onscreenprops with the list of props
 	while (prop != g_Vars.pausedprops) {
+#ifndef PLATFORM_N64
+		// Corrupt-walk guard (client AV family, same as the propsTickPlayer
+		// guard): a prop freed AND recycled mid-frame can leave a dangling
+		// ->next, so this render walk steps onto a NULL/garbage pointer and
+		// crashes reading prop->flags below (observed in a hosted match: read
+		// at 0x1, truncated pointers in the registers). Validate prop is a
+		// live pool pointer; if not, log the PREVIOUS prop (whose ->next is the
+		// bad link) and abort this frame's sort instead of dereferencing it.
+		if (prop == NULL || prop < g_Vars.props
+				|| prop >= g_Vars.props + g_Vars.maxprops) {
+			static u32 lastwarn60 = 0;
+			if (g_Vars.lvframe60 - lastwarn60 > TICKS(60)) {
+				lastwarn60 = g_Vars.lvframe60;
+				if (prev) {
+					sysLogPrintf(LOG_WARNING,
+							"propssort_guard: prop %d (type %d flags 0x%x syncid %u) has corrupt next %p; aborting sort",
+							(s32)(prev - g_Vars.props), prev->type, prev->flags,
+							prev->syncid, (void *)prop);
+				} else {
+					sysLogPrintf(LOG_WARNING,
+							"propssort_guard: activeprops head corrupt (%p); aborting sort",
+							(void *)prop);
+				}
+			}
+			break;
+		}
+#endif
 		if ((prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) == (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) {
 #ifndef PLATFORM_N64
 			// With portal culling disabled (/octree bigroom) far more props
@@ -91,6 +121,9 @@ void propsSort(void)
 			count++;
 		}
 
+#ifndef PLATFORM_N64
+		prev = prop;
+#endif
 		prop = prop->next;
 	}
 
@@ -353,8 +386,185 @@ void propDelist(struct prop *prop)
 	prop->backgroundedframes = 0;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Corruption recovery for netplay clients. The active+paused prop chain is
+ * walked unbounded (to NULL) by several consumers — roomsTickLighting
+ * (dlights.c), propsRenderBeams (propobj.c) and the per-frame prop ticks. A
+ * client-side free/recycle bug can relink a freed prop back into the chain so
+ * its ->next forms a CYCLE: gdb on a hung client showed a syncid=0
+ * client-allocated weapon whose ->next pointed back at the list head, making a
+ * 56-node ring. Every unbounded walk then spins forever (hang) — a separate
+ * failure mode from the null-obj corpse that propsTickPlayer reaps.
+ *
+ * Called once per frame from lvTick BEFORE any walk. Detects a cycle (iteration
+ * cap) or an out-of-pool link, then uses Floyd's to find the exact back-edge so
+ * it severs ONLY the wrap (no orphaned props in the common tail->head case) and
+ * logs the culprit prop (id/type/syncid) so the creating free/activate can be
+ * hunted. Best-effort: on the degenerate out-of-pool case it severs at the last
+ * good node, which may orphan a few props (leaked until stage reset) — strictly
+ * better than a hang. Healthy lists return after one cheap walk.
+ */
+void propsHealActiveList(void)
+{
+	struct prop *prop = g_Vars.activeprops;
+	struct prop *prev = NULL;
+	struct prop *const poolstart = g_Vars.props;
+	struct prop *const poolend = g_Vars.props + g_Vars.maxprops;
+	const s32 cap = g_Vars.maxprops + 16;
+	s32 i = 0;
+	bool cycle = false;
+
+	while (prop) {
+		if (prop < poolstart || prop >= poolend) {
+			sysLogPrintf(LOG_WARNING,
+					"propsheal: out-of-pool active link %p after prop %d; severing",
+					(void *)prop, prev ? (s32)(prev - g_Vars.props) : -1);
+			if (prev) {
+				prev->next = NULL;
+				g_Vars.activepropstail = prev;
+			} else {
+				g_Vars.activeprops = NULL;
+				g_Vars.activepropstail = g_Vars.pausedprops;
+			}
+			return;
+		}
+		// Pre-tick corpse handling (BEFORE the cycle cap, so corpses don't inflate
+		// the iteration count). A listed OBJ/WEAPON/DOOR/EXPLOSION/SMOKE prop whose
+		// union pointer (prop->obj/->explosion/... alias offset 0x48) is NULL is a
+		// freed-but-still-listed corpse. A ticking projectile's COLLISION examines
+		// room-list props (propIsOfCdType: obj->unkgeo) and AVs on a corpse before
+		// its own tick reaps it — so first make it collision-safe by deregistering
+		// its rooms (no-op if already deregistered).
+		//
+		// CRITICAL: do NOT propFree here. A corpse may ALREADY be in the freelist
+		// (a free-without-delist left it there while still active-list-referenced);
+		// propFree-ing it again double-frees -> prop->next = g_Vars.freeprops which
+		// is itself -> a SELF-LOOP that hangs roomsTickLighting (this exact bug was
+		// caused by an earlier version of this block that called
+		// propExecuteTickOperation(TICKOP_FREE) here). So:
+		//   - if the corpse is CORRUPT — self-loop (next==self) or its back-link
+		//     disagrees with our walk (prev) — it's already freed: just UNLINK it
+		//     from the active chain via OUR trusted prev (propDelist can't, it
+		//     trusts the corpse's own NULL/self prev/next) and leave the slot in
+		//     the freelist;
+		//   - if the corpse is CONSISTENT (links match our walk, not in the
+		//     freelist yet), leave it for the per-tick-walk reap to free properly
+		//     — we've already deregistered its rooms so this frame is collision-safe.
+		if (prop->obj == NULL
+				&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON
+					|| prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_EXPLOSION
+					|| prop->type == PROPTYPE_SMOKE)) {
+			struct prop *deadnext = prop->next;
+			propDeregisterRooms(prop);
+			if (deadnext == prop || prop->prev != prev) {
+				static u32 lastwarn60f = 0;
+				if (g_Vars.lvframe60 - lastwarn60f > TICKS(60)) {
+					lastwarn60f = g_Vars.lvframe60;
+					sysLogPrintf(LOG_WARNING,
+							"propsheal: unlink corrupt corpse prop %d type %d flags 0x%x syncid %u (selfloop=%d)",
+							(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid,
+							(deadnext == prop));
+				}
+				if (deadnext == prop) {
+					deadnext = NULL; // self-loop: terminate the active list here
+				}
+				if (prev) {
+					prev->next = deadnext;
+					if (deadnext == NULL) {
+						g_Vars.activepropstail = prev;
+					}
+				} else {
+					g_Vars.activeprops = deadnext;
+					if (deadnext == NULL) {
+						g_Vars.activepropstail = g_Vars.pausedprops;
+					}
+				}
+				prop = deadnext;
+				continue;
+			}
+			// Consistent corpse — leave it for the tick-walk reap (rooms already
+			// deregistered above, so collision is safe this frame).
+			prev = prop;
+			prop = deadnext;
+			continue;
+		}
+		if (++i > cap) {
+			cycle = true;
+			break;
+		}
+		prev = prop;
+		prop = prop->next;
+	}
+
+	if (!cycle) {
+		return; // terminated at NULL within the cap — healthy
+	}
+
+	// A cycle exists and every node in it is in-pool (the range check above
+	// would have severed an out-of-pool link first). Locate the exact back-edge
+	// with Floyd's tortoise/hare so we break only the wrap and name the culprit.
+	{
+		struct prop *slow = g_Vars.activeprops;
+		struct prop *fast = g_Vars.activeprops;
+		struct prop *entry;
+		struct prop *back;
+
+		do {
+			slow = slow->next;
+			fast = fast->next ? fast->next->next : NULL;
+		} while (fast && slow != fast);
+
+		if (fast == NULL) {
+			// Shouldn't happen (the cap proved a cycle); fall back to severing
+			// at the last good node so the chain still terminates.
+			if (prev) {
+				prev->next = NULL;
+				g_Vars.activepropstail = prev;
+			}
+			sysLogPrintf(LOG_WARNING,
+					"propsheal: cycle detected but Floyd bailed; severed at prop %d",
+					prev ? (s32)(prev - g_Vars.props) : -1);
+			return;
+		}
+
+		entry = g_Vars.activeprops;
+		while (entry != slow) {
+			entry = entry->next;
+			slow = slow->next;
+		}
+
+		back = entry;
+		while (back->next != entry) {
+			back = back->next;
+		}
+
+		sysLogPrintf(LOG_WARNING,
+				"propsheal: active-list CYCLE healed — back-edge prop %d (type %d syncid %u flags 0x%x) -> entry prop %d (type %d syncid %u); severing",
+				(s32)(back - g_Vars.props), back->type, back->syncid, back->flags,
+				(s32)(entry - g_Vars.props), entry->type, entry->syncid);
+
+		back->next = NULL;
+		g_Vars.activepropstail = back;
+	}
+}
+#endif
+
 void propReparent(struct prop *mover, struct prop *adopter)
 {
+#ifndef PLATFORM_N64
+	// Never double-link a prop into a child chain. mover->next is dual-use (the
+	// active/paused list when active, the child sibling chain when attached); if
+	// mover is already attached somewhere and we overwrite mover->next below
+	// without unlinking it first, its old predecessor keeps pointing at it and
+	// the chain becomes a cycle (the client weapon-child corruption family).
+	// Detach-before-attach makes reparent idempotent. No-op in the normal
+	// fresh-prop path (parent == NULL); only fires on a stray double-reparent.
+	if (mover->parent) {
+		propDetach(mover);
+	}
+#endif
+
 	mover->parent = adopter;
 
 	if (adopter->child) {
@@ -2300,7 +2510,38 @@ void propsTickPlayer(bool islastplayer)
 					if (objrestore) {
 						objwirepos = prop->pos;
 					}
-					op = objTickPlayer(prop);
+					// Zombie REAP: a typed OBJ/WEAPON/DOOR prop whose union
+					// pointer (prop->obj) is NULL is a freed-but-still-listed
+					// corpse. Root cause (the proptick/propssort/propsbeams
+					// guard family): objFree(obj, /*freeprop=*/false) — used by
+					// the OBJHFLAG_DELETING reaper (propobj.c:11125), bot/player
+					// pickups, and objTestForPickup — sets obj->prop->obj = NULL
+					// and DEFERS the actual propDelist/propFree to the caller
+					// honouring the returned TICKOP_FREE. If that TICKOP_FREE is
+					// ever dropped, the prop is left listed with obj==NULL, and
+					// objTickPlayer's first deref (obj->model at +0x20) crashes
+					// on it. The earlier version of this guard set TICKOP_NONE,
+					// which merely SKIPPED the tick — so the corpse lingered
+					// frame after frame until a different walk (propsRenderBeams
+					// cycle hang, propsSort) tripped on it. Reaping it instead
+					// (TICKOP_FREE) restores the "no null-obj props in the active
+					// list" invariant on the very next tick: propExecuteTick-
+					// Operation's regen check short-circuits on prop->obj==NULL
+					// and falls straight to propDeregisterRooms/propDelist/
+					// propFree — the same path (incl. the harmless double
+					// deregister) the normal DELETING reaper already takes.
+					if (prop->obj == NULL) {
+						static u32 lastwarn60b = 0;
+						if (g_Vars.lvframe60 - lastwarn60b > TICKS(60)) {
+							lastwarn60b = g_Vars.lvframe60;
+							sysLogPrintf(LOG_WARNING,
+									"proptick_guard: reap null-obj prop %d type %d flags 0x%x syncid %u",
+									(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+						}
+						op = TICKOP_FREE;
+					} else {
+						op = objTickPlayer(prop);
+					}
 					if (objrestore && op != TICKOP_FREE && prop->obj) {
 						prop->pos = objwirepos;
 						// objTickPlayer rebuilt the obj's collision geometry from the
@@ -2381,6 +2622,23 @@ void propsTickPlayer(bool islastplayer)
 				} else if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR) {
 					obj = prop->obj;
 
+#ifndef PLATFORM_N64
+					// Zombie REAP (background path): mirror the foreground null-obj
+					// reap above. The background obj-tick derefs obj->type at
+					// g_PausableObjs[obj->type] below with no null check, so a
+					// freed-but-still-listed corpse here crashes BEFORE
+					// objTickPlayer ever runs. Reap it the same way (TICKOP_FREE).
+					if (obj == NULL) {
+						static u32 lastwarn60c = 0;
+						if (g_Vars.lvframe60 - lastwarn60c > TICKS(60)) {
+							lastwarn60c = g_Vars.lvframe60;
+							sysLogPrintf(LOG_WARNING,
+									"proptick_guard: reap null-obj bg prop %d type %d flags 0x%x syncid %u",
+									(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+						}
+						op = TICKOP_FREE;
+					} else
+#endif
 					if (!g_PausableObjs[obj->type]) {
 						op = objTickPlayer(prop);
 					} else if (prop->timetoregen <= 0) {

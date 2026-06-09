@@ -106,6 +106,29 @@ void propsTick(void)
 		done = next == g_Vars.pausedprops;
 		tickop = TICKOP_NONE;
 
+#ifndef PLATFORM_N64
+		// Corpse guard (mirrors propsTickPlayer's null-obj reap, but for THIS
+		// lvTick walk — propsTickPlayer is the separate lvRender walk and its
+		// reap never covered this one). A prop whose union pointer (prop->obj /
+		// ->chr / ->explosion all alias the 0x48 union) is NULL is a freed-but-
+		// still-listed corpse; every dispatcher below dereferences it and AVs —
+		// explosionTick does `prop->explosion->type` = the observed read-at-0x3d4
+		// client crash. Reap it via TICKOP_FREE instead (propExecuteTickOperation
+		// short-circuits the regen check on a NULL union and propDelist/propFrees),
+		// so the active list self-heals here too. With both tick walks reaping,
+		// the later render walks (propsRenderBeams / roomsTickLighting) never see
+		// a corpse.
+		if (prop->obj == NULL) {
+			static u32 lastwarn60e = 0;
+			if (g_Vars.lvframe60 - lastwarn60e > TICKS(60)) {
+				lastwarn60e = g_Vars.lvframe60;
+				sysLogPrintf(LOG_WARNING,
+						"proptick_guard: reap null-union prop %d type %d flags 0x%x syncid %u (propsTick)",
+						(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid);
+			}
+			tickop = TICKOP_FREE;
+		} else
+#endif
 		if (prop->type == PROPTYPE_CHR) {
 			tickop = chrTickBeams(prop);
 		} else if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR) {

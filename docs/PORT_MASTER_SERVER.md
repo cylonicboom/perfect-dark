@@ -88,6 +88,14 @@ Master behaviour: upsert keyed by `(source_ip, game_port)`; store the summary
 fields; **expire after ~45 s** (3 missed heartbeats). Optionally reply with a
 REGISTER_ACK.
 
+**Verify-before-list** (pdmaster, default on): the master probes a newly
+heartbeated server with a PDQM summary query (section B) sent **from its
+listening socket** (so the reply rides the NAT mapping the heartbeat opened)
+and lists the server only after a checksum-valid response. This stops
+spoofed-source heartbeats from polluting the directory and filters servers
+whose game port isn't actually reachable. Consequence: a server with
+`Net.Server.AllowInfoQuery=0` (non-default) will not be listed.
+
 ### 0x02 UNREGISTER  (server → master)
 
 Best-effort on clean shutdown:
@@ -109,10 +117,22 @@ this every ~3 s until it gets a response. You may filter by `protocol_ver` if
 you wish (the game does not strictly require it; mismatched servers just fail to
 join with a clear message).
 
+The master should **rate-limit LIST_REQUEST per source IP** (pdmaster: token
+bucket, burst 8 / refill 1 per second, silent drop when over budget): the
+request is ~11 bytes while the response can be tens of kilobytes, and UDP
+sources can be spoofed — an unthrottled master is a DDoS amplification
+reflector. The 3 s client retransmit rides well under the refill rate, so a
+legitimate browser never notices.
+
 ### 0x04 LIST_RESPONSE  (master → client)
 
-Keep each datagram under ~1200 bytes; split a large directory across several
-packets (the client assembles by address, de-duping).
+**Keep each datagram ≤ 1024 bytes** — that is the game's browser receive
+buffer (`netBrowserTick` `rxbuf[1024]`), and the bundled ENet **drops**
+oversized datagrams outright (`enet_socket_receive` returns -1/-2, never a
+truncated read), so a bigger page is silently lost on every retry and its
+servers never appear in the browser. pdmaster caps pages at 950 bytes for
+headroom. Split a large directory across several packets (the client
+assembles by address, de-duping).
 
 ```
 u16 total            // total servers across all packets (informational)
@@ -144,6 +164,54 @@ str seen_public_addr   // e.g. "203.0.113.7:27100"
 The host logs this (handy for the operator to confirm reachability). Sent to the
 heartbeat's source, so it arrives on the game socket and is dispatched by
 `netServerConnectionlessPacket` → `netMasterHandlePacket`.
+
+### 0x06–0x08 HOST_REQUEST / HOST_GRANT / HOST_DENY  ("Host Online Game" extension)
+
+Optional extension (see [`PORT_HOSTED_SERVER.md`](PORT_HOSTED_SERVER.md)): the
+master spawns a dedicated game-server instance for the requester and returns
+its address plus a one-off admin token. A master without the extension simply
+drops the unknown opcodes (the game shows a clear timeout). Sent on a
+standalone client socket like LIST_REQUEST, retransmitted every ~3 s; the
+master must answer **idempotently** — a duplicate request from the same source
+IP gets the SAME grant back, never a second instance.
+
+```
+0x06 HOST_REQUEST  (client → master)
+    u32 protocol_ver     // deny mismatches against the instance binary's protocol
+    str server_name
+    u8  max_players      // 2..8 (master clamps)
+    str join_password    // "" = open; passed to the instance as --password
+    u32 nonce            // OPTIONAL trailing field: per-process random id.
+                         // Old masters ignore it; old clients omit it.
+
+0x07 HOST_GRANT  (master → client)
+    str addr             // "publicip:port" of the spawned instance
+    str admin_token      // per-instance admin password (--admin-password)
+
+0x08 HOST_DENY  (master → client)
+    str reason           // human-readable ("no free server slots, ...")
+```
+
+Master-side rules (implemented in `pdmaster/instances.go`):
+- Grant idempotency is keyed on **(source IP, nonce)** — a same-IP request
+  with a *different* nonce is a different player behind a shared/CGNAT
+  address and gets its **own** instance (re-sending the first grant would
+  hand its admin token to a stranger). Capped per IP by
+  `-max-instances-per-ip` (default 2) and globally by `-max-instances`;
+  ports from `-instance-port-min..max`. Nonce-less (old-client) requests
+  match only nonce-less instances of that IP.
+- A re-request with **changed settings** (name / max players / password) on a
+  never-populated instance **replaces** it (fresh port + token); once the
+  instance has had players, settings changes re-receive the existing grant.
+- Requests are version-checked against `-instance-proto`, or, when unset,
+  against the protocol the master's own instances report in their heartbeats
+  (learned after the first instance boots).
+- Instances are told `--master 127.0.0.1`, so their heartbeats arrive from
+  loopback: the master must **substitute its public IP** when listing them (and
+  exempt them from any per-source-IP flood cap).
+- Lifecycle: kill when the owner never connects within ~2 min of the grant, or
+  after ~5 min with `num_clients == 0` *after having had players*; reap the
+  process and free the port on exit.
 
 ---
 

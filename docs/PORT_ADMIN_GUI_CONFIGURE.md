@@ -6,6 +6,14 @@ lightweight, purpose-built **Admin: Match Setup** menu replaced the Phase-0
 stopgap and sidesteps the crash class entirely. This doc is retained for the
 root-cause analysis and the options that were considered.
 
+> **Update (Host Online Game):** a working variant of Option 2's "park the
+> client in a menu-safe state, then open the real menu" now exists for the
+> master-hosted instance flow — instead of unloading the world it **reloads a
+> fresh CITRAINING** through the post-match latch (`var80087260`) and runs the
+> setup-load there, which is the context the menu was designed for. See
+> [`PORT_HOSTED_SERVER.md`](PORT_HOSTED_SERVER.md). `/admin configure`'s
+> lightweight menu remains the path for ad-hoc admin clients.
+
 Companion to [`PORT_ADMIN_CONTROL.md`](PORT_ADMIN_CONTROL.md) (the admin remote-control
 protocol) and [`PORT_DEDICATED_SERVER_TRIAGE.md`](PORT_DEDICATED_SERVER_TRIAGE.md).
 

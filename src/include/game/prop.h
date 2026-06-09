@@ -18,6 +18,9 @@ void propFree(struct prop *prop);
 void propActivate(struct prop *prop);
 void propActivateThisFrame(struct prop *prop);
 void propDelist(struct prop *prop);
+#ifndef PLATFORM_N64
+void propsHealActiveList(void);
+#endif
 void propReparent(struct prop *mover, struct prop *adopter);
 void propDetach(struct prop *prop);
 Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass);

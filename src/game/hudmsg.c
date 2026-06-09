@@ -1028,8 +1028,12 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 	}
 
 #ifndef PLATFORM_N64
-	if (g_NetMode && g_Vars.currentplayernum != 0) {
-		// do not create hudmsgs for other net players
+	// Do not create hudmsgs for REMOTE net players (their replayed actions run
+	// locally under setCurrentPlayerNum and would spam our HUD). Keyed on
+	// isremote, not playernum 0 — the local pawn can sit at any slot (no
+	// slot-0 swap on spectator-host servers), and the old != 0 check silently
+	// dropped every hudmsg (weapon pickups included) for such players.
+	if (g_NetMode && (!g_Vars.currentplayer || g_Vars.currentplayer->isremote)) {
 		return;
 	}
 #endif

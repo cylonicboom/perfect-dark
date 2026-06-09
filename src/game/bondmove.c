@@ -110,6 +110,22 @@ static void bgunProcessInputAltButton(struct movedata *data, s8 contpad, s32 i)
 	}
 }
 
+// Shortest-path angle lerp (radians): wrap the delta into [-PI, PI] (M_BADTAU =
+// 2*PI) so a yaw crossing the +/-PI seam takes the short way round, not a spin.
+// View angles are within one period so the delta is bounded — a wrap loop (no
+// libm fmodf, which isn't in scope here) needs at most one pass.
+static inline f32 bmoveLerpAngle(f32 a, f32 b, f32 t)
+{
+	f32 d = b - a;
+	while (d > M_BADTAU * 0.5f) {
+		d -= M_BADTAU;
+	}
+	while (d < -M_BADTAU * 0.5f) {
+		d += M_BADTAU;
+	}
+	return a + d * t;
+}
+
 // Apply the most-recent incoming snapshot for a remote player and run the
 // per-frame derived state (crouch, aim/zoom, weapon switch, fire, reload).
 // Reads from pl->client->inmove[head] (newest) and inmove[head-1] (previous),
@@ -217,9 +233,20 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 		pl->hands[h].crosspos[1] = pl->crosspos[1];
 	}
 
-	if (inmove->ucmd & UCMD_SELECT) {
+	// Weapon switch: gated like the RELOAD apply below — once per NEW move
+	// (!handled), never per frame. The server's rebroadcasts carry UCMD_SELECT
+	// for the whole switch duration (switchtoweaponnum stays set while the
+	// equip anim plays), and this block used to run every frame the newest
+	// move had the bit — restarting the equip animation continuously (reads as
+	// "the weapon constantly reloading" to observers/spectators), and forever
+	// if that move went stale (death idle, stream gap). The differs-checks
+	// also stop re-triggering when the wire repeats an already-applied or
+	// in-flight switch across consecutive moves.
+	if ((inmove->ucmd & UCMD_SELECT) && !handled) {
 		pl->gunctrl.dualwielding = (inmove->ucmd & UCMD_SELECT_DUAL) != 0;
-		if (inmove->weaponnum >= 0) {
+		if (inmove->weaponnum >= 0
+				&& inmove->weaponnum != bgunGetWeaponNum(HAND_RIGHT)
+				&& inmove->weaponnum != pl->gunctrl.switchtoweaponnum) {
 			bgunEquipWeapon(inmove->weaponnum);
 		}
 	}
@@ -310,19 +337,29 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 
 	const bool forceangle = !inmoveprev->tick || !moveticks || (inmove->ucmd & UCMD_FL_FORCEANGLE);
 
-	// ANGLE SNAPPING (NOT lerped, unlike position/speeds below). The snapshot
-	// we're applying drives the server's bgunTick for this remote player,
-	// including the shot-direction ray that shotCreate fires through the
-	// playerUpdateShootRot matrix. Lerping angles backward by g_NetInterpTicks
-	// (~3 ticks) to match the position lerp caused quick-tap shots that the
-	// shooter saw clearly land to graze on the server and register no damage:
-	// the hit-test ray was ~3 ticks behind the aim the player actually had
-	// when they pulled the trigger. Snap to inmove->angles so the hit test
-	// uses the authoritative aim from the move that contained the FIRE bit.
-	// Spectator-visible gun direction snaps step-wise as a result, but that's
-	// preferable to phantom misses on inputs the shooter knows landed.
-	pl->vv_theta = inmove->angles[0];
-	pl->vv_verta = inmove->angles[1];
+	// ANGLE HANDLING — server SNAPS, client INTERPOLATES.
+	// On the SERVER these angles drive the remote player's bgunTick: the
+	// shot-direction ray shotCreate fires through the playerUpdateShootRot
+	// matrix. They must be SNAPPED to the authoritative aim of the move that
+	// carried the FIRE bit — lerping them backward by ~g_NetInterpTicks (to
+	// match the position lerp) made quick-tap shots the shooter saw land graze
+	// and register no damage (hit ray ~3 ticks behind the real aim).
+	// On a CLIENT these angles drive ONLY the rendered pose and the spectated
+	// first-person camera — the server owns hit detection, not us — so we
+	// INTERPOLATE them at the same desired_tick as position/speeds. This makes
+	// a spectated player's viewport as smooth as their body instead of stepping
+	// at the packet rate (the documented "spectator gun direction snaps
+	// step-wise" cost). verta (pitch) is bounded so a plain lerp is fine; theta
+	// (yaw) wraps, so use the shortest-path lerp.
+	if (g_NetMode == NETMODE_CLIENT && !forceangle && snap_newer && snap_older) {
+		const u32 aspan = snap_newer->tick - snap_older->tick;
+		const f32 at = (aspan > 0) ? (f32)(desired_tick - snap_older->tick) / (f32)aspan : 1.f;
+		pl->vv_theta = bmoveLerpAngle(snap_older->angles[0], snap_newer->angles[0], at);
+		pl->vv_verta = lerpf(snap_older->angles[1], snap_newer->angles[1], at);
+	} else {
+		pl->vv_theta = inmove->angles[0];
+		pl->vv_verta = inmove->angles[1];
+	}
 
 	if (forceangle || !snap_newer) {
 		// Snap speeds immediately (force or no usable history)
@@ -1063,7 +1100,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	f32 newverta;
 #ifndef PLATFORM_N64
 	const f32 mlookscale = g_Vars.lvupdate240 ? (4.f / (f32)g_Vars.lvupdate240) : 4.f;
-	const bool allowmlook = (g_Vars.currentplayernum == 0) && (allowc1x || allowc1y);
+	// netPlayerOwnsMouse: under netplay the local pawn can sit at any slot
+	// (no slot-0 swap on spectator-host servers), so the old
+	// currentplayernum == 0 gate left mouse aim dead for those players.
+	const bool allowmlook = netPlayerOwnsMouse() && (allowc1x || allowc1y);
 	bool allowmcross = false;
 #endif
 

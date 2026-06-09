@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 73 // 73: SVC_RACE_STATE / SVC_ELIM_STATE per-combatant slices are now WIRE-KEYED (humans by netclient id, bots by mpchr index — the SVC_SCORE convention) instead of raw local slots, which differ per machine (netPlayersAllocate's local slot-0 swap) and made every client read the HOST's race progress / lives as its own. Same byte layout, different keying — mixed versions must not join.
+#define NET_PROTOCOL_VER 74 // 74: NET_MAX_CLIENTS = MAX_PLAYERS + 1 (9). A spectator host (dedicated / Host-Online, listen Host-Spectator) no longer burns a combatant slot — it sits on the extra +1 client slot so all MAX_PLAYERS (8) wire slots stay free for remote combatants (was 7 on dedicated). The lobby / SVC_STAGE_START manifests are count-prefixed and id-keyed, so the byte layout is unchanged for <=8 clients — but a 9-client server now emits client id 8, which only a proto-74 peer's netResolveWireClient accepts, so mixed versions must not join. "wire id 0 = host" is preserved.
+// 73: SVC_RACE_STATE / SVC_ELIM_STATE per-combatant slices are now WIRE-KEYED (humans by netclient id, bots by mpchr index — the SVC_SCORE convention) instead of raw local slots, which differ per machine (netPlayersAllocate's local slot-0 swap) and made every client read the HOST's race progress / lives as its own. Same byte layout, different keying — mixed versions must not join.
 // 72: "Race" scenario (MPSCENARIO_RACE 8, checkpoint racing over the KoH hillpads) — new SVC_RACE_STATE (0x58: per-racer progress + finish order + finish timer), and g_MpSetup.racelaps/racepitytime u8s appended after elimlives in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_RACE.md
 // 71: Lives went GLOBAL (any scenario; Limits menu; elimlives 0 = off) and the short-lived Elimination scenario (id 8) was retired — same wire fields as 70 but gate semantics differ and id 8 no longer exists, so mixed versions must not join. See docs/PORT_ELIMINATION.md
 // 70: "Elimination" scenario (MPSCENARIO_ELIMINATION, lives-based last-standing) — new SVC_ELIM_STATE (0x57: per-combatant lives + team pools + eliminated set), and g_MpSetup.elimlivesmode/elimlives u8s appended after zonecapturetime in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_ELIMINATION.md
@@ -36,7 +37,15 @@
 
 #define NET_QUERY_MAGIC "PDQM\x01"
 
-#define NET_MAX_CLIENTS MAX_PLAYERS
+// MAX_PLAYERS combatant slots PLUS one extra client slot for a non-combatant
+// host (dedicated / Host-Online / listen Host-Spectator). g_NetClients[] is
+// sized [NET_MAX_CLIENTS + 1] — the trailing index is the client-side temp slot
+// used before SVC_AUTH assigns a real id. Wire id 0 is always the host; remote
+// combatants take ids in [1, NET_MAX_CLIENTS). A combatant host counts as one
+// of MAX_PLAYERS, so a listen server effectively caps at MAX_PLAYERS clients
+// (host + MAX_PLAYERS-1 remotes); only a spectator host uses all NET_MAX_CLIENTS
+// (host + MAX_PLAYERS remotes). netStartServer applies that cap on g_NetMaxClients.
+#define NET_MAX_CLIENTS (MAX_PLAYERS + 1)
 #define NET_MAX_NAME MAX_PLAYERNAME
 #define NET_MAX_ADDR 256
 
@@ -410,6 +419,7 @@ struct netclient {
 	struct netplayermove inmove[NET_SNAPSHOT_COUNT];
 	u32 inmove_head; // index of newest entry in inmove[]
 	u32 inmovetick; // last inmove tick which was applied to the player
+	u32 oneshot_fwd_tick; // server: inmove tick whose one-shot ucmd bits (RELOAD/SELECT) were last forwarded into the rebroadcast — forwarding them every frame replayed a stale reload tap forever on observers
 	u8 renderbehind; // server-side: the firing client's render offset (g_NetInterpTicks) from its last applied inmove; lag-comp rewinds to inmovetick - renderbehind (proto 63)
 	u32 outmoveack; // last acked outmove tick
 	u32 forcetick; // tick on which the client's position was forced, or 0 if not forcing
@@ -484,6 +494,37 @@ s32 netSecureStrEqual(const char *secret, const char *cand);
 // currently holds control, or NET_NULL_CLIENT when nobody does.
 extern char g_NetAdminPassword[NET_MAX_PASSWORD];
 extern u32 g_NetAdminController;
+
+// Host Online Game (master-spawned dedicated instance; docs/PORT_HOSTED_SERVER.md).
+// g_NetHostOnlineMode is set from grant-accept until netDisconnect: this client
+// is the instance's auto-admin "host" and drives the full Combat Sim hosting UI.
+// The token is the per-instance admin password granted by the master; the
+// one-shot setup-load latch and the push watchdog stamp are shared with
+// menutick.c's post-match menu re-entry and the "Begin Match" interception.
+extern s32 g_NetHostOnlineMode;
+extern char g_NetAutoAdminToken[NET_MAX_PASSWORD];
+extern s32 g_NetHostOnlineSetupLoad;
+extern u32 g_NetHostOnlinePushTick;
+
+// Send one CLC_ADMIN command line to the server (the console's /admin path).
+// No-op unless connected as a client at CLSTATE_AUTH+.
+void netClientSendAdminLine(const char *line);
+
+// Re-apply the LOCAL pads to our own slot after mpReset's slot-indexed contpad
+// assignment (slot i = pad i), which is wrong for a net local player seated at
+// slot N >= 1 (spectator-host servers don't slot-0-swap). Called from mpReset
+// per combatant slot; no-op for remote slots / non-net.
+void netMpConfigFixLocalPads(s32 slot);
+
+// True when g_Vars.currentplayer should receive mouse input: under netplay
+// the single local (non-remote) pawn — which can sit at any slot — otherwise
+// local player 0 (splitscreen: only player 1 owns the mouse). Replaces the
+// raw currentplayernum == 0 gates at the mouse-input sites.
+s32 netPlayerOwnsMouse(void);
+
+// Host Online: reload a fresh CITRAINING world and re-enter the Combat Sim
+// hosting UI through the post-match latch (menutick.c). Defined in netmenu.c.
+void netHostOnlineEnterSetup(void);
 
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;

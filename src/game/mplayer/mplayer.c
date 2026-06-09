@@ -651,6 +651,15 @@ void mpReset(void)
 				g_PlayerConfigsArray[i].contpad1 = i;
 				g_PlayerConfigsArray[i].contpad2 = 0;
 
+#ifndef PLATFORM_N64
+				// Netplay: the LOCAL player can sit at any slot (no slot-0
+				// swap when the host is a spectator); the slot-indexed pad
+				// above would point it at a controller that doesn't exist
+				// (frozen pawn, no look). Re-apply the local pads to our own
+				// slot; remote slots keep the inert slot pads.
+				netMpConfigFixLocalPads(i);
+#endif
+
 				mpCalculatePlayerTitle(&g_PlayerConfigsArray[i]);
 
 				g_PlayerConfigsArray[i].newtitle = g_PlayerConfigsArray[i].title;

@@ -80,6 +80,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "system.h" // sysLogPrintf/LOG_* for the propsRenderBeams cycle guard
 #endif
 
 void rng2SetSeed(u32 seed);
@@ -2385,6 +2386,23 @@ void func0f06ab60(struct defaultobj *obj, struct coord *arg1, Mtxf *arg2, RoomNu
 void objFreeProjectile(struct defaultobj *obj)
 {
 	if (obj->hidden & OBJHFLAG_PROJECTILE) {
+#ifndef PLATFORM_N64
+		// Defensive: a corrupted / force-recycled weapon slot can hold a garbage
+		// obj->projectile (observed 0xffffffffffffffff) with OBJHFLAG_PROJECTILE
+		// still set — projectileFree then derefs it (read-at-(-1) crash via
+		// weaponCreate's force-recycle of a full slot, the same class as the
+		// embedded-union crash). obj->projectile is always a pointer INTO the
+		// g_Projectiles pool, so reject anything outside it: clear the flag and
+		// skip the free rather than dereference a wild pointer. Valid pointers
+		// (incl. NULL) are unaffected.
+		if (obj->projectile != NULL
+				&& (obj->projectile < g_Projectiles
+					|| obj->projectile >= g_Projectiles + g_MaxProjectiles)) {
+			obj->projectile = NULL;
+			obj->hidden &= ~OBJHFLAG_PROJECTILE;
+			return;
+		}
+#endif
 		projectileFree(obj->projectile);
 		obj->projectile = NULL;
 
@@ -11482,8 +11500,25 @@ s32 objTickPlayer(struct prop *prop)
 Gfx *propsRenderBeams(Gfx *gdl)
 {
 	struct prop *prop = g_Vars.activeprops;
+#ifndef PLATFORM_N64
+	s32 iter = 0;
+#endif
 
 	while (prop) {
+#ifndef PLATFORM_N64
+		// Guard against a corrupted active-prop list (a prop freed without
+		// being delisted on netplay clients) that turns this walk into a cycle
+		// or steps onto an out-of-pool pointer — either would hang or crash the
+		// beam render. Cap iterations at the pool size and range-check the node.
+		// See the propstick-walk-crash notes / proptick_guard family.
+		if (prop < g_Vars.props || prop >= g_Vars.props + g_Vars.maxprops ||
+				++iter > g_Vars.maxprops) {
+			sysLogPrintf(LOG_WARNING,
+				"propsbeams_guard: corrupt active-prop walk (prop %p iter %d max %d); aborting beam render",
+				prop, iter, g_Vars.maxprops);
+			break;
+		}
+#endif
 		if (prop->type == PROPTYPE_CHR) {
 			struct chrdata *chr = prop->chr;
 
@@ -11502,6 +11537,12 @@ Gfx *propsRenderBeams(Gfx *gdl)
 		} else if (prop->type == PROPTYPE_OBJ) {
 			struct defaultobj *obj = prop->obj;
 
+#ifndef PLATFORM_N64
+			// Zombie prop: obj freed (NULL) but still flagged PROPTYPE_OBJ and
+			// linked. Skip rather than deref. (proptick_guard saw this on clients.)
+			if (obj == NULL) {
+			} else
+#endif
 			if (obj->type == OBJTYPE_AUTOGUN) {
 				struct autogunobj *autogun = (struct autogunobj *)prop->obj;
 				gdl = beamRender(gdl, autogun->beam, true, false);

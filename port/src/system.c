@@ -94,7 +94,17 @@ void sysInit(void)
 	startTick = sysGetMicroseconds();
 
 	if (sysArgCheck("--log")) {
-		sysLogSetPath(LOG_FNAME);
+		// --log [path]: optional path after the flag (e.g. master-spawned
+		// instances each need their own file — multiple processes sharing one
+		// directory's pd.log overwrite each other). Bare --log keeps the
+		// pd.log default; a following token starting with '-' is the next
+		// flag, not a path.
+		const char *logpath = sysArgGetString("--log");
+		if (logpath && logpath[0] && logpath[0] != '-') {
+			sysLogSetPath(logpath);
+		} else {
+			sysLogSetPath(LOG_FNAME);
+		}
 	}
 
 #ifdef VERSION_HASH

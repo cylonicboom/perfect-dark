@@ -2753,6 +2753,30 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 	f32 zdiff;
 	f32 distance;
 
+#ifndef PLATFORM_N64
+	// Crash ledger #18/#20/#21 (one family): under net stress the local
+	// player's pawn can be torn down — or freed AND recycled (garbage union
+	// pointers, not just NULL) — while playerTick still runs a movement tick
+	// (round-transition race). Movement sim is meaningless without a live
+	// player pawn, and its consumers (bwalkTick, bondhead, chrGetRotY,
+	// footsteps below) all deref prop/chr. Validate the pawn ONCE at the
+	// choke point: prop present, still a PLAYER prop (a recycled slot loses
+	// the type), chr present. Log throttled so the generator stays visible.
+	if (g_NetMode != NETMODE_NONE
+			&& (g_Vars.currentplayer->prop == NULL
+				|| g_Vars.currentplayer->prop->type != PROPTYPE_PLAYER
+				|| g_Vars.currentplayer->prop->chr == NULL)) {
+		static u32 lastwarn60 = 0;
+		if (g_Vars.lvframe60 - lastwarn60 > TICKS(60)) {
+			lastwarn60 = g_Vars.lvframe60;
+			sysLogPrintf(LOG_WARNING, "bmoveTick: pawn invalid (prop %p type %d) — skipping movement tick",
+					(void *)g_Vars.currentplayer->prop,
+					g_Vars.currentplayer->prop ? g_Vars.currentplayer->prop->type : -1);
+		}
+		return;
+	}
+#endif
+
 	bmoveProcessInput(allowc1x, allowc1y, allowc1buttons, ignorec2);
 
 	if (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE) {

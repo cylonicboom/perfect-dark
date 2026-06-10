@@ -217,7 +217,27 @@ extern s32 g_MaxShards;
 extern struct shard *g_Shards;
 extern Gfx *var800a4634;
 extern struct room *g_Rooms;
+#ifndef PLATFORM_N64
+// Port: widened u8 -> u16 so all MAX_PLAYERS (8) get distinct visibility bits.
+// The original nibble packing (4 onscreen bits + 4 standby bits) made
+// bgRoomIsOnPlayerScreen's `1 << playernum` alias the STANDBY nibble for
+// players 4-7 (and bgRoomIsOnPlayerStandby's `0x10 << playernum` walk off the
+// byte) — wrong spawn avoidance / AI LOD in 5+ player matches. Layout is now
+// low byte = onscreen bits players 0-7, high byte = standby bits players 0-7,
+// addressed via the MPROOMVIS_* macros below (which expand to the original
+// nibble constants on N64, keeping that build byte-identical).
+typedef u16 MpRoomVis;
+#define MPROOMVIS_ONSCREEN_ALL 0x00ff
+#define MPROOMVIS_STANDBY_ALL  0xff00
+#define MPROOMVIS_STANDBY_BIT(playernum) (0x100 << (playernum))
+extern MpRoomVis *g_MpRoomVisibility;
+#else
+typedef u8 MpRoomVis;
+#define MPROOMVIS_ONSCREEN_ALL 0x0f
+#define MPROOMVIS_STANDBY_ALL  0xf0
+#define MPROOMVIS_STANDBY_BIT(playernum) (0x10 << (playernum))
 extern u8 *g_MpRoomVisibility;
+#endif
 extern struct bgroom *g_BgRooms;
 extern struct bgportal *g_BgPortals;
 extern struct portalmetric *g_PortalMetrics;

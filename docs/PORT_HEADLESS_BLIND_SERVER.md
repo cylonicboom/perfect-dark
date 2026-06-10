@@ -461,17 +461,19 @@ nothing should ever pause).
 
 > Status 2026-06-10: both tiers are in the tree (Tier 1: propobj.c
 > `func0f08e8ac`/`posIsInDrawDistance`; Tier 2: pdmain.c headless loop).
-> **First Linux soak ran** (containerised, headless server + headless
-> client, 8-bot churn playlist): match start, full match, playlist
-> rotation, and a second stage all survived with Tier 1+2 + the §6.1
-> mirror active — no AUDIT FAIL, no gfx-pool overflow at 256MB. The run
-> ALSO flushed out two pre-existing crashers (crash ledger #22 = #19's
-> root family: the `fileLoadToNew` stale-loadedsize reload corruption
-> that killed EVERY dedicated playlist rotation on Linux — first shape
-> fixed, a second shape at the PIPES rotation is under live
-> investigation; #23 = `fclose(NULL)` on a bad savedir) and the ENet
-> IPv6-only socket gap (§7). Longer soaks + a real multi-human session
-> remain the outstanding gates — bot churn does not exercise the human
+> **Linux soak: `OVERALL: PASS`** (2026-06-10, containerised headless
+> server + headless client, 8-bot churn playlist, 15-min window): **18
+> stage_starts** with Tier 1+2 + the §6.1 mirror active, auditor PASS on
+> both roles, **98.8% manifest parity**, heal/reap/orphreap fires **= 0**
+> (the ghost-mine watch item), peak weapon slots 10/50, no gfx-pool
+> overflow at 256MB. The bring-up ALSO root-caused and fixed two
+> pre-existing crashers (crash ledger #22 — BOTH shapes of the rotation
+> modeldef corruption, including the real #19 root: port-added mod model
+> files with no data source promote an uninitialized buffer when a bot
+> rolls that body on an install without the mod data dir; #23 =
+> `fclose(NULL)` on a bad savedir) and the ENet IPv6-only socket gap
+> (§7). Outstanding gates: long (multi-hour) soaks, and a real
+> multi-human session — bot churn does not exercise the human
 > `handsTickAttack` dispatch or spawn-avoidance perception.
 
 The per-site seams in §4 treat symptoms of one cut chain. The systemic repair

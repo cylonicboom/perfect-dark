@@ -1,0 +1,65 @@
+app-id: io.github.murkantor.perfect_dark_netplay
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: io.github.murkantor.perfect_dark_netplay.sh
+
+finish-args:
+  # Gamepads (incl. hotplug); 24.08 also offers --device=input but =all keeps
+  # older flatpak clients working and covers rumble/LED/gyro device nodes.
+  - --device=all
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Audio
+  - --socket=pulseaudio
+  # Netplay: client connections, hosting (default UDP 27100) and the master
+  # server browser all need network access.
+  - --share=network
+
+modules:
+  # The freedesktop runtime ships SDL2 only; the port links libSDL3.so.0, so
+  # build SDL3 into /app/lib. Keep the tag in step with what the repo's CI
+  # builds against (see .github/workflows).
+  - name: sdl3
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DSDL_TESTS=OFF
+      - -DSDL_EXAMPLES=OFF
+    sources:
+      - type: git
+        url: https://github.com/libsdl-org/SDL.git
+        tag: release-3.4.2
+
+  # Build the netplay client from this source tree. NTSC-final only: the
+  # netplay scene (playlists, dedicated servers, the docs) is NTSC; add
+  # -DROMID=pal-final / jpn-final variants here if you need them (the wrapper
+  # already dispatches per-ROM if the extra binaries exist).
+  #
+  # -DUSE_SDLGPU=OFF: the SDL_GPU (Vulkan) backend needs glslang, which the
+  # freedesktop SDK does not export a CMake config for; OpenGL is the default
+  # renderer either way. To enable it, add a glslang module and drop the flag.
+  - name: perfect_dark_netplay
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          # Don't drag local build trees (or a ROM placed inside one) into
+          # the flatpak build context.
+          - build
+          - build_flatpak
+          - build-server
+          - build_debug_sdl3
+    build-commands:
+      - cmake -S . -B build_flatpak -G Ninja
+        -DCMAKE_BUILD_TYPE=Release
+        -DROMID=ntsc-final
+        -DUSE_SDLGPU=OFF
+      - cmake --build build_flatpak -j
+      - install -Dm 755 build_flatpak/pd.x86_64 /app/bin/pd.x86_64
+      - install -Dm 755 dist/linux/io.github.murkantor.perfect_dark_netplay.sh /app/bin/io.github.murkantor.perfect_dark_netplay.sh
+      - install -Dm 644 dist/linux/io.github.murkantor.perfect_dark_netplay.desktop /app/share/applications/io.github.murkantor.perfect_dark_netplay.desktop
+      - install -Dm 644 dist/linux/io.github.murkantor.perfect_dark_netplay.metainfo.xml /app/share/metainfo/io.github.murkantor.perfect_dark_netplay.metainfo.xml
+      - install -Dm 644 dist/linux/io.github.murkantor.perfect_dark_netplay.png /app/share/icons/hicolor/256x256/apps/io.github.murkantor.perfect_dark_netplay.png

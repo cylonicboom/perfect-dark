@@ -4355,8 +4355,63 @@ extern "C" {
 			return (timeVal.tv_sec * 1000) ^ (timeVal.tv_usec / 1000);
 		}
 
+		/* ---- PD vendored patch: IPv4-only fallback (perfect_dark_netplay) ----
+		 * This ENet fork always opens an AF_INET6 dual-stack socket
+		 * (ENET_HOST_ANY = in6addr_any, V6ONLY = 0) and carries IPv4 peers as
+		 * v4-mapped ::ffff:a.b.c.d addresses. On kernels / network namespaces
+		 * with IPv6 disabled entirely (hardened Debian, many containers),
+		 * socket(PF_INET6) fails EAFNOSUPPORT and every host create aborted
+		 * ("NET: could not create ENet host"). Fall back to a plain AF_INET
+		 * socket and translate at the syscall boundary only — the rest of the
+		 * library keeps using v4-mapped in6 addresses unchanged. Real IPv6
+		 * destinations are unreachable in this mode and fail the send/connect.
+		 */
+		static int enet_ipv4only = 0;
+
+		static int enet_address_to_sin4(const ENetAddress* address, struct sockaddr_in* sin) {
+			memset(sin, 0, sizeof(struct sockaddr_in));
+			sin->sin_family = AF_INET;
+
+			if (address == NULL) {
+				sin->sin_addr.s_addr = INADDR_ANY;
+				sin->sin_port = 0;
+				return 0;
+			}
+
+			sin->sin_port = ENET_HOST_TO_NET_16(address->port);
+
+			if (enet_array_is_zeroed((const uint8_t*)&address->ipv6, sizeof(address->ipv6)) == 0) {
+				sin->sin_addr.s_addr = INADDR_ANY; /* in6addr_any */
+				return 0;
+			}
+
+			if (address->ipv4.ffff == 0xFFFF && enet_array_is_zeroed(address->ipv4.zeros, sizeof(address->ipv4.zeros)) == 0) {
+				sin->sin_addr = address->ipv4.ip; /* v4-mapped */
+				return 0;
+			}
+
+			return -1; /* a real IPv6 address — unreachable without IPv6 */
+		}
+
+		static void enet_sin4_to_address(const struct sockaddr_in* sin, ENetAddress* address) {
+			memset(address, 0, sizeof(address->ipv4.zeros));
+			address->ipv4.ffff = 0xFFFF;
+			address->ipv4.ip = sin->sin_addr;
+			address->port = ENET_NET_TO_HOST_16(sin->sin_port);
+		}
+		/* ---- end PD vendored patch helpers ---- */
+
 		int enet_socket_bind(ENetSocket socket, const ENetAddress* address) {
 			struct sockaddr_in6 sin;
+
+			if (enet_ipv4only) {
+				struct sockaddr_in sin4;
+
+				if (enet_address_to_sin4(address, &sin4) != 0)
+					return -1;
+
+				return bind(socket, (struct sockaddr*)&sin4, sizeof(struct sockaddr_in));
+			}
 
 			memset(&sin, 0, sizeof(struct sockaddr_in6));
 
@@ -4404,12 +4459,25 @@ extern "C" {
 
 		ENetSocket enet_socket_create(ENetSocketType type) {
 			int socketType = (type == ENET_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM);
+			ENetSocket result;
 
 			#ifdef SOCK_CLOEXEC
 				socketType |= SOCK_CLOEXEC;
 			#endif
 
-			return socket(PF_INET6, socketType, 0);
+			/* PD vendored patch: IPv4-only fallback when the kernel/netns has
+			 * no IPv6 at all (see enet_address_to_sin4 above). */
+			if (enet_ipv4only)
+				return socket(PF_INET, socketType, 0);
+
+			result = socket(PF_INET6, socketType, 0);
+
+			if (result == -1 && errno == EAFNOSUPPORT) {
+				enet_ipv4only = 1;
+				return socket(PF_INET, socketType, 0);
+			}
+
+			return result;
 		}
 
 		int enet_socket_set_option(ENetSocket socket, ENetSocketOption option, int value) {
@@ -4467,7 +4535,11 @@ extern "C" {
 					break;
 
 				case ENET_SOCKOPT_IPV6_V6ONLY:
-					result = setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&value, sizeof(int));
+					/* PD vendored patch: no-op on an AF_INET fallback socket. */
+					if (enet_ipv4only)
+						result = 0;
+					else
+						result = setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&value, sizeof(int));
 
 					break;
 
@@ -4499,6 +4571,20 @@ extern "C" {
 		int enet_socket_connect(ENetSocket socket, const ENetAddress* address) {
 			int result = -1;
 			struct sockaddr_in6 sin;
+
+			if (enet_ipv4only) {
+				struct sockaddr_in sin4;
+
+				if (enet_address_to_sin4(address, &sin4) != 0)
+					return -1;
+
+				result = connect(socket, (struct sockaddr*)&sin4, sizeof(struct sockaddr_in));
+
+				if (result == -1 && errno == EINPROGRESS)
+					return 0;
+
+				return result;
+			}
 
 			memset(&sin, 0, sizeof(struct sockaddr_in6));
 
@@ -4546,16 +4632,26 @@ extern "C" {
 			struct sockaddr_in6 sin;
 			int sentLength;
 
+			struct sockaddr_in sin4;
+
 			memset(&msgHdr, 0, sizeof(struct msghdr));
 
 			if (address != NULL) {
-				memset(&sin, 0, sizeof(struct sockaddr_in6));
+				if (enet_ipv4only) {
+					if (enet_address_to_sin4(address, &sin4) != 0)
+						return -1;
 
-				sin.sin6_family = AF_INET6;
-				sin.sin6_port = ENET_HOST_TO_NET_16(address->port);
-				sin.sin6_addr = address->ipv6;
-				msgHdr.msg_name = &sin;
-				msgHdr.msg_namelen = sizeof(struct sockaddr_in6);
+					msgHdr.msg_name = &sin4;
+					msgHdr.msg_namelen = sizeof(struct sockaddr_in);
+				} else {
+					memset(&sin, 0, sizeof(struct sockaddr_in6));
+
+					sin.sin6_family = AF_INET6;
+					sin.sin6_port = ENET_HOST_TO_NET_16(address->port);
+					sin.sin6_addr = address->ipv6;
+					msgHdr.msg_name = &sin;
+					msgHdr.msg_namelen = sizeof(struct sockaddr_in6);
+				}
 			}
 
 			msgHdr.msg_iov = (struct iovec*)buffers;
@@ -4574,14 +4670,14 @@ extern "C" {
 
 		int enet_socket_receive(ENetSocket socket, ENetAddress* address, ENetBuffer* buffers, size_t bufferCount) {
 			struct msghdr msgHdr;
-			struct sockaddr_in6 sin;
+			struct sockaddr_storage ss;
 			int recvLength;
 
 			memset(&msgHdr, 0, sizeof(struct msghdr));
 
 			if (address != NULL) {
-				msgHdr.msg_name = &sin;
-				msgHdr.msg_namelen = sizeof(struct sockaddr_in6);
+				msgHdr.msg_name = &ss;
+				msgHdr.msg_namelen = sizeof(ss);
 			}
 
 			msgHdr.msg_iov = (struct iovec*)buffers;
@@ -4599,8 +4695,18 @@ extern "C" {
 				return -2;
 
 			if (address != NULL) {
-				address->ipv6 = sin.sin6_addr;
-				address->port = ENET_NET_TO_HOST_16(sin.sin6_port);
+				/* PD vendored patch: an AF_INET fallback socket delivers
+				 * sockaddr_in — store it v4-mapped like the dual-stack
+				 * socket would have. (sockaddr_storage replaces the bare
+				 * sockaddr_in6 stack buffer for both cases.) */
+				if (ss.ss_family == AF_INET) {
+					enet_sin4_to_address((struct sockaddr_in*)&ss, address);
+				} else {
+					struct sockaddr_in6* sin = (struct sockaddr_in6*)&ss;
+
+					address->ipv6 = sin->sin6_addr;
+					address->port = ENET_NET_TO_HOST_16(sin->sin6_port);
+				}
 			}
 
 			return recvLength;

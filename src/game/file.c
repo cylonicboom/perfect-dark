@@ -4307,6 +4307,53 @@ void *fileLoadToNew(s32 filenum, u32 method, u32 loadtype)
 	void *ptr;
 
 	if (method == FILELOADMETHOD_EXTRAMEM || method == FILELOADMETHOD_DEFAULT) {
+#ifndef PLATFORM_N64
+		// Refuse files with no data source instead of promoting garbage.
+		// Port-added file ids (FILE_CSKEDAR2 / FILE_CDRCARROLL2 / GHAND_*)
+		// exist only as external mod files — they have no ROM fallback by
+		// construction. On an install without the mod data dir,
+		// romdataFileLoad returns NULL and fileLoad early-returns, leaving
+		// the freshly mempAlloc'd buffer UNINITIALIZED — which modeldefLoad
+		// then "promotes" (crash ledger #22 second shape: a bot randomly
+		// rolls BODY_PRESIDENT_CLONE → FILE_CSKEDAR2 → SIGSEGV in
+		// modelPromote* at stage load; the real root of ledger #19's
+		// "timing/pressure-dependent" server crash). Callers that can skip
+		// (bodyAllocateModel → botmgrAllocateBot) handle the NULL.
+		{
+			u8 *romdataFileLoad(s32 fileNum, u32 *outSize); // port/include/romdata.h
+			if (romdataFileLoad(filenum, NULL) == NULL) {
+				sysLogPrintf(LOG_ERROR,
+						"fileLoadToNew: file %d has no data source (missing external/mod file?) — refusing load",
+						filenum);
+				return NULL;
+			}
+		}
+
+		// Always re-derive the allocation size for EXTRAMEM (model) loads.
+		// After a load, romdataFilePreprocess rewrites info->loadedsize to the
+		// ACTUAL post-preprocess size — which has neither the fresh estimate's
+		// margin (romdataFileGetEstimatedSize's 64-bit expansion factor +
+		// 0x20) nor the 0x8000 EXTRAMEM slack that modelAllocateRwData
+		// consumes at runtime. Reusing it for the next load of the same file
+		// under-allocates the buffer: the rzip end-of-buffer inflate scratch
+		// and the in-place 64-bit expansion then write past/over each other
+		// and the modeldef promote pass walks the corrupted result.
+		//
+		// On N64 the reuse was safe (no preprocess: loadedsize stayed the
+		// true inflated size and the overlap-inflate tolerates an exact-size
+		// buffer). On the port it crashes the dedicated server reliably at
+		// the first playlist rotation: bodiesReset NULLs every
+		// g_HeadsAndBodies[].modeldef each stage (lv.c:410), so the rotation
+		// reloads every bot body via modeldefLoadToNew with the stale tight
+		// size (SIGSEGV in modelPromote*, the body.c ledger-#19 family;
+		// repro'd 2/2 on a Linux soak, ~50s in). The head path has dodged
+		// this forever by zeroing loadedsize after every MP head load
+		// (body0f02ce8c) — this makes that reset structural for all model
+		// loads.
+		if (method == FILELOADMETHOD_EXTRAMEM) {
+			info->loadedsize = 0;
+		}
+#endif
 		if (info->loadedsize == 0) {
 			info->loadedsize = (fileGetInflatedSize(filenum, loadtype) + 0x20) & 0xfffffff0;
 

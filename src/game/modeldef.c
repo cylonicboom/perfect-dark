@@ -193,6 +193,16 @@ struct modeldef *modeldefLoad(u16 fileid, u8 *dst, s32 size, struct texpool *arg
 		modeldef = fileLoadToNew(fileid, FILELOADMETHOD_EXTRAMEM, LOADTYPE_MODEL);
 	}
 
+#ifndef PLATFORM_N64
+	// fileLoadToNew refuses files with no data source (port-added mod file
+	// ids on installs without the mod data dir — crash ledger #22). Promote
+	// would walk an uninitialized buffer; propagate the NULL instead. The
+	// body-load callers skip the body/bot on NULL.
+	if (modeldef == NULL) {
+		return NULL;
+	}
+#endif
+
 	modelPromoteTypeToPointer(modeldef);
 	modelPromoteOffsetsToPointers(modeldef, 0x5000000, (uintptr_t) modeldef);
 	modeldef0f1a7560(modeldef, fileid, 0x5000000, modeldef, arg3, dst == NULL);

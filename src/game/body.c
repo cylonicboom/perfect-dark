@@ -187,6 +187,20 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 		bodymodeldef = g_HeadsAndBodies[bodynum].modeldef;
 	}
 
+#ifndef PLATFORM_N64
+	// modeldefLoadToNew returns NULL for files with no data source (port-added
+	// mod model ids — FILE_CSKEDAR2 etc — on installs without the mod data
+	// dir; crash ledger #22). Bail before modelAllocateRwData derefs it; the
+	// bodyAllocateModel guard passes the NULL up and botmgrAllocateBot / the
+	// chr spawn paths skip the body.
+	if (bodymodeldef == NULL) {
+		sysLogPrintf(LOG_ERROR,
+				"body0f02ce8c: body %d (file %d) has no modeldef (missing mod file?) — skipping",
+				bodynum, g_HeadsAndBodies[bodynum].filenum);
+		return NULL;
+	}
+#endif
+
 	modelAllocateRwData(bodymodeldef);
 
 	if (!g_HeadsAndBodies[bodynum].unk00_01) {
@@ -212,6 +226,17 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 							headmodeldef = g_HeadsAndBodies[headnum].modeldef;
 						}
 					}
+
+#ifndef PLATFORM_N64
+					// Same missing-data-source bail as the body load above,
+					// for the head modeldef (ledger #22).
+					if (headmodeldef == NULL) {
+						sysLogPrintf(LOG_ERROR,
+								"body0f02ce8c: head %d (file %d) has no modeldef (missing mod file?) — skipping",
+								headnum, g_HeadsAndBodies[headnum].filenum);
+						return NULL;
+					}
+#endif
 
 					modelAllocateRwData(headmodeldef);
 

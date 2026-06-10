@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Perfect Dark Netplay
+Comment=Perfect Dark port with experimental internet/LAN multiplayer
+Exec=io.github.murkantor.perfect_dark_netplay.sh
+Icon=io.github.murkantor.perfect_dark_netplay
+Terminal=false
+Type=Application
+Categories=Game;ActionGame;
+StartupNotify=false

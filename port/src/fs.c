@@ -429,7 +429,12 @@ FILE *fsFileOpenRead(const char *name)
 
 void fsFileFree(FILE *f)
 {
-	fclose(f);
+	// NULL guard: callers pass the result of a failed open straight in
+	// (e.g. mpsetupOpenFile's create-if-missing path when the save dir is
+	// bad) and glibc fclose(NULL) is a SIGSEGV, not an EOF error.
+	if (f) {
+		fclose(f);
+	}
 }
 
 s32 fsCreateDir(const char *path)

@@ -82,8 +82,17 @@
 #include "headless.h"
 #include "game/prop.h"
 #include "game/mplayer/scenarios.h"
+#include "game/bg.h"
+#include "lib/mtx.h"
 #include "video.h"
 #include "input.h"
+
+// bg.c global (not in bg.h): the room bgTickPortals starts its portal walk
+// from. bgTick normally copies currentplayer->cam_room into it; the headless
+// Tier 2 visibility pass calls bgTickPortals directly (skipping bgTickRooms'
+// room-graphics load/unload work, which is render-tier) so it sets this
+// itself per combatant.
+extern s32 g_CamRoom;
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
@@ -853,9 +862,68 @@ void mainTick(void)
 					if (g_Vars.currentplayer && !g_Vars.currentplayer->client) {
 						continue;
 					}
+
+					// Tier 2: synthetic per-player visibility
+					// (docs/PORT_HEADLESS_BLIND_SERVER.md §9). Mirrors lvRender's
+					// per-player camera setup (lv.c:1404-1450) minus the
+					// framebuffer work. playerTick (tick path) already maintains
+					// cam_pos/cam_look/cam_up/cam_room per remote pawn, and
+					// bmoveProcessRemoteInput keeps fovy tracking the client's
+					// real (zoomed) FOV — so this builds REAL camera matrices:
+					// vi0000b1d0 computes the perspective matrix and stashes it
+					// via camSetMtxF1754 (must precede playerAllocateMatrices —
+					// the spectatorRenderPanel ordering trap), then
+					// playerAllocateMatrices sets the world-to-screen /
+					// projection matrices the portal flood projects through.
+					// bgTickPortals then recomputes ROOMFLAG_ONSCREEN for THIS
+					// player and bgChooseRoomsToLoad ORs the slot's bits into
+					// g_MpRoomVisibility — restoring spawn-pad visibility
+					// avoidance and chrIsRoomOffScreen AI LOD with no wire
+					// change and no client trust (pose-derived only). The gdl
+					// writes land in the throwaway master display list.
+					bool cam_primed = false;
+					{
+						struct player *pl_vis = g_Vars.currentplayer;
+						if (pl_vis && pl_vis->prop && pl_vis->cam_room >= 1
+								&& pl_vis->cam_room < g_Vars.roomcount) {
+							viSetViewPosition(pl_vis->viewleft, pl_vis->viewtop);
+							viSetFovAspectAndSize(pl_vis->fovy, pl_vis->aspect,
+									pl_vis->viewwidth, pl_vis->viewheight);
+							mtx00016748(g_Vars.currentplayerstats->scale_bg2gfx);
+							gdl = vi0000b1d0(gdl);
+							playerAllocateMatrices(&pl_vis->cam_pos,
+									&pl_vis->cam_look, &pl_vis->cam_up);
+							g_CamRoom = pl_vis->cam_room;
+							bgTickPortals();
+							cam_primed = true;
+						}
+					}
+
 					propsTickPlayer(j == lastcombatant);
 					scenarioTickChr(NULL);
 					propsSort();
+
+					// Attack dispatch (PORT_HEADLESS_BLIND_SERVER.md §6.1).
+					// handsTickAttack's ONLY caller is lvRender (lv.c:1456) —
+					// on a listen host it runs per player including remotes,
+					// spawning their thrown/fired projectiles (grenades,
+					// rockets, mines: HANDATTACKTYPE_THROW/SHOOTPROJECTILE)
+					// server-side, where dynamic prop spawns are host-owned
+					// (SVC_PROP_SPAWN). Skipped headless, a client's grenade
+					// existed only on the throwing client. Mirroring it here
+					// is listen-host parity: the remote-shooter rails already
+					// exist on that path — chrHit is skipped for remote
+					// shooters (CLC_HIT applies the damage; the server trace
+					// only feeds hit validation), melee early-returns in
+					// handInflictMeleeDamage (each machine handles its own
+					// local melee), and the explosive-shell (Phoenix) trace
+					// explosion NEEDS to run here to exist at all. Gated on
+					// cam_primed: the trace projects through this player's
+					// matrices (objHit derefs camGetProjectionMtxF without a
+					// NULL guard), so it must not run on an unprimed slot.
+					if (cam_primed) {
+						handsTickAttack();
+					}
 
 					// Pickup detection. propsTestForPickup is normally called
 					// from lvRender's per-player loop (lv.c:1416) — the function

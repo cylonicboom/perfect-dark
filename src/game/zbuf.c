@@ -48,6 +48,11 @@ void zbufReset(s32 stagenum)
  * The allocation sizes need to enforce a minimum because the allocation is also
  * used by lighting initialisation code.
  */
+// NOTE (2026-06-10): do NOT skip this allocation on headless builds. It looks
+// render-only but bgBuildTables' lighting init (func0f001c0c, dlights.c) uses
+// the allocation as scratch and writes through it unconditionally — a skip
+// crashed the dedicated server at stage load (write at NULL+0x240). The
+// docblock's "also used by lighting initialisation code" is load-bearing.
 void zbufAllocate(void)
 {
 	if (IS4MB()) {

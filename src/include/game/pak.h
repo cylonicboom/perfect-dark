@@ -24,6 +24,9 @@ void pak0f116994(void);
 void pak0f1169c8(s8 device, bool tick);
 bool mempakIsReady(s8 device);
 bool mempakIsReadyOrFull(s8 device);
+#ifndef PLATFORM_N64
+bool pakIsGamepakReady(void);
+#endif
 void pak0f116bdc(s8 device, u8 *arg1, u8 *arg2);
 u16 _pakGetSerial(s8 device);
 u32 _pakGetType(s8 device);

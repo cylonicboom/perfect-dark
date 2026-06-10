@@ -210,6 +210,18 @@ void *mempAlloc(u32 len, u8 pool)
 		return allocation;
 	}
 
+#ifndef PLATFORM_N64
+	// Attribute the failure: the pool-full warnings inside mempAllocFromBank
+	// can't name their caller (this function is the trampoline in between).
+	// addr2line -e <exe> <caller> maps it back to the allocating site.
+	// Pools 7/8 excluded like the original debug print below — they are
+	// try-then-fallback pools that fail by design.
+	if (pool != MEMPOOL_8 && pool != MEMPOOL_7 && len) {
+		sysLogPrintf(LOG_NOTE, "#warning: mempAlloc(%u, pool %d) failed — caller %p",
+				len, pool, __builtin_return_address(0));
+	}
+#endif
+
 #if VERSION < VERSION_NTSC_1_0
 #ifdef DEBUG
 	if (pool != MEMPOOL_8 && pool != MEMPOOL_7 && len) {

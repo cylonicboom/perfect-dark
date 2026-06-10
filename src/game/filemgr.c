@@ -21,6 +21,8 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "mpsetups.h"
+#include "system.h" // sysLogPrintf/LOG_* for the headless agent-file auto-create
+extern s32 g_NetDedicatedMode; // net/net.h; 1 = headless (dedicated server OR --headless-client)
 #endif
 
 // bss
@@ -2594,6 +2596,38 @@ MenuItemHandlerResult filemgrChooseAgentListMenuHandler(s32 operation, struct me
 			g_FileAutoSelect = -1;
 			filemgrChooseAgentListMenuHandler(MENUOP_SET, item, data);
 			data->list.value = tmp;
+		} else if (g_FileAutoSelect >= 0 && g_NetDedicatedMode
+				&& g_FileLists[0] && g_FileLists[0]->numfiles == 0) {
+			// Headless boot (dedicated server / --headless-client) with a fresh
+			// save dir: there is no agent file for the auto-select above to pick
+			// and nobody to drive the New Agent name-entry dialogs, so this
+			// dialog sits forever and the host/join latch — consumed by the MAIN
+			// MENU tick, which never opens — never fires (the server runs but
+			// never hosts, with no error). Create the default agent file
+			// directly into the game pak's blank-slot guid (deviceguids[] is
+			// indexed by SAVEDEVICE constant; pakSaveAtGuid is a replace-into-
+			// slot scheme, so fileid 0 = "new" does NOT work — and numdevices
+			// is "devices with >=1 occupied file", always 0 here, so it can't
+			// be the readiness gate). spacesfree/deviceguids fill in from the
+			// blank files once the pak is READY; wait for that. The refreshed
+			// list is auto-selected by the branch above on the next tick. One
+			// attempt only so a pak error can't retry-spam.
+			static bool triedcreate = false;
+			if (!triedcreate
+					&& g_FileLists[0]->spacesfree[SAVEDEVICE_GAMEPAK] > 0
+					&& g_FileLists[0]->deviceguids[SAVEDEVICE_GAMEPAK].fileid != 0) {
+				triedcreate = true;
+				gamefileLoadDefaults(&g_GameFile);
+				strcpy(g_GameFile.name, "PD");
+				g_GameFileGuid.fileid = g_FileLists[0]->deviceguids[SAVEDEVICE_GAMEPAK].fileid;
+				g_GameFileGuid.deviceserial = g_FileLists[0]->deviceguids[SAVEDEVICE_GAMEPAK].deviceserial;
+				if (gamefileSave(SAVEDEVICE_GAMEPAK, g_GameFileGuid.fileid, g_GameFileGuid.deviceserial) == 0) {
+					filelistCreate(0, FILETYPE_GAME);
+					sysLogPrintf(LOG_NOTE, "filemgr: created default agent file for headless boot");
+				} else {
+					sysLogPrintf(LOG_ERROR, "filemgr: headless agent-file create failed (pak error %d) — cannot reach main menu", g_FilemgrLastPakError);
+				}
+			}
 		}
 #endif
 		break;

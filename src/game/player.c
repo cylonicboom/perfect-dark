@@ -2527,6 +2527,16 @@ void playerTickPauseMenu(void)
 			opened = soloChoosePauseDialog();
 			break;
 		case MENUROOT_FILEMGR:
+#ifndef PLATFORM_N64
+			// Dedicated/headless boot: never open the agent file-select
+			// (nobody can drive it headless) — consume the host/join latch
+			// directly instead. False = pak still preparing; stay in
+			// PAUSEMODE_PAUSING and retry next frame.
+			if (g_NetDedicatedMode && (g_NetHostLatch || g_NetJoinLatch)) {
+				opened = netDedicatedBootTick();
+				break;
+			}
+#endif
 			opened = filemgrConsiderPushingFileSelectDialog();
 			break;
 		case MENUROOT_4MBMAINMENU:

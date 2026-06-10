@@ -22,6 +22,7 @@
 #include "game/title.h"   // titleSetNextMode / setNumPlayers (Host Online lobby reload)
 #include "game/pdmode.h"  // titleSetNextStage
 #include "game/mplayer/mplayer.h" // mpSetPaused
+#include "game/pak.h"     // pakIsGamepakReady (netDedicatedBootTick)
 #include "lib/main.h"     // mainChangeToStage
 #include "net/net.h"
 #include "net/netmaster.h"
@@ -171,6 +172,74 @@ MenuItemHandlerResult menuhandlerHostStart(s32 operation, struct menuitem *item,
 	}
 
 	return 0;
+}
+
+/**
+ * Direct dedicated/headless boot — the first-class server boot path.
+ *
+ * A headless process (dedicated server or --headless-client) used to boot
+ * like a player: CI training stage, agent file-select, main menu, and only
+ * then was the host/join latch consumed by the MAIN MENU's tick handler.
+ * Nobody can drive those menus headless, so a fresh save dir (no agent file)
+ * stalled the boot forever on the file select — running, never hosting, no
+ * error (the 2026-06-10 soak-harness failure).
+ *
+ * Called from playerTickPauseMenu's MENUROOT_FILEMGR case (the exact moment
+ * the boot would otherwise open the file select) when g_NetDedicatedMode and
+ * a latch is pending. Replicates what the menu path provided, minus all
+ * dialogs: default game file (no agent file needed at all), mpInit, then
+ * netStartClient directly (join) or the guts of the Host Game flow (host —
+ * menuhandlerHostStart itself opens the Combat Sim root menus, which is the
+ * lobby state the admin/playlist flows expect).
+ *
+ * Returns false while the game pak is still preparing (caller stays in
+ * PAUSEMODE_PAUSING and retries next frame); true once the latch is consumed.
+ */
+s32 netDedicatedBootTick(void)
+{
+	s32 i;
+
+	// mpsetupCopyAllFromPak (in the host path) reads the game pak; the pak
+	// state machine prepares it over the first boot frames.
+	if (!pakIsGamepakReady()) {
+		return false;
+	}
+
+	// What loading an agent file provided: a valid g_GameFile. A server never
+	// saves mission progress, so the defaults are the whole requirement.
+	gamefileLoadDefaults(&g_GameFile);
+	strcpy(g_GameFile.name, "PD");
+
+	// What the file-select dialog's OPEN handler provided.
+	mpInit(true);
+	for (i = 0; i < MAX_LOCAL_PLAYERS; i++) {
+		if (g_PlayerConfigsArray[i].base.name[0] == '\0') {
+			sprintf(g_PlayerConfigsArray[i].base.name, "Player %d\n", i + 1);
+		}
+	}
+
+	if (g_NetJoinLatch) {
+		// Headless client (--headless-client / --dedicated + --connect): just
+		// connect. No Joining dialog — the connection state machine runs from
+		// netStartFrame, the dialog is only UI/watchdog for interactive use.
+		g_NetJoinLatch = false;
+		g_NetHostLatch = false;
+		strncpy(g_NetJoinAddr, g_NetLastJoinAddr, NET_MAX_ADDR);
+		g_NetJoinAddr[NET_MAX_ADDR] = '\0';
+		if (netStartClient(g_NetJoinAddr) != 0) {
+			sysLogPrintf(LOG_ERROR, "NET: headless join to %s failed at boot", g_NetJoinAddr);
+		}
+	} else if (g_NetHostLatch) {
+		// Dedicated server: seed the menu-local port/cap the Host Game dialog
+		// would have, then run the Start guts (netStartServer + mpsetup load +
+		// Combat Sim lobby entry).
+		g_NetHostLatch = false;
+		g_NetMenuPort = g_NetServerPort;
+		g_NetMenuMaxPlayers = g_NetMaxClients;
+		menuhandlerHostStart(MENUOP_SET, NULL, NULL);
+	}
+
+	return true;
 }
 
 /* admin: lightweight match-setup menu (see docs/PORT_ADMIN_GUI_CONFIGURE.md) */

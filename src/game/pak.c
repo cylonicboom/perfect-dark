@@ -540,6 +540,19 @@ bool mempakIsReadyOrFull(s8 device)
 	return false;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Is the game pak's PD filesystem prepared (eeprom formatted, blank files
+ * created)? The direct dedicated/headless boot (netDedicatedBootTick) waits
+ * on this before hosting/joining — mempakIsReady can't be used because the
+ * game pak is not PAKTYPE_MEMORY.
+ */
+bool pakIsGamepakReady(void)
+{
+	return g_Paks[SAVEDEVICE_GAMEPAK].state == PAKSTATE_READY;
+}
+#endif
+
 void pak0f116bdc(s8 device, u8 *arg1, u8 *arg2)
 {
 	*arg1 = g_Paks[device].unk2ba;

@@ -457,6 +457,12 @@ extern s32 g_NetMode;
 extern s32 g_NetJoinLatch;
 extern s32 g_NetHostLatch;
 
+// Direct dedicated/headless boot: consumes the host/join latch without the
+// agent file-select + main menu (netmenu.c; called from playerTickPauseMenu's
+// MENUROOT_FILEMGR case). Returns false while the game pak is still
+// preparing (retry next frame), true once the latch was consumed.
+s32 netDedicatedBootTick(void);
+
 // Dedicated-server mode. 0 = listen server (host plays), 1 = headless dedicated
 // (no SDL window, no audio device, server-only tick), 2 = windowed dedicated
 // (window open showing a status overlay, no local combatant). Set from the

@@ -20667,6 +20667,21 @@ bool func0f08e8ac(struct prop *prop, struct coord *pos, f32 arg2, bool arg3)
 	bool result = false;
 	u32 stack;
 
+#ifndef PLATFORM_N64
+	// Blind-server Tier 1 (docs/PORT_HEADLESS_BLIND_SERVER.md §9): on a
+	// headless dedicated host the authoritative sim must never be gated on
+	// visibility — this predicate decides chrTick's needsupdate and
+	// objTickPlayer's pass2 (full tick + model matrices + the on-screen
+	// flags propsSort reads), and the on-screen vs off-screen child FREE
+	// branch (ghost-mine class). The normal body can't answer honestly
+	// here anyway: ROOMFLAG_ONSCREEN reflects only the last synthetic
+	// visibility pass's player, and camIsPosInFovAndVisibleRoom tests one
+	// player's frustum. Everything is "seen" by the server.
+	if (g_NetDedicatedMode == 1 && g_NetMode == NETMODE_SERVER) {
+		return true;
+	}
+#endif
+
 	rooms = prop->rooms;
 	roomnum = *rooms;
 
@@ -20704,12 +20719,27 @@ bool func0f08e8ac(struct prop *prop, struct coord *pos, f32 arg2, bool arg3)
 
 bool posIsInDrawDistance(struct coord *pos)
 {
-	struct coord *campos = &g_Vars.currentplayer->cam_pos;
-	f32 x = pos->x - campos->x;
-	f32 y = pos->y - campos->y;
-	f32 z = pos->z - campos->z;
-	f32 aggregate = x * x + y * y + z * z;
+	struct coord *campos;
+	f32 x;
+	f32 y;
+	f32 z;
+	f32 aggregate;
 	bool result = true;
+
+#ifndef PLATFORM_N64
+	// Blind-server Tier 1: no draw distance on the authoritative sim (see
+	// func0f08e8ac above). Keeps the hoverbike / CANFILLVIEWPORT pass2
+	// branches from culling on a remote slot's camera distance.
+	if (g_NetDedicatedMode == 1 && g_NetMode == NETMODE_SERVER) {
+		return true;
+	}
+#endif
+
+	campos = &g_Vars.currentplayer->cam_pos;
+	x = pos->x - campos->x;
+	y = pos->y - campos->y;
+	z = pos->z - campos->z;
+	aggregate = x * x + y * y + z * z;
 
 	if (aggregate > 32000 * 32000) {
 		result = false;

@@ -427,7 +427,15 @@ nothing should ever pause).
 
 ---
 
-## 9. Proposed: two-tier visibility restoration (the systemic fix)
+## 9. Two-tier visibility restoration (the systemic fix) — IMPLEMENTED, compile-verified
+
+> Status 2026-06-10: both tiers are in the tree (Tier 1: propobj.c
+> `func0f08e8ac`/`posIsInDrawDistance`; Tier 2: pdmain.c headless loop).
+> Linux `DEDICATED_SERVER` build links. **Runtime-unproven — run a soak
+> (`docs/PORT_NET_SOAK.md`) before trusting**; watch for: per-frame gfx pool
+> pressure (every chr/obj now allocates matrices), sim behavior changes
+> (full-fidelity "watched" AI paths everywhere), spawn-avoidance actually
+> avoiding watched pads, and ghost-mine reconcile fires dropping to zero.
 
 The per-site seams in §4 treat symptoms of one cut chain. The systemic repair
 is **two complementary mechanisms**, combined — they answer different
@@ -436,9 +444,11 @@ questions and share no consumers, so neither conflicts with the other:
 ### Tier 1 — "should the authoritative sim run this?" → always YES
 
 Short-circuit the visibility **predicates** — not the room flag — on the
-blind server: `func0f08e8ac` (propobj.c:20663) and `posIsInDrawDistance`
-(propobj.c:20705) return `true` under `#ifndef PLATFORM_N64` +
-`g_NetDedicatedMode == 1`.
+blind server: `func0f08e8ac` and `posIsInDrawDistance` (propobj.c) return
+`true` under `#ifndef PLATFORM_N64` + `g_NetDedicatedMode == 1 &&
+g_NetMode == NETMODE_SERVER`. (The NETMODE gate keeps the `--headless-client`
+soak build behaving like a real client — masking the §6.4 client fulltick
+gates there would make soaks less representative.)
 
 Why the predicate and not `ROOMFLAG_ONSCREEN`: forcing the flag still dies one
 call later — `camIsPosInFovAndVisibleRoom` (camera.c:615) reads
@@ -478,11 +488,26 @@ Clients do **not** send a visibility set; `netplayermove` carries the view
 *pose* (pos, `angles[2]`, `zoomfov`, `crosspos`) plus `settings.fovy`. But the
 visibility machinery is CPU-only: `g_MpRoomVisibility` is just the per-player
 OR of `ROOMFLAG_ONSCREEN/STANDBY` after the portal flood (bg.c:6797-6815),
-and the flood is portal-graph + frustum math. The server therefore runs a
-**synthetic per-client visibility pass**: per combatant slot (the headless
-loop already cycles `currentplayer`), prime camera state from the adopted
-pose and run the room flood; write that slot's `g_MpRoomVisibility` bits.
-Reduced rate (~10 Hz, staggered per client) is ample for every consumer.
+and the flood is portal-graph + frustum math.
+
+**As implemented** (pdmain.c headless loop, per bound combatant, before
+`propsTickPlayer` — full rate, mirroring lvRender's per-player order): the
+heavy lifting was already done by the tick path —
+
+- `playerTick` (tick path, runs headless) maintains
+  `cam_pos/cam_look/cam_up/cam_room` per pawn via `playerSetCamProperties`;
+- `bmoveProcessRemoteInput` keeps `player->fovy` tracking the client's real
+  (zoomed) FOV via `playerTweenFovY`;
+
+so the synthetic pass is four mirrored calls: `viSetFovAspectAndSize` (vi
+state from the player's live fov/aspect), `vi0000b1d0` (perspective matrix →
+`camSetMtxF1754` — **must precede the next call**, the documented
+`spectatorRenderPanel` ordering trap; its gdl writes land in the throwaway
+master display list), `playerAllocateMatrices` (real world-to-screen +
+projection — replacing the §4.3 identity fallback with *correct* matrices for
+that player), then `g_CamRoom = cam_room; bgTickPortals()` (called directly,
+skipping `bgTick`'s `bgTickRooms` room-graphics load/unload, which is
+render-tier).
 
 What Tier 2 buys:
 - **Spawn avoidance works again** (player.c:292-296): "don't spawn where a
@@ -499,12 +524,28 @@ movement, so deriving visibility from it adds no new attack surface. A
 client-*sent* visibility list would add a lie vector ("I see nothing") for
 anything gated on it — rejected.
 
-Implementation cautions: the visibility walk has side effects beyond flags
-(`ROOMFLAG_STANDBY`/`LOADCANDIDATE` bookkeeping, `bgUnpausePropsInRoom` —
-see §6.9); the synthetic pass must either run those deliberately or use a
-flags-only variant. And the client renders `renderbehind` ticks in the past,
-so derived visibility slightly leads the client's true view — irrelevant for
-spawn/LOD; lag-comp already owns the time offset for hits.
+Implementation cautions:
+- The walk's side effects (`ROOMFLAG_STANDBY`/`LOADCANDIDATE` bookkeeping,
+  `bgUnpausePropsInRoom` — see §6.9) now run per combatant, deliberately —
+  `bgUnpausePropsInRoom` is gameplay GC and *should* run; `LOADCANDIDATE`
+  flags are cleared at the top of each `bgTickPortals` pass and never
+  consumed headless (room-graphics loading lives in the render path).
+- The client renders `renderbehind` ticks in the past, so derived visibility
+  slightly leads the client's true view — irrelevant for spawn/LOD; lag-comp
+  already owns the time offset for hits.
+- The synthetic viewport is the headless default (100×100, fov/aspect live) —
+  self-consistent for the flood, but a slightly different window shape than
+  the client's real one. Acceptable; revisit only if avoidance feels off.
+- **Pre-existing 4-player packing**: `g_MpRoomVisibility` packs 4 onscreen
+  bits (low nibble) + 4 standby bits (high nibble); `bgRoomIsOnPlayerScreen`
+  uses `1 << playernum`, so combatant slots ≥ 4 alias the standby nibble.
+  An 8-combatant dedicated match needs this widened (u8 → u16 per room)
+  before per-player visibility is trustworthy for slots 4-7. Engine-wide
+  constraint, predates this work.
+- After the last combatant's pass, `ROOMFLAG_ONSCREEN` holds that player's
+  view for the rest of the frame — same as a listen host, where the last
+  rendered player's flags persist; Tier 1 keeps tick consumers independent
+  of it.
 
 ### Why the combination is coherent
 

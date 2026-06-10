@@ -256,8 +256,22 @@ void bheadUpdate(f32 arg0, f32 arg1)
 
 void bheadAdjustAnimation(f32 speed)
 {
+#ifndef PLATFORM_N64
+	// Crash ledger #20: a net client's local player can tick bmove with a
+	// torn-down pawn (round-transition race under load: prop or prop->chr
+	// NULL while isdead is still false) — the chr->oldframe write at the
+	// bottom faulted at NULL+0x1d8. Sibling head functions only touch
+	// player-> fields, so guarding the one chr consumer suffices.
+	struct chrdata *chr = (g_Vars.currentplayer->prop != NULL) ? g_Vars.currentplayer->prop->chr : NULL;
+	s32 i;
+
+	if (chr == NULL) {
+		return;
+	}
+#else
 	struct chrdata *chr = g_Vars.currentplayer->prop->chr;
 	s32 i;
+#endif
 
 	speed *= g_HeadAnims[HEADANIM_MOVING].translateperframe;
 

@@ -4094,6 +4094,15 @@ void chrChoke(struct chrdata *chr, s32 choketype)
 
 f32 chrGetShield(struct chrdata *chr)
 {
+#ifndef PLATFORM_N64
+	// Crash ledger #18: lvUpdateSoloHandicaps -> playerGetShieldFrac passes
+	// currentplayer->prop->chr, which is NULL for a pawn-less net client
+	// (Host-Online lobby / spectator / between matches on CI) — read at
+	// NULL+0x1cc. Guard here so every caller is covered.
+	if (chr == NULL) {
+		return 0;
+	}
+#endif
 	return chr->cshield;
 }
 

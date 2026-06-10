@@ -58,6 +58,23 @@ if [ -z "$BIN" ]; then
   exit 2
 fi
 
+# Preflight: catch the Windows silent-death case. A MinGW exe with unresolved
+# DLLs exits instantly with NO output at all — the usual cause is launching
+# from the plain MSYS shell, which leaves /mingw64/bin (libwinpthread/libgcc/
+# zlib1) off PATH. MSYS2's ldd understands PE binaries, so check up front.
+if command -v ldd >/dev/null 2>&1; then
+  MISSING_DLLS="$(ldd "$BIN" 2>/dev/null | grep -i 'not found' || true)"
+  if [ -n "$MISSING_DLLS" ]; then
+    echo "error: $BIN cannot load in THIS shell — unresolved libraries:" >&2
+    echo "$MISSING_DLLS" >&2
+    if [ -n "${MSYSTEM:-}" ] && [ "${MSYSTEM:-}" != "MINGW64" ]; then
+      echo "you are in the '$MSYSTEM' shell — use the 'MSYS2 MinGW x64' shell" >&2
+      echo "(prompt says MINGW64), which puts /mingw64/bin on PATH." >&2
+    fi
+    exit 2
+  fi
+fi
+
 OUTDIR="$HERE/tools/soak/out"
 mkdir -p "$OUTDIR"
 STAMP="$(date -u +%Y%m%d_%H%M%S)"
@@ -86,10 +103,27 @@ if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
     echo "(no \`timeout\` on PATH — running uncapped; Ctrl-C to stop)"
   fi
   "${CMD[@]}" 2>&1 | tee -a "$LOG"
+  RC=${PIPESTATUS[0]}
+  CAPPED=0
 else
   timeout --signal=INT "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
-  echo
-  echo "soak window elapsed. client-side verdict:"
+  RC=${PIPESTATUS[0]}   # 124 = the full window elapsed (normal for a capped run)
+  CAPPED=1
+fi
+
+echo
+if [ ! -s "$DIAG" ]; then
+  echo "FAIL: the client exited (status $RC) without ever writing the diag CSV." >&2
+  echo "  expected: $DIAG" >&2
+  echo "It died before connecting — check the console log: $LOG" >&2
+  echo "If the log is EMPTY the exe never started (Windows: missing DLLs — run from" >&2
+  echo "the MSYS2 MinGW x64 shell; check: ldd $BIN | grep -i 'not found')." >&2
+  echo "If the log HAS output: missing ROM/data, server unreachable, or a" >&2
+  echo "NET_PROTOCOL_VER mismatch (DISCONNECT_VERSION in the log)." >&2
+  exit 1
+fi
+if [ "$CAPPED" = 1 ]; then
+  echo "soak window elapsed (exit status $RC). client-side verdict:"
   if [ -n "$PY" ]; then
     "$PY" "$HERE/tools/netsoak.py" "$DIAG"
   else

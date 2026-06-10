@@ -59,6 +59,23 @@ if [ ! -f "$PLAYLIST" ]; then
   exit 2
 fi
 
+# Preflight: catch the Windows silent-death case. A MinGW exe with unresolved
+# DLLs exits instantly with NO output at all — the usual cause is launching
+# from the plain MSYS shell, which leaves /mingw64/bin (libwinpthread/libgcc/
+# zlib1) off PATH. MSYS2's ldd understands PE binaries, so check up front.
+if command -v ldd >/dev/null 2>&1; then
+  MISSING_DLLS="$(ldd "$BIN" 2>/dev/null | grep -i 'not found' || true)"
+  if [ -n "$MISSING_DLLS" ]; then
+    echo "error: $BIN cannot load in THIS shell — unresolved libraries:" >&2
+    echo "$MISSING_DLLS" >&2
+    if [ -n "${MSYSTEM:-}" ] && [ "${MSYSTEM:-}" != "MINGW64" ]; then
+      echo "you are in the '$MSYSTEM' shell — use the 'MSYS2 MinGW x64' shell" >&2
+      echo "(prompt says MINGW64), which puts /mingw64/bin on PATH." >&2
+    fi
+    exit 2
+  fi
+fi
+
 echo "soak server:"
 echo "  binary   : $BIN"
 echo "  port     : $PORT"
@@ -83,14 +100,30 @@ if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
     echo "(no \`timeout\` on PATH — running uncapped; Ctrl-C to stop)"
   fi
   "${CMD[@]}" 2>&1 | tee -a "$LOG"
+  RC=${PIPESTATUS[0]}
+  CAPPED=0
 else
   # Run with a wall-clock cap, then SIGINT for a clean shutdown (flushes the
   # diag file via netDisconnect's netDiagClose). On MSYS2/Windows the INT may
   # arrive as a console ctrl event or a hard kill depending on the runtime —
   # either way the audit: lines are already flushed line-by-line.
   timeout --signal=INT "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
-  echo
-  echo "soak window elapsed. verdict:"
+  RC=${PIPESTATUS[0]}   # 124 = the full window elapsed (normal for a capped run)
+  CAPPED=1
+fi
+
+echo
+if [ ! -s "$DIAG" ]; then
+  echo "FAIL: the server exited (status $RC) without ever writing the diag CSV." >&2
+  echo "  expected: $DIAG" >&2
+  echo "It died before hosting — check the console log: $LOG" >&2
+  echo "If the log is EMPTY the exe never started (Windows: missing DLLs — run from" >&2
+  echo "the MSYS2 MinGW x64 shell; check: ldd $BIN | grep -i 'not found')." >&2
+  echo "If the log HAS output, the usual cause is missing ROM/data assets." >&2
+  exit 1
+fi
+if [ "$CAPPED" = 1 ]; then
+  echo "soak window elapsed (exit status $RC). verdict:"
   if [ -n "$PY" ]; then
     "$PY" "$HERE/tools/netsoak.py" "$DIAG"
   else

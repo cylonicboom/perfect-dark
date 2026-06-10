@@ -155,6 +155,16 @@ The scripts are plain bash and run as-is in the **MSYS2 MinGW x64 shell**
 (coreutils `timeout`/`tee` and python are present there); the binary name
 autodetects the `.exe` suffix. Still ROM-gated — see the asset note below.
 
+> **Shell gotcha (the #1 failure mode):** it must be the **MinGW x64** shell —
+> the prompt says `MINGW64`, not `MSYS`. In the plain MSYS shell,
+> `/mingw64/bin` is off PATH, so the exe's runtime DLLs (`libwinpthread-1`,
+> `libgcc_s_seh-1`, `zlib1`) don't resolve and Windows kills it **before
+> `main()` — instantly, with zero output and no diag CSV** (the run looks like
+> it "elapsed" immediately). The scripts now preflight this with `ldd` and
+> refuse to launch, and they fail loudly after the run if no CSV was written.
+> (The CI artifact ships those three DLLs next to the exe for this reason; a
+> local build dir doesn't have them.)
+
 1. **Build the headless target** (MSYS2 MinGW x64 shell, repo root):
    ```
    mkdir -p build_ded && cd build_ded
@@ -164,7 +174,9 @@ autodetects the `.exe` suffix. Still ROM-gated — see the asset note below.
    ```
    Produces `build_ded/pd-server.x86_64.exe` — a console app (Ctrl-C / closing
    the window is a clean shutdown). It can host OR join. CI builds this exact
-   target ("Build dedicated server (x86_64 windows, headless)").
+   target ("Build dedicated server (x86_64 windows, headless)"). The dir name
+   is yours to pick (CI uses `build-server/`); pass the binary path as the
+   scripts' BINARY arg if it isn't the `build_ded/` default.
    **Assets:** provision the ROM/`data` for `build_ded` the same way as your
    other build dirs (the headless build discovers them identically).
 

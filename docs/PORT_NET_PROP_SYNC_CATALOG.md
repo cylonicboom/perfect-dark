@@ -59,9 +59,9 @@ cleanly on both sides.
 
 | Prop class | Type | Spawned by | Sync | GC | Known issue |
 |---|---|---|---|---|---|
-| **Dropped weapon** (disarm / death drop) | WEAPON | `objDrop*`, disarm, `chrDropAllItems` | spawn ✅ / pos ⚠️ | ⚠️ | **Intangible to clients** (§5.1); **floats** (§5.2) |
-| **Thrown grenade / N-Bomb** | WEAPON (projectile) | grenade throw | spawn ✅ / flight ⚠️ | ⚠️ | bounce/land divergence (§5.2) |
-| **Rocket / SK-rocket / Devastator / SuperDragon grenade** | WEAPON (projectile, some POWERED) | fire | spawn ✅ (powered vec) / flight ⚠️ | ⚠️ | flight path + impact free |
+| **Dropped weapon** (disarm / death drop) | WEAPON | `objDrop*`, disarm, `chrDropAllItems` | spawn ✅ / pos ✅ (§5.2 fix) | ⚠️ | ~~intangible (§5.1)~~ / ~~floats (§5.2)~~ — both FIXED |
+| **Thrown grenade / N-Bomb** | WEAPON (projectile) | grenade throw | spawn ✅ / flight ✅ (§5.2 pass 1) | ⚠️ | ~~bounce/land divergence~~ FIXED |
+| **Rocket / SK-rocket / Devastator / SuperDragon grenade** | WEAPON (projectile, some POWERED) | fire | spawn ✅ (powered vec) / flight ✅ (§5.2 pass 1) | ⚠️ | impact free |
 | **Proximity / remote / timed mine** (incl. **Dragon** secondary) | WEAPON (projectile→stuck) | lay mine | spawn ✅ / stick ⚠️ | ❌ **screen-gated free** | ghost mines (§6) |
 | **Laptop Gun sentry** (thrown) | OBJ / **AUTOGUN** + `OBJFLAG_THROWNLAPTOP` | `laptopDeploy` (bondgun.c:4690) | spawn ✅ / **AI/fire ❌** | ⚠️ | **doesn't work on client** (§5.3) |
 | **Embedded mine/knife on a chr** | WEAPON, `OBJHFLAG_EMBEDDED` child of chr | stick to body | ⚠️ | ❌ **screen-gated** | the original ghost class (reconcile backstop) |
@@ -104,25 +104,41 @@ throw/fire ──► AIRBORNE (flight) ──► bounce/SLIDING ──► land/S
 
 ## 5. Symptom → cause map (the reported bugs)
 
-### 5.1 Dropped weapons on the floor are **intangible** to clients — **[confirmed]**
-`objTestForPickup` (propobj.c:17808) early-returns `TICKOP_NONE` when
+### 5.1 Dropped weapons on the floor are **intangible** to clients — **FIXED**
+> Resolved by the 2026-06-10 netprop consolidation (see
+> `PORT_NET_PROP_LIFECYCLE.md` "Combat Sim client pickups"): `objTestForPickup`'s
+> Combat-Sim client hard-bail was replaced — clients run the same read-only
+> pickup checks, send `CLC_PICKUP_REQUEST`, and take ONLY via the host's
+> `SVC_PROP_PICKUP` echo (no local take, so no double-give; the host's own
+> proximity scan for remote pawns remains the second detection path). The
+> original analysis below is kept for the record.
+
+`objTestForPickup` (propobj.c:17808) early-returned `TICKOP_NONE` when
 `g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum < 0`. The client pickup path
 (`CLC_PICKUP_REQUEST` → host validates → `SVC_PROP_PICKUP`) was wired **for co-op
-only**; **Combat Sim clients can never collect a dropped/floor weapon.** This is a
-design gap, not corruption. **Fix:** extend the `CLC_PICKUP_REQUEST` authority
-path to Combat Sim (drop the `coopplayernum < 0` guard, gate on
-`g_NetMode == CLIENT` + a "this is a pickup we'd take" check, host re-validates by
-synced position — same as co-op). The host already grants via `SVC_PROP_PICKUP`.
+only**; Combat Sim clients could never collect a dropped/floor weapon. This was a
+design gap, not corruption.
 
-### 5.2 Weapons **floating above their spawn point** — **[hypothesis]**
-A dropped gun spawns at the drop height and should fall (`OBJFLAG_FALL` →
-projectile fall physics). Two candidate causes: (a) the client runs its own fall
-in `objTickPlayer` but the prop is **backgrounded/not ticked** so it never falls,
-or (b) it falls locally but diverges from the host because there's **no wire-pos
-reconcile for Combat Sim WEAPON props** (§4). **Next:** log a floating prop's
-`prop->pos.y` vs the wire `SVC_PROP_MOVE` pos and whether `objTickPlayer` is
-ticking it on the client; decide between "client owns fall, snap to wire on
-settle" vs "host owns pos, client never integrates."
+### 5.2 Weapons **floating above their spawn point** — **FIXED (send-side reconcile)**
+> Resolved 2026-06-11: the server now re-broadcasts Combat Sim dynamic prop
+> positions itself (net.c `netEndFrame`, the same two-pass design as the co-op
+> movable-OBJ block directly above it): **pass 1** sends every synced,
+> unparented, non-embedded WEAPON/OBJ in projectile motion every tick (clients
+> track the full fall/bounce arc — also covers thrown grenade/N-Bomb/rocket
+> flight divergence); **pass 2** round-robins a few settled ones per tick
+> (heals a diverged rest position, a dropped impulse packet, or a JIP client).
+> The read side already applied pos + rooms + the projectile block, so there
+> is **no wire or protocol change**. This also masks cause (a) below — a
+> client copy that never fullticks still follows the wire to the floor; the
+> objTickPlayer gate cleanup stays with the projectile-sync WIP.
+
+Original analysis: a dropped gun spawns at the drop height and should fall
+(`OBJFLAG_FALL` → projectile fall physics). Two candidate causes: (a) the
+client runs its own fall in `objTickPlayer` but the prop is
+**backgrounded/not ticked** so it never falls, or (b) it falls locally but
+diverges from the host because there was **no wire-pos reconcile for Combat
+Sim WEAPON props** (§4). Both shapes are addressed by the host-owned position
+stream; clients still integrate locally between updates for smoothness.
 
 ### 5.3 Throwing the **Laptop Gun sentry does not work** — **[hypothesis]**
 Spawn is covered, but the sentry's **fire AI is server-only** and its beam isn't

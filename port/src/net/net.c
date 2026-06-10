@@ -2894,6 +2894,68 @@ void netEndFrame(void)
 				coopobjcursor = i; // resume here next tick
 			}
 
+			// Combat Sim dynamic-prop position sync (catalog §5.2 "floating /
+			// diverging dropped weapons"). Same design as the co-op block above,
+			// for normal MP: a dropped/thrown WEAPON (or movable OBJ) only ever
+			// got its position broadcast on the impulse event (the drop/throw
+			// moment in propobj.c) — never during the projectile fall, never at
+			// settle. Clients integrate the fall with their own objTickPlayer
+			// physics, which (a) can be gated off entirely for drops that miss
+			// the owner-iteration fulltick gates (PORT_NET_KNOWN_ISSUES: items
+			// frozen mid-air) and (b) otherwise diverges from the host (different
+			// bounce/landing -> guns floating above the floor or resting in the
+			// wrong spot). The read side (netmsgSvcPropMoveRead) already applies
+			// pos + rooms + the full projectile block for these props, so the fix
+			// is send-side only — no wire or protocol change:
+			//  - Pass 1, every tick: any synced WEAPON/OBJ in projectile motion
+			//    (airborne / sliding / falling) so clients track the full arc and
+			//    land exactly where the host does. Usually 0-3 props.
+			//  - Pass 2, round-robin: refresh a few SETTLED ones per tick so a
+			//    diverged rest position, a dropped impulse packet, or a JIP
+			//    client heals within ~maxprops/4 ticks.
+			// Exclusions: parented props (held weapons / embedded mines ride a
+			// chr bone or an embedment — their pos is owned by the parent, and
+			// re-registering wire rooms on them would fight the child linkage);
+			// doors (synced via SVC_PROP_DOOR; wire pos breaks the open anim).
+			// Unreliable (g_NetMsg): latest-wins, self-heals next tick/sweep.
+			if (g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
+				const s32 maxprops = g_Vars.maxprops;
+				// Pass 1: props in projectile motion, every tick.
+				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 160; i++) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->parent == NULL
+							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)
+							&& (prop->obj->hidden & OBJHFLAG_EMBEDDED) == 0) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+					}
+				}
+				// Pass 2: settled props, round-robin (a few per tick).
+				static s32 mpobjcursor = 0;
+				if (mpobjcursor >= maxprops) {
+					mpobjcursor = 0;
+				}
+				s32 scanned = 0;
+				s32 sent = 0;
+				s32 i = mpobjcursor;
+				while (scanned < maxprops && sent < 4 && g_NetMsg.wp < NET_BUFSIZE - 160) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->parent == NULL
+							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+							&& (prop->obj->hidden & (OBJHFLAG_PROJECTILE | OBJHFLAG_EMBEDDED)) == 0) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						sent++;
+					}
+					i = (i + 1) % maxprops;
+					scanned++;
+				}
+				mpobjcursor = i; // resume here next tick
+			}
+
 			// Co-op stage flags: scripts, objectives and triggered events gate on
 			// g_StageFlags, set host-side by action blocks / scripts the client
 			// doesn't run. Mirror it (reliable) so the client's flag-gated logic

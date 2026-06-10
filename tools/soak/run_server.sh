@@ -34,7 +34,7 @@ resolve_bin() {
   return 1
 }
 
-BIN_ARG="${1:-$HERE/build_ded/pd-server.x86_64}"
+BIN_ARG="${1:-$HERE/build-server/pd-server.x86_64}"
 PORT="${2:-27100}"
 MINUTES="${3:-0}"
 

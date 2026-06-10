@@ -881,6 +881,7 @@ void mainTick(void)
 					// avoidance and chrIsRoomOffScreen AI LOD with no wire
 					// change and no client trust (pose-derived only). The gdl
 					// writes land in the throwaway master display list.
+					bool cam_primed = false;
 					{
 						struct player *pl_vis = g_Vars.currentplayer;
 						if (pl_vis && pl_vis->prop && pl_vis->cam_room >= 1
@@ -894,12 +895,35 @@ void mainTick(void)
 									&pl_vis->cam_look, &pl_vis->cam_up);
 							g_CamRoom = pl_vis->cam_room;
 							bgTickPortals();
+							cam_primed = true;
 						}
 					}
 
 					propsTickPlayer(j == lastcombatant);
 					scenarioTickChr(NULL);
 					propsSort();
+
+					// Attack dispatch (PORT_HEADLESS_BLIND_SERVER.md §6.1).
+					// handsTickAttack's ONLY caller is lvRender (lv.c:1456) —
+					// on a listen host it runs per player including remotes,
+					// spawning their thrown/fired projectiles (grenades,
+					// rockets, mines: HANDATTACKTYPE_THROW/SHOOTPROJECTILE)
+					// server-side, where dynamic prop spawns are host-owned
+					// (SVC_PROP_SPAWN). Skipped headless, a client's grenade
+					// existed only on the throwing client. Mirroring it here
+					// is listen-host parity: the remote-shooter rails already
+					// exist on that path — chrHit is skipped for remote
+					// shooters (CLC_HIT applies the damage; the server trace
+					// only feeds hit validation), melee early-returns in
+					// handInflictMeleeDamage (each machine handles its own
+					// local melee), and the explosive-shell (Phoenix) trace
+					// explosion NEEDS to run here to exist at all. Gated on
+					// cam_primed: the trace projects through this player's
+					// matrices (objHit derefs camGetProjectionMtxF without a
+					// NULL guard), so it must not run on an unprimed slot.
+					if (cam_primed) {
+						handsTickAttack();
+					}
 
 					// Pickup detection. propsTestForPickup is normally called
 					// from lvRender's per-player loop (lv.c:1416) — the function

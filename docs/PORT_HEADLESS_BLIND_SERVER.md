@@ -267,7 +267,28 @@ no render data.
 Ordered by impact. Items 1-3 are the substantive engineering work; the rest
 are small.
 
-### 6.1 `handsTickAttack` is not mirrored — remote throw/fire-projectile spawns never run ⚠️ HIGHEST
+### 6.1 `handsTickAttack` mirror — IMPLEMENTED (compile-verified, runtime-unproven)
+
+> Status 2026-06-10: mirrored in the pdmain.c headless loop after `propsSort`
+> (lvRender's order), gated on the §9 Tier 2 camera prime — the shot trace
+> projects through the player's matrices and `objHit` derefs
+> `camGetProjectionMtxF` with no NULL guard, so it must never run on an
+> unprimed slot. Soak checklist: remote grenade/rocket/mine visible to all
+> clients, Phoenix explosive-shell explosions, uplink (HTM), no
+> double-detonation (DETONATE is reachable from both `bmoveTick` and this
+> dispatcher — same as a listen host), spawn-pos sanity on thrown projectiles.
+>
+> **Quirk inherited from listen hosts (pre-existing, now shared):** a remote
+> shooter's prop hit applies damage TWICE server-side — the server's own
+> trace (`objHit → objTakeGunfire → objDamage`) plus the shooter's
+> `CLC_PROP_HIT` report (`netmsgClcPropHitRead` enqueues unconditionally, no
+> dedupe). Invisible for one-hit glass; mild inflation on HP destructibles.
+> Fix direction: mirror the chrHit pattern — skip the local `objDamage` for
+> remote shooters on the server and let the client report be the single
+> application (plus record for validation). Deliberately NOT bundled with the
+> mirror commit so the mirror is pure listen-host parity.
+
+Original analysis (kept for the record):
 `handsTickAttack` (prop.c:1833) → `handTickAttack` (prop.c:1736) is the
 **attack dispatcher**: `HANDATTACKTYPE_SHOOT` (shotCreate), `_MELEE`,
 `_DETONATE`, `_UPLINK`, `_BOOST`, `_SHOOTPROJECTILE`
@@ -558,5 +579,6 @@ Tier 1 reads `ROOMFLAG_ONSCREEN`-family state through `func0f08e8ac`; Tier 2
 writes `g_MpRoomVisibility`. No consumer reads both for the same decision, so
 the tiers compose without interference — and together they subsume §4.2's
 interact seams, §4.5's degradations, §6.2's blind validation, and §6.3's
-ghost mines, leaving §6.1 (`handsTickAttack` mirror) as the remaining
-mainTick change.
+ghost mines. The §6.1 `handsTickAttack` mirror rides on top (gated on the
+Tier 2 camera prime) — with it, the headless per-player loop is a faithful
+gameplay-tier image of lvRender's.

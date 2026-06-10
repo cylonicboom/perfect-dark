@@ -4308,6 +4308,27 @@ void *fileLoadToNew(s32 filenum, u32 method, u32 loadtype)
 
 	if (method == FILELOADMETHOD_EXTRAMEM || method == FILELOADMETHOD_DEFAULT) {
 #ifndef PLATFORM_N64
+		// Refuse files with no data source instead of promoting garbage.
+		// Port-added file ids (FILE_CSKEDAR2 / FILE_CDRCARROLL2 / GHAND_*)
+		// exist only as external mod files — they have no ROM fallback by
+		// construction. On an install without the mod data dir,
+		// romdataFileLoad returns NULL and fileLoad early-returns, leaving
+		// the freshly mempAlloc'd buffer UNINITIALIZED — which modeldefLoad
+		// then "promotes" (crash ledger #22 second shape: a bot randomly
+		// rolls BODY_PRESIDENT_CLONE → FILE_CSKEDAR2 → SIGSEGV in
+		// modelPromote* at stage load; the real root of ledger #19's
+		// "timing/pressure-dependent" server crash). Callers that can skip
+		// (bodyAllocateModel → botmgrAllocateBot) handle the NULL.
+		{
+			u8 *romdataFileLoad(s32 fileNum, u32 *outSize); // port/include/romdata.h
+			if (romdataFileLoad(filenum, NULL) == NULL) {
+				sysLogPrintf(LOG_ERROR,
+						"fileLoadToNew: file %d has no data source (missing external/mod file?) — refusing load",
+						filenum);
+				return NULL;
+			}
+		}
+
 		// Always re-derive the allocation size for EXTRAMEM (model) loads.
 		// After a load, romdataFilePreprocess rewrites info->loadedsize to the
 		// ACTUAL post-preprocess size — which has neither the fresh estimate's

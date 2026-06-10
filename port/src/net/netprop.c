@@ -55,10 +55,21 @@ static const char *netPropEvName(u8 ev)
 	}
 }
 
+// Spawn-broadcast dedupe window (netSyncPropSpawn). File-scope so the
+// per-stage reset below can clear it: both inputs it keys on restart at a
+// stage boundary (lvReset zeroes lvframe60, netSyncIdsAllocate restarts the
+// syncid counter), so a stale entry from the previous match could otherwise
+// false-match a legitimate spawn in the new one and silently swallow its
+// broadcast (client permanently misses the prop).
+static struct { u32 syncid; u32 frame; } g_NetSpawnRecent[8];
+static u32 g_NetSpawnRecentHead = 0;
+
 void netPropLogReset(void)
 {
 	g_NetPropLogHead = 0;
 	memset(g_NetPropLog, 0, sizeof(g_NetPropLog));
+	memset(g_NetSpawnRecent, 0, sizeof(g_NetSpawnRecent));
+	g_NetSpawnRecentHead = 0;
 }
 
 void netPropLogEvent(struct prop *prop, u8 ev, u16 extra)
@@ -237,20 +248,15 @@ void netSyncPropSpawn(struct prop *prop)
 	// re-spawn after pickup/free is seconds away), so swallow it centrally
 	// instead of auditing every caller forever. The read side independently
 	// enforces one-prop-per-syncid (latest spawn wins) as the backstop.
-	{
-		static struct { u32 syncid; u32 frame; } s_recent[8];
-		static u32 s_recenthead = 0;
-
-		for (u32 i = 0; i < 8; i++) {
-			if (s_recent[i].syncid == prop->syncid
-					&& (u32)(g_Vars.lvframe60 - s_recent[i].frame) < 4u) {
-				return;
-			}
+	for (u32 i = 0; i < 8; i++) {
+		if (g_NetSpawnRecent[i].syncid == prop->syncid
+				&& (u32)(g_Vars.lvframe60 - g_NetSpawnRecent[i].frame) < 4u) {
+			return;
 		}
-		s_recent[s_recenthead & 7].syncid = prop->syncid;
-		s_recent[s_recenthead & 7].frame = g_Vars.lvframe60;
-		s_recenthead++;
 	}
+	g_NetSpawnRecent[g_NetSpawnRecentHead & 7].syncid = prop->syncid;
+	g_NetSpawnRecent[g_NetSpawnRecentHead & 7].frame = g_Vars.lvframe60;
+	g_NetSpawnRecentHead++;
 
 	netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
 	netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);

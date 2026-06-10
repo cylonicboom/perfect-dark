@@ -241,7 +241,22 @@ static inline u32 netbufWritePropPtr(struct netbuf *buf, const struct prop *prop
 		static u32 s_sidwarntick = 0xffffffffu;
 		if (s_sidwarntick != g_NetTick) {
 			s_sidwarntick = g_NetTick;
-			sysLogPrintf(LOG_WARNING, "NET: wire ref to syncid-0 prop (type %d) — diet gap?", prop->type);
+			// Identify the culprit: prop index + active/parent state, and for
+			// weapon/obj props the objtype + weaponnum (the 2026-06-10 soak hit
+			// ONE "type 4" in 2 min — not enough to find the spawn path without
+			// this detail; see /proplog <idx> for its lifecycle history).
+			s32 objtype = -1;
+			s32 weaponnum = -1;
+			if (prop->obj && (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+				objtype = prop->obj->type;
+				if (prop->type == PROPTYPE_WEAPON) {
+					weaponnum = ((struct weaponobj *)prop->obj)->weaponnum;
+				}
+			}
+			sysLogPrintf(LOG_WARNING,
+					"NET: wire ref to syncid-0 prop %d (type %d objtype %d wpn %d active %d parent %d) — diet gap?",
+					(g_Vars.props && prop >= g_Vars.props) ? (s32)(prop - g_Vars.props) : -1,
+					prop->type, objtype, weaponnum, prop->active, prop->parent != NULL);
 		}
 	}
 
@@ -3135,16 +3150,23 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 	// first match) and immune to the reconcile (its syncid IS in the host's
 	// set) — a permanent ghost copy. Replace instead: free our existing
 	// weapon/obj copy through the teardown choke point and rebuild it from
-	// this (newer) spawn. Non-weapon/obj collisions (shouldn't happen) are
-	// logged and left alone — a duplicate is no worse than the status quo.
+	// this (newer) spawn. Non-weapon/obj collisions (shouldn't happen) DROP
+	// the incoming spawn instead of building a second prop on the same
+	// syncid: we can't free the holder (a chr's syncid is its identity for
+	// chr-state sync, and netPropFreeSynced refuses non-weapon/obj anyway),
+	// and a duplicate would be unreachable by any later free (the type-gated
+	// read paths resolve the syncid to the chr) — a permanent ghost. The
+	// partial-read return-1 bail is the same idiom as the bad-modelnum /
+	// slots-full drops below; the reconcile heartbeat re-sends a real spawn.
 	{
 		struct prop *existing = netSyncIdToProp(syncid);
 		if (existing && existing->obj
 				&& (existing->type == PROPTYPE_WEAPON || existing->type == PROPTYPE_OBJ)) {
 			netPropFreeSynced(existing, NETPROP_FREE_RESPAWN);
 		} else if (existing) {
-			sysLogPrintf(LOG_WARNING, "NET: spawn %u collides with existing prop type %d — not replacing",
+			sysLogPrintf(LOG_WARNING, "NET: spawn %u collides with existing prop type %d — dropping spawn",
 					syncid, existing->type);
+			return 1;
 		}
 	}
 

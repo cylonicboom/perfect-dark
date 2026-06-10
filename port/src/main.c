@@ -139,6 +139,15 @@ int main(int argc, const char **argv)
 		g_NetDedicatedMode = 1;
 	} else if (sysArgCheck("--dedicated-windowed")) {
 		g_NetDedicatedMode = 2;
+	} else if (sysArgGetString("--headless-client")) {
+		// Headless CLIENT (soak harness, docs/PORT_NET_SOAK.md): the same
+		// headless runtime as --dedicated (no window/audio/input, gameplay-tick
+		// path, 60Hz pacing) but it JOINs a server as a combatant instead of
+		// hosting. netInit turns --headless-client <addr> into a join latch.
+		// The prop-sync apply + the invariant auditor run in the tick path
+		// (not lvRender, which is skipped headless), so a headless client is a
+		// valid second machine for the manifest-parity check.
+		g_NetDedicatedMode = 1;
 	}
 #ifdef DEDICATED_SERVER
 	// Server-only build has no video/audio/input compiled in, so it must run

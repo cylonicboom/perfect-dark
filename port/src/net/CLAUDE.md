@@ -206,6 +206,13 @@ Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` u
 ```
 --host              auto-host on startup
 --connect <addr>    auto-join address on startup
+--headless-client <addr>  headless soak/test client: headless runtime (no
+                    window/audio/input, like --dedicated) but JOINs <addr> as a
+                    combatant instead of hosting. The prop-sync apply + the
+                    invariant auditor run in the tick path (lvRender is skipped),
+                    so it's a valid second machine for the manifest-parity check.
+                    Spawns at round boundaries only (server-authoritative), takes
+                    neutral input. See docs/PORT_NET_SOAK.md "Headless client".
 --port <n>          server port override
 --maxclients <n>    max client cap
 --master <addr>     master-server host/IP override (Net.Master.Addr)

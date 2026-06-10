@@ -991,8 +991,17 @@ void netInit(void)
 	}
 
 	const char *argjoin = sysArgGetString("--connect");
+	// --headless-client <addr>: headless soak/test client. Same address plumbing
+	// as --connect, but main.c also forced g_NetDedicatedMode=1 for it so the
+	// runtime is headless (no window/audio/input). It JOINs, so it must NOT take
+	// the --dedicated host path below.
+	const char *arghlclient = sysArgGetString("--headless-client");
+	if (!argjoin && arghlclient) {
+		argjoin = arghlclient;
+	}
 	if (argjoin) {
 		strncpy(g_NetLastJoinAddr, argjoin, sizeof(g_NetLastJoinAddr) - 1);
+		g_NetLastJoinAddr[sizeof(g_NetLastJoinAddr) - 1] = '\0';
 		g_NetJoinLatch = true;
 	}
 
@@ -1001,15 +1010,21 @@ void netInit(void)
 	}
 
 	// --dedicated: true headless. videoInit/audioInit will no-op, mainTick
-	// skips the render path. Implies --host (auto-starts server on boot).
+	// skips the render path. Implies --host (auto-starts server on boot) UNLESS
+	// we're joining (--connect / --headless-client), in which case the headless
+	// runtime hosts nothing and runs as a client instead.
 	// --dedicated-windowed: same server-mode, but keeps the SDL window for a
 	// status overlay — useful for beginners who want to see what's going on.
 	if (sysArgCheck("--dedicated")) {
 		g_NetDedicatedLatch = 1;
-		g_NetHostLatch = true;
+		if (!g_NetJoinLatch) {
+			g_NetHostLatch = true;
+		}
 	} else if (sysArgCheck("--dedicated-windowed")) {
 		g_NetDedicatedLatch = 2;
-		g_NetHostLatch = true;
+		if (!g_NetJoinLatch) {
+			g_NetHostLatch = true;
+		}
 	}
 
 	const char *argplaylist = sysArgGetString("--playlist");

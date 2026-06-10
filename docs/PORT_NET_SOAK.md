@@ -1,9 +1,12 @@
 # Netplay Prop-Sync Soak Harness (Phase 2) — 2026-06-10
 
 > **Status: implemented, compile-verified (Linux dedicated build); the offline
-> tool is unit-tested on synthetic logs. The end-to-end soak itself needs a
-> ROM-provisioned build + a connecting client to actually run — there is no
-> headless client.** Phase 2 of the prop-sync consistency plan.
+> tool is unit-tested on synthetic logs. A HEADLESS CLIENT now exists
+> (`--headless-client`), so a fully unattended two-process soak (headless server
+> + headless client on one box) is possible — but the headless client's
+> live behaviour is NOT yet runtime-verified (it needs a ROM; see "Headless
+> client" below for the honest limits and what's unproven).** Phase 2 of the
+> prop-sync consistency plan.
 >
 > Pairs with `docs/PORT_NET_PROP_LIFECYCLE.md` (Phase 0/1 — the auditor checks
 > the invariants that work established) and `docs/PORT_NET_CRASH_LEDGER.md`.
@@ -98,38 +101,91 @@ The tool is validated on synthetic logs (healthy → PASS/0; injected dupes+heal
 |---|---|
 | `playlist_soak.txt` | churn-maximising playlist: 8 MEANSIM bots, launcher/mine loadouts, short 3-min rounds (frequent stage-reload cold paths), 3 maps of differing prop density. `min_humans_to_start = 1`. |
 | `run_server.sh` | launches `pd-server.x86_64 --dedicated --playlist … --netdiag … --svcrate 2`; auto-starts the match when one client connects; on a timed run, prints the verdict at the end. |
+| `run_client.sh` | launches the headless client (`--headless-client <addr> --netdiag …`); on a timed run prints the client-side verdict + the parity command. |
 | `out/` | generated CSVs/logs (gitignored). |
 
-## How to run a soak (needs a ROM + a client)
+## Headless client (`--headless-client <addr>`)
 
-The dedicated server is headless but still ROM-gated, and there is **no
-headless client**, so a soak needs your real (windowed) client to connect and
-provide the second half of the manifest-parity check. Minimal procedure:
+The headless client reuses the dedicated build's headless runtime (no window/
+audio/input, 60 Hz pacing) but **joins** a server instead of hosting. It's the
+second machine the manifest-parity check needs, and it makes a **fully
+unattended** soak possible (server + client as two processes on one box, no GUI).
 
-1. **Build the dedicated server** (and your normal client) from this branch:
+**Why it works headless.** Everything the soak depends on runs in the game-TICK
+path, which executes headless; only `lvRender` is skipped (that's the point —
+no visuals):
+- client prop apply — `netmsgSvcPropMoveRead`/`netmsgSvcPropSpawnRead`/`…FreeRead`
+  run in the net-receive path (`netStartFrame`);
+- chr interpolation — `netChrInterpolate` is called from `chrTick` (chr.c), a
+  tick-path function, not from render;
+- client prop physics / GC — `objTickPlayer`, `propsHealActiveList`,
+  `weaponSlotsReapOrphans` all run from `lvTick`/`propsTickPlayer`;
+- the auditor — `netPropAuditTick` runs from `netEndFrame`.
+
+**Honest limits (what's NOT verified / by-design degraded).** This is the novel
+combo — a local *combatant* pawn on a *headless* build (the dedicated server is
+always a pawnless spectator), so these seams are unproven until a real run:
+- **Round-boundary respawn only.** The local-pawn spawn (`playerStartNewLife`,
+  lv.c) lives in `lvRender` and is already gated off for clients
+  (`g_NetMode != NETMODE_CLIENT`) — client spawning is server-authoritative via
+  `mpStartMatch` at each round start (tick-path, headless-safe). So a headless
+  client spawns at round start, and after death **stays dead until the next
+  round** (no mid-round respawn). That's fine for a soak — prop churn comes from
+  the bots, and the auditor runs regardless of the client's pawn state.
+- **Neutral input** — the pawn stands still (stubbed input returns neutral), so
+  it's an easy kill. That's *good* churn (frequent deaths → drops), just not
+  representative movement.
+- **Render-prep with a local pawn headless is unproven.** No frame is rendered,
+  but if some tick-path code derefs a viewport/camera/matrix that `lvRender`
+  normally primed for the local player, it could misbehave. The first real run
+  (watch for crashes / `AUDIT FAIL` storms in the client log) is the test.
+- **Protocol match.** The server it joins must run THIS branch's build
+  (`NET_PROTOCOL_VER`), or auth is rejected `DISCONNECT_VERSION`. Pointing it at
+  the live VPS only works once the VPS is on this branch.
+
+If the headless client proves unstable, the soak still runs with a **real
+(windowed) client** as the second machine — the auditor + parity work identically
+either way; you just lose the unattended/CI property.
+
+## How to run a soak
+
+Both the server and the client can be headless now, so the soak runs
+unattended as two processes (still ROM-gated — each needs the game assets). All
+of this needs a real run to validate the headless client (see its limits above).
+
+1. **Build the headless target** from this branch:
    ```
    cmake -DDEDICATED_SERVER=ON -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release ..
    make -j
    ```
-2. **Launch the server** (provision its ROM/assets as usual for a dedicated
-   instance), e.g. for a 30-minute capped run:
+   (`pd-server.x86_64` can host OR join — it's the headless build for both.)
+
+2. **Launch the server** (provision its ROM/assets as a dedicated instance), for
+   a 30-minute capped run:
    ```
    tools/soak/run_server.sh build_ded/pd-server.x86_64 27100 30
    ```
    It writes `tools/soak/out/server_<stamp>.csv`.
-3. **Connect a client** to `host:27100`. On the client, open the console (`~`)
-   and turn on its own diag + audit:
+
+3. **Launch a headless client** against it (separate terminal / box):
    ```
-   /diag C:\path\to\client_soak.csv
-   /audit on
+   tools/soak/run_client.sh 127.0.0.1:27100 '' 30
    ```
-   (or set `Net.Debug.LogPath` in the client's `pd.ini` before connecting; the
-   auditor is on by default). The match auto-starts; leave it running. For a
-   harsher test, add latency/loss on the client: `/lag 120` and `/loss 20`.
+   It writes `tools/soak/out/client_<stamp>.csv`. The match auto-starts as soon
+   as the client connects (playlist `min_humans_to_start = 1`).
+   - **Or** connect a real (windowed) client instead — open the console (`~`),
+     `/diag <path>` + `/audit on` (auditor is on by default), and optionally
+     `/lag 120` + `/loss 20` to stress the link. Use this if the headless client
+     proves unstable.
+
 4. **Get the verdict** from both logs:
    ```
-   tools/netsoak.py tools/soak/out/server_<stamp>.csv client_soak.csv
+   tools/netsoak.py tools/soak/out/server_<stamp>.csv tools/soak/out/client_<stamp>.csv
    ```
+
+To reproduce a **live VPS** prop issue, point the client at the VPS instead
+(`tools/soak/run_client.sh pd.example.net:27100 '' 30`) — but only once the VPS
+runs this branch's build (protocol match).
 
 ### What a clean run looks like
 `OVERALL: PASS`, zero FAIL cycles on both roles, manifest parity ≥ 99 %, and
@@ -148,11 +204,13 @@ and `netprop:` lines for the whole run.
 
 ## Not yet done (future Phase 2 work)
 
-- **Headless client** — the missing piece for a *fully unattended* soak (server
-  + scripted bot-driven client in CI). It's a real lift (the client couples to
-  the render path; cf. the dedicated-server stubbing in `dedicated_stubs.c`),
-  deferred deliberately. Until then the soak is "launch server, connect a real
-  client, walk away, read the verdict."
+- **Runtime-validate the headless client** — it's wired + compile-verified but
+  unproven live (see "Headless client" limits). First real run: watch the
+  client log for crashes / `AUDIT FAIL` storms / the pawn never spawning.
+- **Scripted client movement** — the headless client takes neutral input
+  (stationary pawn). Driving it with a simple movement/fire script (or a Lua
+  hook) would make it a more representative second combatant; currently the
+  bots provide the churn and the client is a passive auditor + parity peer.
 - **In-session parity SVC** — parity is currently an offline log compare (no
   wire change). A live `SVC`/console readout of host-vs-client manifest delta
   would make divergence visible in-game, but that's a proto-bump item for the

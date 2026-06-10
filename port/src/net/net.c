@@ -2647,6 +2647,21 @@ void netEndFrame(void)
 			if (!ph->prop || !ph->prop->obj) {
 				continue;
 			}
+			// Prop-hit validation, mirroring the chr-hit block above: since the
+			// remote shooter's server-side trace records prop detections too
+			// (objHit, propobj.c) instead of double-applying objDamage, the same
+			// srvhits ring validates CLC_PROP_HIT claims. Log mode measures
+			// agreement; enforce drops unseen claims.
+			if (g_NetHitValidate && ph->playernum >= 0 && ph->prop->syncid) {
+				struct netclient *shooter = netClientForPlayerNum(ph->playernum);
+				if (shooter && !netServerHitWasDetected(shooter, (u16)ph->prop->syncid)) {
+					netDiagLogf("prophit_reject", "shooter=%u prop_sid=%u dmg=%.1f mode=%d",
+							shooter->id, (unsigned)ph->prop->syncid, ph->damage, g_NetHitValidate);
+					if (g_NetHitValidate >= 2) {
+						continue; // enforce: drop the unvalidated claim
+					}
+				}
+			}
 			if (ph->playernum >= 0) {
 				setCurrentPlayerNum(ph->playernum);
 			}

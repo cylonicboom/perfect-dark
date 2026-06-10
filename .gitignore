@@ -26,6 +26,7 @@ tools/mkrom/mkrom
 CppProperties.json
 .idea
 cmake-build-debug
+build_ded/
 CLAUDE.local.md
 
 # Local-only Go master server (pdmaster). Kept in-tree for convenience but never

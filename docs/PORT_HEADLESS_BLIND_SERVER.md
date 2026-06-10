@@ -42,7 +42,8 @@ render pass sets ROOMFLAG_ONSCREEN
 
 Anything downstream of that chain either needs a bypass (alwaystick, active-list
 scans), a replacement authority (client-reported hits), or acceptance as a
-documented degradation.
+documented degradation. §9 proposes the systemic repair: a **two-tier
+visibility restoration** that replaces most of the per-site seams.
 
 ---
 
@@ -231,6 +232,8 @@ effects, two of them still live:
    outside the on-screen gates reads a stale pool pointer. Audit rule: never
    touch chr matrices server-side without checking the needsupdate gate.
 
+All three are addressed at the root by §9 Tier 1.
+
 ---
 
 ## 5. Axis E — client-authoritative combat (structural, by design)
@@ -309,19 +312,19 @@ enter it (§4.5). Net effect: on a dedicated host, `Net.Server.HitValidate=1`
 logs every hit as undetected and `=2` would **reject all legitimate hits**.
 Today's default (0 = off) is the only mode that works blind.
 
-**Workaround direction:** after 6.1 lands, populate the trace's candidate set
-on the server from the **active prop list** (the §4.2 pattern) instead of
-`onscreenprops`, and validate chr hits in cylinder space (pos + bbox) rather
-than narrow-phase model matrices, which don't exist headless. Until then,
-document HitValidate as listen-host-only.
+**Workaround direction:** §9 fixes both halves — Tier 1 restores
+`onscreenprops` + chr matrices; Tier 2 supplies the *per-shooter* candidate
+set ("what the shooting client sees"), which is the semantically correct
+input for validating that shooter's `CLC_HIT`. Until then, document
+HitValidate as listen-host-only.
 
 ### 6.3 Screen-gated frees → ghost mines (mitigated, not fixed)
 The embedded/stuck-prop FREE path picks `chr0f022214` (on-screen) vs
 `func0f0706f8` (off-screen); a blind host always takes the off-screen branch
 and can miss the free → ghosts on clients. The reconcile backstop papers over
-it at 2 Hz. **Fix:** in the off-screen child handler, run the same reap the
-on-screen branch does when `g_NetMode == NETMODE_SERVER && g_NetDedicatedMode`
-(it is gameplay GC, not rendering). See `PORT_NET_PROP_SYNC_CATALOG.md` §4.
+it at 2 Hz. **Fix:** §9 Tier 1 routes the blind host down the on-screen branch
+unconditionally (a free is gameplay GC, not rendering — it must never be
+gated on whether anyone is looking). See `PORT_NET_PROP_SYNC_CATALOG.md` §4.
 
 ### 6.4 Dropped-item physics owner-gates (known issue, prop-sync WIP)
 `objTickPlayer`'s projectile fulltick gates (propobj.c ~11250-11286) assume an
@@ -360,7 +363,18 @@ local pawn) is **compile-verified only**; mid-round respawn for the local
 pawn is render-gated off for clients (round-boundary spawns only). Watch the
 first long soak with movement scripts.
 
-### 6.9 Residual cosmetic/known items (no action planned)
+### 6.9 Prop pause/unpause machinery is visibility-driven (audit needed)
+`bgUnpausePropsInRoom` is called from the room-visibility walk (bg.c, the same
+pass that maintains `ROOMFLAG_STANDBY`/`LOADCANDIDATE`) — which never runs on
+a blind server. `g_Vars.alwaystick` only force-foregrounds props on the
+**active** list; props parked in the paused segment (`g_Vars.pausedprops`)
+are never iterated by `propsTickPlayer` at all. Dedicated servers visibly run
+roaming bots, so something keeps the relevant props live in practice, but the
+pause/unpause lifecycle has never been audited headless. Audit alongside the
+§9 work (Tier 1 makes the question concrete: if everything is "on-screen",
+nothing should ever pause).
+
+### 6.10 Residual cosmetic/known items (no action planned)
 - Punch/animation-script sounds still play first-person everywhere
   (src/game/CLAUDE.md "known still-broken").
 - Continuous-loop gun sounds skipped for remotes (design tradeoff).
@@ -410,3 +424,98 @@ first long soak with movement scripts.
    *aim ticks* — anything needing the client's exact view must be
    client-reported + server-validated (the `CLC_HIT` pattern), and the
    validation itself must use blind-safe data (§6.2).
+
+---
+
+## 9. Proposed: two-tier visibility restoration (the systemic fix)
+
+The per-site seams in §4 treat symptoms of one cut chain. The systemic repair
+is **two complementary mechanisms**, combined — they answer different
+questions and share no consumers, so neither conflicts with the other:
+
+### Tier 1 — "should the authoritative sim run this?" → always YES
+
+Short-circuit the visibility **predicates** — not the room flag — on the
+blind server: `func0f08e8ac` (propobj.c:20663) and `posIsInDrawDistance`
+(propobj.c:20705) return `true` under `#ifndef PLATFORM_N64` +
+`g_NetDedicatedMode == 1`.
+
+Why the predicate and not `ROOMFLAG_ONSCREEN`: forcing the flag still dies one
+call later — `camIsPosInFovAndVisibleRoom` (camera.c:615) reads
+`bgGetRoomDrawSlot(room)->box` (render-pass-populated screen boxes) and runs a
+screen-space frustum test against camera state that doesn't exist headless.
+The predicate is the single choke point where the chain can be restored
+deterministically.
+
+What Tier 1 buys, all at once:
+- `chrTick needsupdate = true` → full anim + joint positioning + **chr model
+  matrices exist server-side** (closes §4.5 item 3);
+- `objTickPlayer pass2 = true` → obj matrices + `ONTHISSCREENTHISTICK`;
+- `g_Vars.onscreenprops` populates → server shot traces have candidates
+  (half of §6.2) and the §6.1 `handsTickAttack` mirror becomes fully viable;
+- embedded/stuck-prop frees take the on-screen branch → **ghost-mine class
+  (§6.3) fixed at the root** instead of leaning on the reconcile backstop;
+- subsumes the interact `noscreen` seams (§4.2) over time.
+
+Cost is provisioned: the port already scales the per-frame gfx pools by
+`PD_BIG_POOL_SCALE` for exactly the "whole level, culling off" case
+(gfxmemory.c), and `MAX_ONSCREEN_PROPS` is 1024 on the port (vs 200 N64) with
+the `/octree bigroom` overflow guard already in `propsSort`. Sims taking the
+full-fidelity "someone is watching" paths is *more* correct (matches a listen
+host), but it changes the dedicated baseline — soak before trusting.
+
+Residual `cam_pos` garbage inside the newly-enabled blocks (chrTick anim-LOD
+~chr.c:2920, `explosionCreate` bullethole §6.5): zero the spectator host's
+`cam_pos` or patch per-site.
+
+**Do NOT extend Tier 1 to `g_MpRoomVisibility`** — all-ones there would mark
+every spawn pad "seen" and poison the spawn-avoidance shortlist. All-zero is
+the correct *blind* value; Tier 2 is the correct *sighted* one.
+
+### Tier 2 — "does a human actually see this?" → derive it from client pose
+
+Clients do **not** send a visibility set; `netplayermove` carries the view
+*pose* (pos, `angles[2]`, `zoomfov`, `crosspos`) plus `settings.fovy`. But the
+visibility machinery is CPU-only: `g_MpRoomVisibility` is just the per-player
+OR of `ROOMFLAG_ONSCREEN/STANDBY` after the portal flood (bg.c:6797-6815),
+and the flood is portal-graph + frustum math. The server therefore runs a
+**synthetic per-client visibility pass**: per combatant slot (the headless
+loop already cycles `currentplayer`), prime camera state from the adopted
+pose and run the room flood; write that slot's `g_MpRoomVisibility` bits.
+Reduced rate (~10 Hz, staggered per client) is ample for every consumer.
+
+What Tier 2 buys:
+- **Spawn avoidance works again** (player.c:292-296): "don't spawn where a
+  player is looking" — the one consumer whose semantics neither all-zero nor
+  all-ones can satisfy;
+- **AI LOD matches listen-host feel**: `chrIsRoomOffScreen` (MP path) goes
+  cheap only when *no client* is watching;
+- **Per-shooter validation candidates** (§6.2): "what the shooting client
+  sees" is the semantically correct set for validating that client's
+  `CLC_HIT` — tighter than Tier 1's everything.
+
+Design rule: **derive, never trust.** The pose is already trust-client for
+movement, so deriving visibility from it adds no new attack surface. A
+client-*sent* visibility list would add a lie vector ("I see nothing") for
+anything gated on it — rejected.
+
+Implementation cautions: the visibility walk has side effects beyond flags
+(`ROOMFLAG_STANDBY`/`LOADCANDIDATE` bookkeeping, `bgUnpausePropsInRoom` —
+see §6.9); the synthetic pass must either run those deliberately or use a
+flags-only variant. And the client renders `renderbehind` ticks in the past,
+so derived visibility slightly leads the client's true view — irrelevant for
+spawn/LOD; lag-comp already owns the time offset for hits.
+
+### Why the combination is coherent
+
+| Question | Mechanism | Consumers |
+|---|---|---|
+| Should the sim tick/build/free X? | Tier 1: predicate forced true | prop foreground gate, chr/obj matrices, `onscreenprops`, screen-gated frees |
+| Does a player see X? | Tier 2: pose-derived `g_MpRoomVisibility` | spawn avoidance, `chrIsRoomOffScreen` AI LOD, per-shooter hit-validation candidates |
+
+Tier 1 reads `ROOMFLAG_ONSCREEN`-family state through `func0f08e8ac`; Tier 2
+writes `g_MpRoomVisibility`. No consumer reads both for the same decision, so
+the tiers compose without interference — and together they subsume §4.2's
+interact seams, §4.5's degradations, §6.2's blind validation, and §6.3's
+ghost mines, leaving §6.1 (`handsTickAttack` mirror) as the remaining
+mainTick change.

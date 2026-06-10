@@ -40,6 +40,7 @@
 #include "net/net.h"
 #include "net/netbuf.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 
 /* utils */
 
@@ -230,6 +231,20 @@ static inline struct prop *netSyncIdToProp(u32 syncid)
 
 static inline u32 netbufWritePropPtr(struct netbuf *buf, const struct prop *prop)
 {
+	// Diet tripwire: the server wire-referencing a prop that never got a
+	// syncid means a prop entered the world without passing propActivate/
+	// propActivateThisFrame/propPause (where netPropAssignSyncId runs) — a
+	// gap in the syncid-diet coverage. The reference still goes out as 0
+	// (resolves NULL on the peer, same as before the diet); this just names
+	// the gap. Throttled to one line per tick.
+	if (prop && prop->syncid == 0 && g_NetMode == NETMODE_SERVER) {
+		static u32 s_sidwarntick = 0xffffffffu;
+		if (s_sidwarntick != g_NetTick) {
+			s_sidwarntick = g_NetTick;
+			sysLogPrintf(LOG_WARNING, "NET: wire ref to syncid-0 prop (type %d) — diet gap?", prop->type);
+		}
+	}
+
 	netbufWriteU32(buf, prop ? prop->syncid : 0);
 	return buf->error;
 }
@@ -1616,7 +1631,7 @@ u32 netmsgClcObjectiveDoneRead(struct netbuf *src, struct netclient *srccl)
 
 u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 {
-	// A co-op client walked up to an OBJ / weapon / key it wants (its own
+	// A client walked up to an OBJ / weapon / key it wants (its own
 	// objTestForPickup passed) but can't take itself — pickups are host-authoritative.
 	// Re-validate and grant as the requesting client's player: with that player's slot
 	// current, objTestForPickup re-checks proximity (the client's synced position) /
@@ -1624,8 +1639,13 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 	// propPickupByPlayer (inside) gives the item, runs the host's toast gate, and
 	// broadcasts SVC_PROP_PICKUP — which the requesting client applies (item + toast).
 	// propExecuteTickOperation mirrors the normal propsTestForPickup flow.
+	// Serves CO-OP and COMBAT SIM alike now (the old coopplayernum gate made
+	// Combat Sim floor weapons client-uninitiable — catalog §5.1); Combat Sim
+	// clients defer entirely to the SVC_PROP_PICKUP echo, so a request that
+	// races the host's own proximity scan is harmless (first grant frees the
+	// prop, the loser resolves a dead syncid below).
 	const u16 syncid = netbufReadU16(src);
-	if (src->error || g_NetMode != NETMODE_SERVER || g_Vars.coopplayernum < 0
+	if (src->error || g_NetMode != NETMODE_SERVER
 			|| srccl->state < CLSTATE_GAME || srccl->is_spectator
 			|| !srccl->player || !srccl->player->prop
 			|| srccl->playernum >= MAX_PLAYERS) {
@@ -2893,7 +2913,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 						// flag can't survive on a recycled slot.
 						weaponSetGunfireVisible(oldwp, false,
 								chr->prop ? chr->prop->rooms[0] : 0);
-						objFreePermanently(oldwp->obj, true);
+						netPropFreeSynced(oldwp, NETPROP_FREE_WEAPONSWAP);
 					}
 				}
 				if (want >= 0) {
@@ -3084,21 +3104,10 @@ u32 netmsgSvcPropSpawnWrite(struct netbuf *dst, struct prop *prop)
 	return dst->error;
 }
 
-#ifndef PLATFORM_N64
-// Broadcast a freshly-fired projectile's spawn (+ an initial move) to clients. The PLAYER
-// gun paths (bondgun.c) already do this inline, but the chr/sim fire path (chraction.c)
-// never did — so sim/NPC-fired rockets/grenades were INVISIBLE on clients (they still
-// detonated, because their host-side prop has a syncid (propAllocate) and propExplode's
-// SVC_EXPLOSION is syncid-gated). Server-only; only while in an active match.
-void netSyncSpawnProjectile(struct prop *prop)
-{
-	if (g_NetMode == NETMODE_SERVER && prop && prop->syncid
-			&& g_NetLocalClient && g_NetLocalClient->state == CLSTATE_GAME) {
-		netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
-		netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);
-	}
-}
-#endif
+// (netSyncSpawnProjectile moved to netprop.c as netSyncPropSpawn — the single
+// spawn-broadcast helper every server-side spawn site now calls. It kept this
+// function's full gate and gained the autogun owner-validity guard plus a
+// same-syncid dedupe window; see port/include/net/netprop.h.)
 
 u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 {
@@ -3119,6 +3128,26 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		return 1;
 	}
 
+	// ONE PROP PER SYNCID ("latest spawn wins"). A re-received spawn for a
+	// syncid we already hold — the historical objDrop+caller double-broadcast,
+	// or a future server re-send — used to allocate a SECOND prop with the
+	// same syncid: unreferenced by any move/free (netSyncIdToProp resolves the
+	// first match) and immune to the reconcile (its syncid IS in the host's
+	// set) — a permanent ghost copy. Replace instead: free our existing
+	// weapon/obj copy through the teardown choke point and rebuild it from
+	// this (newer) spawn. Non-weapon/obj collisions (shouldn't happen) are
+	// logged and left alone — a duplicate is no worse than the status quo.
+	{
+		struct prop *existing = netSyncIdToProp(syncid);
+		if (existing && existing->obj
+				&& (existing->type == PROPTYPE_WEAPON || existing->type == PROPTYPE_OBJ)) {
+			netPropFreeSynced(existing, NETPROP_FREE_RESPAWN);
+		} else if (existing) {
+			sysLogPrintf(LOG_WARNING, "NET: spawn %u collides with existing prop type %d — not replacing",
+					syncid, existing->type);
+		}
+	}
+
 	struct prop *prop = (type == PROPTYPE_OBJ && objtype == OBJTYPE_AUTOGUN) ? NULL : propAllocate();
 
 	if (type == PROPTYPE_WEAPON) {
@@ -3133,6 +3162,7 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		// drive a ROM model load; reject out-of-range before either.
 		if (modelnum < 0 || modelnum >= NUM_MODELS) {
 			if (prop) {
+				netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_DROP, NETPROP_DROP_BADMODEL);
 				propFree(prop); // don't leak the bare allocation
 			}
 			return 1;
@@ -3164,6 +3194,7 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 				modelmgrFreeModel(model);
 			}
 			if (prop) {
+				netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_DROP, NETPROP_DROP_SLOTSFULL);
 				propFree(prop);
 			}
 			return 1;
@@ -3241,6 +3272,7 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 	// crash: read at obj+0x4c). Free the bare allocation and drop the message.
 	if (prop && !prop->obj && (type == PROPTYPE_WEAPON || type == PROPTYPE_OBJ)) {
 		sysLogPrintf(LOG_WARNING, "NET: spawn %u type %u objtype %u bound no obj; dropping", syncid, type, objtype);
+		netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_DROP, NETPROP_DROP_NOOBJ);
 		propFree(prop);
 		return 1;
 	}
@@ -3329,6 +3361,8 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 
 	// just in case
 	prop->pos = pos;
+
+	netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_RX, 0);
 
 	// projdiag (temporary): a projectile spawn was successfully CREATED on the
 	// client. If this appears but you still see no rocket, it lives but isn't
@@ -3748,7 +3782,7 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 				sysLogPrintf(LOG_WARNING, "projdiag: client FREE projectile syncid=%u", prop->syncid);
 			}
 		}
-		objFreePermanently(prop->obj, true);
+		netPropFreeSynced(prop, NETPROP_FREE_WIRE);
 	}
 
 	return src->error;
@@ -3763,14 +3797,24 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 // so a client prop absent from the set is genuinely a ghost (no in-flight skew).
 // Existence-only: it heals ghosts, not identity-mismap (that relies on the
 // deterministic positional syncid pool, kept consistent by symmetric spawn/free).
-#define NET_RECONCILE_MAXSYNCID 4096
+//
+// Coverage cap: props with syncid >= NET_RECONCILE_MAXSYNCID are neither listed
+// nor reaped (consistent both ways, just uncovered). Was 4096, which a busy
+// server's id counter blew past within minutes when every explosion/smoke
+// allocation consumed an id — silently ending backstop coverage mid-session.
+// The syncid diet (netPropAssignSyncId) fixed the burn rate; raising the cap to
+// the full u16 range (8KB bitmap) makes the cliff unreachable in practice.
+#define NET_RECONCILE_MAXSYNCID 65536
 
 u32 netmsgSvcPropReconcileWrite(struct netbuf *dst)
 {
 	netbufWriteU8(dst, SVC_PROP_RECONCILE);
 	for (s32 i = 0; i < g_Vars.maxprops; i++) {
 		struct prop *prop = &g_Vars.props[i];
-		if (prop->syncid && prop->obj
+		// The < MAXSYNCID guard keeps an over-cap id from truncating into the
+		// u16 and aliasing some other prop's entry (over-cap props are simply
+		// uncovered, both ways — unreachable post-diet anyway).
+		if (prop->syncid && prop->syncid < NET_RECONCILE_MAXSYNCID && prop->obj
 				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
 			netbufWriteU16(dst, (u16)prop->syncid);
 		}
@@ -3781,6 +3825,7 @@ u32 netmsgSvcPropReconcileWrite(struct netbuf *dst)
 		// — sims/players are never freed mid-match, so the list would only
 		// grow for nothing.
 		else if (g_Vars.coopplayernum >= 0 && prop->syncid
+				&& prop->syncid < NET_RECONCILE_MAXSYNCID
 				&& prop->type == PROPTYPE_CHR && prop->chr) {
 			netbufWriteU16(dst, (u16)prop->syncid);
 		}
@@ -3817,7 +3862,7 @@ u32 netmsgSvcPropReconcileRead(struct netbuf *src, struct netclient *srccl)
 				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
 			// Use the engine's full teardown (objDetach/embedment/model/rooms/free),
 			// same as SVC_PROP_FREE — a ghost may be a child of a chr (stuck mine).
-			objFreePermanently(prop->obj, true);
+			netPropFreeSynced(prop, NETPROP_FREE_RECONCILE);
 		} else if (g_Vars.coopplayernum >= 0 && prop->type == PROPTYPE_CHR) {
 			// Co-op chr ghost (proto 61): an NPC the host freed before we
 			// joined. Reap through the engine's own delete flag, exactly like

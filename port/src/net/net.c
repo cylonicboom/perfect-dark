@@ -10,6 +10,7 @@
 #include "net/net.h"
 #include "net/netbuf.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 #include "net/netmaster.h"
 #include "net/playlist.h"
 #include "det.h"
@@ -3496,6 +3497,9 @@ void netPlayersAllocate(void)
 
 void netSyncIdsAllocate(void)
 {
+	// Fresh lifecycle ring per stage so /proplog reads as one stage's history.
+	netPropLogReset();
+
 	// allocate sync ids sequentially for all active or paused props
 	g_NetNextSyncId = 1;
 
@@ -6179,6 +6183,13 @@ s32 netConsoleCommand(const char *line)
 			g_CheatsEnabledBank1 &= ~bit;
 		}
 		sysLogPrintf(LOG_CHAT, "mirror %s", on ? "ON" : "OFF");
+	} else if (strcmp(cmd, "proplog") == 0) {
+		// /proplog [syncid] — dump the networked-prop lifecycle ring (see
+		// netprop.c): no arg = the newest 40 events of any prop; with a
+		// syncid = every buffered event for that prop. The tool for "what
+		// touched this prop, in what order" questions (ghost guns, slot
+		// orphans, double frees) without a debugger attach.
+		netPropLogDump(*arg ? (u32)atoi(arg) : 0u, 40);
 	} else if (strcmp(cmd, "octree") == 0) {
 		// /octree [on|off]    toggle outdoor-room octree frustum culling
 		// /octree forcecull   debug: cull every batch (flagged rooms go black)
@@ -6356,6 +6367,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
 		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
 		sysLogPrintf(LOG_CHAT, "  /slomo           print slow-motion / combat-boost decision state");
+		sysLogPrintf(LOG_CHAT, "  /proplog [sid]   dump networked-prop lifecycle events (no arg = newest 40)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]              toggle wireframe (CHEAT_WIREFRAME)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe bg|wire RRGGBB        sky / wire colour (wire off = natural)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");

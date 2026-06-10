@@ -60,6 +60,7 @@
 #include "video.h"
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 #include "mpsetups.h"
 #endif
 
@@ -4956,9 +4957,8 @@ struct defaultobj *bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 		}
 
 #ifndef PLATFORM_N64
-		if (obj && g_NetMode == NETMODE_SERVER) {
-			netmsgSvcPropSpawnWrite(&g_NetMsgRel, obj->prop);
-			netmsgSvcPropMoveWrite(&g_NetMsgRel, obj->prop, NULL);
+		if (obj) {
+			netSyncPropSpawn(obj->prop);
 		}
 #endif
 	}
@@ -5286,9 +5286,8 @@ void bgunCreateFiredProjectile(s32 handnum)
 					weapon->base.model = NULL;
 				}
 #ifndef PLATFORM_N64
-				else if (g_NetMode == NETMODE_SERVER) {
-					netmsgSvcPropSpawnWrite(&g_NetMsgRel, weapon->base.prop);
-					netmsgSvcPropMoveWrite(&g_NetMsgRel, weapon->base.prop, NULL);
+				else {
+					netSyncPropSpawn(weapon->base.prop);
 				}
 #endif
 #else
@@ -6803,10 +6802,7 @@ void bgunDisarm(struct prop *attackerprop)
 				objDrop(prop2, true);
 
 #ifndef PLATFORM_N64
-				if (g_NetMode == NETMODE_SERVER) {
-					netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop2);
-					netmsgSvcPropMoveWrite(&g_NetMsgRel, prop2, NULL);
-				}
+				netSyncPropSpawn(prop2);
 #endif
 			}
 		}

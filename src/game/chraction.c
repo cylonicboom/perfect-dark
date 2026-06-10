@@ -61,6 +61,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 #endif
 
 s32 g_RecentQuipsPlayed[5];
@@ -10954,7 +10955,7 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 								// invisible on clients (they still detonated via the
 								// syncid-gated SVC_EXPLOSION). Fully launched here
 								// (bgun0f09ebcc above set pos/velocity/mtx).
-								netSyncSpawnProjectile(projectileobj->base.prop);
+								netSyncPropSpawn(projectileobj->base.prop);
 #endif
 							}
 						}

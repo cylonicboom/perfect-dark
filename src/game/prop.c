@@ -43,6 +43,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 #include "system.h" // sysLogPrintf/LOG_* for the proptick guards
 #endif
 
@@ -216,8 +217,14 @@ struct prop *propAllocate(void)
 		prop->opawallhits = NULL;
 		prop->xluwallhits = NULL;
 #ifndef PLATFORM_N64
-		// NOTE: this will be automatically overwritten at the start of the stage for the setup props
-		prop->syncid = (g_NetMode == NETMODE_SERVER) ? g_NetNextSyncId++ : 0;
+		// Syncid diet: dynamic ids are now assigned at first propActivate/
+		// propActivateThisFrame/propPause (netPropAssignSyncId) instead of
+		// here, because prop->type isn't known yet at allocation — assigning
+		// unconditionally burned an id on every explosion/smoke prop, pushing
+		// real weapon/obj ids past the reconcile coverage cap within minutes
+		// on a busy server. Setup props are still overwritten with their
+		// deterministic index ids at stage start (netSyncIdsAllocate).
+		prop->syncid = 0;
 #endif
 		g_Vars.propstates[prop->propstateindex].propcount++;
 
@@ -242,6 +249,12 @@ struct prop *propAllocate(void)
 void propFree(struct prop *prop)
 {
 #ifndef PLATFORM_N64
+	// Lifecycle audit: record EVERY free, broadcast or not, so /proplog shows
+	// which path released a slot (the free-without-clear generators all
+	// surfaced as "slot still references a freed prop" with no record of who
+	// freed it — see docs/PORT_NET_CRASH_LEDGER.md #16).
+	netPropLogEvent(prop, NETPROP_EV_FREE, 0);
+
 	// Tell clients to remove their copy of a destroyed networked prop (detonated
 	// mines/projectiles, shot-out objects) so it doesn't linger after the host
 	// frees it — SVC_EXPLOSION is cosmetic and carries no syncid. Weapon/obj props
@@ -286,6 +299,14 @@ void propFree(struct prop *prop)
  */
 void propActivate(struct prop *prop)
 {
+#ifndef PLATFORM_N64
+	// First entry into the world: assign the dynamic syncid (server, no-op once
+	// set / for explosion+smoke) and record the lifecycle event. Type is set by
+	// every caller before activation, so the type-based diet filter works here.
+	netPropAssignSyncId(prop);
+	netPropLogEvent(prop, NETPROP_EV_ACTIVATE, 0);
+#endif
+
 	if (g_Vars.activeprops && g_Vars.activeprops != g_Vars.pausedprops) {
 		if (prop != g_Vars.activeprops && !prop->prev) {
 			g_Vars.activeprops->prev = prop;
@@ -316,6 +337,12 @@ void propActivate(struct prop *prop)
  */
 void propActivateThisFrame(struct prop *prop)
 {
+#ifndef PLATFORM_N64
+	// Same hooks as propActivate (explosions/smoke activate via this variant).
+	netPropAssignSyncId(prop);
+	netPropLogEvent(prop, NETPROP_EV_ACTIVATE_TF, 0);
+#endif
+
 	if (g_Vars.activepropstail && g_Vars.activepropstail != g_Vars.pausedprops) {
 		if (prop != g_Vars.activepropstail && !prop->next) {
 			prop->prev = g_Vars.activepropstail;
@@ -349,6 +376,10 @@ void propActivateThisFrame(struct prop *prop)
  */
 void propDelist(struct prop *prop)
 {
+#ifndef PLATFORM_N64
+	netPropLogEvent(prop, NETPROP_EV_DELIST, 0);
+#endif
+
 	if (prop->active) {
 		if (prop == g_Vars.activeprops) {
 			g_Vars.activeprops = prop->next;
@@ -1849,7 +1880,10 @@ void propExecuteTickOperation(struct prop *prop, s32 op)
 			if (g_NetMode != NETMODE_NONE
 					&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
 					&& prop->obj && prop->obj->prop == prop) {
-				objFreePermanently(prop->obj, true);
+				// Routed through the teardown choke point (same
+				// objFreePermanently underneath) for the lifecycle ring entry
+				// + the post-free weapon-slot tripwire.
+				netPropFreeSynced(prop, NETPROP_FREE_TICKOP);
 			} else
 #endif
 			{
@@ -2075,6 +2109,12 @@ bool currentPlayerInteract(bool eyespy)
 void propPause(struct prop *prop)
 {
 	if ((prop->flags & PROPFLAG_DONTPAUSE) == 0) {
+#ifndef PLATFORM_N64
+		// A prop can enter the world paused (never activated) and still be
+		// wire-referenced later, so the syncid diet assigns here too.
+		netPropAssignSyncId(prop);
+		netPropLogEvent(prop, NETPROP_EV_PAUSE, 0);
+#endif
 		propDelist(prop);
 
 		if (g_Vars.pausedprops) {

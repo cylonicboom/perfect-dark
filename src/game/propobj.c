@@ -80,6 +80,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 #include "system.h" // sysLogPrintf/LOG_* for the propsRenderBeams cycle guard
 #endif
 
@@ -4256,6 +4257,22 @@ bool propExplode(struct prop *prop, s32 exptype)
 	s32 playernum = (obj->hidden & 0xf0000000) >> 28;
 	bool result;
 #ifndef PLATFORM_N64
+	// CLIENT + synced prop: suppress the LOCAL detonation entirely. The host
+	// owns the lifecycle — its propExplode broadcasts SVC_EXPLOSION (visual)
+	// and the ensuing free arrives as SVC_PROP_FREE, so a client-local blast
+	// double-rendered the explosion and applied client-side damage off the
+	// client's diverged physics (the projdiag Phase-2a question — answered by
+	// construction: clients no longer self-detonate). Returning false also
+	// leaves the conditional mine/timer callers un-freed locally, which is the
+	// desired "wire owns the lifetime" behaviour; the unconditional grenade
+	// callers still set OBJHFLAG_DELETING and reap cleanly through the fixed
+	// teardown path, with the wire blast as the only visual. Client-local
+	// (syncid 0) props keep the vanilla path.
+	if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
+		netPropLogEvent(prop, NETPROP_EV_EXPLODE_GATED, (u16)exptype);
+		return false;
+	}
+
 	// SVC_EXPLOSION wire position. Defaults to the prop's own pos, but for a prop
 	// embedded in a chr (prop->parent) we broadcast the CHR's world position so the
 	// client renders the blast ON the chr instead of at the wall/floor where the
@@ -4343,18 +4360,9 @@ bool propExplode(struct prop *prop, s32 exptype)
 		netmsgSvcExplosionWrite(&g_NetMsgRel, exptype,
 				net_useparentpos ? &net_exppos : &prop->pos,
 				net_useparentpos ? net_exprooms : prop->rooms);
-	} else if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
-		// projdiag (Phase 2a, temporary): the CLIENT reached propExplode for a synced
-		// prop — i.e. it locally detonated a projectile. The comment above asserts
-		// propExplode is server-only; if this appears in pd.log for player rockets, the
-		// client self-detonates (and should show a local blast). Throttled (~7/sec).
-		static u32 s_projDiagExpFrame = 0;
-		if (g_Vars.lvframe60 - s_projDiagExpFrame > 8) {
-			s_projDiagExpFrame = g_Vars.lvframe60;
-			sysLogPrintf(LOG_WARNING, "projdiag: client propExplode syncid=%u exptype=%d proptype=%d",
-					prop->syncid, exptype, prop->type);
-		}
 	}
+	// (The Phase-2a "client reached propExplode" projdiag branch is gone: the
+	// client+synced case now early-returns at the top of this function.)
 #endif
 
 	return result;
@@ -4822,15 +4830,55 @@ void weaponTick(struct prop *prop)
 	// HARDFREEING. They then fade out over 1 second, at which point they are
 	// given the REAPABLE flag and soon freed.
 	if (obj->flags3 & OBJFLAG3_HARDFREEING) {
-		weapon->fadeouttimer60 -= g_Vars.lvupdate60;
+#ifndef PLATFORM_N64
+		// CLIENT: never locally hard-free a SYNCED weapon. The fade ran on the
+		// client's own 20-on-screen budget, so a client could free a dropped
+		// gun the host still tracks — and nothing re-spawns it (the reconcile
+		// only reaps extras, it never re-sends missing props), leaving a
+		// permanent per-client hole. It was also the generator behind crash
+		// ledger #16: the fadeout's TICKOP_FREE ran the bare-propFree path
+		// that orphaned weapon slots. The host hard-frees on its own budget
+		// and broadcasts SVC_PROP_FREE; client-local (syncid 0) props keep
+		// fading normally.
+		if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
+			netPropLogEvent(prop, NETPROP_EV_HARDFREE_GATED, 0);
+		} else
+#endif
+		{
+			weapon->fadeouttimer60 -= g_Vars.lvupdate60;
 
-		if (weapon->fadeouttimer60 <= 0) {
-			weapon->fadeouttimer60 = 0;
-			obj->hidden |= OBJHFLAG_DELETING;
+			if (weapon->fadeouttimer60 <= 0) {
+				weapon->fadeouttimer60 = 0;
+				obj->hidden |= OBJHFLAG_DELETING;
+			}
 		}
 	}
 
+#ifndef PLATFORM_N64
+	{
+		bool canhardfree = (obj->flags3 & OBJFLAG3_CANHARDFREE) != 0;
+		bool counts = (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK) != 0;
+
+		// Client mirror of the gate above: don't even ENTER hard-freeing for a
+		// synced prop (the wire owns its lifetime).
+		if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
+			canhardfree = false;
+		}
+
+#ifdef DEDICATED_SERVER
+		// Headless: no render pass ever sets the on-screen flag, so the
+		// vanilla 20-on-screen hard-free budget NEVER fires and dropped guns
+		// accumulate unboundedly — the weapon-slot churn/saturation feeding
+		// the crash-ledger families. Count every hard-freeable gun instead
+		// (the budget becomes "20 total dropped guns", slightly stricter than
+		// a listen host's "20 visible" but bounded and broadcast-correct).
+		counts = true;
+#endif
+
+		if (canhardfree && counts) {
+#else
 	if ((obj->flags3 & OBJFLAG3_CANHARDFREE) && (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)) {
+#endif
 		g_Vars.hardfreeabletally++;
 
 		if (g_Vars.hardfreeabletally > 20) {
@@ -4839,6 +4887,9 @@ void weaponTick(struct prop *prop)
 			obj->flags3 |= OBJFLAG3_HARDFREEING;
 		}
 	}
+#ifndef PLATFORM_N64
+	}
+#endif
 }
 
 void func0f07063c(struct prop *prop, bool arg1)
@@ -11233,6 +11284,28 @@ s32 objTickPlayer(struct prop *prop)
 				&& g_Vars.currentplayer == g_NetLocalClient->player) {
 			fulltick = true;
 		}
+
+		// projdiag (Phase 0, temporary): once a second per machine, dump the
+		// full gate state for a client-side synced projectile so ONE log run
+		// pinpoints which gate blocks projectileTick. If "SPAWN ok" appears
+		// in the log but THIS line never does, the prop isn't reaching
+		// objTickPlayer at all (paused-at-spawn or backgrounded — check the
+		// active/bg fields of whichever line does appear, and /proplog <sid>
+		// for the activate/pause history). NOTE: for SIM-owned projectiles
+		// fulltick was already true before the override above (the player-
+		// owner gate doesn't apply to chr owners), so a "fulltick=1 anim=0"
+		// line that still doesn't fly means the blocker is past this point.
+		if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
+			static u32 s_projGateFrame = 0;
+			if (g_Vars.lvframe60 - s_projGateFrame > 60) {
+				s_projGateFrame = g_Vars.lvframe60;
+				sysLogPrintf(LOG_WARNING, "projdiag: gate sid=%u fulltick=%d anim=%d active=%d bg=%d sliding=%d pos=(%.0f,%.0f,%.0f)",
+						prop->syncid, fulltick, model->anim != NULL,
+						prop->active, prop->backgrounded,
+						projectile ? (s32)((projectile->flags & PROJECTILEFLAG_SLIDING) != 0) : -1,
+						prop->pos.x, prop->pos.y, prop->pos.z);
+			}
+		}
 #endif
 	}
 
@@ -14907,9 +14980,11 @@ bool objDrop(struct prop *prop, bool lazy)
 		// on clients. Broadcast the spawn so it appears on the ground; pickup stays
 		// server-authoritative (SVC_PROP_PICKUP). Weapon/obj only — matches the
 		// SVC_PROP_FREE / reconcile scope (the reconcile backstop covers a miss).
-		if (g_NetMode == NETMODE_SERVER && prop->syncid && prop->obj
-				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
-			netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
+		// netSyncPropSpawn carries the role/state gates and also ships the
+		// initial SVC_PROP_MOVE (this site used to send the spawn alone), so
+		// the client gets the drop's initial fall/projectile state too.
+		if (prop->obj && (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
+			netSyncPropSpawn(prop);
 		}
 #endif
 
@@ -17879,17 +17954,18 @@ s32 objTestForPickup(struct prop *prop)
 	}
 
 #ifndef PLATFORM_N64
-	// Co-op: clients used to bail out here ("not the authority"), which meant a
-	// client could never collect an OBJ / key / objective item — only the host
-	// could, making any mission gated on a client-collected item unbeatable. Now
-	// the client runs the same (read-only) pickup checks and, when it would pick
-	// up, sends CLC_PICKUP_REQUEST to the host instead of taking it locally (see
-	// the pickup site below). The host re-validates against the client's synced
-	// position and grants authoritatively via SVC_PROP_PICKUP. Non-co-op clients
-	// (shouldn't exist) keep the old bail-out.
-	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum < 0) {
-		return TICKOP_NONE;
-	}
+	// Clients (co-op AND Combat Sim) run the same read-only pickup checks as
+	// the host and, when they would pick up, reach the request site at the
+	// bottom of this function. Co-op clients take locally + tell the host
+	// (responsiveness; the host's echo back is skipped). Combat Sim clients
+	// send CLC_PICKUP_REQUEST and take NOTHING locally — the host's
+	// SVC_PROP_PICKUP echo is the only give (netmsgSvcPropPickupRead applies
+	// our own pickups in Combat Sim precisely because of this). The host's own
+	// proximity scan for remote pawns (propsTestForPickup's latest-pos swap)
+	// remains as the second detection path; double-grants are impossible
+	// because the first grant frees/DELETING-flags the prop and the request
+	// handler resolves a freed syncid to NULL. (This replaces the old Combat
+	// Sim client hard-bail that made floor weapons intangible — catalog §5.1.)
 #endif
 
 	if (func0f085194(obj) && obj->type != OBJTYPE_HAT) {
@@ -18134,6 +18210,17 @@ s32 objTestForPickup(struct prop *prop)
 			// ran and the item never entered the client's inventory.
 			if (g_NetMode == NETMODE_CLIENT) {
 				netClientRequestPickup(prop);
+				netPropLogEvent(prop, NETPROP_EV_PICKUP_REQ, 0);
+
+				// Combat Sim: defer entirely to the host's SVC_PROP_PICKUP
+				// echo (which netmsgSvcPropPickupRead applies for our own
+				// pickups when coopplayernum < 0). Taking locally here would
+				// double-give, because unlike co-op there is no skip-own
+				// filter on the echo. Costs ~1 RTT of pickup latency, same as
+				// the host-scan path that already serves Combat Sim clients.
+				if (g_Vars.coopplayernum < 0) {
+					return TICKOP_NONE;
+				}
 			}
 #endif
 			return propPickupByPlayer(prop, true);
@@ -18449,7 +18536,9 @@ struct weaponobj *weaponCreate(bool musthaveprop, bool musthavemodel, struct mod
 		}
 		s32 pick = (localoff >= 0) ? localoff : localany;
 		if (pick >= 0) {
-			objFreePermanently(&g_WeaponSlots[pick].base, true);
+			// Through the teardown choke point (same objFreePermanently
+			// underneath) so the eviction lands in the lifecycle ring.
+			netPropFreeSynced(g_WeaponSlots[pick].base.prop, NETPROP_FREE_RECYCLE);
 			g_NextWeaponSlot = (pick + 1) % g_MaxWeaponSlots;
 			return &g_WeaponSlots[pick];
 		}
@@ -21884,10 +21973,7 @@ void weaponCreateForPlayerDrop(s32 weaponnum)
 		}
 
 #ifndef PLATFORM_N64
-		if (g_NetMode == NETMODE_SERVER) {
-			netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
-			netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);
-		}
+		netSyncPropSpawn(prop);
 #endif
 	}
 }

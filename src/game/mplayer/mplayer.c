@@ -229,7 +229,7 @@ void mpStartMatch(void)
 			}
 		}
 
-		g_MpSetup.chrslots &= 0xff00;
+		g_MpSetup.chrslots &= MPCHRSLOTS_BOTS_MASK;
 		// In host-spectator mode the host doesn't take slot 0 — clients fill
 		// 0..N-1. Otherwise slot 0 is the host and remotes start at slot 1.
 		// Source of truth is g_NetLocalClient->is_spectator (g_MpSetup is
@@ -4610,7 +4610,7 @@ void mp0f18dec4(s32 slot)
 
 #if VERSION >= VERSION_JPN_FINAL
 #if MAX_PLAYERS > 4
-	g_MpSetup.chrslots &= 0xff;
+	g_MpSetup.chrslots &= MPCHRSLOTS_PLAYERS_MASK;
 #else
 	g_MpSetup.chrslots &= 0x0f;
 #endif

@@ -28,7 +28,17 @@
 #define MAX_MPPLAYERCONFIGS    (MAX_PLAYERS + MAX_COOPCHRS)
 #define MAX_OBJECTIVES         10
 #define MAX_LOCAL_PLAYERS      4
-#define MAX_PLAYERS            8
+#ifdef PLATFORM_N64
+#define MAX_PLAYERS            4
+#else
+// Port: 16-player netplay (proto 75). Default server cap stays 8 via
+// --maxclients; 16 is opt-in. chrslots layout: bits 0..MAX_PLAYERS-1 =
+// players, bits MAX_PLAYERS..MAX_PLAYERS+MAX_BOTS-1 = bots; use these masks
+// instead of width literals.
+#define MAX_PLAYERS            16
+#define MPCHRSLOTS_PLAYERS_MASK ((1u << MAX_PLAYERS) - 1u)
+#define MPCHRSLOTS_BOTS_MASK    (((1u << MAX_BOTS) - 1u) << MAX_PLAYERS)
+#endif
 #define MAX_PROPSPERROOMCHUNK  7
 #define MAX_ROOMPROPLISTCHUNKS 256
 // Capacity of g_Vars.onscreenprops (and the parallel depths[] / roomnumsbyprop[]

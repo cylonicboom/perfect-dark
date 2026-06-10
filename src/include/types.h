@@ -4187,7 +4187,11 @@ struct mpsetup {
 	 * Bits 0xff00 are for sims
 	 * Externally loaded MP setups get automatically converted to this format.
 	 */
-	/*0x800acb9e*/ u16 chrslots;
+	// Port: widened u16 -> u32 for 16 players + 8 bots (the options-u64
+	// precedent: unconditional on every build; N64 offset comments below are
+	// stale). Not persisted in mpsetups.bin (rebuilt at match start); on the
+	// wire since proto 75 as u32.
+	/*0x800acb9e*/ u32 chrslots;
 	/*0x800acba0*/ u8 weapons[NUM_MPWEAPONSLOTS];
 	/*0x800acba6*/ u8 paused;
 	/*0x800acba8*/ struct fileguid fileguid;
@@ -4205,7 +4209,7 @@ struct mpsetup {
 	u8 racepitytime; // Race: seconds after the first finisher before the match force-ends, 0-120; 0 = end with the winner (port-only)
 	// Used to restore the non-player bits of chrslots upon entering Combat
 	// Simulator, after playing Co-Op/Counter-Op with a human sim.
-	u16 storedbotbits;
+	u32 storedbotbits;
 #endif
 };
 

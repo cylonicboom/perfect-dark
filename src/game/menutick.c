@@ -250,7 +250,7 @@ void menuTick(void)
 					// admin, who drives the full setup menu like a server and keeps
 					// its sims across matches.
 					if (g_NetMode == NETMODE_SERVER || g_NetHostOnlineMode) {
-						g_MpSetup.chrslots = (g_MpSetup.chrslots & 0xff00) | 1;
+						g_MpSetup.chrslots = (g_MpSetup.chrslots & MPCHRSLOTS_BOTS_MASK) | 1;
 					} else {
 						g_MpSetup.chrslots = 1;
 					}
@@ -340,9 +340,9 @@ void menuTick(void)
 				}
 #endif
 #if MAX_PLAYERS > 4
-				g_MpSetup.chrslots &= 0xff00;
+				g_MpSetup.chrslots &= MPCHRSLOTS_BOTS_MASK;
 #else
-				g_MpSetup.chrslots &= 0xfff0;
+				g_MpSetup.chrslots &= MPCHRSLOTS_BOTS_MASK | (MPCHRSLOTS_PLAYERS_MASK & ~0xfu);
 #endif
 			}
 

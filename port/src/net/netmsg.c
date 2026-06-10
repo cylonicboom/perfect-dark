@@ -464,7 +464,7 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.scorelimit);
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
-	netbufWriteU16(dst, g_MpSetup.chrslots);
+	netbufWriteU32(dst, g_MpSetup.chrslots); // u32 since proto 75 (16 players)
 	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	netbufWriteU8(dst, g_MpSetup.kohstatichill);
@@ -503,7 +503,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	const u8 scorelimit = netbufReadU8(src);
 	const u8 timelimit = netbufReadU8(src);
 	const u16 teamscorelimit = netbufReadU16(src);
-	const u16 chrslots = netbufReadU16(src);
+	const u32 chrslots = netbufReadU32(src); // u32 since proto 75
 	const u64 options = netbufReadU64(src);
 	u8 weapons[NUM_MPWEAPONSLOTS];
 	netbufReadData(src, weapons, sizeof(weapons));
@@ -992,7 +992,7 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.scorelimit);
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
-	netbufWriteU16(dst, g_MpSetup.chrslots);
+	netbufWriteU32(dst, g_MpSetup.chrslots); // u32 since proto 75 (16 players)
 	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	// Per-slot weapon function flags (FNFLAG_*) — preset fn restrictions and
@@ -1185,7 +1185,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.scorelimit = netbufReadU8(src);
 	g_MpSetup.timelimit = netbufReadU8(src);
 	g_MpSetup.teamscorelimit = netbufReadU16(src);
-	g_MpSetup.chrslots = netbufReadU16(src);
+	g_MpSetup.chrslots = netbufReadU32(src); // u32 since proto 75
 	g_MpSetup.options = netbufReadU64(src);
 	netbufReadData(src, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	// Per-slot fn-flags (proto 58): wire-authoritative, same lifecycle as the

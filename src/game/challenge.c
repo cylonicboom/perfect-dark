@@ -267,11 +267,11 @@ void challengePerformSanityChecks(void)
 	} else if (!challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
 		// Limit to 4 players and 4 simulants in local games
 #ifndef PLATFORM_N64
-		g_MpSetup.chrslots &= (g_NetMode ? 0x0fff : 0x0f0f);
+		g_MpSetup.chrslots &= (g_NetMode ? (MPCHRSLOTS_PLAYERS_MASK | (0xfu << MAX_PLAYERS)) : (0xfu | (0xfu << MAX_PLAYERS)));
 #elif MAX_PLAYERS > 4
-		g_MpSetup.chrslots &= 0x0f0f;
+		g_MpSetup.chrslots &= 0xfu | (0xfu << MAX_PLAYERS);
 #else
-		g_MpSetup.chrslots &= 0x00ff;
+		g_MpSetup.chrslots &= MPCHRSLOTS_PLAYERS_MASK;
 #endif
 	}
 }

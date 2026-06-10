@@ -52,7 +52,7 @@ u8 *preprocessMpConfigs(u8* data, u32 size, u32* outSize)
 		PD_SWAP_VAL(cfg->setup.chrslots);
 #if MAX_PLAYERS > 4
 		// make space for the extra players
-		cfg->setup.chrslots = (cfg->setup.chrslots & 0x000f) | ((cfg->setup.chrslots & 0x0ff0) << 4);
+		cfg->setup.chrslots = (cfg->setup.chrslots & 0x000f) | ((cfg->setup.chrslots & 0x0ff0) << (MAX_PLAYERS - 4));
 #endif
 		// TODO: are these required or are they always 0?
 		PD_SWAP_VAL(cfg->setup.fileguid.deviceserial);

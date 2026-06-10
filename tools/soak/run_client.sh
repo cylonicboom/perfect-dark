@@ -95,7 +95,9 @@ echo
 # --headless-client <addr> : headless runtime (no window/audio/input) + JOIN.
 # --netdiag opens the diag CSV; the auditor is on by default and logs `audit:`
 # lines once a second (role=C).
-CMD=( "$BIN" --headless-client "$ADDR" --netdiag "$DIAG" )
+# --savedir: isolated soak config (Game.MemorySize=256 — see run_server.sh).
+CMD=( "$BIN" --headless-client "$ADDR" --netdiag "$DIAG"
+      --savedir "$HERE/tools/soak/save" )
 
 echo "+ ${CMD[*]}" | tee "$LOG"
 if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
@@ -106,7 +108,10 @@ if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
   RC=${PIPESTATUS[0]}
   CAPPED=0
 else
-  timeout --signal=INT "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
+  # --kill-after: on MSYS2/Windows the INT never reaches the native exe
+  # (runtime-observed), so hard-terminate 15s later; audit lines are
+  # line-flushed so only buffered position dumps can be lost.
+  timeout --signal=INT --kill-after=15 "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
   RC=${PIPESTATUS[0]}   # 124 = the full window elapsed (normal for a capped run)
   CAPPED=1
 fi

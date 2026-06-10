@@ -28,6 +28,9 @@ CppProperties.json
 cmake-build-debug
 build_ded/
 tools/soak/out/
+# Soak save dir: runtime artifacts (eeprom, mpsetups) are local; pd.ini is tracked.
+tools/soak/save/*
+!tools/soak/save/pd.ini
 CLAUDE.local.md
 
 # Local-only Go master server (pdmaster). Kept in-tree for convenience but never

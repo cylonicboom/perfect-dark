@@ -1,12 +1,36 @@
 # Netplay Prop-Sync Soak Harness (Phase 2) — 2026-06-10
 
-> **Status: implemented, compile-verified (Linux dedicated build); the offline
-> tool is unit-tested on synthetic logs. A HEADLESS CLIENT now exists
-> (`--headless-client`), so a fully unattended two-process soak (headless server
-> + headless client on one box) is possible — but the headless client's
-> live behaviour is NOT yet runtime-verified (it needs a ROM; see "Headless
-> client" below for the honest limits and what's unproven).** Phase 2 of the
-> prop-sync consistency plan.
+> **Status: RUNTIME-PROVEN on Windows (2026-06-10 evening): repeated unattended
+> two-process soaks (headless server + headless client, one box) ran matches,
+> rotated the playlist, and produced `OVERALL: PASS` with 100% manifest parity
+> and zero heal/reap fires.** One-click entry point: `tools\soak\soak_oneclick.bat
+> [minutes]` (default 30) — opens the server in its own window, runs the client
+> in the launching console, prints both verdicts + the combined parity verdict.
+>
+> What the bring-up fixed (all required for the first PASS):
+> - **Direct dedicated boot** (`netDedicatedBootTick`, netmenu.c, hooked from
+>   `playerTickPauseMenu`'s `MENUROOT_FILEMGR` case): headless processes used to
+>   stall FOREVER on the agent file-select with a fresh save dir (no agent file
+>   for the `--profile` auto-select, no one to drive New Agent, and the host/join
+>   latch is only consumed by the main-menu tick). Headless now hosts/joins
+>   directly with `gamefileLoadDefaults` — no agent file, no menus. (A blank-slot
+>   auto-create fallback also exists in filemgr.c's auto-select block.)
+> - **`--savedir tools/soak/save`** in both run scripts: its pd.ini sets
+>   `Game.MemorySize=256`. With no pd.ini the engine defaults to 16MB pools,
+>   which crashed the 8-bot playlist's bot-body modeldef load at the first match
+>   rotation (`modelPromoteOffsetsToPointers` read at -1).
+> - **`timeout --kill-after=15`** in both run scripts: on MSYS2/Windows the INT
+>   never reaches the native exe, so timed runs sailed past the cap; audit lines
+>   are line-flushed so the hard kill loses nothing that matters.
+> - **`--no-advertise`** on the soak server: it otherwise heartbeats to the
+>   public master and shows up in everyone's server browser.
+>
+> Honest residual limits: client spawns at round boundaries only, neutral input
+> (unchanged); 1-2 min windows only exercise short-soak behaviour — long-soak
+> (30+ min) churn is the next milestone. One open lead from the first runs: a
+> single `wire ref to syncid-0 prop (type 4)` diet-gap warning (~1 per 2 min);
+> the tripwire now logs prop idx/objtype/weaponnum to identify it next run.
+> Phase 2 of the prop-sync consistency plan.
 >
 > Pairs with `docs/PORT_NET_PROP_LIFECYCLE.md` (Phase 0/1 — the auditor checks
 > the invariants that work established) and `docs/PORT_NET_CRASH_LEDGER.md`.

@@ -91,8 +91,15 @@ echo
 # --dedicated implies --host (auto-start server on boot).
 # --svcrate 2 mirrors how pdmaster spawns instances (30Hz state, ~half band).
 # --netdiag opens the diag CSV at host time; the auditor is on by default.
+# --no-advertise: a soak/test server must NOT appear on the public master
+# server browser list (it heartbeats there by default otherwise).
+# --savedir tools/soak/save: isolated config/eeprom for soak processes. Its
+# pd.ini sets Game.MemorySize=256 — without it the engine defaults to 16MB
+# pools, which starve the per-stage modeldef loads under the 8-bot playlist
+# (observed: bot-body load crash at the first match rotation).
 CMD=( "$BIN" --dedicated --port "$PORT" --playlist "$PLAYLIST"
-      --netdiag "$DIAG" --svcrate 2 --maxclients 8 )
+      --netdiag "$DIAG" --svcrate 2 --maxclients 8 --no-advertise
+      --savedir "$HERE/tools/soak/save" )
 
 echo "+ ${CMD[*]}" | tee "$LOG"
 if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
@@ -104,10 +111,11 @@ if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
   CAPPED=0
 else
   # Run with a wall-clock cap, then SIGINT for a clean shutdown (flushes the
-  # diag file via netDisconnect's netDiagClose). On MSYS2/Windows the INT may
-  # arrive as a console ctrl event or a hard kill depending on the runtime —
-  # either way the audit: lines are already flushed line-by-line.
-  timeout --signal=INT "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
+  # diag file via netDisconnect's netDiagClose). On MSYS2/Windows the INT does
+  # NOT reach the native exe at all (runtime-observed: the process sails past
+  # the cap), so --kill-after hard-terminates it 15s later — the audit: lines
+  # are flushed line-by-line, so only buffered position dumps can be lost.
+  timeout --signal=INT --kill-after=15 "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
   RC=${PIPESTATUS[0]}   # 124 = the full window elapsed (normal for a capped run)
   CAPPED=1
 fi

@@ -147,45 +147,60 @@ If the headless client proves unstable, the soak still runs with a **real
 (windowed) client** as the second machine — the auditor + parity work identically
 either way; you just lose the unattended/CI property.
 
-## How to run a soak
+## How to run a soak — Windows (MSYS2), the current primary path
 
-Both the server and the client can be headless now, so the soak runs
-unattended as two processes (still ROM-gated — each needs the game assets). All
-of this needs a real run to validate the headless client (see its limits above).
+Only the VPS runs Debian, so soaks run on the Windows dev box for now. Both
+processes are headless console apps, so this is just two MSYS2 shell windows.
+The scripts are plain bash and run as-is in the **MSYS2 MinGW x64 shell**
+(coreutils `timeout`/`tee` and python are present there); the binary name
+autodetects the `.exe` suffix. Still ROM-gated — see the asset note below.
 
-1. **Build the headless target** from this branch:
+1. **Build the headless target** (MSYS2 MinGW x64 shell, repo root):
    ```
-   cmake -DDEDICATED_SERVER=ON -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release ..
+   mkdir -p build_ded && cd build_ded
+   cmake -G "Unix Makefiles" -DDEDICATED_SERVER=ON -DCMAKE_BUILD_TYPE=Release ..
    make -j
+   cd ..
    ```
-   (`pd-server.x86_64` can host OR join — it's the headless build for both.)
+   Produces `build_ded/pd-server.x86_64.exe` — a console app (Ctrl-C / closing
+   the window is a clean shutdown). It can host OR join. CI builds this exact
+   target ("Build dedicated server (x86_64 windows, headless)").
+   **Assets:** provision the ROM/`data` for `build_ded` the same way as your
+   other build dirs (the headless build discovers them identically).
 
-2. **Launch the server** (provision its ROM/assets as a dedicated instance), for
-   a 30-minute capped run:
+2. **Shell window 1 — server** (30-minute capped run):
    ```
-   tools/soak/run_server.sh build_ded/pd-server.x86_64 27100 30
+   tools/soak/run_server.sh build_ded/pd-server.x86_64.exe 27100 30
    ```
-   It writes `tools/soak/out/server_<stamp>.csv`.
+   (The first arg is optional — the default resolves the `.exe` itself.)
+   Writes `tools/soak/out/server_<stamp>.csv`.
 
-3. **Launch a headless client** against it (separate terminal / box):
+3. **Shell window 2 — headless client**:
    ```
    tools/soak/run_client.sh 127.0.0.1:27100 '' 30
    ```
-   It writes `tools/soak/out/client_<stamp>.csv`. The match auto-starts as soon
-   as the client connects (playlist `min_humans_to_start = 1`).
-   - **Or** connect a real (windowed) client instead — open the console (`~`),
-     `/diag <path>` + `/audit on` (auditor is on by default), and optionally
-     `/lag 120` + `/loss 20` to stress the link. Use this if the headless client
-     proves unstable.
+   Writes `tools/soak/out/client_<stamp>.csv`. The match auto-starts as soon as
+   the client connects (playlist `min_humans_to_start = 1`).
+   - **Or** connect your real (windowed) client instead — console (`~`),
+     `/diag <path>` (auditor is on by default), optionally `/lag 120` +
+     `/loss 20` to stress the link. Use this if the headless client proves
+     unstable — and note the lag/loss knobs are console-only, so link-stress
+     runs need the windowed client anyway.
 
-4. **Get the verdict** from both logs:
+4. **Verdict**:
    ```
-   tools/netsoak.py tools/soak/out/server_<stamp>.csv tools/soak/out/client_<stamp>.csv
+   python3 tools/netsoak.py tools/soak/out/server_<stamp>.csv tools/soak/out/client_<stamp>.csv
    ```
+   (`python` works too if MSYS2 has no `python3` alias.)
 
-To reproduce a **live VPS** prop issue, point the client at the VPS instead
-(`tools/soak/run_client.sh pd.example.net:27100 '' 30`) — but only once the VPS
-runs this branch's build (protocol match).
+### Linux / VPS (later)
+
+The same three commands work unchanged on Debian (binary
+`build_ded/pd-server.x86_64`, no `.exe`). To reproduce a **live VPS** prop
+issue, run only the client side against it:
+`tools/soak/run_client.sh <vps>:27100 '' 30` — but only once the VPS instance
+runs this branch's build (protocol match; otherwise `DISCONNECT_VERSION`). The
+VPS's own `--netdiag` CSV is then the `role=S` log for the parity check.
 
 ### What a clean run looks like
 `OVERALL: PASS`, zero FAIL cycles on both roles, manifest parity ≥ 99 %, and

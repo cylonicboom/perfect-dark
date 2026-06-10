@@ -22,25 +22,39 @@
 #
 # Usage:
 #   tools/soak/run_client.sh ADDR[:PORT] [BINARY] [MINUTES]
-# Defaults: BINARY=build_ded/pd-server.x86_64 (the headless build can host OR
-#           join), MINUTES=0 (until Ctrl-C).
+# Defaults: BINARY=build_ded/pd-server.x86_64[.exe] (the headless build can
+#           host OR join), MINUTES=0 (until Ctrl-C).
 # Examples:
 #   tools/soak/run_client.sh 127.0.0.1:27100            # local soak server
 #   tools/soak/run_client.sh pd.example.net:27100 '' 30 # 30-min VPS repro
+#
+# WINDOWS (MSYS2): run from the MSYS2 MinGW x64 shell at the repo root (second
+# shell window alongside run_server.sh). The .exe suffix autodetects.
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+resolve_bin() {
+  for c in "$1" "$1.exe"; do
+    if [ -x "$c" ]; then echo "$c"; return 0; fi
+  done
+  return 1
+}
+
 ADDR="${1:-}"
-BIN="${2:-$HERE/build_ded/pd-server.x86_64}"
+BIN_ARG="${2:-$HERE/build_ded/pd-server.x86_64}"
 MINUTES="${3:-0}"
+
+BIN="$(resolve_bin "$BIN_ARG" || true)"
+PY="$(command -v python3 || command -v python || true)"
 
 if [ -z "$ADDR" ]; then
   echo "usage: $0 ADDR[:PORT] [BINARY] [MINUTES]" >&2
   exit 2
 fi
-if [ ! -x "$BIN" ]; then
-  echo "error: binary not found/executable: $BIN" >&2
-  echo "build the headless target:  cmake -DDEDICATED_SERVER=ON .. && make -j" >&2
+if [ -z "$BIN" ]; then
+  echo "error: binary not found/executable: $BIN_ARG[.exe]" >&2
+  echo "build the headless target:  cmake -G 'Unix Makefiles' -DDEDICATED_SERVER=ON .. && make -j" >&2
   exit 2
 fi
 
@@ -67,13 +81,20 @@ echo
 CMD=( "$BIN" --headless-client "$ADDR" --netdiag "$DIAG" )
 
 echo "+ ${CMD[*]}" | tee "$LOG"
-if [ "$MINUTES" = 0 ]; then
+if [ "$MINUTES" = 0 ] || ! command -v timeout >/dev/null 2>&1; then
+  if [ "$MINUTES" != 0 ]; then
+    echo "(no \`timeout\` on PATH — running uncapped; Ctrl-C to stop)"
+  fi
   "${CMD[@]}" 2>&1 | tee -a "$LOG"
 else
   timeout --signal=INT "${MINUTES}m" "${CMD[@]}" 2>&1 | tee -a "$LOG"
   echo
   echo "soak window elapsed. client-side verdict:"
-  python3 "$HERE/tools/netsoak.py" "$DIAG"
+  if [ -n "$PY" ]; then
+    "$PY" "$HERE/tools/netsoak.py" "$DIAG"
+  else
+    echo "(python not found — run: python tools/netsoak.py $DIAG)"
+  fi
   echo
   echo "for the full parity verdict, run with the matching server CSV:"
   echo "  tools/netsoak.py tools/soak/out/server_<stamp>.csv $DIAG"

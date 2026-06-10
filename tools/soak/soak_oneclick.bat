@@ -29,6 +29,13 @@ set MSYSTEM=MINGW64
 set CHERE_INVOKING=1
 cd /d "%REPO%"
 
+rem Hermetic soak: wipe runtime save state from the previous run (keep pd.ini).
+rem Two concurrent headless processes share this save dir; a leftover
+rem truncated mpsetups.bin/eeprom.bin from a prior run poisoned the setup
+rem state and crashed bot allocation at match start (2026-06-10 22:14 run).
+del /q "%REPO%\tools\soak\save\eeprom.bin" 2>nul
+del /q "%REPO%\tools\soak\save\mpsetups.bin" 2>nul
+
 echo === prop-sync soak: %MINUTES% min, server window + this window as client ===
 start "PD SOAK SERVER" /D "%REPO%" cmd /k %BASH% -lc 'bash tools/soak/run_server.sh %BIN% 27100 %MINUTES%'
 

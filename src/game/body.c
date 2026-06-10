@@ -23,6 +23,9 @@
 #include "lib/collision.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "system.h" // sysLogPrintf for the bodyAllocateModel NULL-definition guard
+#endif
 
 s32 g_NumActiveHeadsPerGender;
 u32 var8009cd24;
@@ -295,6 +298,9 @@ struct model *bodyAllocateModel(s32 bodynum, s32 headnum, u32 spawnflags)
 {
 	bool sunglasses = false;
 	u8 varyheight = true;
+#ifndef PLATFORM_N64
+	struct model *model;
+#endif
 
 	if (spawnflags & SPAWNFLAG_FORCESUNGLASSES) {
 		sunglasses = true;
@@ -306,7 +312,30 @@ struct model *bodyAllocateModel(s32 bodynum, s32 headnum, u32 spawnflags)
 		varyheight = false;
 	}
 
+#ifndef PLATFORM_N64
+	// A model whose definition (or its contents) is bad crashes far away from
+	// here — chrAllocate -> chrSetLookAngle -> modelSetChrRotY read-at-0 on a
+	// headless server at match start (timing/pressure-dependent, 2026-06-10;
+	// suspected file-cache reclaim of the modeldef backing memory while
+	// g_HeadsAndBodies[] still points at it: zeroed contents = rootnode NULL
+	// at offset 0). Catch BOTH shapes here, name the body/head loudly, and
+	// return NULL — botmgrAllocateBot and the chr spawn paths handle NULL by
+	// skipping the chr. The model slot is deliberately leaked (freeing a
+	// half-built model walks its definition); this is a crash-grade event,
+	// once-per-incident, and the slot returns at stage end.
+	model = body0f02d338(bodynum, headnum, NULL, NULL, sunglasses, varyheight);
+
+	if (model && (model->definition == NULL || model->definition->rootnode == NULL)) {
+		sysLogPrintf(LOG_ERROR,
+				"bodyAllocateModel: body %d head %d produced model with NULL definition/rootnode — dropping (file evicted?)",
+				bodynum, headnum);
+		return NULL;
+	}
+
+	return model;
+#else
 	return body0f02d338(bodynum, headnum, NULL, NULL, sunglasses, varyheight);
+#endif
 }
 
 s32 body0f02d3f8(void)

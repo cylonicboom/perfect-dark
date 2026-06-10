@@ -421,6 +421,15 @@ nothing should ever pause).
   outpacing a client; the server has the same exposure).
 - Logging: `--netdiag <path>`; one writer per file (PID-suffix if running
   multiple instances against one dir).
+- **IPv6-less kernels/netns work** (hardened Debian, containers): the
+  vendored ENet always opened an AF_INET6 dual-stack socket and aborted
+  with "could not create ENet host" when `socket(PF_INET6)` returned
+  EAFNOSUPPORT. The vendored IPv4-only fallback (enet.h, documented in its
+  commit) arms automatically; real IPv6 peers are unreachable in that mode.
+- **`--savedir` must be an absolute path** (or resolvable from the CWD the
+  process actually runs in) — a wrong `$S` used to `fclose(NULL)`-crash at
+  boot (ledger #23, now guarded), and still means configs/saves land
+  somewhere unintended.
 
 ---
 
@@ -452,11 +461,18 @@ nothing should ever pause).
 
 > Status 2026-06-10: both tiers are in the tree (Tier 1: propobj.c
 > `func0f08e8ac`/`posIsInDrawDistance`; Tier 2: pdmain.c headless loop).
-> Linux `DEDICATED_SERVER` build links. **Runtime-unproven — run a soak
-> (`docs/PORT_NET_SOAK.md`) before trusting**; watch for: per-frame gfx pool
-> pressure (every chr/obj now allocates matrices), sim behavior changes
-> (full-fidelity "watched" AI paths everywhere), spawn-avoidance actually
-> avoiding watched pads, and ghost-mine reconcile fires dropping to zero.
+> **First Linux soak ran** (containerised, headless server + headless
+> client, 8-bot churn playlist): match start, full match, playlist
+> rotation, and a second stage all survived with Tier 1+2 + the §6.1
+> mirror active — no AUDIT FAIL, no gfx-pool overflow at 256MB. The run
+> ALSO flushed out two pre-existing crashers (crash ledger #22 = #19's
+> root family: the `fileLoadToNew` stale-loadedsize reload corruption
+> that killed EVERY dedicated playlist rotation on Linux — first shape
+> fixed, a second shape at the PIPES rotation is under live
+> investigation; #23 = `fclose(NULL)` on a bad savedir) and the ENet
+> IPv6-only socket gap (§7). Longer soaks + a real multi-human session
+> remain the outstanding gates — bot churn does not exercise the human
+> `handsTickAttack` dispatch or spawn-avoidance perception.
 
 The per-site seams in §4 treat symptoms of one cut chain. The systemic repair
 is **two complementary mechanisms**, combined — they answer different

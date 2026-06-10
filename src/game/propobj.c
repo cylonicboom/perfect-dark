@@ -18632,6 +18632,7 @@ void weaponSlotsReapOrphans(void)
 		// VERIFICATION (crash ledger #16): with the propExecuteTickOperation source
 		// fix in place this should never fire — any `orphan_reap` line means another
 		// generator still bare-frees a weapon prop. Throttled.
+		g_NetAuditOrphanFires++; // soak auditor (every reap, not just logged ones)
 		{
 			static u32 lastlog60 = 0;
 			if (lastlog60 == 0 || g_Vars.lvframe60 - lastlog60 > TICKS(30)) {

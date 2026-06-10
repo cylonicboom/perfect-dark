@@ -256,3 +256,174 @@ void netSyncPropSpawn(struct prop *prop)
 	netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);
 	netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_TX, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Invariant auditor
+// ---------------------------------------------------------------------------
+
+u32 g_NetAuditHealFires = 0;
+u32 g_NetAuditReapFires = 0;
+u32 g_NetAuditOrphanFires = 0;
+s32 g_NetAuditEnabled = 1;
+u32 g_NetAuditRate = 60;
+
+static u32 g_NetAuditFailCycles = 0; // cumulative FAIL cycles this stage
+static u32 g_NetAuditCycles = 0;     // total cycles this stage
+
+// Coverage cap mirrors NET_RECONCILE_MAXSYNCID (netmsg.c). Kept local to size
+// the dedupe bitmap; a syncid at or past it is uncovered by both systems.
+#define NETAUDIT_MAXSYNCID 65536
+
+// Order-independent per-syncid hash for the manifest digest (Knuth
+// multiplicative finalizer). XOR-combined across the set, so the two machines'
+// differing pool order doesn't matter — only the SET membership does.
+static u32 netAuditSyncHash(u32 syncid)
+{
+	u32 h = syncid * 2654435761u;
+	h ^= h >> 15;
+	h *= 2246822519u;
+	h ^= h >> 13;
+	return h;
+}
+
+void netPropAuditReset(void)
+{
+	g_NetAuditHealFires = 0;
+	g_NetAuditReapFires = 0;
+	g_NetAuditOrphanFires = 0;
+	g_NetAuditFailCycles = 0;
+	g_NetAuditCycles = 0;
+}
+
+bool netPropAudit(void)
+{
+	// Dedupe bitmap over the syncid space — static so we don't put 8KB on the
+	// game-thread stack. Single-threaded, so reuse across calls is fine.
+	static u8 seen[NETAUDIT_MAXSYNCID / 8];
+	memset(seen, 0, sizeof(seen));
+
+	if (g_NetMode == NETMODE_NONE || !g_Vars.props) {
+		return true;
+	}
+
+	s32 netprops = 0;   // networked weapon/obj props
+	s32 dupes = 0;      // two props sharing a syncid
+	s32 corpses = 0;    // listed null-union weapon/obj/door/explosion/smoke
+	s32 overcap = 0;    // networked syncid >= coverage cap
+	u32 manifest = 0;   // xor-hash of the networked weapon/obj syncid set
+
+	// Pure pool iteration — never follows ->next, so a corrupt/cyclic active
+	// list can't hang the audit (that's propsHealActiveList's job; we just
+	// count its fires below).
+	for (s32 i = 0; i < g_Vars.maxprops; i++) {
+		struct prop *prop = &g_Vars.props[i];
+
+		// Standing corpse: in the active list (active flag set) but the union
+		// pointer is NULL — the freed-but-still-listed class every tick walk
+		// AVs on. (propAllocate-fresh free props have active == false.)
+		if (prop->active && prop->obj == NULL
+				&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON
+					|| prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_EXPLOSION
+					|| prop->type == PROPTYPE_SMOKE)) {
+			corpses++;
+		}
+
+		if (prop->syncid
+				&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+				&& prop->obj) {
+			netprops++;
+			manifest ^= netAuditSyncHash(prop->syncid);
+			if (prop->syncid < NETAUDIT_MAXSYNCID) {
+				const u32 bit = (u32)prop->syncid;
+				if (seen[bit >> 3] & (1 << (bit & 7))) {
+					dupes++;
+				} else {
+					seen[bit >> 3] |= (u8)(1 << (bit & 7));
+				}
+			} else {
+				overcap++;
+			}
+		}
+	}
+
+	// Weapon-slot census (formalizes the ad-hoc `weaponslots` diag line).
+	s32 occ = 0, synced = 0, proj = 0, projdead = 0, orphan = 0;
+	if (g_WeaponSlots) {
+		for (s32 i = 0; i < g_MaxWeaponSlots; i++) {
+			struct prop *wp = g_WeaponSlots[i].base.prop;
+			if (!wp) {
+				continue;
+			}
+			occ++;
+			if (wp->syncid) {
+				synced++;
+			}
+			if (g_WeaponSlots[i].base.hidden & OBJHFLAG_PROJECTILE) {
+				proj++;
+				if (!wp->active) {
+					projdead++;
+				}
+			}
+			// Orphan: the slot references a prop whose union no longer points
+			// back (freed/recycled without releasing the slot) — the ledger #16
+			// generator. weaponSlotsReapOrphans clears these; a nonzero count
+			// here means one slipped past it this frame.
+			if (wp->obj != &g_WeaponSlots[i].base) {
+				orphan++;
+			}
+		}
+	}
+
+	// Heal-layer activity since the last cycle (read + reset).
+	const u32 heal = g_NetAuditHealFires;
+	const u32 reap = g_NetAuditReapFires;
+	const u32 orphreap = g_NetAuditOrphanFires;
+	g_NetAuditHealFires = 0;
+	g_NetAuditReapFires = 0;
+	g_NetAuditOrphanFires = 0;
+
+	// Standing corruption = hard FAIL; heal activity = the corruption was
+	// present but masked (still a finding for the soak verdict).
+	const bool standing = (dupes > 0 || corpses > 0 || orphan > 0 || overcap > 0);
+	const bool fired = (heal > 0 || reap > 0 || orphreap > 0);
+	const bool pass = !standing && !fired;
+
+	g_NetAuditCycles++;
+	if (!pass) {
+		g_NetAuditFailCycles++;
+	}
+
+	const char role = (g_NetMode == NETMODE_CLIENT) ? 'C' : 'S';
+
+	// Always to the diag log (machine-parseable, offline-comparable manifest).
+	netDiagLogf("audit",
+			"role=%c result=%s netprops=%d manifest=0x%08x dupes=%d corpses=%d overcap=%d "
+			"slots_occ=%d synced=%d local=%d proj=%d projdead=%d orphan=%d heal=%u reap=%u orphreap=%u",
+			role, pass ? "PASS" : "FAIL", netprops, manifest, dupes, corpses, overcap,
+			occ, g_MaxWeaponSlots, occ - synced, proj, projdead, orphan, heal, reap, orphreap);
+
+	// To the console only when there's something to see, so a healthy soak is
+	// quiet but a regression is loud even without a diag file open.
+	if (!pass) {
+		sysLogPrintf(LOG_WARNING,
+				"AUDIT %s [%c]: dupes=%d corpses=%d orphan=%d overcap=%d | heal=%u reap=%u orphreap=%u (fail %u/%u)",
+				standing ? "FAIL" : "WARN", role, dupes, corpses, orphan, overcap,
+				heal, reap, orphreap, g_NetAuditFailCycles, g_NetAuditCycles);
+	}
+
+	return pass;
+}
+
+void netPropAuditTick(void)
+{
+	if (!g_NetAuditEnabled || g_NetMode == NETMODE_NONE) {
+		return;
+	}
+	if (g_NetAuditRate == 0) {
+		return;
+	}
+	if ((g_NetTick % g_NetAuditRate) != 0) {
+		return;
+	}
+	netPropAudit();
+}

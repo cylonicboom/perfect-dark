@@ -1,0 +1,45 @@
+# Prop-sync soak playlist (Phase 2, docs/PORT_NET_SOAK.md).
+#
+# Deliberately maximises networked-prop churn — the stress the invariant
+# auditor (netprop.c / /audit) and the teardown choke point are meant to
+# survive: lots of bots, launchers + mines + grenades (constant spawn/fly/
+# free + dropped-gun churn on death), short time limit so rounds cycle often
+# (stage reload = lifecycle-ring reset = repeated cold-start path).
+#
+# Load it on the dedicated server with:  --playlist $PWD/tools/soak/playlist_soak.txt
+# (or copy next to pd.ini and pass the absolute path). See PORT_NET_SOAK.md.
+
+[server]
+min_humans_to_start = 1     # one connected client kicks the match off
+random_in_pool      = false # deterministic order so reruns compare
+vote_seconds        = 5     # short inter-round vote so churn resumes fast
+
+# Entry 1: max bots, mostly-launcher loadout = peak projectile + drop churn.
+[entry.soak_rockets]
+stage       = COMPLEX
+scenario    = COMBAT
+bots        = 8
+bot_diff    = MEANSIM
+timelimit   = 3
+options     = FASTMOVEMENT
+# No preset line = the menu/admin default loadout. If you maintain a custom
+# "all rockets/mines" preset, add:  preset = YourPresetName
+
+# Entry 2: a tighter map so props pack into fewer rooms (room-list / relevancy
+# stress) with the same heavy loadout.
+[entry.soak_pipes]
+stage       = PIPES
+scenario    = COMBAT
+bots        = 8
+bot_diff    = MEANSIM
+timelimit   = 3
+options     = FASTMOVEMENT
+
+# Entry 3: King of the Hill keeps bots clustered on the hill (dense combat =
+# dense drops/explosions in one spot) — a different prop-density profile.
+[entry.soak_koh]
+stage       = WAREHOUSE
+scenario    = KOH
+bots        = 8
+bot_diff    = MEANSIM
+timelimit   = 3

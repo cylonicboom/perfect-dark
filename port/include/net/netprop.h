@@ -93,4 +93,43 @@ void netPropFreeSynced(struct prop *prop, u8 reason);
 // the old inline sites lacked. Safe to call from any server-side spawn site.
 void netSyncPropSpawn(struct prop *prop);
 
+// ---------------------------------------------------------------------------
+// Invariant auditor (Phase 2 soak harness)
+// ---------------------------------------------------------------------------
+//
+// A cheap per-second self-check that runs on BOTH roles during net play and
+// emits one structured `audit:` line (to the diag log always; to the console
+// as a WARNING only when something is wrong). It re-detects the prop-sync
+// invariants from current state — no list walk (cycle-immune; pool iteration
+// only), so it can never hang on the corruption it's looking for:
+//   * dupes    — two props sharing a syncid (the double-spawn class)
+//   * corpses  — a listed weapon/obj/door/explosion/smoke prop with a NULL
+//                union pointer (freed-but-still-listed)
+//   * orphans  — a weapon slot whose prop's backlink doesn't point home
+//   * overcap  — networked syncids past the reconcile coverage cap
+//   * heal/reap/orphreap FIRES since the last audit (the heal layers acting =
+//     corruption occurred and was masked — a WARN even if standing state is clean)
+//   * manifest — an order-independent digest (count + xor-hash) of the
+//                networked weapon/obj syncid SET, so server and client logs can
+//                be compared offline by tools/netsoak.py (no wire change)
+//
+// The fire counters are bumped at the heal/reap/orphan-reap sites and
+// read+reset each audit cycle.
+extern u32 g_NetAuditHealFires;    // propsHealActiveList corrupt-corpse unlinks
+extern u32 g_NetAuditReapFires;    // null-union corpse reaps (the tick walks)
+extern u32 g_NetAuditOrphanFires;  // weaponSlotsReapOrphans slot releases
+extern s32 g_NetAuditEnabled;      // /audit on|off (default on)
+extern u32 g_NetAuditRate;         // ticks between audits (default 60 = 1s)
+
+// Run one audit cycle now and emit the line (ignores the rate gate). Returns
+// true if the audit PASSED (no standing corruption AND no heal fires).
+bool netPropAudit(void);
+
+// Per-frame hook: runs netPropAudit() every g_NetAuditRate ticks when enabled.
+// Called once from netEndFrame on both roles.
+void netPropAuditTick(void);
+
+// Reset cumulative audit state at stage start.
+void netPropAuditReset(void);
+
 #endif

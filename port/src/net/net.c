@@ -2569,6 +2569,12 @@ void netEndFrame(void)
 	g_NetReliableFrameLen = 0;
 	g_NetUnreliableFrameLen = 0;
 
+	// Phase-2 soak auditor: once a second on both roles, re-check the prop-sync
+	// invariants and emit the `audit:` line (see netprop.c). Cheap pool scan;
+	// self-gates on rate + enable. Runs before the send block so a FAIL is
+	// stamped with the same tick as that frame's outgoing state.
+	netPropAuditTick();
+
 	// /netstats: snapshot the per-message-type byte accumulators once per second.
 	if (g_NetTick - g_NetStatSecBase >= 60u) {
 		for (s32 i = 0; i < NETSTAT_COUNT; ++i) {
@@ -3497,8 +3503,9 @@ void netPlayersAllocate(void)
 
 void netSyncIdsAllocate(void)
 {
-	// Fresh lifecycle ring per stage so /proplog reads as one stage's history.
+	// Fresh lifecycle ring + audit counters per stage.
 	netPropLogReset();
+	netPropAuditReset();
 
 	// allocate sync ids sequentially for all active or paused props
 	g_NetNextSyncId = 1;
@@ -6190,6 +6197,26 @@ s32 netConsoleCommand(const char *line)
 		// touched this prop, in what order" questions (ghost guns, slot
 		// orphans, double frees) without a debugger attach.
 		netPropLogDump(*arg ? (u32)atoi(arg) : 0u, 40);
+	} else if (strcmp(cmd, "audit") == 0) {
+		// /audit [on|off|now|rate N] — the Phase-2 invariant auditor.
+		// no arg / "now" runs one cycle immediately and prints the line;
+		// on|off toggles the per-second tick; rate N sets the cadence.
+		if (strcmp(arg, "on") == 0) {
+			g_NetAuditEnabled = 1;
+			sysLogPrintf(LOG_CHAT, "AUDIT: on (every %u ticks)", g_NetAuditRate);
+		} else if (strcmp(arg, "off") == 0) {
+			g_NetAuditEnabled = 0;
+			sysLogPrintf(LOG_CHAT, "AUDIT: off");
+		} else if (strncmp(arg, "rate", 4) == 0) {
+			const s32 r = atoi(arg + 4);
+			g_NetAuditRate = (r < 1) ? 1 : (r > 600 ? 600 : (u32)r);
+			sysLogPrintf(LOG_CHAT, "AUDIT: rate = every %u ticks", g_NetAuditRate);
+		} else {
+			// no arg or "now": run one cycle and report PASS/FAIL inline
+			const bool ok = netPropAudit();
+			sysLogPrintf(LOG_CHAT, "AUDIT: %s (see audit: line; enabled=%s rate=%u)",
+					ok ? "PASS" : "FAIL", g_NetAuditEnabled ? "yes" : "no", g_NetAuditRate);
+		}
 	} else if (strcmp(cmd, "octree") == 0) {
 		// /octree [on|off]    toggle outdoor-room octree frustum culling
 		// /octree forcecull   debug: cull every batch (flagged rooms go black)
@@ -6368,6 +6395,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
 		sysLogPrintf(LOG_CHAT, "  /slomo           print slow-motion / combat-boost decision state");
 		sysLogPrintf(LOG_CHAT, "  /proplog [sid]   dump networked-prop lifecycle events (no arg = newest 40)");
+		sysLogPrintf(LOG_CHAT, "  /audit [on|off|now|rate N]  prop-sync invariant auditor (soak harness)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe [on|off]              toggle wireframe (CHEAT_WIREFRAME)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe bg|wire RRGGBB        sky / wire colour (wire off = natural)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe thick N               wire thickness in pixels (1..16)");

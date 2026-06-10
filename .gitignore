@@ -27,6 +27,7 @@ CppProperties.json
 .idea
 cmake-build-debug
 build_ded/
+tools/soak/out/
 CLAUDE.local.md
 
 # Local-only Go master server (pdmaster). Kept in-tree for convenience but never

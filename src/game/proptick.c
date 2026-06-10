@@ -47,6 +47,7 @@
 #ifndef PLATFORM_N64
 #include "system.h"
 #include "net/net.h"
+#include "net/netprop.h"
 #endif
 
 void propsTick(void)
@@ -119,6 +120,7 @@ void propsTick(void)
 		// the later render walks (propsRenderBeams / roomsTickLighting) never see
 		// a corpse.
 		if (prop->obj == NULL) {
+			g_NetAuditReapFires++; // soak auditor
 			static u32 lastwarn60e = 0;
 			if (g_Vars.lvframe60 - lastwarn60e > TICKS(60)) {
 				lastwarn60e = g_Vars.lvframe60;

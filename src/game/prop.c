@@ -489,6 +489,7 @@ void propsHealActiveList(void)
 			struct prop *deadnext = prop->next;
 			propDeregisterRooms(prop);
 			if (deadnext == prop || prop->prev != prev) {
+				g_NetAuditHealFires++; // soak auditor: corruption was masked here
 				static u32 lastwarn60f = 0;
 				if (g_Vars.lvframe60 - lastwarn60f > TICKS(60)) {
 					lastwarn60f = g_Vars.lvframe60;
@@ -2596,6 +2597,7 @@ void propsTickPlayer(bool islastplayer)
 					// propFree — the same path (incl. the harmless double
 					// deregister) the normal DELETING reaper already takes.
 					if (prop->obj == NULL) {
+						g_NetAuditReapFires++; // soak auditor
 						static u32 lastwarn60b = 0;
 						if (g_Vars.lvframe60 - lastwarn60b > TICKS(60)) {
 							lastwarn60b = g_Vars.lvframe60;
@@ -2694,6 +2696,7 @@ void propsTickPlayer(bool islastplayer)
 					// freed-but-still-listed corpse here crashes BEFORE
 					// objTickPlayer ever runs. Reap it the same way (TICKOP_FREE).
 					if (obj == NULL) {
+						g_NetAuditReapFires++; // soak auditor
 						static u32 lastwarn60c = 0;
 						if (g_Vars.lvframe60 - lastwarn60c > TICKS(60)) {
 							lastwarn60c = g_Vars.lvframe60;

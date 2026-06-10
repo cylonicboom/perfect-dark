@@ -42,7 +42,7 @@ resolve_bin() {
 }
 
 ADDR="${1:-}"
-BIN_ARG="${2:-$HERE/build_ded/pd-server.x86_64}"
+BIN_ARG="${2:-$HERE/build-server/pd-server.x86_64}"
 MINUTES="${3:-0}"
 
 BIN="$(resolve_bin "$BIN_ARG" || true)"

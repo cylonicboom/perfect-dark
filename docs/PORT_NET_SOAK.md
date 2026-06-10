@@ -167,22 +167,18 @@ autodetects the `.exe` suffix. Still ROM-gated — see the asset note below.
 
 1. **Build the headless target** (MSYS2 MinGW x64 shell, repo root):
    ```
-   mkdir -p build_ded && cd build_ded
-   cmake -G "Unix Makefiles" -DDEDICATED_SERVER=ON -DCMAKE_BUILD_TYPE=Release ..
-   make -j
-   cd ..
+   cmake -G "Unix Makefiles" -Bbuild-server -DDEDICATED_SERVER=ON -DCMAKE_BUILD_TYPE=Release .
+   cmake --build build-server -j
    ```
-   Produces `build_ded/pd-server.x86_64.exe` — a console app (Ctrl-C / closing
-   the window is a clean shutdown). It can host OR join. CI builds this exact
-   target ("Build dedicated server (x86_64 windows, headless)"). The dir name
-   is yours to pick (CI uses `build-server/`); pass the binary path as the
-   scripts' BINARY arg if it isn't the `build_ded/` default.
-   **Assets:** provision the ROM/`data` for `build_ded` the same way as your
-   other build dirs (the headless build discovers them identically).
+   Produces `build-server/pd-server.x86_64.exe` — a console app (Ctrl-C /
+   closing the window is a clean shutdown). It can host OR join. CI builds
+   this exact target ("Build dedicated server (x86_64 windows, headless)").
+   **Assets:** provision the ROM/`data` for `build-server` the same way as
+   your other build dirs (the headless build discovers them identically).
 
 2. **Shell window 1 — server** (30-minute capped run):
    ```
-   tools/soak/run_server.sh build_ded/pd-server.x86_64.exe 27100 30
+   tools/soak/run_server.sh build-server/pd-server.x86_64.exe 27100 30
    ```
    (The first arg is optional — the default resolves the `.exe` itself.)
    Writes `tools/soak/out/server_<stamp>.csv`.
@@ -208,7 +204,7 @@ autodetects the `.exe` suffix. Still ROM-gated — see the asset note below.
 ### Linux / VPS (later)
 
 The same three commands work unchanged on Debian (binary
-`build_ded/pd-server.x86_64`, no `.exe`). To reproduce a **live VPS** prop
+`build-server/pd-server.x86_64`, no `.exe`). To reproduce a **live VPS** prop
 issue, run only the client side against it:
 `tools/soak/run_client.sh <vps>:27100 '' 30` — but only once the VPS instance
 runs this branch's build (protocol match; otherwise `DISCONNECT_VERSION`). The

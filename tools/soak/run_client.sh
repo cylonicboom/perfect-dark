@@ -46,7 +46,7 @@ BIN_ARG="${2:-$HERE/build_ded/pd-server.x86_64}"
 MINUTES="${3:-0}"
 
 BIN="$(resolve_bin "$BIN_ARG" || true)"
-PY="$(command -v python3 || command -v python || true)"
+PY="$(command -v python3 || command -v python || command -v py || true)"
 
 if [ -z "$ADDR" ]; then
   echo "usage: $0 ADDR[:PORT] [BINARY] [MINUTES]" >&2
@@ -93,7 +93,7 @@ else
   if [ -n "$PY" ]; then
     "$PY" "$HERE/tools/netsoak.py" "$DIAG"
   else
-    echo "(python not found — run: python tools/netsoak.py $DIAG)"
+    echo "(python not found — run: py tools/netsoak.py $DIAG)"
   fi
   echo
   echo "for the full parity verdict, run with the matching server CSV:"

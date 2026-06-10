@@ -39,7 +39,7 @@ PORT="${2:-27100}"
 MINUTES="${3:-0}"
 
 BIN="$(resolve_bin "$BIN_ARG" || true)"
-PY="$(command -v python3 || command -v python || true)"
+PY="$(command -v python3 || command -v python || command -v py || true)"
 
 PLAYLIST="$HERE/tools/soak/playlist_soak.txt"
 OUTDIR="$HERE/tools/soak/out"
@@ -94,6 +94,6 @@ else
   if [ -n "$PY" ]; then
     "$PY" "$HERE/tools/netsoak.py" "$DIAG"
   else
-    echo "(python not found — run: python tools/netsoak.py $DIAG)"
+    echo "(python not found — run: py tools/netsoak.py $DIAG)"
   fi
 fi

@@ -8,6 +8,23 @@
 - Cloaking device not synced.
 - Slayer fly-by-wire and FarSight alt-fire don't work on clients.
 - **Dropped-item physics (ammo boxes / dropped guns) no longer run on some machines** (user-reported 2026-06-10, regression window = the WIP projectile-sync work in 58fed026e and after). Dropped items fall via `OBJHFLAG_PROJECTILE` physics through the same `projectileTick` that rockets use, so they're subject to the `objTickPlayer` fulltick gates (propobj.c ~11250-11286): the owner gate only fullticks player-owned projectiles on the owner's `propsTickPlayer` iteration, and the client-side fly override requires `prop->syncid` + the primary-local-pawn iteration. A dropped crate that doesn't qualify under any gate (e.g. owner is a remote/disconnected player's pawn, or a client-local syncid-0 drop) freezes mid-air instead of falling. **2026-06-11: symptom MASKED for synced props by the Combat Sim dynamic-prop position stream** (net.c `netEndFrame`, catalog §5.2 fix — a never-ticked client copy still follows the wire to the floor; pass-2 heals settled divergence). Client-local syncid-0 drops have no wire stream and can still freeze; root the gates when the projectile-sync WIP resumes (`net-projectile-sync` memory has the gate map).
+- **Sim-dropped hand weapons exist as TWO parallel copies** (long-standing — predates
+  port-net-predict; root-caused 2026-06-11 during the projectile-sync hunt; NO visible
+  bug in play, user-confirmed). A sim's hand weapon is given server-side via
+  `chrGiveWeapon` (dynamic syncid, never spawn-broadcast — while held it's parented so
+  nothing wire-references it); the client mirrors the hands with its own LOCAL syncid-0
+  props (the chr-state weapons-held sync). When the sim dies, BOTH machines put their
+  own copy on the floor: the server's (authoritative, syncid'd — and now in the §5.2
+  per-tick move stream, which is what produces the throttled client warnings
+  `prop with syncid N does not exist` / `obj body for syncid N unapplied — consumed`)
+  and the client's local visual twin. Pickups are server-granted by proximity so play
+  works; the costs are per-tick ghost-move bandwidth for every gun on the floor,
+  possible visual-vs-authoritative position divergence, and warning noise. **Fix
+  direction** ("wire owns the lifetime"): broadcast `netSyncPropSpawn` at the
+  `objSetDropped` chokepoint for synced chr-held weapons entering the world, and
+  suppress the client's local corpse-drop so the wire copy is THE gun. Touches the
+  ghost-gun/double-spawn lifecycle family (`PORT_NET_PROP_LIFECYCLE.md`) — needs its
+  own pass + soak run. Deferred.
 - High bandwidth usage, especially with 8 players; recommend `Net.Server.UpdateFrames=2`.
 - Sim bots are position-driven on clients — `SVC_CHR_FIRE` syncs shoot sound + muzzle-flash on/off, and the chr-state block in `SVC_PROP_MOVE` syncs body rotation and animation. `chr->actiontype` is **not** synced (would crash; see Sim Position Sync section); the client always dispatches sim chrTick as `ACT_STAND`, so visible animation comes only from the synced `animnum` and not from any per-action tick logic. Aim/look direction (head/torso) and partial-body animations (limb-specific layers) are still server-authoritative only.
 - Punching and a few weapon-animation sounds still play first-person for every listener — the punch swing/hit goes through a code path outside the GUNCMD_PLAYSOUND hook we patched. Source TBD.

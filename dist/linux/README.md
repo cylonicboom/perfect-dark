@@ -56,10 +56,14 @@ external model files some MP bodies use — see `docs/PORT_NET_CRASH_LEDGER.md`
 
 ### Status
 
-Manifest is review-verified but **not yet built in CI** — `flatpak-builder`
-needs privileges the development container lacks. First local build report
-welcome; the moving parts (SDL3 tag, runtime version) are pinned to what the
-repo's CI uses.
+**Built and smoke-tested 2026-06-11** (WSL2 Debian trixie, flatpak-builder
+1.4.x, user installation): SDL3 module + game build clean from the source
+tree, app installs and launches — launcher creates the sandbox data dirs,
+binary reports the correct version stamp, SDL3 creates a GL context, and it
+proceeds to the ROM check (full in-game run needs a ROM in `data/roms/`).
+One source fix was needed and is committed (`strcasecmp` include in
+`port/src/input.c` — the 24.08 SDK's gcc treats implicit declarations as
+errors). Not yet built in CI.
 
 ## Dedicated server
 

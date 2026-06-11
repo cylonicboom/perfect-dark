@@ -283,5 +283,25 @@ pawn-model matrices are the prerequisite for enforce mode (noted at both sites).
 
 | 25 | `netLagCompBegin` net.c:4323 | SIGSEGV read near-NULL (`matrices+idx`) | crash | remote pawn chr body model never rendered headless → `model->matrices` NULL → `modelGetRootMtx` returns small non-NULL offset; first dereference = first shot with a second client connected | matrices-NULL guards in netLagCompBegin/End + chrTestHit early-return (b617ebe00); headless pawn-model matrices = future prerequisite for HitValidate enforce | fixed (guarded; enforce-mode gap documented) |
 
+## #26 Client crash via spectator redirect: remote reaper audio sentinel dereferenced (2026-06-11)
+
+**CLIENT-side**, two humans / no bots. `lvRender → playerRenderHud → bgunTickGameplay2
+(bondgun.c zero-update stop loop) → audioStop` — AV read at 0x69, i.e. handle == **0x1**.
+The SFX_805E reaper spin-up stores `(struct sndstate *)1` in `hand->audiohandle` as a
+"remote pawn, no real handle" sentinel (psCreate has no compatible handle). The sentinel's
+own consumer is isremote-guarded, but the **client-spectator redirect** runs
+`playerRenderHud` — and so `bgunTickGameplay2` — with `currentplayer` = the spectated
+REMOTE player, whose hands carry the sentinel; the `lvupdate240 == 0` stop loop
+(`if (hand->audiohandle) audioStop(...)`) then dereferenced it. Render-only zero-update
+frames are routine under netplay's tick pin on >60fps machines, and death → auto-spectate
+made the redirect routine in a two-human match. Same exposure existed in the laser-stream
+`sndGetState`, mauler-charge stop/pitch, and weapon-switch stop sites — and on the
+dedicated server via the new §6.1 `bgunTickGameplay2` mirror.
+
+Fix: `bgunAudioHandleReal()` helper (NULL and sentinel both "not real") guarding all four
+generic deref sites, + the weapon-switch path clears a leftover sentinel. N64 byte-identical.
+
+| 26 | `audioStop` via `bgunTickGameplay2` zero-update stop loop | AV read 0x69 (handle = sentinel 0x1) | crash | remote reaper-spin audio sentinel `(sndstate*)1` in `hand->audiohandle` reached generic audio derefs when the spectator redirect ran the gun tick on a remote pawn's hands (zero-update frames routine under the netplay tick pin) | `bgunAudioHandleReal()` guard at all generic deref sites + sentinel clear on weapon switch | fixed (source) |
+
 > Keep appending here on every new crash: site, fault, root, fix, status. The table is
 > the map; the pattern section is the territory.

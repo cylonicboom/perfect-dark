@@ -60,6 +60,21 @@
 #include "video.h"
 #include "net/net.h"
 #include "system.h"
+
+#ifndef PLATFORM_N64
+// Remote continuous-sound sentinel: the SFX_805E reaper spin-up stores
+// (struct sndstate *)1 in hand->audiohandle for REMOTE pawns (psCreate has no
+// compatible handle; the sentinel only suppresses re-trigger). Every generic
+// audiohandle consumer must treat it as "no real handle" — audioStop /
+// audioPostEvent / sndGetState on it dereference near-NULL memory. Crashed a
+// client 2026-06-11: the spectator redirect runs playerRenderHud (and so
+// bgunTickGameplay2) on the spectated REMOTE player's hands, and the
+// zero-update-frame stop loop hit audioStop(0x1).
+static inline bool bgunAudioHandleReal(struct sndstate *handle)
+{
+	return handle != NULL && handle != (struct sndstate *)(uintptr_t)1;
+}
+#endif
 #include "net/netmsg.h"
 #include "net/netprop.h"
 #include "mpsetups.h"
@@ -5937,9 +5952,18 @@ void bgunTickSwitch2(void)
 
 				animInit(&player->hands[i].anim);
 
+#ifndef PLATFORM_N64
+				if (bgunAudioHandleReal(player->hands[i].audiohandle)
+						&& sndGetState(player->hands[i].audiohandle) != AL_STOPPED) {
+					audioStop(player->hands[i].audiohandle);
+				} else if (player->hands[i].audiohandle) {
+					player->hands[i].audiohandle = NULL; // clear a remote sentinel on weapon switch
+				}
+#else
 				if (player->hands[i].audiohandle && sndGetState(player->hands[i].audiohandle) != AL_STOPPED) {
 					audioStop(player->hands[i].audiohandle);
 				}
+#endif
 			}
 
 			invCalculateCurrentIndex();
@@ -7680,7 +7704,13 @@ void bgunUpdateLaser(struct hand *hand)
 
 	if (hand->matmot1 > 0) {
 		hand->matmot1 -= LVUPDATE60FREAL() / 10.0f;
-	} else if (hand->audiohandle != NULL && sndGetState(hand->audiohandle) != AL_STOPPED) {
+	}
+#ifndef PLATFORM_N64
+	else if (hand->audiohandle != NULL && !bgunAudioHandleReal(hand->audiohandle)) {
+		hand->audiohandle = NULL; // remote sentinel left by the reaper path — never deref
+	}
+#endif
+	else if (hand->audiohandle != NULL && sndGetState(hand->audiohandle) != AL_STOPPED) {
 		audioStop(hand->audiohandle);
 	}
 }
@@ -8819,7 +8849,12 @@ void bgunTickMaulerCharge(void)
 				sndStart(var80095200, SFX_MAULER_CHARGE, &hand->audiohandle, -1, -1, -1, -1, -1);
 			}
 
-			if (hand->audiohandle) {
+#ifndef PLATFORM_N64
+			if (bgunAudioHandleReal(hand->audiohandle))
+#else
+			if (hand->audiohandle)
+#endif
+			{
 				f32 speed = 0.5f + hand->matmot1 / 3.0f + sinf(g_20SecIntervalFrac * M_PI * 32.0f) * 0.03f;
 
 				if (hand->matmot1 < 0.1f || !charging) {
@@ -8912,7 +8947,17 @@ void bgunTickGameplay2(void)
 		for (i = 0; i < 2; i++) {
 			hand = &player->hands[i];
 
-			if (hand->audiohandle) {
+			// The sentinel guard matters here specifically: the client
+			// spectator redirect runs this function on the spectated REMOTE
+			// player's hands, whose reaper spin-up plants the fake handle —
+			// and netplay's render-only frames make lvupdate240 == 0 common
+			// (the 2026-06-11 two-human client crash: audioStop(0x1)).
+#ifndef PLATFORM_N64
+			if (bgunAudioHandleReal(hand->audiohandle))
+#else
+			if (hand->audiohandle)
+#endif
+			{
 				audioStop(hand->audiohandle);
 			}
 		}

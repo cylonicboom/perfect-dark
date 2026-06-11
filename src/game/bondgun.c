@@ -5072,18 +5072,6 @@ void bgunCreateFiredProjectile(s32 handnum)
 	if (g_NetMode == NETMODE_CLIENT) {
 		return;
 	}
-
-	// projdiag (temporary): a remote pawn's fire reached projectile creation
-	// on the server — log the spawn inputs (muzzlepos is render-populated
-	// viewmodel state, suspect garbage on a headless server).
-	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
-		struct hand *dh = g_Vars.currentplayer->hands + handnum;
-		sysLogPrintf(LOG_WARNING,
-				"projdiag: srvfire pl=%d weap=%d func=%d muzzle=(%.0f,%.0f,%.0f) rocket=%d",
-				g_Vars.currentplayernum, dh->gset.weaponnum, dh->gset.weaponfunc,
-				dh->muzzlepos.x, dh->muzzlepos.y, dh->muzzlepos.z,
-				dh->rocket != NULL);
-	}
 #endif
 
 	hand = g_Vars.currentplayer->hands + handnum;
@@ -5265,29 +5253,6 @@ void bgunCreateFiredProjectile(s32 handnum)
 						weapon->base.projectile->pickuptimer240 = TICKS(240);
 						weapon->base.projectile->unk08c = funcdef->reflectangle;
 						weapon->base.projectile->unk098 = funcdef->unk50 * 1.6666666f;
-
-#ifndef PLATFORM_N64
-						// projdiag (temporary): name the NaN source in the launch
-						// math for a remote shooter ("rocket doesn't propel" —
-						// srvgate showed spd NaN from launch). gundir feeds
-						// sp250 (thrust) and sp264 (launch impulse); speed is
-						// what bgun0f09ed2c stored from sp264.
-						if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
-							sysLogPrintf(LOG_WARNING,
-									"projdiag: srvlaunch gundir=(%.3f,%.3f,%.3f) vel=(%.1f,%.1f,%.1f) spd=(%.1f,%.1f,%.1f) cross=(%.1f,%.1f) scl=(%f,%f) fov=%.1f prev=(%.0f,%.0f,%.0f)",
-									gundir.x, gundir.y, gundir.z,
-									sp264.x, sp264.y, sp264.z,
-									weapon->base.projectile->speed.x,
-									weapon->base.projectile->speed.y,
-									weapon->base.projectile->speed.z,
-									g_Vars.currentplayer->crosspos[0],
-									g_Vars.currentplayer->crosspos[1],
-									g_Vars.currentplayer->c_scalex,
-									g_Vars.currentplayer->c_scaley,
-									viGetFovY(),
-									prevpos->x, prevpos->y, prevpos->z);
-						}
-#endif
 
 						if (funcdef->soundnum > 0) {
 							psCreate(NULL, weapon->base.prop, funcdef->soundnum, -1, -1, 0, 0, PSTYPE_NONE, 0, -1.0f, 0, -1, -1.0f, -1.0f, -1.0f);

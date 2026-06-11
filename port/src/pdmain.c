@@ -965,31 +965,6 @@ void mainTick(void)
 						handsTickAttack();
 					}
 
-					// projdiag (temporary): name the gate blocking remote-pawn
-					// projectile fire on the dedicated server ("client shoots
-					// nothing", 2026-06-11). One line per second per remote pawn
-					// dumps every gate on the fire chain: trigger -> bgun0f09bf44
-					// (bgunIsLoaded: gunmem owner + masterload) -> HANDSTATE_ATTACK
-					// -> hand->firing -> handTickAttack -> bgunCreateFiredProjectile.
-					{
-						struct player *pl_fd = g_Vars.currentplayer;
-						static u32 s_fireDiagFrame = 0;
-						if (pl_fd && pl_fd->isremote && pl_fd->prop
-								&& g_Vars.lvframe60 - s_fireDiagFrame > 60) {
-							s_fireDiagFrame = g_Vars.lvframe60;
-							struct hand *h0 = &pl_fd->hands[HAND_RIGHT];
-							sysLogPrintf(LOG_WARNING,
-									"projdiag: srvhand pl=%d cam=%d weap=%d state=%d firing=%d atk=%d loaded=%d memtype=%d memown=%d mls=%d switchto=%d gset=%d/%d",
-									g_Vars.currentplayernum, cam_primed,
-									pl_fd->gunctrl.weaponnum, h0->state, h0->firing,
-									h0->attacktype, bgunIsLoaded(),
-									pl_fd->gunctrl.gunmemtype, pl_fd->gunctrl.gunmemowner,
-									pl_fd->gunctrl.masterloadstate,
-									pl_fd->gunctrl.switchtoweaponnum,
-									h0->gset.weaponnum, h0->gset.weaponfunc);
-						}
-					}
-
 					// Pickup detection. propsTestForPickup is normally called
 					// from lvRender's per-player loop (lv.c:1416) — the function
 					// iterates props near the current player and routes weapon

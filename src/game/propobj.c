@@ -11284,49 +11284,6 @@ s32 objTickPlayer(struct prop *prop)
 				&& g_Vars.currentplayer == g_NetLocalClient->player) {
 			fulltick = true;
 		}
-
-		// projdiag (Phase 0, temporary): once a second per machine, dump the
-		// full gate state for a client-side synced projectile so ONE log run
-		// pinpoints which gate blocks projectileTick. If "SPAWN ok" appears
-		// in the log but THIS line never does, the prop isn't reaching
-		// objTickPlayer at all (paused-at-spawn or backgrounded — check the
-		// active/bg fields of whichever line does appear, and /proplog <sid>
-		// for the activate/pause history). NOTE: for SIM-owned projectiles
-		// fulltick was already true before the override above (the player-
-		// owner gate doesn't apply to chr owners), so a "fulltick=1 anim=0"
-		// line that still doesn't fly means the blocker is past this point.
-		if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
-			static u32 s_projGateFrame = 0;
-			if (g_Vars.lvframe60 - s_projGateFrame > 60) {
-				s_projGateFrame = g_Vars.lvframe60;
-				sysLogPrintf(LOG_WARNING, "projdiag: gate sid=%u fulltick=%d anim=%d active=%d bg=%d sliding=%d pos=(%.0f,%.0f,%.0f)",
-						prop->syncid, fulltick, model->anim != NULL,
-						prop->active, prop->backgrounded,
-						projectile ? (s32)((projectile->flags & PROJECTILEFLAG_SLIDING) != 0) : -1,
-						prop->pos.x, prop->pos.y, prop->pos.z);
-			}
-		}
-
-		// projdiag (temporary, server): flight-gate state for PLAYER-owned
-		// projectiles — the §6.1-mirrored rocket fire ("rocket frozen" report:
-		// is projectileTick reached on the owner's pass, and with what state?)
-		if (g_NetMode == NETMODE_SERVER && prop->syncid && projectile
-				&& projectile->ownerprop && projectile->ownerprop->type == PROPTYPE_PLAYER) {
-			static u32 s_srvProjFrame = 0;
-			if (g_Vars.lvframe60 - s_srvProjFrame > 60) {
-				s_srvProjFrame = g_Vars.lvframe60;
-				sysLogPrintf(LOG_WARNING,
-						"projdiag: srvgate sid=%u fulltick=%d anim=%d active=%d bg=%d pflags=0x%x spd=(%.1f,%.1f,%.1f) pos=(%.0f,%.0f,%.0f) own=%u cur=%d",
-						prop->syncid, fulltick, model->anim != NULL,
-						prop->active, prop->backgrounded,
-						projectile->flags,
-						projectile->speed.x, projectile->speed.y, projectile->speed.z,
-						prop->pos.x, prop->pos.y, prop->pos.z,
-						projectile->ownerprop->syncid,
-						(g_Vars.currentplayer && g_Vars.currentplayer->prop)
-								? (s32)g_Vars.currentplayer->prop->syncid : -1);
-			}
-		}
 #endif
 	}
 

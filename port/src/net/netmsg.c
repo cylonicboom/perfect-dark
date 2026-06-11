@@ -3227,16 +3227,6 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		struct model *model = modelmgrInstantiateModelWithoutAnim(modeldef);
 		struct weaponobj *weapon = weaponCreate(prop == NULL, model == NULL, modeldef);
 		if (weapon == NULL) {
-			// projdiag (temporary): the rocket/weapon spawn was DROPPED because the
-			// 50-slot weapon pool is full. If this floods pd.log, slot saturation
-			// (not rendering) is why no rockets appear.
-			{
-				static u32 s_projDropFrame = 0;
-				if (g_Vars.lvframe60 - s_projDropFrame > 4) {
-					s_projDropFrame = g_Vars.lvframe60;
-					sysLogPrintf(LOG_WARNING, "projdiag: SPAWN DROPPED (weapon slots full) weaponnum=%d", weaponnum);
-				}
-			}
 			// weaponCreate exhausted all 50 slots with NON-recyclable entries
 			// (in-flight projectiles + held weapons are excluded from the recycle
 			// scan), so it returned NULL — the `*weapon = tmp` below would write
@@ -3418,17 +3408,6 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 	prop->pos = pos;
 
 	netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_RX, 0);
-
-	// projdiag (temporary): a projectile spawn was successfully CREATED on the
-	// client. If this appears but you still see no rocket, it lives but isn't
-	// rendered (or is freed almost immediately — see the FREE diag). Throttled.
-	if (prop && prop->obj && (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
-		static u32 s_projOkFrame = 0;
-		if (g_Vars.lvframe60 - s_projOkFrame > 4) {
-			s_projOkFrame = g_Vars.lvframe60;
-			sysLogPrintf(LOG_WARNING, "projdiag: SPAWN ok projectile syncid=%u type=%d active=%d", prop->syncid, prop->type, prop->active);
-		}
-	}
 
 	return src->error;
 }
@@ -3827,16 +3806,6 @@ u32 netmsgSvcPropFreeRead(struct netbuf *src, struct netclient *srccl)
 		}
 	} else if (prop && prop->obj && prop->active
 			&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)) {
-		// projdiag (temporary): host freed a synced projectile. If "SPAWN ok" and
-		// this FREE land within a frame or two of each other, the rocket is created
-		// and removed before it ever renders (lag-batched lifecycle). Throttled.
-		if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
-			static u32 s_projFreeFrame = 0;
-			if (g_Vars.lvframe60 - s_projFreeFrame > 4) {
-				s_projFreeFrame = g_Vars.lvframe60;
-				sysLogPrintf(LOG_WARNING, "projdiag: client FREE projectile syncid=%u", prop->syncid);
-			}
-		}
 		netPropFreeSynced(prop, NETPROP_FREE_WIRE);
 	}
 
@@ -4925,18 +4894,6 @@ u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl)
 	// resolve locally is harmless.
 	if (room < 0 || room >= g_Vars.roomcount) {
 		return src->error;
-	}
-
-	// projdiag (Phase 2a, temporary): the host's authoritative blast reached this
-	// client. If sim rockets log this but player rockets don't, the host isn't
-	// broadcasting player-rocket explosions; if both log but only sims visibly
-	// explode, it's a client-side render/position issue. Throttled (~7/sec).
-	{
-		static u32 s_svcExpFrame = 0;
-		if (g_Vars.lvframe60 - s_svcExpFrame > 8) {
-			s_svcExpFrame = g_Vars.lvframe60;
-			sysLogPrintf(LOG_WARNING, "projdiag: client recv SVC_EXPLOSION exptype=%d room=%d", exptype, room);
-		}
 	}
 
 	RoomNum rooms[2] = { room, -1 };

@@ -192,6 +192,7 @@ char g_NetPlaylistPath[260] = "$S/server_playlist.ini";
 struct netvotestate g_NetVote;
 
 u32 g_NetServerUpdateRate = 1;
+s32 g_NetIdleExitMins = 0; // dedicated self-reap: exit after N minutes with no remote clients (0 = off). --idle-exit / Net.Server.IdleExit; pdmaster instances should pass --idle-exit 5 (via -instance-args) so empty hosted instances free their port even if the master-side reaper's accounting is starved
 s32 g_NetLagCompExact = 1; // 1 = exact rewind (inmovetick - renderbehind, proto 63); 0 = legacy RTT/2 + interp_lag estimate. /lagcomp toggles for live A/B
 s32 g_NetRelevancy = 1; // P2: per-client relevancy cull of sim/NPC chr-state (default on; /relevancy off = identical broadcast to all)
 f32 g_NetRelevancyDist = 9000.0f; // a sim NOT sharing a room with the client's pawn is culled beyond this (world units). Conservative default — well past LV_SMART_SLOMO_RANGE (1500). /relevancy dist N to tune
@@ -1088,6 +1089,12 @@ void netInit(void)
 	const s32 argclcrate = sysArgGetInt("--clcrate", -1);
 	if (argclcrate >= 1) {
 		g_NetClientUpdateRate = (u32)(argclcrate > 60 ? 60 : argclcrate);
+	}
+
+	// --idle-exit <minutes>: dedicated self-reap (see g_NetIdleExitMins).
+	const s32 argidleexit = sysArgGetInt("--idle-exit", -1);
+	if (argidleexit >= 0) {
+		g_NetIdleExitMins = argidleexit > 1440 ? 1440 : argidleexit;
 	}
 
 	// Initialise playlist to empty defaults; an actual load (which logs if
@@ -2589,6 +2596,33 @@ void netEndFrame(void)
 	// self-gates on rate + enable. Runs before the send block so a FAIL is
 	// stamped with the same tick as that frame's outgoing state.
 	netPropAuditTick();
+
+	// Dedicated self-reap (--idle-exit / Net.Server.IdleExit): exit cleanly
+	// after N minutes with no remote clients at all. Belt-and-braces against
+	// any master-side empty-instance accounting starvation (observed
+	// 2026-06-11: a hosted instance ran 35+ min empty past pdmaster's 5-min
+	// reaper) — the instance is the one authority on its own client table.
+	// exit() (not _exit) so atexit teardown closes the diag log; with no
+	// peers connected netDisconnect cannot block.
+	if (g_NetMode == NETMODE_SERVER && g_NetDedicatedMode
+			&& g_NetIdleExitMins > 0 && (g_NetTick % 60u) == 0) {
+		static u32 s_idleSinceTick = 0;
+		bool haveremote = false;
+		for (s32 i = 0; i < g_NetMaxClients; ++i) {
+			if (&g_NetClients[i] != g_NetLocalClient
+					&& g_NetClients[i].state != CLSTATE_DISCONNECTED) {
+				haveremote = true;
+				break;
+			}
+		}
+		if (haveremote) {
+			s_idleSinceTick = g_NetTick;
+		} else if (g_NetTick - s_idleSinceTick > (u32)g_NetIdleExitMins * 3600u) {
+			sysLogPrintf(LOG_NOTE, "NET: dedicated server idle for %d min (no remote clients) — exiting",
+					g_NetIdleExitMins);
+			exit(0);
+		}
+	}
 
 	// /netstats: snapshot the per-message-type byte accumulators once per second.
 	if (g_NetTick - g_NetStatSecBase >= 60u) {
@@ -7212,6 +7246,7 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterFloat("Net.Server.PosQuantScale", &g_NetPosQuantScale, 0.01f, 64.0f);
 	configRegisterInt("Net.Server.AllowInfoQuery", &g_NetServerInfoQuery, 0, 1);
 	configRegisterInt("Net.Server.HitValidate", &g_NetHitValidate, 0, 2);
+	configRegisterInt("Net.Server.IdleExit", &g_NetIdleExitMins, 0, 1440);
 
 	configRegisterString("Net.Debug.LogPath", g_NetDiagPath, sizeof(g_NetDiagPath) - 1);
 	configRegisterUInt("Net.Debug.LogRate", &g_NetDiagDumpRate, 0, 600);

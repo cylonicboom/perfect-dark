@@ -266,5 +266,22 @@ desynced any client that had them.
 
 | 24 | `lvRender` lv.c:1365 | AV read 0x328 (NULL `chr`) | crash | cross-build initial-prop divergence (stale VPS build: locked-challenge 4-sim clamp vs new client's always-8) → server dynamic syncids 51-54 alias client sims+pawn → un-type-gated `SVC_PROP_PICKUP` sim path TICKOP_FREEs the local pawn | redeploy VPS from HEAD; proposed: pickup type gate + lvRender pawn guard + stage-ready allocation cross-check | diagnosed (fixes pending) |
 
+## #25 Two-player shot crash: lag-comp rewind through a never-rendered pawn model (2026-06-11)
+
+**SERVER-side**, first multi-human session after the §6.1 fire-mirror + aspect fix made
+remote shot traces real. Any shot with ≥2 clients connected: `mainTick (§6.1 mirror) →
+handsTickAttack → shotCreate → shotCalculateHits → netLagCompBegin` SIGSEGV at net.c:4323
+reading `rootmtx->m[3][0]`. Root: a remote pawn's chr body model is render-populated —
+headless its `model->matrices` is never allocated, and `modelGetRootMtx` returns
+`matrices + idx` = a near-NULL **non-NULL** pointer that defeated the existing NULL check.
+Solo play never hit it (no other pawn to rewind; sim targets have valid chrTick matrices).
+`chrTestHit` (chr.c:4748/4755) reads the same pointer one call later — guarded too.
+Fix b617ebe00: matrices-NULL guards in netLagCompBegin/End + chrTestHit early-return.
+Consequence while pawn models stay matrices-less headless: player-target hits can't be
+server-confirmed, so `Net.Server.HitValidate >= 1` would log/reject them — real headless
+pawn-model matrices are the prerequisite for enforce mode (noted at both sites).
+
+| 25 | `netLagCompBegin` net.c:4323 | SIGSEGV read near-NULL (`matrices+idx`) | crash | remote pawn chr body model never rendered headless → `model->matrices` NULL → `modelGetRootMtx` returns small non-NULL offset; first dereference = first shot with a second client connected | matrices-NULL guards in netLagCompBegin/End + chrTestHit early-return (b617ebe00); headless pawn-model matrices = future prerequisite for HitValidate enforce | fixed (guarded; enforce-mode gap documented) |
+
 > Keep appending here on every new crash: site, fault, root, fix, status. The table is
 > the map; the pattern section is the territory.

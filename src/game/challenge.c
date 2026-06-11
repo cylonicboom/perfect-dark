@@ -66,7 +66,7 @@ bool challengeIsAvailable(s32 challengeindex)
 
 bool challengeIsAvailableToPlayer(s32 chrnum, s32 challengeindex)
 {
-	if ((g_MpSetup.chrslots & (1 << chrnum)) == 0) {
+	if ((g_MpSetup.chrslots & MPCHRSLOT(chrnum)) == 0) {
 		return 0;
 	}
 
@@ -224,7 +224,7 @@ void challengeDetermineUnlockedFeatures(void)
 	// If the ability to have 8 simulants hasn't been unlocked, limit them to 4
 	if (!challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
 		for (k = 4; k < MAX_BOTS; k++) {
-			if (g_MpSetup.chrslots & (1 << (MAX_PLAYERS + k))) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(MAX_PLAYERS + k)) {
 				mpRemoveSimulant(k);
 			}
 		}
@@ -243,7 +243,7 @@ void challengePerformSanityChecks(void)
 
 		// Reset player handicaps
 		for (i = 0; i < MAX_PLAYERS; i++) {
-			if (g_MpSetup.chrslots & (1 << i)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(i)) {
 				g_PlayerConfigsArray[i].handicap = 0x80;
 				numplayers++;
 			}
@@ -253,11 +253,11 @@ void challengePerformSanityChecks(void)
 		// for this number of players
 		g_MpSetup.chrslots &= 0x000f;
 
-		for (i = 0; i < MAX_BOTS; i++) {
+		for (i = 0; i < MAX_BOTS_PRESET; i++) {
 			g_BotConfigsArray[i].difficulty = g_MpSimulantDifficultiesPerNumPlayers[i][numplayers - 1];
 
 			if (g_BotConfigsArray[i].difficulty != BOTDIFF_DISABLED) {
-				g_MpSetup.chrslots |= 1 << (i + MAX_PLAYERS);
+				g_MpSetup.chrslots |= MPCHRSLOT(i + MAX_PLAYERS);
 			}
 		}
 
@@ -537,7 +537,7 @@ void challengeForceUnlockConfigFeatures(struct mpconfig *config, u8 *array, s32 
 	s32 numplayers;
 	s32 i;
 
-	for (i = 0; i < MAX_BOTS; i++) {
+	for (i = 0; i < MAX_BOTS_PRESET; i++) {
 		s32 simtype = mpFindBotProfile(config->simulants[i].type, BOTDIFF_NORMAL);
 
 		if (simtype >= 0) {

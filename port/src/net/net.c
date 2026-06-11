@@ -4979,7 +4979,7 @@ static void netAdminCaptureSetup(void)
 	e->scorelimit = g_MpSetup.scorelimit;
 	e->timelimit = g_MpSetup.timelimit;
 	e->teamscorelimit = g_MpSetup.teamscorelimit;
-	e->bot_count = (u8)(g_BotCount > MAX_BOTS ? MAX_BOTS : g_BotCount);
+	e->bot_count = (u8)(g_BotCount > NET_MAX_BOTS ? NET_MAX_BOTS : g_BotCount);
 	e->bot_difficulty = BOTDIFF_NORMAL;
 	e->weight = 1;
 	strcpy(e->name, "admin");
@@ -5187,7 +5187,7 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > 65535) n = 65535;
 			e->teamscorelimit = (u16)n; netAdminReply(cl, "teamscorelimit = %d", n);
 		} else if (strcmp(field, "bots") == 0) {
-			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > MAX_BOTS) n = MAX_BOTS;
+			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > NET_MAX_BOTS) n = NET_MAX_BOTS;
 			e->bot_count = (u8)n;
 			if (v2[0]) {
 				const s32 d = playlistLookupBotDiff(v2);
@@ -7167,7 +7167,7 @@ Gfx *netDebugRender(Gfx *gdl)
 
 	// Position the panel from the bottom — leave enough room for the maximum
 	// possible content (header + CSP/lagcomp + up to 8 clients × 2 lines +
-	// up to MAX_BOTS sim lines).
+	// up to NET_MAX_BOTS sim lines).
 	const s32 lineCount = 4 + 1 + (g_NetMaxClients * 2) + numSims + 1;
 	s32 x = 2;
 	s32 y = viGetHeight() - 1 - (lineCount * 8);

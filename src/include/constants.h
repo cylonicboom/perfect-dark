@@ -14,7 +14,18 @@
 #define true  1
 
 #define MAX_ARTIFACTS          120
+#ifdef PLATFORM_N64
 #define MAX_BOTS               8
+#else
+// Port: 32 offline simulants (docs/PORT_OFFLINE_32_SIMS.md). Net games are
+// capped at NET_MAX_BOTS - the wire, query and lobby formats are unchanged
+// (no protocol bump; the setupCreateProps RNG-parity clamp keeps spawn
+// determinism identical to 8-bot builds).
+#define MAX_BOTS               32
+#define NET_MAX_BOTS           8
+#endif
+// ROM mpconfig / mpsetups.bin image width - file formats, never widen.
+#define MAX_BOTS_PRESET        8
 #define MAX_CHRSPERSQUADRON    16
 #define MAX_CHRSPERTEAM        32
 #define MAX_CHRWAYPOINTS       6
@@ -36,8 +47,10 @@
 // players, bits MAX_PLAYERS..MAX_PLAYERS+MAX_BOTS-1 = bots; use these masks
 // instead of width literals.
 #define MAX_PLAYERS            16
-#define MPCHRSLOTS_PLAYERS_MASK ((1u << MAX_PLAYERS) - 1u)
-#define MPCHRSLOTS_BOTS_MASK    (((1u << MAX_BOTS) - 1u) << MAX_PLAYERS)
+#define MPCHRSLOTS_PLAYERS_MASK ((1ULL << MAX_PLAYERS) - 1)
+#define MPCHRSLOTS_BOTS_MASK    (((1ULL << MAX_BOTS) - 1) << MAX_PLAYERS)        // bits 16..47
+#define NET_MPCHRSLOTS_BOTS_MASK (((1ULL << NET_MAX_BOTS) - 1) << MAX_PLAYERS)   // bits 16..23 (fits the u32 wire field)
+#define MPCHRSLOT(n)            (1ULL << (n))   // chrslots bit - always 64-bit safe
 #endif
 #define MAX_PROPSPERROOMCHUNK  7
 #define MAX_ROOMPROPLISTCHUNKS 256
@@ -1701,6 +1714,11 @@
 #define MENUDIALOGFLAG_1000              0x1000
 #ifndef PLATFORM_N64
 #define MENUDIALOGFLAG_LITERAL_TEXT      0x2000
+#ifndef PLATFORM_N64
+// Sibling skipped by menuPushDialog's carousel walk when g_NetMode !=
+// NETMODE_NONE (the offline-only Simulants pages 2-4).
+#define MENUDIALOGFLAG_NETPLAY_HIDDEN    0x4000
+#endif
 #endif
 
 #define MENUDIALOGSTATE_PREOPEN    0

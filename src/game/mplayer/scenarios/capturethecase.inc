@@ -31,7 +31,7 @@ MenuItemHandlerResult menuhandlerMpCtcTeamBase(s32 operation, struct menuitem *i
 	case MENUOP_CHECKDISABLED:
 		team_in_use = false;
 		for (k = 0; k < MAX_MPCHRS; k++) {
-			if ((g_MpSetup.chrslots & (1 << k)) && MPCHR(k)->team == team_idx) {
+			if ((g_MpSetup.chrslots & MPCHRSLOT(k)) && MPCHR(k)->team == team_idx) {
 				team_in_use = true;
 				break;
 			}
@@ -227,7 +227,7 @@ void ctcInit(void)
 	}
 
 	for (k = 0; k < MAX_MPCHRS; k++) {
-		if (g_MpSetup.chrslots & (1 << k)) {
+		if (g_MpSetup.chrslots & MPCHRSLOT(k)) {
 			struct mpchrconfig *mpchr = MPCHR(k);
 
 			while (mpchr->team >= scenarioGetMaxTeams()) {
@@ -331,7 +331,7 @@ void ctcInitProps(void)
 	}
 
 	for (k = 0; k < MAX_MPCHRS; k++) {
-		if (g_MpSetup.chrslots & (1 << k)) {
+		if (g_MpSetup.chrslots & MPCHRSLOT(k)) {
 			mpchr = MPCHR(k);
 
 			while (mpchr->team >= scenarioGetMaxTeams()) {

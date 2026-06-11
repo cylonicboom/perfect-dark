@@ -41,7 +41,7 @@ struct playlistentry {
 	u8  scorelimit;
 	u8  timelimit;
 	u16 teamscorelimit;
-	u8  bot_count;           // 0..MAX_BOTS
+	u8  bot_count;           // 0..NET_MAX_BOTS
 	u8  bot_difficulty;      // BOTDIFF_*
 	u8  weight;              // 1..255, vote-pool weighting
 	char name[PLAYLIST_NAME_MAXLEN];

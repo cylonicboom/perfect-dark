@@ -567,7 +567,7 @@ void mainLoop(void)
 				if (g_MpSetup.chrslots & (MPCHRSLOTS_BOTS_MASK | (MPCHRSLOTS_PLAYERS_MASK & ~0xfu))) {
 					g_MpSetup.storedbotbits = g_MpSetup.chrslots & (MPCHRSLOTS_BOTS_MASK | (MPCHRSLOTS_PLAYERS_MASK & ~0xfu));
 				}
-				g_MpSetup.chrslots = (1 << ncoop) - 1;
+				g_MpSetup.chrslots = MPCHRSLOT(ncoop) - 1;
 			}
 #endif
 			mpReset();
@@ -595,7 +595,7 @@ void mainLoop(void)
 				g_MpSetup.chrslots = 1;
 
 				for (s32 i = 1; i < numplayers; ++i) {
-					g_MpSetup.chrslots |= 1 << i;
+					g_MpSetup.chrslots |= MPCHRSLOT(i);
 				}
 
 				g_MpSetup.stagenum = g_StageNum;

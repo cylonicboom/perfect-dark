@@ -4191,7 +4191,11 @@ struct mpsetup {
 	// precedent: unconditional on every build; N64 offset comments below are
 	// stale). Not persisted in mpsetups.bin (rebuilt at match start); on the
 	// wire since proto 75 as u32.
-	/*0x800acb9e*/ u32 chrslots;
+	// Port: u64 since the 32-offline-simulant feature - players bits 0-15,
+	// bots bits 16-47 (use MPCHRSLOT()/the MPCHRSLOTS_* masks; plain 1<<n is
+	// UB past bit 31). Not persisted; the wire carries the masked low 24 bits
+	// (players + first NET_MAX_BOTS bots) in a u32 field.
+	/*0x800acb9e*/ u64 chrslots;
 	/*0x800acba0*/ u8 weapons[NUM_MPWEAPONSLOTS];
 	/*0x800acba6*/ u8 paused;
 	/*0x800acba8*/ struct fileguid fileguid;
@@ -4209,7 +4213,7 @@ struct mpsetup {
 	u8 racepitytime; // Race: seconds after the first finisher before the match force-ends, 0-120; 0 = end with the winner (port-only)
 	// Used to restore the non-player bits of chrslots upon entering Combat
 	// Simulator, after playing Co-Op/Counter-Op with a human sim.
-	u32 storedbotbits;
+	u64 storedbotbits;
 #endif
 };
 
@@ -5205,7 +5209,7 @@ struct mpconfigsim {
 
 struct mpconfig {
 	struct mpsetup setup;
-	struct mpconfigsim simulants[MAX_BOTS];
+	struct mpconfigsim simulants[MAX_BOTS_PRESET]; // ROM image width - never widen
 };
 
 struct mpweapon {
@@ -5222,7 +5226,7 @@ struct mpweapon {
 
 struct mpstrings {
 	char description[200];
-	char aibotnames[MAX_BOTS][15];
+	char aibotnames[MAX_BOTS_PRESET][15]; // file image width
 };
 
 struct mpconfigfull {

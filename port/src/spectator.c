@@ -236,7 +236,7 @@ static struct chrdata *spectatorResolveTargetChr(struct spectatorpanel *p)
 		return chr;
 	}
 	if (SPEC_MODE_IS_SIM(p->mode)) {
-		if (p->target >= MAX_BOTS) {
+		if (p->target >= NET_MAX_BOTS) {
 			return NULL;
 		}
 		struct chrdata *chr = g_MpBotChrPtrs[p->target];
@@ -253,7 +253,7 @@ static struct chrdata *spectatorResolveTargetChr(struct spectatorpanel *p)
 // candidates (which forces a fallback to freecam at tick time).
 static u8 spectatorNextTarget(u8 mode, u8 cur, s32 dir)
 {
-	const s32 limit = SPEC_MODE_IS_PLAYER(mode) ? NET_MAX_CLIENTS : MAX_BOTS;
+	const s32 limit = SPEC_MODE_IS_PLAYER(mode) ? NET_MAX_CLIENTS : NET_MAX_BOTS;
 	if (limit <= 0) {
 		return SPEC_TARGET_NONE;
 	}
@@ -499,7 +499,7 @@ static void spectatorPickSpawnPos(struct coord *out, s32 *room_out)
 			}
 		}
 	}
-	for (s32 i = 0; i < MAX_BOTS; i++) {
+	for (s32 i = 0; i < NET_MAX_BOTS; i++) {
 		struct chrdata *chr = g_MpBotChrPtrs[i];
 		if (chr && chr->prop) {
 			*out = chr->prop->pos;

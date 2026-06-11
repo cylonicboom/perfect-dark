@@ -464,7 +464,7 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.scorelimit);
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
-	netbufWriteU32(dst, g_MpSetup.chrslots); // u32 since proto 75 (16 players)
+	netbufWriteU32(dst, (u32)(g_MpSetup.chrslots & (MPCHRSLOTS_PLAYERS_MASK | NET_MPCHRSLOTS_BOTS_MASK))); // u32 since proto 75; bots clamped to NET_MAX_BOTS (offline-32-sims)
 	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	netbufWriteU8(dst, g_MpSetup.kohstatichill);
@@ -481,8 +481,8 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.racelaps);
 	netbufWriteU8(dst, g_MpSetup.racepitytime);
 	netbufWriteU8(dst, (u8)g_BotCount);
-	netbufWriteU8(dst, MAX_BOTS);
-	for (s32 i = 0; i < MAX_BOTS; ++i) {
+	netbufWriteU8(dst, NET_MAX_BOTS);
+	for (s32 i = 0; i < NET_MAX_BOTS; ++i) {
 		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
 		netbufWriteU8(dst, bot->base.mpheadnum);
 		netbufWriteU8(dst, bot->base.mpbodynum);
@@ -527,8 +527,8 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	struct {
 		u8 head, body, team, type, diff;
 		char name[36];
-	} tmpbots[MAX_BOTS];
-	if (numbots > MAX_BOTS) {
+	} tmpbots[NET_MAX_BOTS];
+	if (numbots > NET_MAX_BOTS) {
 		sysLogPrintf(LOG_WARNING, "NET: CLC_ADMIN_SETUP bad bot count %u", numbots);
 		return 1;
 	}
@@ -579,7 +579,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.scorelimit = scorelimit;
 	g_MpSetup.timelimit = timelimit;
 	g_MpSetup.teamscorelimit = teamscorelimit;
-	g_MpSetup.chrslots = chrslots;
+	g_MpSetup.chrslots = chrslots & (MPCHRSLOTS_PLAYERS_MASK | NET_MPCHRSLOTS_BOTS_MASK); // net cap: extras are offline-only
 	// Preserve the sticky host-spectator flag (the dedicated host is a spectator).
 	g_MpSetup.options = (g_MpSetup.options & MPOPTION_HOSTSPECTATOR)
 			| (options & ~(u64)MPOPTION_HOSTSPECTATOR);
@@ -992,7 +992,7 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.scorelimit);
 	netbufWriteU8(dst, g_MpSetup.timelimit);
 	netbufWriteU16(dst, g_MpSetup.teamscorelimit);
-	netbufWriteU32(dst, g_MpSetup.chrslots); // u32 since proto 75 (16 players)
+	netbufWriteU32(dst, (u32)(g_MpSetup.chrslots & (MPCHRSLOTS_PLAYERS_MASK | NET_MPCHRSLOTS_BOTS_MASK))); // u32 since proto 75; bots clamped to NET_MAX_BOTS (offline-32-sims)
 	netbufWriteU64(dst, g_MpSetup.options);
 	netbufWriteData(dst, g_MpSetup.weapons, sizeof(g_MpSetup.weapons));
 	// Per-slot weapon function flags (FNFLAG_*) — preset fn restrictions and
@@ -1084,10 +1084,10 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	// Sim bot configs — without these the client's g_BotConfigsArray stays
 	// default and botmgrAllocateBot picks default heads/bodies on the
 	// client side, so sims show up wearing the wrong models/colors. Send
-	// all MAX_BOTS slots so the array is fully reconstructable; difficulty
+	// all NET_MAX_BOTS slots so the array is fully reconstructable; difficulty
 	// is what gates which slots actually spawn so it has to come along too.
-	netbufWriteU8(dst, MAX_BOTS);
-	for (s32 i = 0; i < MAX_BOTS; ++i) {
+	netbufWriteU8(dst, NET_MAX_BOTS);
+	for (s32 i = 0; i < NET_MAX_BOTS; ++i) {
 		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
 		netbufWriteU8(dst, bot->base.mpheadnum);
 		netbufWriteU8(dst, bot->base.mpbodynum);
@@ -1314,8 +1314,8 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	// the local "Combat Sim" menu was last set to) so sims show up with the
 	// wrong models and names. Must match the write in netmsgSvcStageStartWrite.
 	const u8 numbots = netbufReadU8(src);
-	if (src->error || numbots != MAX_BOTS) {
-		sysLogPrintf(LOG_WARNING, "NET: malformed SVC_STAGE bot config block from server (got %u, want %d)", numbots, MAX_BOTS);
+	if (src->error || numbots != NET_MAX_BOTS) {
+		sysLogPrintf(LOG_WARNING, "NET: malformed SVC_STAGE bot config block from server (got %u, want %d)", numbots, NET_MAX_BOTS);
 		return 4;
 	}
 	for (s32 i = 0; i < numbots; ++i) {
@@ -5018,11 +5018,11 @@ u32 netmsgQueryDetailsWrite(struct netbuf *dst)
 	}
 
 	s32 numbots = 0;
-	for (s32 i = 0; i < MAX_BOTS; i++) {
+	for (s32 i = 0; i < NET_MAX_BOTS; i++) {
 		if (g_BotConfigsArray[i].difficulty != BOTDIFF_DISABLED) { numbots++; }
 	}
 	netbufWriteU8(dst, (u8)numbots);
-	for (s32 i = 0; i < MAX_BOTS; i++) {
+	for (s32 i = 0; i < NET_MAX_BOTS; i++) {
 		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
 		if (bot->difficulty == BOTDIFF_DISABLED) { continue; }
 		netbufWriteStr(dst, bot->base.name);
@@ -5114,11 +5114,11 @@ u32 netmsgSvcLobbyStateWrite(struct netbuf *dst)
 
 	// Active bots: name, team, difficulty
 	s32 numbots = 0;
-	for (s32 i = 0; i < MAX_BOTS; i++) {
+	for (s32 i = 0; i < NET_MAX_BOTS; i++) {
 		if (g_BotConfigsArray[i].difficulty != BOTDIFF_DISABLED) { numbots++; }
 	}
 	netbufWriteU8(dst, (u8)numbots);
-	for (s32 i = 0; i < MAX_BOTS; i++) {
+	for (s32 i = 0; i < NET_MAX_BOTS; i++) {
 		const struct mpbotconfig *bot = &g_BotConfigsArray[i];
 		if (bot->difficulty == BOTDIFF_DISABLED) { continue; }
 		char nbuf[NET_MAX_NAME];
@@ -5176,8 +5176,8 @@ u32 netmsgSvcLobbyStateRead(struct netbuf *src, struct netclient *srccl)
 
 	// Bots
 	const u8 num_bots = netbufReadU8(src);
-	struct netlobbybot bots[MAX_BOTS];
-	const u8 nbt = (num_bots < MAX_BOTS) ? num_bots : MAX_BOTS;
+	struct netlobbybot bots[NET_MAX_BOTS];
+	const u8 nbt = (num_bots < NET_MAX_BOTS) ? num_bots : NET_MAX_BOTS;
 	for (s32 i = 0; i < nbt; i++) {
 		const char *name = netbufReadStr(src);
 		const u8 team    = netbufReadU8(src);

@@ -43,7 +43,7 @@ MenuItemHandlerResult mpStatsForPlayerDropdownHandler(s32 operation, struct menu
 		data->list.value = 0;
 
 		for (v0 = 0; v0 < MAX_MPCHRS; v0++) {
-			if (g_MpSetup.chrslots & (1 << v0)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(v0)) {
 				data->list.value++;
 			}
 		}
@@ -52,7 +52,7 @@ MenuItemHandlerResult mpStatsForPlayerDropdownHandler(s32 operation, struct menu
 		v0 = 0;
 
 		for (a1 = 0; a1 < MAX_MPCHRS; a1++) {
-			if (g_MpSetup.chrslots & (1 << a1)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(a1)) {
 				mpchr = MPCHR(a1);
 
 				if (v0 == data->list.value) {
@@ -68,7 +68,7 @@ MenuItemHandlerResult mpStatsForPlayerDropdownHandler(s32 operation, struct menu
 		v0 = 0;
 
 		for (a1 = 0; a1 < MAX_MPCHRS; a1++) {
-			if (g_MpSetup.chrslots & (1 << a1)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(a1)) {
 				if (v0);
 
 				if (data->list.value == v0) {
@@ -84,7 +84,7 @@ MenuItemHandlerResult mpStatsForPlayerDropdownHandler(s32 operation, struct menu
 		v0 = 0;
 
 		for (v1 = 0; v1 < MAX_MPCHRS; v1++) {
-			if (g_MpSetup.chrslots & (1 << v1)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(v1)) {
 				if (v0);
 
 				if (g_MpSelectedPlayersForStats[g_MpPlayerNum] == v1) {

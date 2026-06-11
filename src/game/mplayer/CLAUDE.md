@@ -25,3 +25,11 @@ Owns multiplayer session setup, bot allocation, scoring, and per-scenario logic.
 - **Do not insert allocations between `netClientSyncRng()` and `botmgrAllocateBot`.** Any allocation that runs on one side but not the other desynchronises `g_MpBotChrPtrs[]`, breaking sim identity on clients.
 - **`g_BotConfigsArray` is stale on clients until `SVC_STAGE_START` arrives.** Adding a new bot config field requires wiring it through `netmsgSvcStageStartWrite/Read`; otherwise clients use whatever the local Combat Sim menu last had.
 - **`chr->actiontype` is intentionally not synced.** Applying the server's actiontype on the client crashes on uninitialised union data. Clients always dispatch as `ACT_STAND`. See [`../CLAUDE.md`](../CLAUDE.md).
+
+## Offline 32 Simulants (docs/PORT_OFFLINE_32_SIMS.md)
+
+`MAX_BOTS` is 32 on the port; **net games cap at `NET_MAX_BOTS` (8)** and file
+images at `MAX_BOTS_PRESET` (8). chrslots is u64 — bot bits 16-47, always via
+`MPCHRSLOT(n)`. The `setupCreateProps` bot-spawn RNG-parity clamp (net →
+exactly 8 iterations) is load-bearing for cross-peer determinism. Preset/wad
+loads disable rows 8-31 so session extras never leak into challenges.

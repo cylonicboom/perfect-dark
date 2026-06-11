@@ -250,7 +250,7 @@ void menuTick(void)
 					// admin, who drives the full setup menu like a server and keeps
 					// its sims across matches.
 					if (g_NetMode == NETMODE_SERVER || g_NetHostOnlineMode) {
-						g_MpSetup.chrslots = (g_MpSetup.chrslots & MPCHRSLOTS_BOTS_MASK) | 1;
+						g_MpSetup.chrslots = (g_MpSetup.chrslots & NET_MPCHRSLOTS_BOTS_MASK) | 1; // net lobby restore: extras (slots 8-31) are offline-only
 					} else {
 						g_MpSetup.chrslots = 1;
 					}
@@ -265,7 +265,7 @@ void menuTick(void)
 				for (i = 0; i < MAX_LOCAL_PLAYERS; i++) {
 					g_Vars.waitingtojoin[i] = false;
 
-					if (g_MpSetup.chrslots & (1 << i)) {
+					if (g_MpSetup.chrslots & MPCHRSLOT(i)) {
 						g_MpPlayerNum = i;
 
 						if (g_Vars.mpsetupmenu == MPSETUPMENU_ADVSETUP) {
@@ -353,7 +353,7 @@ void menuTick(void)
 					g_Menus[i].playernum = g_MpNumJoined++;
 
 					if (g_MenuData.prevmenuroot == -1) {
-						g_MpSetup.chrslots |= (1 << i);
+						g_MpSetup.chrslots |= MPCHRSLOT(i);
 					}
 				}
 			}
@@ -363,7 +363,7 @@ void menuTick(void)
 				s32 slot = 1;
 				for (i = 1; i < g_NetMaxClients; ++i) {
 					if (g_NetClients[i].state >= CLSTATE_LOBBY) {
-						g_MpSetup.chrslots |= (1 << slot);
+						g_MpSetup.chrslots |= MPCHRSLOT(slot);
 						++slot;
 					}
 				}
@@ -635,7 +635,7 @@ void menuTick(void)
 				const s32 maxplayers = g_NetMode ? 1 : MAX_LOCAL_PLAYERS;
 				for (i = 0; i < maxplayers; i++) {
 #endif
-					if (g_MpSetup.chrslots & (1 << i)) {
+					if (g_MpSetup.chrslots & MPCHRSLOT(i)) {
 						if (g_Vars.coopplayernum >= 0) {
 							if (g_Vars.stagenum == STAGE_DEEPSEA) {
 								g_MissionConfig.stageindex++;

@@ -649,7 +649,7 @@ s32 playlistLoad(struct playlist *pl, const char *path)
 				cur->mp_options_mask |= bits;
 			} else if (ieq(key, "bots")) {
 				const s32 v = (s32)strtol(val, NULL, 0);
-				cur->bot_count = (u8)(v < 0 ? 0 : v > MAX_BOTS ? MAX_BOTS : v);
+				cur->bot_count = (u8)(v < 0 ? 0 : v > NET_MAX_BOTS ? NET_MAX_BOTS : v);
 			} else if (ieq(key, "bot_diff") || ieq(key, "bot_difficulty")) {
 				cur->bot_difficulty = parseBotDiff(val);
 			} else if (ieq(key, "weight")) {
@@ -824,13 +824,13 @@ void playlistApply(const struct playlistentry *resolved)
 	// chrslots bit (botnum + MAX_PLAYERS), type, difficulty, name, head,
 	// body, team. g_BotCount is derived elsewhere from chrslots popcount;
 	// we set it here so mpHasSimulants returns true in mpReset.
-	for (s32 i = 0; i < MAX_BOTS; ++i) {
-		g_MpSetup.chrslots &= ~(1u << (i + MAX_PLAYERS));
+	for (s32 i = 0; i < NET_MAX_BOTS; ++i) {
+		g_MpSetup.chrslots &= ~MPCHRSLOT(i + MAX_PLAYERS);
 		g_BotConfigsArray[i].base.name[0] = '\0';
 	}
 	const u8 prof = (resolved->bot_difficulty <= BOTDIFF_DARK)
 			? resolved->bot_difficulty : (u8)BOTDIFF_NORMAL;
-	for (s32 i = 0; i < resolved->bot_count && i < MAX_BOTS; ++i) {
+	for (s32 i = 0; i < resolved->bot_count && i < NET_MAX_BOTS; ++i) {
 		mpCreateBotFromProfile(i, prof);
 	}
 	g_BotCount = resolved->bot_count;

@@ -266,7 +266,7 @@ struct netlobbystate {
 	u8 num_clients;
 	struct netlobbyclient clients[NET_MAX_CLIENTS];
 	u8 num_bots;
-	struct netlobbybot bots[MAX_BOTS];
+	struct netlobbybot bots[NET_MAX_BOTS];
 	char teamnames[MAX_TEAMS][NET_LOBBY_TEAMNAME_LEN];
 	char arena_name[NET_LOBBY_ARENANAME_LEN];
 	char scenario_name[NET_LOBBY_SCENNAME_LEN];

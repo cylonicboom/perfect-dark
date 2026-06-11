@@ -3298,7 +3298,7 @@ MenuItemHandlerResult mpLoadPlayerMenuHandler(s32 operation, struct menuitem *it
 		for (i = 0; i < MAX_LOCAL_PLAYERS; i++) {
 			if (file->fileid == g_PlayerConfigsArray[i].fileguid.fileid
 					&& file->deviceserial == g_PlayerConfigsArray[i].fileguid.deviceserial) {
-				if ((g_MpSetup.chrslots & (1 << i)) == 0) {
+				if ((g_MpSetup.chrslots & MPCHRSLOT(i)) == 0) {
 					mpPlayerSetDefaults(i, true);
 				} else {
 					available = false;
@@ -3405,7 +3405,7 @@ MenuItemHandlerResult menuhandlerMpHandicapPlayer(s32 operation, struct menuitem
 {
 	switch (operation) {
 	case MENUOP_CHECKHIDDEN:
-		if ((g_MpSetup.chrslots & (1 << item->param)) == 0) {
+		if ((g_MpSetup.chrslots & MPCHRSLOT(item->param)) == 0) {
 			return 1;
 		}
 		break;
@@ -3425,7 +3425,7 @@ MenuItemHandlerResult menuhandlerMpHandicapPlayer(s32 operation, struct menuitem
 
 char *mpMenuTextHandicapPlayerName(struct menuitem *item)
 {
-	if (g_MpSetup.chrslots & (1 << item->param)) {
+	if (g_MpSetup.chrslots & MPCHRSLOT(item->param)) {
 #ifndef PLATFORM_N64
 		if (g_NetMode) {
 			// use client names directly, as the config names are not set yet
@@ -3917,7 +3917,7 @@ MenuItemHandlerResult mpAddChangeSimulantMenuHandler(s32 operation, struct menui
 		if (botnum < 0) {
 			botnum = mpGetSlotForNewBot();
 			creating = 1;
-		} else if ((g_MpSetup.chrslots & (1 << (botnum + MAX_PLAYERS))) == 0) {
+		} else if ((g_MpSetup.chrslots & MPCHRSLOT(botnum + MAX_PLAYERS)) == 0) {
 			creating = 1;
 		}
 
@@ -4175,7 +4175,7 @@ MenuItemHandlerResult menuhandlerMpSimulantSlot(s32 operation, struct menuitem *
 	case MENUOP_SET:
 		g_Menus[g_MpPlayerNum].mpsetup.slotindex = item->param;
 
-		if ((g_MpSetup.chrslots & (1 << (item->param + MAX_PLAYERS))) == 0) {
+		if ((g_MpSetup.chrslots & MPCHRSLOT(item->param + MAX_PLAYERS)) == 0) {
 			menuPushDialog(&g_MpAddSimulantMenuDialog);
 		} else if (IS4MB()) {
 			menuPushDialog(&g_MpEditSimulant4MbMenuDialog);
@@ -4201,7 +4201,7 @@ char *mpMenuTextSimulantName(struct menuitem *item)
 {
 	s32 index = item->param;
 
-	if (g_BotConfigsArray[index].base.name[0] == '\0' || (g_MpSetup.chrslots & 1 << (index + MAX_PLAYERS)) == 0) {
+	if (g_BotConfigsArray[index].base.name[0] == '\0' || (g_MpSetup.chrslots & MPCHRSLOT(index + MAX_PLAYERS)) == 0) {
 		return "";
 	}
 
@@ -4213,7 +4213,7 @@ char *func0f17d3dc(struct menuitem *item)
 	s32 index = item->param;
 
 	if (g_BotConfigsArray[index].base.name[0] == '\0'
-			|| ((g_MpSetup.chrslots & 1 << (index + MAX_PLAYERS)) == 0)) {
+			|| (g_MpSetup.chrslots & MPCHRSLOT(index + MAX_PLAYERS)) == 0) {
 		return "";
 	}
 
@@ -4476,13 +4476,111 @@ struct menuitem g_MpSimulantsMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
+
+#ifndef PLATFORM_N64
+// Offline-32-sims (docs/PORT_OFFLINE_32_SIMS.md): Simulants carousel pages
+// 2-4 (slots 9-16 / 17-24 / 25-32). Rows carry the ABSOLUTE slot index in
+// param - menuhandlerMpSimulantSlot and mpMenuTextSimulantName key purely
+// off it, so the page-1 handlers work unchanged. The numeric row label
+// comes from a text function (the language file only has IDs for "1:".."8:").
+char *mpMenuTextSimulantSlotLabel(struct menuitem *item)
+{
+	sprintf(g_StringPointer, "%d:", item->param + 1);
+	return g_StringPointer;
+}
+
+#define MP_SIMPAGE_ROW(slot) \
+	{ \
+		MENUITEMTYPE_SELECTABLE, \
+		slot, \
+		0, \
+		(uintptr_t)&mpMenuTextSimulantSlotLabel, \
+		(uintptr_t)&mpMenuTextSimulantName, \
+		menuhandlerMpSimulantSlot, \
+	}
+
+#define MP_SIMPAGE_ITEMS(a) \
+	{ \
+		MENUITEMTYPE_SELECTABLE, \
+		0, \
+		MENUITEMFLAG_LOCKABLEMINOR, \
+		L_MPMENU_084, /* "Add Simulant..." */ \
+		0, \
+		menuhandlerMpAddSimulant, \
+	}, \
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL }, \
+	MP_SIMPAGE_ROW((a) + 0), \
+	MP_SIMPAGE_ROW((a) + 1), \
+	MP_SIMPAGE_ROW((a) + 2), \
+	MP_SIMPAGE_ROW((a) + 3), \
+	MP_SIMPAGE_ROW((a) + 4), \
+	MP_SIMPAGE_ROW((a) + 5), \
+	MP_SIMPAGE_ROW((a) + 6), \
+	MP_SIMPAGE_ROW((a) + 7), \
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL }, \
+	{ \
+		MENUITEMTYPE_SELECTABLE, \
+		0, \
+		MENUITEMFLAG_LOCKABLEMINOR, \
+		L_MPMENU_093, /* "Clear All" */ \
+		0, \
+		menuhandlerMpClearAllSimulants, \
+	}, \
+	{ \
+		MENUITEMTYPE_SELECTABLE, \
+		0, \
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG, \
+		L_MPMENU_094, /* "Back" */ \
+		0, \
+		NULL, \
+	}, \
+	{ MENUITEMTYPE_END }
+
+struct menuitem g_MpSimulantsMenuItems2[] = { MP_SIMPAGE_ITEMS(8) };
+struct menuitem g_MpSimulantsMenuItems3[] = { MP_SIMPAGE_ITEMS(16) };
+struct menuitem g_MpSimulantsMenuItems4[] = { MP_SIMPAGE_ITEMS(24) };
+
+struct menudialogdef g_MpSimulants4MenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Simulants 25-32\n",
+	g_MpSimulantsMenuItems4,
+	menudialogMpSimulants,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_NETPLAY_HIDDEN,
+	NULL,
+};
+
+struct menudialogdef g_MpSimulants3MenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Simulants 17-24\n",
+	g_MpSimulantsMenuItems3,
+	menudialogMpSimulants,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_NETPLAY_HIDDEN,
+	&g_MpSimulants4MenuDialog,
+};
+
+struct menudialogdef g_MpSimulants2MenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Simulants 9-16\n",
+	g_MpSimulantsMenuItems2,
+	menudialogMpSimulants,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_NETPLAY_HIDDEN,
+	&g_MpSimulants3MenuDialog,
+};
+#endif
+
 struct menudialogdef g_MpSimulantsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	L_MPMENU_083, // "Simulants"
 	g_MpSimulantsMenuItems,
 	menudialogMpSimulants,
 	MENUDIALOGFLAG_MPLOCKABLE,
+#ifndef PLATFORM_N64
+	// Offline-32-sims carousel: pages 2-4 (slots 9-32), hidden while online
+	// via MENUDIALOGFLAG_NETPLAY_HIDDEN (menuPushDialog skips them).
+	&g_MpSimulants2MenuDialog,
+#else
 	NULL,
+#endif
 };
 
 MenuItemHandlerResult menuhandlerMpNTeams(s32 operation, struct menuitem *item, union handlerdata *data, s32 numteams)
@@ -4585,7 +4683,7 @@ MenuItemHandlerResult menuhandlerMpMaximumTeams(s32 operation, struct menuitem *
 		u8 team = 0;
 
 		for (i = 0; i != MAX_MPCHRS; i++) {
-			if (g_MpSetup.chrslots & (1 << i)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(i)) {
 				struct mpchrconfig *mpchr = MPCHR(i);
 
 				mpchr->team = team++;
@@ -4608,7 +4706,7 @@ MenuItemHandlerResult menuhandlerMpHumansVsSimulants(s32 operation, struct menui
 		s32 i;
 
 		for (i = 0; i != MAX_MPCHRS; i++) {
-			if (g_MpSetup.chrslots & (1 << i)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(i)) {
 				struct mpchrconfig *mpchr = MPCHR(i);
 
 				mpchr->team = i < MAX_PLAYERS ? 0 : 1;
@@ -4630,7 +4728,7 @@ MenuItemHandlerResult menuhandlerMpHumanSimulantPairs(s32 operation, struct menu
 		s32 simindex = 0;
 
 		for (i = 0; i != MAX_MPCHRS; i++) {
-			if (g_MpSetup.chrslots & (1 << i)) {
+			if (g_MpSetup.chrslots & MPCHRSLOT(i)) {
 				struct mpchrconfig *mpchr = MPCHR(i);
 
 				if (i < MAX_PLAYERS) {
@@ -6252,7 +6350,12 @@ MenuItemHandlerResult menuhandlerMpNumberOfSimulants(s32 operation, struct menui
 {
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
+#ifndef PLATFORM_N64
+		// Offline-32-sims: Quick Team offers up to 32 sims offline, 8 online.
+		data->dropdown.value = !challengeIsFeatureUnlocked(MPFEATURE_8BOTS) ? 4 : mpGetMaxBotSlots();
+#else
 		data->dropdown.value = !challengeIsFeatureUnlocked(MPFEATURE_8BOTS) ? 4 : MAX_BOTS;
+#endif
 		break;
 	case MENUOP_GETOPTIONTEXT:
 		sprintf(g_StringPointer, "%d\n", data->dropdown.value + 1);

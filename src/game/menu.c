@@ -1581,9 +1581,21 @@ void menuPushDialog(struct menudialogdef *dialogdef)
 			sibling = dialogdef->nextsibling;
 
 			while (sibling && layer->numsiblings < 5) {
+#ifndef PLATFORM_N64
+				// Offline-32-sims: carousel pages flagged NETPLAY_HIDDEN
+				// (the Simulants 9-32 pages) don't exist while in a net
+				// lobby/match - skip them at push time, when g_NetMode is
+				// known. With all siblings skipped the dialog behaves
+				// exactly like a chain-less one (no L/R arrows).
+				if (g_NetMode != NETMODE_NONE && (sibling->flags & MENUDIALOGFLAG_NETPLAY_HIDDEN)) {
+					sibling = sibling->nextsibling;
+					continue;
+				}
+#endif
 				// @bug:
 				// If this limit were to be reached, the game would soft lock
 				// because sibling is incremented inside the if-statement block.
+				// (Port: fixed - the else-break below exits the walk.)
 				if (g_Menus[g_MpPlayerNum].numdialogs < ARRAYCOUNT(g_Menus[0].dialogs)) {
 					dialog = &g_Menus[g_MpPlayerNum].dialogs[g_Menus[g_MpPlayerNum].numdialogs];
 					g_Menus[g_MpPlayerNum].numdialogs++;
@@ -1601,6 +1613,11 @@ void menuPushDialog(struct menudialogdef *dialogdef)
 
 					sibling = sibling->nextsibling;
 				}
+#ifndef PLATFORM_N64
+				else {
+					break; // dialogs[] full - drop remaining siblings instead of soft-locking
+				}
+#endif
 			}
 
 			if (sibling);
@@ -5613,7 +5630,7 @@ Gfx *menuRender(Gfx *gdl)
 #ifndef PLATFORM_N64
 			if (g_NetMode) {
 				if (g_NetMode == NETMODE_SERVER) {
-					sprintf(text, "Server: %d/%d %04x", g_NetNumClients, g_NetMaxClients, g_MpSetup.chrslots);
+					sprintf(text, "Server: %d/%d %06x", g_NetNumClients, g_NetMaxClients, (u32)(g_MpSetup.chrslots & 0xffffff)); // low 24 bits: players + first 8 bots
 				} else {
 					sprintf(text, "Client: ID %u", g_NetLocalClient->id);
 				}
@@ -5661,7 +5678,7 @@ Gfx *menuRender(Gfx *gdl)
 
 					// Check which controllers are connected
 					// and update the alpha of the label
-					if (((g_MpSetup.chrslots | ~joyGetConnectedControllers()) & (1 << i)) == 0) {
+					if (((g_MpSetup.chrslots | ~joyGetConnectedControllers()) & MPCHRSLOT(i)) == 0) {
 #if VERSION >= VERSION_PAL_BETA
 						tmp1 = g_Vars.diffframe60freal * 3;
 #else
@@ -6208,7 +6225,7 @@ s32 menuPakNumToPlayerNum(s32 paknum)
 	u32 result = 0;
 
 	if (g_Vars.normmplayerisrunning) {
-		if (g_MpSetup.chrslots & (1 << paknum)) {
+		if (g_MpSetup.chrslots & MPCHRSLOT(paknum)) {
 			result = paknum;
 		}
 	} else {

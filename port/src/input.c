@@ -1,4 +1,7 @@
 #include <string.h>
+#ifndef _WIN32
+#include <strings.h> // strcasecmp; gcc14-era toolchains (flatpak 24.08 SDK) error on the implicit declaration
+#endif
 #include <ctype.h>
 #include <stdio.h>  // snprintf/sscanf; SDL3's SDL_stdinc.h no longer includes it for us
 #include <stdlib.h> // abs/atoi; SDL3's SDL_stdinc.h no longer includes it for us

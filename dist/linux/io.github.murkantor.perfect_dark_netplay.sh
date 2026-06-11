@@ -39,4 +39,39 @@ case "${1:-}" in
         ;;
 esac
 
-exec "$executable" --basedir "${XDG_DATA_HOME}/roms" --savedir "${XDG_DATA_HOME}/saves" "$@"
+# Mod auto-detection: the AIO-style mod overlays live under data/mods/. Any of
+# the standard mod dirs found there gets its flag appended automatically, so a
+# user who copies them in runs fully modded with a plain `flatpak run` — same
+# experience as the Windows AIO install. An explicitly passed flag wins (the
+# auto-append is skipped for that flag), so overrides and opt-outs still work,
+# e.g. `--moddir /dev/null` to run vanilla.
+has_flag() {
+    flag="$1"
+    shift
+    for a in "$@"; do
+        if [ "$a" = "$flag" ]; then return 0; fi
+    done
+    return 1
+}
+
+mods_root="${XDG_DATA_HOME}/mods"
+extra_args=()
+for spec in \
+    "--moddir mod_allinone" \
+    "--gexmoddir mod_gex" \
+    "--kakarikomoddir mod_kakariko" \
+    "--darknoonmoddir mod_dark_noon" \
+    "--goldfinger64moddir mod_goldfinger_64"; do
+    flag="${spec%% *}"
+    dir="${spec##* }"
+    if [ -d "${mods_root}/${dir}" ] && ! has_flag "$flag" "$@"; then
+        extra_args+=("$flag" "${mods_root}/${dir}")
+    fi
+done
+
+# Run from the mods root so bare relative mod names (--moddir mod_allinone,
+# matching the Windows AIO command line) resolve via the game's cwd lookup.
+# Side effect: cwd-relative outputs (pd.crash.log) land in data/mods/.
+cd "${mods_root}" || exit 1
+
+exec "$executable" --basedir "${XDG_DATA_HOME}/roms" --savedir "${XDG_DATA_HOME}/saves" "${extra_args[@]}" "$@"

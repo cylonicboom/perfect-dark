@@ -30,6 +30,33 @@ external model files some MP bodies use — see `docs/PORT_NET_CRASH_LEDGER.md`
 #22) go in `data/roms/data/`, mirroring a normal install's layout relative to
 `--basedir`.
 
+### Mods
+
+Copy AIO-style mod overlay dirs into `data/mods/` (use `cp` from a WSL/Linux
+shell, NOT Windows Explorer into `\\wsl$` — Explorer materializes NTFS
+`Zone.Identifier` streams as junk files):
+
+```
+~/.var/app/io.github.murkantor.perfect_dark_netplay/data/mods/mod_allinone
+~/.var/app/io.github.murkantor.perfect_dark_netplay/data/mods/mod_gex
+...
+```
+
+The launcher auto-detects the standard dirs (`mod_allinone`, `mod_gex`,
+`mod_kakariko`, `mod_dark_noon`, `mod_goldfinger_64`) and appends the matching
+`--moddir`/`--*moddir` flags, so a plain `flatpak run` is fully modded once
+they're in place. Explicit flags override the auto-detection per flag, and the
+launcher runs from `data/mods/` so bare relative names work too:
+
+```sh
+flatpak run io.github.murkantor.perfect_dark_netplay \
+    --moddir mod_allinone --gexmoddir mod_gex --mod-rom gex.z64
+```
+
+Chain-loaded mod ROMs (`--mod-rom gex.z64`) resolve against `data/roms/`.
+For netplay, server auth matches the mod dir *basename* — keep the standard
+names to join AIO servers.
+
 ### Netplay notes
 
 - The manifest grants `--share=network`: joining, hosting (default UDP

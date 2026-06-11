@@ -4193,6 +4193,15 @@ void modelInit(struct model *model, struct modeldef *modeldef, u32 *rwdatas, boo
 	model->attachedtomodel = NULL;
 	model->attachedtonode = NULL;
 
+#ifndef PLATFORM_N64
+	// matrices is only assigned when the model is first render-prepped
+	// (modelSetMatrices). Until then it is uninitialized memory — on a
+	// headless server (which never renders) that leaked garbage non-NULL
+	// pointers into the hit-trace paths (crash ledger #25). NULL it here so
+	// "matrices == NULL" is a meaningful not-yet-built test everywhere.
+	model->matrices = NULL;
+#endif
+
 	node = modeldef->rootnode;
 
 	while (node) {

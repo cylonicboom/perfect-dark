@@ -84,6 +84,7 @@
 #include "game/mplayer/scenarios.h"
 #include "game/bg.h"
 #include "game/bondgun.h"
+#include "game/camera.h"
 #include "lib/mtx.h"
 #include "video.h"
 #include "input.h"
@@ -959,6 +960,37 @@ void mainTick(void)
 							&& g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON
 							&& g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY) {
 						bgunTickGameplay2();
+					}
+
+					// §6.1/§9 follow-up (crash ledger #25): build every pawn's
+					// third-person body-model matrices in THIS combatant's
+					// camera space. chrTick does this for chrs (sims) inside
+					// propsTickPlayer above, but PLAYER props skip chrTick —
+					// on a listen host their body matrices come from chrRender
+					// in the render pass, which never runs headless, so the
+					// hit traces / lag-comp rewind / lock-on acquisition
+					// against PLAYER targets read an unbuilt matrices pointer.
+					// Per-frame gfx-arena allocation, same lifetime as the sim
+					// matrices chrTick builds. Must run before handsTickAttack
+					// so this pass's traces see fresh matrices.
+					if (cam_primed) {
+						for (s32 pj = 0; pj < PLAYERCOUNT(); pj++) {
+							struct player *pp = g_Vars.players[pj];
+							if (!pp || !pp->haschrbody || !pp->prop || !pp->prop->chr) {
+								continue;
+							}
+							struct model *bodymodel = pp->prop->chr->model;
+							if (!bodymodel || !bodymodel->definition) {
+								continue;
+							}
+							struct modelrenderdata mrd = {0, 1, 3};
+							mrd.unk10 = gfxAllocate(bodymodel->definition->nummatrices * sizeof(Mtxf));
+							if (!mrd.unk10) {
+								continue;
+							}
+							mrd.unk00 = camGetWorldToScreenMtxf();
+							modelSetMatricesWithAnim(&mrd, bodymodel);
+						}
 					}
 
 					if (cam_primed) {

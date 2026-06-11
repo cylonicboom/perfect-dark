@@ -4317,16 +4317,12 @@ void netLagCompBegin(const struct netclient *shooter)
 		// past matrix[0] risks corrupting vertex buffers or other heap allocations.
 		// Narrow-phase hits (bone raycast) still test against the current frame's
 		// matrices, so those remain server-authoritative only — a safer tradeoff.
-		// NEVER touch pawn body-model matrices on the dedicated server: the
-		// model struct is carved from raw memory and `matrices` is only
-		// assigned by the RENDER path, so headless it is uninitialized —
-		// sometimes NULL, sometimes garbage non-NULL (the 2026-06-11
-		// "anyone shoots with two players connected" crash survived a plain
-		// NULL check for exactly that reason; with one client the loop never
-		// reaches another pawn). Listen hosts render every frame, so their
-		// pawn matrices are valid and keep the broad-phase rewind.
-		if (!g_NetDedicatedMode
-				&& cl->player->prop->chr && cl->player->prop->chr->model
+		// matrices NULL = the pawn's body model hasn't been built this frame
+		// (it is NULLed at modelInit and built per-frame — chrRender on a
+		// listen host, the pdmain headless per-combatant mirror on a
+		// dedicated server). A garbage non-NULL value is no longer possible
+		// (crash ledger #25); skip the broad-phase patch when unbuilt.
+		if (cl->player->prop->chr && cl->player->prop->chr->model
 				&& cl->player->prop->chr->model->matrices) {
 			Mtxf *rootmtx = modelGetRootMtx(cl->player->prop->chr->model);
 			if (rootmtx) {

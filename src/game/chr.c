@@ -4738,19 +4738,13 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 		f32 radius = chrGetHitRadius(chr);
 
 #ifndef PLATFORM_N64
-		// Headless server: a pawn's chr body model is never rendered, and the
-		// model struct is carved from raw memory — `matrices` is only assigned
-		// by the render path, so headless it is uninitialized: sometimes NULL,
-		// sometimes garbage non-NULL (a plain NULL check did NOT survive the
-		// 2026-06-11 two-player shot crash). Skip PLAYER props outright on the
-		// dedicated server (sims are fine — their matrices are chrTick-computed
-		// every frame); keep the NULL check as a general guard. NOTE: with
-		// Net.Server.HitValidate >= 1 this means player-target hits can't be
-		// confirmed headless (validation logs/rejects them) — giving pawn body
-		// models real headless matrices is the prerequisite for trusting
-		// enforce mode.
-		if (chr->model == NULL || chr->model->matrices == NULL
-				|| (g_NetDedicatedMode && prop->type == PROPTYPE_PLAYER)) {
+		// A model whose matrices were never built can't be hit-tested (the
+		// modelGetRootMtx broad-phase read below would dereference junk —
+		// crash ledger #25). matrices is NULLed at modelInit and built
+		// per-frame: chrs in chrTick, pawn bodies in chrRender (listen) or
+		// the pdmain headless per-combatant mirror (dedicated), so a NULL
+		// here is a not-yet-built frame, not a permanent state.
+		if (chr->model == NULL || chr->model->matrices == NULL) {
 			return;
 		}
 #endif

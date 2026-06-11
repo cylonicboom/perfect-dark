@@ -11306,6 +11306,27 @@ s32 objTickPlayer(struct prop *prop)
 						prop->pos.x, prop->pos.y, prop->pos.z);
 			}
 		}
+
+		// projdiag (temporary, server): flight-gate state for PLAYER-owned
+		// projectiles — the §6.1-mirrored rocket fire ("rocket frozen" report:
+		// is projectileTick reached on the owner's pass, and with what state?)
+		if (g_NetMode == NETMODE_SERVER && prop->syncid && projectile
+				&& projectile->ownerprop && projectile->ownerprop->type == PROPTYPE_PLAYER) {
+			static u32 s_srvProjFrame = 0;
+			if (g_Vars.lvframe60 - s_srvProjFrame > 60) {
+				s_srvProjFrame = g_Vars.lvframe60;
+				sysLogPrintf(LOG_WARNING,
+						"projdiag: srvgate sid=%u fulltick=%d anim=%d active=%d bg=%d pflags=0x%x spd=(%.1f,%.1f,%.1f) pos=(%.0f,%.0f,%.0f) own=%u cur=%d",
+						prop->syncid, fulltick, model->anim != NULL,
+						prop->active, prop->backgrounded,
+						projectile->flags,
+						projectile->speed.x, projectile->speed.y, projectile->speed.z,
+						prop->pos.x, prop->pos.y, prop->pos.z,
+						projectile->ownerprop->syncid,
+						(g_Vars.currentplayer && g_Vars.currentplayer->prop)
+								? (s32)g_Vars.currentplayer->prop->syncid : -1);
+			}
+		}
 #endif
 	}
 

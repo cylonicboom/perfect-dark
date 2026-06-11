@@ -59,6 +59,7 @@
 #include "game/stagetable.h"
 #include "video.h"
 #include "net/net.h"
+#include "system.h"
 #include "net/netmsg.h"
 #include "net/netprop.h"
 #include "mpsetups.h"
@@ -5071,6 +5072,18 @@ void bgunCreateFiredProjectile(s32 handnum)
 	if (g_NetMode == NETMODE_CLIENT) {
 		return;
 	}
+
+	// projdiag (temporary): a remote pawn's fire reached projectile creation
+	// on the server — log the spawn inputs (muzzlepos is render-populated
+	// viewmodel state, suspect garbage on a headless server).
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+		struct hand *dh = g_Vars.currentplayer->hands + handnum;
+		sysLogPrintf(LOG_WARNING,
+				"projdiag: srvfire pl=%d weap=%d func=%d muzzle=(%.0f,%.0f,%.0f) rocket=%d",
+				g_Vars.currentplayernum, dh->gset.weaponnum, dh->gset.weaponfunc,
+				dh->muzzlepos.x, dh->muzzlepos.y, dh->muzzlepos.z,
+				dh->rocket != NULL);
+	}
 #endif
 
 	hand = g_Vars.currentplayer->hands + handnum;
@@ -5253,6 +5266,29 @@ void bgunCreateFiredProjectile(s32 handnum)
 						weapon->base.projectile->unk08c = funcdef->reflectangle;
 						weapon->base.projectile->unk098 = funcdef->unk50 * 1.6666666f;
 
+#ifndef PLATFORM_N64
+						// projdiag (temporary): name the NaN source in the launch
+						// math for a remote shooter ("rocket doesn't propel" —
+						// srvgate showed spd NaN from launch). gundir feeds
+						// sp250 (thrust) and sp264 (launch impulse); speed is
+						// what bgun0f09ed2c stored from sp264.
+						if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+							sysLogPrintf(LOG_WARNING,
+									"projdiag: srvlaunch gundir=(%.3f,%.3f,%.3f) vel=(%.1f,%.1f,%.1f) spd=(%.1f,%.1f,%.1f) cross=(%.1f,%.1f) scl=(%f,%f) fov=%.1f prev=(%.0f,%.0f,%.0f)",
+									gundir.x, gundir.y, gundir.z,
+									sp264.x, sp264.y, sp264.z,
+									weapon->base.projectile->speed.x,
+									weapon->base.projectile->speed.y,
+									weapon->base.projectile->speed.z,
+									g_Vars.currentplayer->crosspos[0],
+									g_Vars.currentplayer->crosspos[1],
+									g_Vars.currentplayer->c_scalex,
+									g_Vars.currentplayer->c_scaley,
+									viGetFovY(),
+									prevpos->x, prevpos->y, prevpos->z);
+						}
+#endif
+
 						if (funcdef->soundnum > 0) {
 							psCreate(NULL, weapon->base.prop, funcdef->soundnum, -1, -1, 0, 0, PSTYPE_NONE, 0, -1.0f, 0, -1, -1.0f, -1.0f, -1.0f);
 						}
@@ -5288,6 +5324,18 @@ void bgunCreateFiredProjectile(s32 handnum)
 #ifndef PLATFORM_N64
 				else {
 					netSyncPropSpawn(weapon->base.prop);
+				}
+
+				// Remote pawn on a server: vanilla detaches the fired rocket
+				// from the hand in bgunRender (the "render it attached one
+				// more frame" handoff, bondgun.c ~11782) — render-tier, so
+				// headless the hand kept pointing at the FIRED rocket and the
+				// next shot re-consumed the same prop: re-scaled its realrot
+				// (the "rocket doubles in size every shot" report) and
+				// re-launched it from the new muzzle. Detach immediately here.
+				if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+						&& hand->firedrocket) {
+					hand->rocket = NULL;
 				}
 #endif
 #else
@@ -8639,6 +8687,43 @@ void bgun0f0a5550(s32 handnum)
 
 		hand->muzzlez = -hand->cammtx.m[3][2];
 	}
+
+#ifndef PLATFORM_N64
+	// Remote pawn on a server: every muzzle value above is derived from the
+	// first-person viewmodel matrix pipeline, which is render-tier — on a
+	// headless server those matrices are uninitialized scratch (observed
+	// muzzle=(-inf,nan,inf), which NaN-poisoned the fired rocket's prop/rooms
+	// and crashed the server in the next chr-state write). Substitute an
+	// eye-derived muzzle from the pawn's authoritative view pose (cam_pos /
+	// cam_look, maintained per remote pawn by playerTick — the same pose §9
+	// Tier-2 visibility and hit validation trust). Consumers fixed at once:
+	// bgunCreateFiredProjectile (rocket spawnpos + posmtx), bgunCreateThrown-
+	// Projectile (grenade spawnpos + muzzlemat throw rotation) and
+	// bgunUpdateHeldRocket (held-rocket placement).
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+		struct player *rpl = g_Vars.currentplayer;
+		// Degenerate-up guard: looking straight up/down makes cam_look
+		// parallel to the world up, and mtx00016b58's cross products NaN out
+		// (the original crash repro was firing at the ground). Use a Z up
+		// there instead.
+		f32 upy = (rpl->cam_look.y > 0.99f || rpl->cam_look.y < -0.99f) ? 0.0f : 1.0f;
+		f32 upz = 1.0f - upy;
+		hand->muzzlepos.x = rpl->cam_pos.x + rpl->cam_look.x * 25.0f;
+		hand->muzzlepos.y = rpl->cam_pos.y + rpl->cam_look.y * 25.0f;
+		hand->muzzlepos.z = rpl->cam_pos.z + rpl->cam_look.z * 25.0f;
+		mtx00016b58(&hand->muzzlemat, 0.0f, 0.0f, 0.0f,
+				rpl->cam_look.x, rpl->cam_look.y, rpl->cam_look.z,
+				0.0f, upy, upz);
+		// Fired-projectile basis (bgunCreateFiredProjectile copies posmtx into
+		// the rocket's realrot): rocket models nose along +Z of their realrot,
+		// so the plain look-along matrix (forward = -Z) rendered them flying
+		// tail-first. Build posmtx with the look negated.
+		mtx00016b58(&hand->posmtx, 0.0f, 0.0f, 0.0f,
+				-rpl->cam_look.x, -rpl->cam_look.y, -rpl->cam_look.z,
+				0.0f, upy, upz);
+		hand->muzzlez = 0.0f;
+	}
+#endif
 
 	switch (weaponnum) {
 	case WEAPON_ROCKETLAUNCHER:

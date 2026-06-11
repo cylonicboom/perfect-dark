@@ -214,5 +214,57 @@ heal logs:
    (recover + log, don't die). If runtime confirms "logs fire but no crash/hang", that
    is a viable shipping state while the generators are hunted one by one.
 
+## #24 Cross-build sim-count divergence → syncid aliasing → client pawn freed by a sim pickup (2026-06-11)
+
+**Site:** `lvRender` lv.c:1365 (`chr->blurdrugamount` with `chr == NULL`, AV read 0x328).
+Client = HEAD build (proto 75, post-PR#18); server = the VPS dedicated instance, a STALE
+`port-custom` x86_64-linux build (started 11 Jun 00:24) that is proto 75 (has f2a1761df)
+but **pre-dates c71ad7a52 (offline-32 sims)** — so its `setupCreateProps` still runs the
+challenge-gated clamp `maxsimulants = challengeIsFeatureUnlocked(MPFEATURE_8BOTS) ? 8 : 4`,
+and the headless VPS save has no challenge unlocks → **server spawned 4 sims while the
+client (post-c71a: always `NET_MAX_BOTS` 8 in net) spawned 8** for the same wire chrslots.
+
+**Evidence:** server log `last initial syncid: 50, next dynamic: 51` vs client log
+`last initial syncid: 54, next dynamic: 55`; server diag `pos_sim id=0..3` vs client diag
+`pos_sim id=0..7`; client warnings name syncids 51/52/53 as type 3 (the 3 extra sim chrs)
+and 54 as type 6 (the local pawn, allocated after the sims).
+
+**Cascade once the pools diverge (server dynamic ids 51..54 alias the client's last 4
+initial props):**
+1. every `SVC_PROP_MOVE` for server dynamics 51-54 hits the type gate → warning + `return 1`
+   → **the rest of that packet is dropped** (hundreds of packet tails lost over the match —
+   collateral loss of unrelated player/prop/score messages riding behind it);
+2. `SVC_PROP_SPAWN` 51-53 → "spawn collides with existing prop — dropping spawn" → those
+   dropped weapons/projectiles **never exist client-side** (an invisible-projectile source
+   independent of the propobj.c:11412 fulltick gate);
+3. `SVC_PROP_FREE` 51-53 → resolves to the client's phantom sim chrs → `CHRHFLAG_DELETING`
+   tears down sims the server still owns;
+4. **the kill:** `SVC_PROP_PICKUP` with `clid == 0xff` (sim picked up the server's dropped
+   weapon, dynamic syncid 54) → `netmsgSvcPropPickupRead`'s sim-pickup path runs
+   `propExecuteTickOperation(prop, TICKOP_FREE)` with **no prop-type gate** → frees the
+   client's OWN PLAYER prop → union NULL corpse → `bmoveTick` choke-point guard (#21) fired
+   once ("pawn invalid... skipping movement tick") but `lvRender`'s blur block
+   (lv.c:1361-1365) has no such guard → NULL `prop->chr` deref next frame.
+
+**Note the proto bump did NOT protect:** both builds honestly report 75; c71ad7a52 changed
+net-relevant determinism with "no proto bump" on the strength of the RNG-parity clamp, but
+the clamp only matches an OLD peer whose `MPFEATURE_8BOTS` is unlocked. A locked old build
+(any fresh-savedir dedicated instance) iterates 4, not 8 — this was also a LATENT old-vs-old
+bug: a dedicated server without challenge unlocks could never spawn >4 sims and silently
+desynced any client that had them.
+
+**Fixes:**
+- **operational (the actual cause):** redeploy the VPS `pd-server.x86_64` from HEAD (the
+  proto-74/75 deploy noted in the spectator-slot9 work happened with a stale intermediate
+  build);
+- **hardening (proposed):** (a) type-gate `netmsgSvcPropPickupRead`'s tickop execution
+  (all three paths: sim/0xff, spectator, main) to WEAPON/OBJ so a wire message can never
+  free a PLAYER/CHR prop; (b) mirror the #21 pawn-validation guard in `lvRender`'s blur
+  block (or hoist it to the per-player loop top); (c) consider carrying the client's
+  `last initial syncid` in `CLC_STAGE_READY` so the server can detect allocation divergence
+  at match start and kick with a clear error instead of corrupting silently.
+
+| 24 | `lvRender` lv.c:1365 | AV read 0x328 (NULL `chr`) | crash | cross-build initial-prop divergence (stale VPS build: locked-challenge 4-sim clamp vs new client's always-8) → server dynamic syncids 51-54 alias client sims+pawn → un-type-gated `SVC_PROP_PICKUP` sim path TICKOP_FREEs the local pawn | redeploy VPS from HEAD; proposed: pickup type gate + lvRender pawn guard + stage-ready allocation cross-check | diagnosed (fixes pending) |
+
 > Keep appending here on every new crash: site, fault, root, fix, status. The table is
 > the map; the pattern section is the territory.

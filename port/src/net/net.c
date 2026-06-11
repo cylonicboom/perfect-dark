@@ -2941,7 +2941,12 @@ void netEndFrame(void)
 					if (prop->syncid && prop->obj && prop->parent == NULL
 							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
 							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)
-							&& (prop->obj->hidden & OBJHFLAG_EMBEDDED) == 0) {
+							&& (prop->obj->hidden & OBJHFLAG_EMBEDDED) == 0
+							// Held rockets are first-person viewmodel cosmetics
+							// (re-placed at the holder's muzzle every frame, not
+							// world physics) — never wire their position; the
+							// fired projectile they become is what syncs.
+							&& (prop->obj->flags & OBJFLAG_HELDROCKET) == 0) {
 						const u32 b0 = g_NetMsg.wp;
 						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
 						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
@@ -2959,7 +2964,8 @@ void netEndFrame(void)
 					struct prop *prop = &g_Vars.props[i];
 					if (prop->syncid && prop->obj && prop->parent == NULL
 							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
-							&& (prop->obj->hidden & (OBJHFLAG_PROJECTILE | OBJHFLAG_EMBEDDED)) == 0) {
+							&& (prop->obj->hidden & (OBJHFLAG_PROJECTILE | OBJHFLAG_EMBEDDED)) == 0
+							&& (prop->obj->flags & OBJFLAG_HELDROCKET) == 0) {
 						const u32 b0 = g_NetMsg.wp;
 						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
 						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);

@@ -3556,7 +3556,25 @@ f32 player0f0bd358(void)
 #ifdef PLATFORM_N64
 	return result;
 #else
-	return result * (videoGetAspect() / ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO));
+	{
+		// Headless (dedicated server / --headless-client): the renderer never
+		// initializes, so videoGetAspect() returns 0 — and playerTick feeds
+		// this through playermgrSetAspectRatio + viSetFovAspectAndSize every
+		// tick, zeroing every pawn's c_perspaspect: c_scalex = 0, the
+		// crosshair spread math divides by zero (inf), and cam0f0b4c3c's
+		// inf*0 makes the aim ray NaN — server-mirrored projectile fire
+		// launched rockets with NaN speed/thrust ("rocket doesn't propel",
+		// 2026-06-11 srvlaunch diag), and the same NaN poisoned the per-
+		// shooter hit-validation traces silently. Treat an uninitialized
+		// video aspect as native (multiplier exactly 1.0 = N64 behavior).
+		f32 vidaspect = videoGetAspect();
+
+		if (!(vidaspect > 0.0f)) {
+			return result;
+		}
+
+		return result * (vidaspect / ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO));
+	}
 #endif
 }
 
@@ -3587,6 +3605,23 @@ void playerAutoWalk(s16 aimpad, u8 walkspeed, u8 turnspeed, u8 lookup, u8 dist)
 
 void playerLaunchSlayerRocket(struct weaponobj *rocket)
 {
+#ifndef PLATFORM_N64
+	// Net: never engage fly-by-wire for a REMOTE pawn. The server's fire
+	// mirror (pdmain.c §6.1 handsTickAttack) runs bgunCreateFiredProjectile
+	// for remote players' Slayer secondary; engaging VISIONMODE_SLAYERROCKET
+	// here hijacks the SERVER-side pawn — playerTick's slayer branch calls
+	// bmoveTick(0,0,0,1) (movement input ignored, pawn freezes while the
+	// client keeps walking = CSP rubber-band) and routes the client's stick
+	// input into rocket steering the client can't even see (its own
+	// bgunCreateFiredProjectile is client-gated, so the rocket-cam never
+	// engages there) — the 2026-06-11 "player becomes a random rocket"
+	// report. Degrade: a remote shooter's fly-by-wire rocket flies unguided;
+	// proper client-side fly-by-wire needs the client to own the rocket
+	// flight + camera (future work). Listen-host local player keeps vanilla.
+	if (g_NetMode != NETMODE_NONE && g_Vars.currentplayer->isremote) {
+		return;
+	}
+#endif
 	g_Vars.currentplayer->slayerrocket = rocket;
 	g_Vars.currentplayer->visionmode = VISIONMODE_SLAYERROCKET;
 

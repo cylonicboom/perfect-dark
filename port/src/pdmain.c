@@ -83,6 +83,7 @@
 #include "game/prop.h"
 #include "game/mplayer/scenarios.h"
 #include "game/bg.h"
+#include "game/bondgun.h"
 #include "lib/mtx.h"
 #include "video.h"
 #include "input.h"
@@ -921,8 +922,72 @@ void mainTick(void)
 					// cam_primed: the trace projects through this player's
 					// matrices (objHit derefs camGetProjectionMtxF without a
 					// NULL guard), so it must not run on an unprimed slot.
+					// Gun-load kick (§6.1 follow-up, the "client shoots nothing"
+					// root — 2026-06-11 srvhand diag: memown=2 mls=0 loaded=0
+					// forever). bgunLoadAll's ONLY caller is lvRender
+					// (lv.c:1424-1429) — render-tier — so headless it never ran,
+					// gunctrl.loadall stayed true (bgunReset sets it), and
+					// bgunTickGameplay2 skips bgunTickLoad while loadall is set:
+					// the master-load never claimed the gunmem from
+					// GUNMEMOWNER_CHRBODY, bgunIsLoaded() stayed false, and the
+					// fire state machine (bgun0f09bf44 -> HANDSTATE_ATTACK ->
+					// hand->firing -> handTickAttack) never ran for remote pawns.
+					// Hitscan never noticed (damage rides CLC_HIT), but every
+					// projectile weapon (rocket/grenade/mine/laptop) silently
+					// no-opped for every client. Mirror the lvRender call here;
+					// lvRender's extra gates (var80075d60 debug default, menu bg,
+					// third-person/eyespy camera) don't apply to a headless
+					// remote pawn.
+					if (g_Vars.currentplayer && g_Vars.currentplayer->prop
+							&& g_Vars.currentplayer->gunctrl.loadall) {
+						g_Vars.currentplayer->gunctrl.loadall = bgunLoadAll();
+					}
+
+					// bgunTickGameplay2 is ALSO render-tier — its only caller is
+					// playerRenderHud (player.c:5142) — yet it owns the gun-load
+					// ticker (bgunTickLoad -> bgunTickMasterLoad: claims the
+					// gunmem from GUNMEMOWNER_CHRBODY and advances
+					// masterloadstate to LOADED) plus the per-hand housekeeping
+					// (bgun0f0a5550: muzzlepos/posmtx updates the projectile
+					// spawn position reads). Without it the loadall kick above
+					// clears the flag but nothing ever loads — memown stayed 2
+					// forever (second srvhand diag run, 2026-06-11 18:55).
+					// Run it inside the cam prime so camGetProjectionMtxF is
+					// THIS pawn's matrices (bgun0f0a5550 transforms muzzlepos
+					// through it); mirror the playerRenderHud camera gates.
+					if (cam_primed
+							&& g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON
+							&& g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY) {
+						bgunTickGameplay2();
+					}
+
 					if (cam_primed) {
 						handsTickAttack();
+					}
+
+					// projdiag (temporary): name the gate blocking remote-pawn
+					// projectile fire on the dedicated server ("client shoots
+					// nothing", 2026-06-11). One line per second per remote pawn
+					// dumps every gate on the fire chain: trigger -> bgun0f09bf44
+					// (bgunIsLoaded: gunmem owner + masterload) -> HANDSTATE_ATTACK
+					// -> hand->firing -> handTickAttack -> bgunCreateFiredProjectile.
+					{
+						struct player *pl_fd = g_Vars.currentplayer;
+						static u32 s_fireDiagFrame = 0;
+						if (pl_fd && pl_fd->isremote && pl_fd->prop
+								&& g_Vars.lvframe60 - s_fireDiagFrame > 60) {
+							s_fireDiagFrame = g_Vars.lvframe60;
+							struct hand *h0 = &pl_fd->hands[HAND_RIGHT];
+							sysLogPrintf(LOG_WARNING,
+									"projdiag: srvhand pl=%d cam=%d weap=%d state=%d firing=%d atk=%d loaded=%d memtype=%d memown=%d mls=%d switchto=%d gset=%d/%d",
+									g_Vars.currentplayernum, cam_primed,
+									pl_fd->gunctrl.weaponnum, h0->state, h0->firing,
+									h0->attacktype, bgunIsLoaded(),
+									pl_fd->gunctrl.gunmemtype, pl_fd->gunctrl.gunmemowner,
+									pl_fd->gunctrl.masterloadstate,
+									pl_fd->gunctrl.switchtoweaponnum,
+									h0->gset.weaponnum, h0->gset.weaponfunc);
+						}
 					}
 
 					// Pickup detection. propsTestForPickup is normally called

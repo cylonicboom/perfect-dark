@@ -269,6 +269,14 @@ static inline struct prop *netbufReadPropPtr(struct netbuf *buf)
 	const u32 syncid = netbufReadU32(buf);
 	struct prop *prop = netSyncIdToProp(syncid);
 	if (!prop && syncid != 0) {
+		// Throttled: the per-tick dynamic-prop move broadcast repeats a ghost
+		// syncid (a prop the server has but this client never spawned) every
+		// tick — unthrottled this line hit 1000+ per match (2026-06-11 log).
+		static u32 s_ghostwarntick = 0xffffffffu;
+		if (s_ghostwarntick == g_NetTick) {
+			return prop;
+		}
+		s_ghostwarntick = g_NetTick;
 		sysLogPrintf(LOG_WARNING, "NET: prop with syncid %u does not exist", syncid);
 	}
 	return prop;
@@ -2488,7 +2496,10 @@ static f32 netSimBlendAngle(f32 cur, f32 target, f32 alpha)
 u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 {
 	const u8 flags = netbufReadU8(src);
-	struct prop *prop = netbufReadPropPtr(src);
+	// Resolve by hand (not netbufReadPropPtr) so the ghost diagnostics below can
+	// name the wire syncid even when it resolves to nothing.
+	const u32 wiresid = netbufReadU32(src);
+	struct prop *prop = netSyncIdToProp(wiresid);
 	struct coord pos;
 	if (flags & (1 << 5)) {
 		netbufReadPosQ(src, &pos); // proto 65: s16-quantized position
@@ -2552,56 +2563,78 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// netmsgSvcPropMoveWrite): prop->obj aliases prop->chr/door, so for a
 		// stale/recycled syncid that now resolves to a CHR prop, `prop->obj`
 		// would be non-NULL but point at chr data — the OBJHFLAG reads below
-		// would chase junk pointers. A type mismatch stops the packet exactly
-		// like the missing-obj case.
-		if (!prop || !prop->obj || (prop->type != PROPTYPE_OBJ
-				&& prop->type != PROPTYPE_WEAPON && prop->type != PROPTYPE_DOOR)) {
-			// Can't resolve the obj here, so we can't safely consume the
-			// flag-determined projectile body — stop the packet (logged as
-			// SVC_PROP_MOVE, not a garbage id). Rare: a projectile move normally
-			// arrives after its spawn. prop may be NULL (see header note).
-			sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have an obj, but doesn't (type %d)", prop ? prop->syncid : 0, prop ? prop->type : -1);
-			return 1;
-		}
+		// would chase junk pointers.
+		//
+		// An unresolved/mismatched prop must NOT stop the packet: the section's
+		// byte layout is fully flag-determined (independent of the prop), so it
+		// is consumed into a throwaway and parsing continues. The old `return 1`
+		// here dropped the REST of the packet for every move referencing a prop
+		// this client doesn't have; with the per-tick dynamic-prop move
+		// broadcast (netEndFrame §5.2 passes) ONE standing ghost prop murdered
+		// hundreds of packet tails per match — losing the reliable spawns/frees
+		// riding behind them, which created MORE ghosts (the self-feeding loss
+		// spiral behind "player rockets never appear" / missing frees,
+		// 2026-06-11: 619 dropped tails, 9 of ~60+ frees received).
+		const bool objok = prop && prop->obj && (prop->type == PROPTYPE_OBJ
+				|| prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR);
 
-		if (flags & (1 << 1)) {
+		struct projectile *projectile = NULL;
+
+		if (objok && (flags & (1 << 1))) {
 			// create a projectile for this prop if it isn't already there
 			func0f0685e4(prop);
 
-			struct projectile *projectile = NULL;
 			if (prop->obj->hidden & OBJHFLAG_EMBEDDED) {
 				projectile = prop->obj->embedment->projectile;
 			} else if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
 				projectile = prop->obj->projectile;
 			}
+		}
 
-			if (!projectile) {
-				sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: prop %u should have a projectile, but doesn't", prop->syncid);
-				return 1;
+		if (!objok || ((flags & (1 << 1)) && !projectile)) {
+			// Throttled (continuous moves re-fire this every tick for a
+			// standing ghost). Names the wire syncid — the ghost id is the
+			// lead for hunting the missing spawn-broadcast path.
+			static u32 s_objwarntick = 0xffffffffu;
+			if (s_objwarntick != g_NetTick) {
+				s_objwarntick = g_NetTick;
+				sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_MOVE: obj body for syncid %u unapplied (resolved %d type %d proj %d) — consumed",
+						wiresid, prop != NULL, prop ? prop->type : -1, projectile != NULL);
 			}
+		}
 
-			netbufReadCoord(src, &projectile->speed);
-			projectile->unk0dc = netbufReadF32(src);
-			projectile->flags = netbufReadU32(src);
-			projectile->bouncecount = netbufReadS8(src);
-			projectile->ownerprop = netbufReadPropPtr(src);
-			projectile->targetprop = netbufReadPropPtr(src);
+		if (flags & (1 << 1)) {
+			// Read into the real projectile or a throwaway — identical byte
+			// layout either way, keeping the packet stream aligned.
+			struct projectile dummy;
+			struct projectile *pj = projectile ? projectile : &dummy;
+
+			netbufReadCoord(src, &pj->speed);
+			pj->unk0dc = netbufReadF32(src);
+			pj->flags = netbufReadU32(src);
+			pj->bouncecount = netbufReadS8(src);
+			pj->ownerprop = netbufReadPropPtr(src);
+			pj->targetprop = netbufReadPropPtr(src);
 
 			if (flags & (1 << 2)) {
 				struct coord initrot; netbufReadCoord(src, &initrot);
-				mtx4LoadRotation(&initrot, &projectile->mtx);
+				if (projectile) {
+					mtx4LoadRotation(&initrot, &projectile->mtx);
+				}
 			}
 
 			if (flags & (1 << 3)) {
-				projectile->unk08c = netbufReadF32(src);
-				projectile->unk098 = netbufReadF32(src);
-				projectile->unk0e0 = netbufReadF32(src);
-				projectile->unk0e4 = netbufReadF32(src);
-				projectile->unk0ec = netbufReadF32(src);
-				projectile->unk0f0 = netbufReadF32(src);
+				pj->unk08c = netbufReadF32(src);
+				pj->unk098 = netbufReadF32(src);
+				pj->unk0e0 = netbufReadF32(src);
+				pj->unk0e4 = netbufReadF32(src);
+				pj->unk0ec = netbufReadF32(src);
+				pj->unk0f0 = netbufReadF32(src);
 			}
 
-			prop->pos = pos;
+			if (projectile) {
+				prop->pos = pos;
+			}
 		}
 	}
 

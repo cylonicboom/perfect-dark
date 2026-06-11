@@ -88,7 +88,7 @@ calls. The headless mirror lives in `port/src/pdmain.c` `mainTick`
 | `currentPlayerInteract(false)` | lv.c:1566/1577 | ✅ pdmain.c:873-876 | gated on `JO_ACTION_ACTIVATE` from UCMDs. |
 | death state machine (`playerRenderHud`, player.c:5220-5502: `isdead` 1→2, `deathanimfinished`, `redbloodfinished`, `colourfadetimemax60`) | player.c | ✅ pdmain.c:878-910 | terminal state advanced immediately; without it `numdying` never reaches 0 and the match never ends (lv.c:2402). |
 | respawn detect+consume (`dostartnewlife` on `UCMD_RESPAWN` → `playerStartNewLife`) | player.c:5268-5328 / lv.c | ✅ pdmain.c:912-945 | |
-| `handsTickAttack` | **lv.c:1456 — only caller in the tree** | ❌ **NOT mirrored** | see §6.1 — this is the biggest open gap. |
+| `handsTickAttack` | **lv.c:1456 — only caller in the tree** | ✅ pdmain.c (after propsSort, gated on the Tier 2 camera prime) | see §6.1 — remote projectile/uplink dispatch; remote-shooter damage rails already on the path. |
 | `autoaimTick` | lv.c:1455 | ❌ | server has no aim-assist consumer; cosmetic. OK. |
 | `lookingatprop` calc (`propFindAimingAt` QUERY) | lv.c:1464-1497 | ❌ | HUD/aim-track only; interact has its own scan (§4). OK. |
 | `lvFindThreats` / tracked props | lv.c | ❌ | threat-detector HUD; OK. |
@@ -283,10 +283,11 @@ are small.
 > trace (`objHit → objTakeGunfire → objDamage`) plus the shooter's
 > `CLC_PROP_HIT` report (`netmsgClcPropHitRead` enqueues unconditionally, no
 > dedupe). Invisible for one-hit glass; mild inflation on HP destructibles.
-> Fix direction: mirror the chrHit pattern — skip the local `objDamage` for
-> remote shooters on the server and let the client report be the single
-> application (plus record for validation). Deliberately NOT bundled with the
-> mirror commit so the mirror is pure listen-host parity.
+> **RESOLVED (proto-75 batch):** objHit now mirrors the chrHit pattern — a
+> remote shooter's prop hit records `netServerRecordDetectedHit` instead of
+> applying `objDamage`; the `CLC_PROP_HIT` report is the single application,
+> and the drain validates it against the same srvhits ring as chr hits
+> (`prophit_reject` diag line, log/enforce via `Net.Server.HitValidate`).
 
 Original analysis (kept for the record):
 `handsTickAttack` (prop.c:1833) → `handTickAttack` (prop.c:1736) is the
@@ -333,11 +334,12 @@ enter it (§4.5). Net effect: on a dedicated host, `Net.Server.HitValidate=1`
 logs every hit as undetected and `=2` would **reject all legitimate hits**.
 Today's default (0 = off) is the only mode that works blind.
 
-**Workaround direction:** §9 fixes both halves — Tier 1 restores
-`onscreenprops` + chr matrices; Tier 2 supplies the *per-shooter* candidate
-set ("what the shooting client sees"), which is the semantically correct
-input for validating that shooter's `CLC_HIT`. Until then, document
-HitValidate as listen-host-only.
+**Status:** closed by §9 + the §6.1 mirror (the server's own remote-shooter
+trace runs with real candidates + matrices and records chr AND prop
+detections), plus the prop-hit validation drain. `Net.Server.HitValidate=1`
+(log-only) is now meaningful on a dedicated host — run it on the VPS to
+measure agreement before considering enforce mode. Runtime-unproven against
+real human aim ticks; watch `hit_reject`/`prophit_reject` rates.
 
 ### 6.3 Screen-gated frees → ghost mines (mitigated, not fixed)
 The embedded/stuck-prop FREE path picks `chr0f022214` (on-screen) vs

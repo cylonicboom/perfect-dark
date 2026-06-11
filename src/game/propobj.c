@@ -16285,6 +16285,23 @@ void objHit(struct shotdata *shotdata, struct hit *hit)
 				}
 			}
 
+#ifndef PLATFORM_N64
+			// Remote shooter on the server: CLC_PROP_HIT applies this damage
+			// (evaluated at the client's own aim tick), so applying the
+			// server's lag-comp'd trace TOO double-damaged the prop — the
+			// pre-existing listen-host quirk the §6.1 mirror inherited
+			// (PORT_HEADLESS_BLIND_SERVER.md). Mirror the chrHit pattern:
+			// record that the authoritative trace also detected this hit (so
+			// the CLC_PROP_HIT claim can be validated, Net.Server.HitValidate)
+			// and skip the local apply. objHit is shot-trace-only context
+			// (currentplayer == the shooter); sim/AI gunfire reaches
+			// objTakeGunfire by other callers and is unaffected.
+			if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote) {
+				if (g_Vars.currentplayer->client && prop->syncid) {
+					netServerRecordDetectedHit(g_Vars.currentplayer->client, (u16)prop->syncid);
+				}
+			} else
+#endif
 			objTakeGunfire(obj, damage, &sp110, shotdata->gset.weaponnum, g_Vars.currentplayernum);
 
 			if (obj->model->definition->skel == &g_SkelWindowedDoor && !hit->slowsbullet) {

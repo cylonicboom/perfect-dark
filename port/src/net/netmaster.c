@@ -431,14 +431,14 @@ static void netBrowserParseQuery(const u8 *data, s32 len, const ENetAddress *fro
 		if (buf.error) {
 			return;
 		}
-		if (i < MAX_BOTS) {
+		if (i < NET_MAX_BOTS) {
 			strncpy(d.sims[i].name, bn ? bn : "", NET_MAX_NAME - 1);
 			d.sims[i].team = tm;
 			d.sims[i].difficulty = df;
 			d.sims[i].score = sc;
 		}
 	}
-	d.num_sims = (nb < MAX_BOTS) ? nb : (u8)MAX_BOTS;
+	d.num_sims = (nb < NET_MAX_BOTS) ? nb : (u8)NET_MAX_BOTS;
 
 	if (!buf.error && committed) {
 		g_NetServerDetails = d;

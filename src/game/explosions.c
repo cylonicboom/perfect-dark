@@ -253,7 +253,23 @@ bool explosionCreate(struct prop *sourceprop, struct coord *exppos, RoomNum *exp
 	if (type == EXPLOSIONTYPE_BULLETHOLE) {
 		f32 lodscale = camGetLodScaleZ();
 		struct coord *campos = &g_Vars.currentplayer->cam_pos;
-		f32 xdist = exppos->x - campos->x;
+		f32 xdist;
+
+#ifndef PLATFORM_N64
+		// Blind-server guard (PORT_HEADLESS_BLIND_SERVER.md §6.5): a pawnless
+		// current player (the dedicated host's spectator shell, or a tick
+		// context outside the per-combatant loop) never had cam_pos set — the
+		// distance test would compare against zeros/stale data, picking an
+		// arbitrary LOD and consuming an RNG draw on one path but not the
+		// other. Use the explosion position itself (distance 0 -> the
+		// near/full branch). Combatant slots are unaffected: playerTick
+		// maintains their cam_pos in the tick path.
+		if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+			campos = exppos;
+		}
+#endif
+
+		xdist = exppos->x - campos->x;
 		f32 ydist = exppos->y - campos->y;
 		f32 zdist = exppos->z - campos->z;
 		f32 sum = xdist * xdist + ydist * ydist + zdist * zdist;

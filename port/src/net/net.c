@@ -2647,6 +2647,21 @@ void netEndFrame(void)
 			if (!ph->prop || !ph->prop->obj) {
 				continue;
 			}
+			// Prop-hit validation, mirroring the chr-hit block above: since the
+			// remote shooter's server-side trace records prop detections too
+			// (objHit, propobj.c) instead of double-applying objDamage, the same
+			// srvhits ring validates CLC_PROP_HIT claims. Log mode measures
+			// agreement; enforce drops unseen claims.
+			if (g_NetHitValidate && ph->playernum >= 0 && ph->prop->syncid) {
+				struct netclient *shooter = netClientForPlayerNum(ph->playernum);
+				if (shooter && !netServerHitWasDetected(shooter, (u16)ph->prop->syncid)) {
+					netDiagLogf("prophit_reject", "shooter=%u prop_sid=%u dmg=%.1f mode=%d",
+							shooter->id, (unsigned)ph->prop->syncid, ph->damage, g_NetHitValidate);
+					if (g_NetHitValidate >= 2) {
+						continue; // enforce: drop the unvalidated claim
+					}
+				}
+			}
 			if (ph->playernum >= 0) {
 				setCurrentPlayerNum(ph->playernum);
 			}
@@ -2892,6 +2907,68 @@ void netEndFrame(void)
 					scanned++;
 				}
 				coopobjcursor = i; // resume here next tick
+			}
+
+			// Combat Sim dynamic-prop position sync (catalog §5.2 "floating /
+			// diverging dropped weapons"). Same design as the co-op block above,
+			// for normal MP: a dropped/thrown WEAPON (or movable OBJ) only ever
+			// got its position broadcast on the impulse event (the drop/throw
+			// moment in propobj.c) — never during the projectile fall, never at
+			// settle. Clients integrate the fall with their own objTickPlayer
+			// physics, which (a) can be gated off entirely for drops that miss
+			// the owner-iteration fulltick gates (PORT_NET_KNOWN_ISSUES: items
+			// frozen mid-air) and (b) otherwise diverges from the host (different
+			// bounce/landing -> guns floating above the floor or resting in the
+			// wrong spot). The read side (netmsgSvcPropMoveRead) already applies
+			// pos + rooms + the full projectile block for these props, so the fix
+			// is send-side only — no wire or protocol change:
+			//  - Pass 1, every tick: any synced WEAPON/OBJ in projectile motion
+			//    (airborne / sliding / falling) so clients track the full arc and
+			//    land exactly where the host does. Usually 0-3 props.
+			//  - Pass 2, round-robin: refresh a few SETTLED ones per tick so a
+			//    diverged rest position, a dropped impulse packet, or a JIP
+			//    client heals within ~maxprops/4 ticks.
+			// Exclusions: parented props (held weapons / embedded mines ride a
+			// chr bone or an embedment — their pos is owned by the parent, and
+			// re-registering wire rooms on them would fight the child linkage);
+			// doors (synced via SVC_PROP_DOOR; wire pos breaks the open anim).
+			// Unreliable (g_NetMsg): latest-wins, self-heals next tick/sweep.
+			if (g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
+				const s32 maxprops = g_Vars.maxprops;
+				// Pass 1: props in projectile motion, every tick.
+				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 160; i++) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->parent == NULL
+							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)
+							&& (prop->obj->hidden & OBJHFLAG_EMBEDDED) == 0) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+					}
+				}
+				// Pass 2: settled props, round-robin (a few per tick).
+				static s32 mpobjcursor = 0;
+				if (mpobjcursor >= maxprops) {
+					mpobjcursor = 0;
+				}
+				s32 scanned = 0;
+				s32 sent = 0;
+				s32 i = mpobjcursor;
+				while (scanned < maxprops && sent < 4 && g_NetMsg.wp < NET_BUFSIZE - 160) {
+					struct prop *prop = &g_Vars.props[i];
+					if (prop->syncid && prop->obj && prop->parent == NULL
+							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
+							&& (prop->obj->hidden & (OBJHFLAG_PROJECTILE | OBJHFLAG_EMBEDDED)) == 0) {
+						const u32 b0 = g_NetMsg.wp;
+						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						sent++;
+					}
+					i = (i + 1) % maxprops;
+					scanned++;
+				}
+				mpobjcursor = i; // resume here next tick
 			}
 
 			// Co-op stage flags: scripts, objectives and triggered events gate on
@@ -4902,7 +4979,7 @@ static void netAdminCaptureSetup(void)
 	e->scorelimit = g_MpSetup.scorelimit;
 	e->timelimit = g_MpSetup.timelimit;
 	e->teamscorelimit = g_MpSetup.teamscorelimit;
-	e->bot_count = (u8)(g_BotCount > MAX_BOTS ? MAX_BOTS : g_BotCount);
+	e->bot_count = (u8)(g_BotCount > NET_MAX_BOTS ? NET_MAX_BOTS : g_BotCount);
 	e->bot_difficulty = BOTDIFF_NORMAL;
 	e->weight = 1;
 	strcpy(e->name, "admin");
@@ -5110,7 +5187,7 @@ void netServerAdminCommand(struct netclient *cl, const char *line)
 			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > 65535) n = 65535;
 			e->teamscorelimit = (u16)n; netAdminReply(cl, "teamscorelimit = %d", n);
 		} else if (strcmp(field, "bots") == 0) {
-			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > MAX_BOTS) n = MAX_BOTS;
+			s32 n = (s32)strtol(v1, NULL, 0); if (n < 0) n = 0; if (n > NET_MAX_BOTS) n = NET_MAX_BOTS;
 			e->bot_count = (u8)n;
 			if (v2[0]) {
 				const s32 d = playlistLookupBotDiff(v2);
@@ -7090,7 +7167,7 @@ Gfx *netDebugRender(Gfx *gdl)
 
 	// Position the panel from the bottom — leave enough room for the maximum
 	// possible content (header + CSP/lagcomp + up to 8 clients × 2 lines +
-	// up to MAX_BOTS sim lines).
+	// up to NET_MAX_BOTS sim lines).
 	const s32 lineCount = 4 + 1 + (g_NetMaxClients * 2) + numSims + 1;
 	s32 x = 2;
 	s32 y = viGetHeight() - 1 - (lineCount * 8);

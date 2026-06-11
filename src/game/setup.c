@@ -2113,6 +2113,18 @@ void setupCreateProps(s32 stagenum)
 					maxsimulants = 4;
 				}
 
+#ifndef PLATFORM_N64
+				// Offline-32-sims RNG-parity clamp (LOAD-BEARING): this loop
+				// consumes one rngRandom() per iteration with net-synced
+				// seeds on server AND client. Net games must iterate exactly
+				// NET_MAX_BOTS like every existing proto-75 build, or
+				// g_MpBotChrPtrs[] silently desyncs across peers. Offline
+				// gets the full 32.
+				if (g_NetMode != NETMODE_NONE && maxsimulants > NET_MAX_BOTS) {
+					maxsimulants = NET_MAX_BOTS;
+				}
+#endif
+
 				for (i = 0; i < MAX_BOTS; i++) {
 					slotsdone[i] = false;
 				}
@@ -2124,7 +2136,7 @@ void setupCreateProps(s32 stagenum)
 						slotnum = (slotnum + 1) % maxsimulants;
 					}
 
-					if ((g_MpSetup.chrslots & (1 << (slotnum + MAX_PLAYERS)))
+					if ((g_MpSetup.chrslots & MPCHRSLOT(slotnum + MAX_PLAYERS))
 							&& mpIsSimSlotEnabled(slotnum)) {
 						botmgrAllocateBot(chrnum, slotnum);
 						chrnum++;

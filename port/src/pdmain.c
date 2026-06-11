@@ -564,10 +564,10 @@ void mainLoop(void)
 				// the SVC_STAGE_START co-op manifest count), keeping the deterministic
 				// spawn-pad allocation in setup.c identical on both ends.
 				s32 ncoop = (numplayers >= 2 && numplayers <= MAX_PLAYERS) ? numplayers : 2;
-				if (g_MpSetup.chrslots & 0xfff0) {
-					g_MpSetup.storedbotbits = g_MpSetup.chrslots & 0xfff0;
+				if (g_MpSetup.chrslots & (MPCHRSLOTS_BOTS_MASK | (MPCHRSLOTS_PLAYERS_MASK & ~0xfu))) {
+					g_MpSetup.storedbotbits = g_MpSetup.chrslots & (MPCHRSLOTS_BOTS_MASK | (MPCHRSLOTS_PLAYERS_MASK & ~0xfu));
 				}
-				g_MpSetup.chrslots = (1 << ncoop) - 1;
+				g_MpSetup.chrslots = MPCHRSLOT(ncoop) - 1;
 			}
 #endif
 			mpReset();
@@ -595,7 +595,7 @@ void mainLoop(void)
 				g_MpSetup.chrslots = 1;
 
 				for (s32 i = 1; i < numplayers; ++i) {
-					g_MpSetup.chrslots |= 1 << i;
+					g_MpSetup.chrslots |= MPCHRSLOT(i);
 				}
 
 				g_MpSetup.stagenum = g_StageNum;

@@ -99,7 +99,7 @@ u8 *g_BgPrimaryData;
 u32 var800a4920;
 u32 g_BgSection3;
 struct room *g_Rooms;
-u8 *g_MpRoomVisibility;
+MpRoomVis *g_MpRoomVisibility;
 RoomNum g_BgForceOnscreenRooms[350];
 s32 g_BgNumForceOnscreenRooms;
 u16 g_BgUnloadDelay240;
@@ -1844,7 +1844,7 @@ void bgBuildTables(s32 stagenum)
 	}
 
 	if (g_Vars.mplayerisrunning) {
-		g_MpRoomVisibility = mempAlloc(ALIGN16(g_Vars.roomcount), MEMPOOL_STAGE);
+		g_MpRoomVisibility = mempAlloc(ALIGN16(g_Vars.roomcount * sizeof(*g_MpRoomVisibility)), MEMPOOL_STAGE);
 
 		for (i = 0; i < g_Vars.roomcount; i++) {
 			g_MpRoomVisibility[i] = 0;
@@ -2738,7 +2738,7 @@ void bgCopyBox(struct screenbox *dst, struct screenbox *src)
 bool bgRoomIsOnscreen(s32 room)
 {
 	if (g_Vars.mplayerisrunning) {
-		return (g_MpRoomVisibility[room] & 0xf) != 0;
+		return (g_MpRoomVisibility[room] & MPROOMVIS_ONSCREEN_ALL) != 0;
 	} else {
 		return g_Rooms[room].flags & ROOMFLAG_ONSCREEN;
 	}
@@ -2747,7 +2747,7 @@ bool bgRoomIsOnscreen(s32 room)
 bool bgRoomIsStandby(s32 room)
 {
 	if (g_Vars.mplayerisrunning) {
-		return (g_MpRoomVisibility[room] & 0xf0) != 0;
+		return (g_MpRoomVisibility[room] & MPROOMVIS_STANDBY_ALL) != 0;
 	}
 
 	return g_Rooms[room].flags & ROOMFLAG_STANDBY;
@@ -2765,7 +2765,7 @@ bool bgRoomIsOnPlayerScreen(s32 room, u32 playernum)
 bool bgRoomIsOnPlayerStandby(s32 room, u32 playernum)
 {
 	if (g_Vars.mplayerisrunning) {
-		return (g_MpRoomVisibility[room] & (0x10 << playernum)) != 0;
+		return (g_MpRoomVisibility[room] & MPROOMVIS_STANDBY_BIT(playernum)) != 0;
 	} else {
 		return g_Rooms[room].flags & ROOMFLAG_STANDBY;
 	}
@@ -6795,8 +6795,8 @@ void bgChooseRoomsToLoad(void)
 
 	// Update visibility per player
 	if (g_Vars.mplayerisrunning) {
-		u8 flag1 = 0x01 << g_Vars.currentplayernum;
-		u8 flag2 = 0x10 << g_Vars.currentplayernum;
+		MpRoomVis flag1 = 0x01 << g_Vars.currentplayernum;
+		MpRoomVis flag2 = MPROOMVIS_STANDBY_BIT(g_Vars.currentplayernum);
 
 		for (i = 0; i < g_Vars.roomcount; i++) {
 			if (g_Rooms[i].flags & ROOMFLAG_ONSCREEN) {

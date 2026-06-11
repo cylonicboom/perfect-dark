@@ -108,7 +108,7 @@ struct netserverdetails {
 	u8  num_players;
 	struct netserverdetailplayer players[NET_MAX_CLIENTS];
 	u8  num_sims;
-	struct netserverdetailsim sims[MAX_BOTS];
+	struct netserverdetailsim sims[NET_MAX_BOTS];
 	// Server's mod dir basename from the query summary ("" = vanilla), plus
 	// whether it matches ours (join auth rejects a mod-dir mismatch, so the
 	// Details view can warn before the player tries to connect). The match is

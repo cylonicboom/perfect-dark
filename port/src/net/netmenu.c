@@ -261,11 +261,11 @@ static void netAdminMenuSetSims(s32 count, u8 diff)
 	if (count < 0) {
 		count = 0;
 	}
-	if (count > MAX_BOTS) {
-		count = MAX_BOTS;
+	if (count > NET_MAX_BOTS) {
+		count = NET_MAX_BOTS;
 	}
-	for (s32 i = 0; i < MAX_BOTS; ++i) {
-		g_MpSetup.chrslots &= ~(1u << (i + MAX_PLAYERS));
+	for (s32 i = 0; i < NET_MAX_BOTS; ++i) {
+		g_MpSetup.chrslots &= ~MPCHRSLOT(i + MAX_PLAYERS);
 		g_BotConfigsArray[i].base.name[0] = '\0';
 	}
 	for (s32 i = 0; i < count; ++i) {
@@ -299,10 +299,10 @@ static MenuItemHandlerResult menuhandlerNetAdminScenario(s32 operation, struct m
 
 static MenuItemHandlerResult menuhandlerNetAdminSims(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	static const char *const opts[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8" }; // 0..MAX_BOTS
+	static const char *const opts[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8" }; // 0..NET_MAX_BOTS
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = MAX_BOTS + 1;
+		data->dropdown.value = NET_MAX_BOTS + 1;
 		break;
 	case MENUOP_GETOPTIONTEXT:
 		return (intptr_t)opts[data->dropdown.value];
@@ -310,7 +310,7 @@ static MenuItemHandlerResult menuhandlerNetAdminSims(s32 operation, struct menui
 		netAdminMenuSetSims((s32)data->checkbox.value, (u8)g_NetAdminMenuSimDiff);
 		break;
 	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = (g_BotCount <= MAX_BOTS) ? (uintptr_t)g_BotCount : MAX_BOTS;
+		data->dropdown.value = (g_BotCount <= NET_MAX_BOTS) ? (uintptr_t)g_BotCount : NET_MAX_BOTS;
 		break;
 	}
 	return 0;

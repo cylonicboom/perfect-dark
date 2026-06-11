@@ -65,11 +65,25 @@ s32 fileInfo(const char *filename, s32 *texNum, char extension[5])
 	if (!ext) return 1;
 
 	++ext;
+
+	// Reject extensions that don't fit the buffer — no valid texture
+	// extension is longer than 4 chars, and this also skips NTFS
+	// alternate-data-stream artifacts ("x.png:Zone.Identifier") that a
+	// Windows -> Linux copy materializes as real files.
+	if (strlen(ext) > 4) return 1;
+
 	strncpy(extension, ext, 5);
 
-	// get the filename without extension
+	// get the filename without extension; valid names are short hex texnums,
+	// so anything that doesn't fit is not ours. The unbounded memcpy here was
+	// a real stack smash — fortified glibc (flatpak 24.08 SDK) aborted on the
+	// materialized ADS filenames above ("*** buffer overflow detected ***").
 	char basename[16] = { 0 };
-	memcpy(basename, filename, strlen(filename) - strlen(ext) - 1);
+	size_t baselen = strlen(filename) - strlen(ext) - 1;
+
+	if (baselen >= sizeof(basename)) return 1;
+
+	memcpy(basename, filename, baselen);
 
 	*texNum = strtol(basename, NULL, 16);
 

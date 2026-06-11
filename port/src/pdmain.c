@@ -84,7 +84,10 @@
 #include "game/mplayer/scenarios.h"
 #include "game/bg.h"
 #include "game/bondgun.h"
+#include "game/bondmove.h"
 #include "game/camera.h"
+#include "game/game_0b0fd0.h"
+#include "game/lv.h"
 #include "lib/mtx.h"
 #include "video.h"
 #include "input.h"
@@ -995,6 +998,64 @@ void mainTick(void)
 
 					if (cam_primed) {
 						handsTickAttack();
+					}
+
+					// Lock-on target tracking (mirror of lvRender lv.c:1463-1518,
+					// which runs right after handsTickAttack on a listen host).
+					// The targeted/homing rocket's lock is SERVER-side state:
+					// bgunCreateFiredProjectile reads trackedprops[0] at fire
+					// time, and the slots are filled here — lookingatprop comes
+					// from a propFindAimingAt TRACE (player-capable headless now
+					// that pawn body matrices are built above) and
+					// lvUpdateTrackedProp promotes/ages it. Without this mirror
+					// a client's targeted rocket always flew straight on a
+					// dedicated server (targetprop NULL). The THREATDETECTOR
+					// branch (lvFindThreats) is deliberately NOT mirrored: it
+					// walks g_Vars.onscreenprops, which stays empty headless,
+					// and only drives the K7 threat-detector HUD.
+					if (cam_primed && g_Vars.currentplayer) {
+						struct player *pl_lk = g_Vars.currentplayer;
+
+						if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_AIMTRACK)
+								&& bmoveIsInSightAimMode()) {
+							pl_lk->lookingatprop.prop = propFindAimingAt(HAND_RIGHT, false, FINDPROPCONTEXT_QUERY);
+
+							// Target filtering mirrored from lvRender: cloaked
+							// chrs aren't lockable without the IR scanner, and
+							// objs must opt in via REACTTOSIGHT.
+							if (pl_lk->lookingatprop.prop) {
+								struct prop *lp = pl_lk->lookingatprop.prop;
+								if (lp->type == PROPTYPE_CHR || lp->type == PROPTYPE_PLAYER) {
+									if (lp->chr && (lp->chr->hidden & CHRHFLAG_CLOAKED)
+											&& !USINGDEVICE(DEVICE_IRSCANNER)) {
+										pl_lk->lookingatprop.prop = NULL;
+									}
+								} else if (lp->type == PROPTYPE_OBJ
+										|| lp->type == PROPTYPE_WEAPON
+										|| lp->type == PROPTYPE_DOOR) {
+									if ((lp->obj->flags3 & OBJFLAG3_REACTTOSIGHT) == 0) {
+										pl_lk->lookingatprop.prop = NULL;
+									}
+								} else {
+									pl_lk->lookingatprop.prop = NULL;
+								}
+							}
+						} else {
+							pl_lk->lookingatprop.prop = NULL;
+						}
+
+						if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_AIMTRACK)) {
+							if (lvUpdateTrackedProp(&pl_lk->lookingatprop, -1) == 0) {
+								pl_lk->lookingatprop.prop = NULL;
+							}
+
+							for (s32 tj = 0; tj < ARRAYCOUNT(pl_lk->trackedprops); tj++) {
+								if (!lvUpdateTrackedProp(&pl_lk->trackedprops[tj], tj)) {
+									pl_lk->trackedprops[tj].x1 = -1;
+									pl_lk->trackedprops[tj].x2 = -2;
+								}
+							}
+						}
 					}
 
 					// Pickup detection. propsTestForPickup is normally called

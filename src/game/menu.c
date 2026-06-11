@@ -3179,10 +3179,7 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 			gdl = menugfxDrawDialogChevron(gdl, dialogleft - 5, (dialogtop + dialogbottom) / 2, 9, 1, colour, colour, menuGetSinOscFrac(20));
 			gdl = menugfxDrawDialogChevron(gdl, dialogright + 5, (dialogtop + dialogbottom) / 2, 9, 3, colour, colour, menuGetSinOscFrac(20));
 
-			if (g_MenuData.root == MENUROOT_MAINMENU
-					|| g_MenuData.root == MENUROOT_4MBFILEMGR
-					|| g_MenuData.root == MENUROOT_TRAINING
-					|| g_MenuData.root == MENUROOT_FILEMGR) {
+			{
 				char *title;
 				s32 textheight;
 				s32 textwidth;

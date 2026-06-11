@@ -1433,6 +1433,14 @@ void setupLoadFiles(s32 stagenum)
 
 		if (g_Vars.normmplayerisrunning) {
 			numobjs += scenarioNumProps();
+#ifndef PLATFORM_N64
+			// modelmgrAllocateSlots sets g_MaxAnims = numchrs + 20. The stage
+			// setup file has no OBJTYPE_CHR entries for Combat Sim, so numchrs
+			// is 0 and only 20 anim slots are reserved — not enough for all
+			// players + bots. Add the max players and bots explicitly so the
+			// pool is always large enough regardless of how many sims are used.
+			numchrs += PLAYERCOUNT() + mpGetMaxBotSlots();
+#endif
 		}
 
 		modelmgrAllocateSlots(numobjs, numchrs);
@@ -2107,21 +2115,17 @@ void setupCreateProps(s32 stagenum)
 				s32 maxsimulants;
 				s32 slotnum;
 
+#ifndef PLATFORM_N64
+				// Port: always allow the full offline/net slot range regardless
+				// of challenge unlock status. mpGetMaxBotSlots() returns MAX_BOTS
+				// (32) offline and NET_MAX_BOTS (8) in net games — the RNG-parity
+				// clamp is baked in, so no separate online clamp is needed.
+				maxsimulants = mpGetMaxBotSlots();
+#else
 				if (challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
 					maxsimulants = MAX_BOTS;
 				} else {
 					maxsimulants = 4;
-				}
-
-#ifndef PLATFORM_N64
-				// Offline-32-sims RNG-parity clamp (LOAD-BEARING): this loop
-				// consumes one rngRandom() per iteration with net-synced
-				// seeds on server AND client. Net games must iterate exactly
-				// NET_MAX_BOTS like every existing proto-75 build, or
-				// g_MpBotChrPtrs[] silently desyncs across peers. Offline
-				// gets the full 32.
-				if (g_NetMode != NETMODE_NONE && maxsimulants > NET_MAX_BOTS) {
-					maxsimulants = NET_MAX_BOTS;
 				}
 #endif
 

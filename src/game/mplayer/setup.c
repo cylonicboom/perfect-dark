@@ -4184,7 +4184,8 @@ MenuItemHandlerResult menuhandlerMpSimulantSlot(s32 operation, struct menuitem *
 		}
 		break;
 	case MENUOP_CHECKHIDDEN:
-		if (item->param >= 4 && !challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
+		// Only the original 8-slot range (0-7) is gated; offline-32-sim slots 8-31 must never be hidden here.
+		if (item->param >= 4 && item->param < NET_MAX_BOTS && !challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
 			return true;
 		}
 		break;
@@ -4485,7 +4486,7 @@ struct menuitem g_MpSimulantsMenuItems[] = {
 // comes from a text function (the language file only has IDs for "1:".."8:").
 char *mpMenuTextSimulantSlotLabel(struct menuitem *item)
 {
-	sprintf(g_StringPointer, "%d:", item->param + 1);
+	sprintf(g_StringPointer, "%d:\n", item->param + 1);
 	return g_StringPointer;
 }
 

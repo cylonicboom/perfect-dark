@@ -25,6 +25,7 @@ Owns multiplayer session setup, bot allocation, scoring, and per-scenario logic.
 - **Do not insert allocations between `netClientSyncRng()` and `botmgrAllocateBot`.** Any allocation that runs on one side but not the other desynchronises `g_MpBotChrPtrs[]`, breaking sim identity on clients.
 - **`g_BotConfigsArray` is stale on clients until `SVC_STAGE_START` arrives.** Adding a new bot config field requires wiring it through `netmsgSvcStageStartWrite/Read`; otherwise clients use whatever the local Combat Sim menu last had.
 - **`chr->actiontype` is intentionally not synced.** Applying the server's actiontype on the client crashes on uninitialised union data. Clients always dispatch as `ACT_STAND`. See [`../CLAUDE.md`](../CLAUDE.md).
+- **`MENUOP_CHECKHIDDEN` conditions must have an upper bound when port-extension items exist.** `menuCalculateItemSize` sets `*height = 0` when `CHECKHIDDEN` returns true, making the item render as a ~1px sliver. A condition like `item->param >= 4 && !featureUnlocked(...)` with no upper bound will silently hide every port-extension item whose param lands above the threshold. Always add `&& item->param < ORIGINAL_MAX` so only the original N64 range is gated. Example: `item->param >= 4 && item->param < NET_MAX_BOTS && !challengeIsFeatureUnlocked(MPFEATURE_8BOTS)`.
 
 ## Offline 32 Simulants (docs/PORT_OFFLINE_32_SIMS.md)
 

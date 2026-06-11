@@ -4737,6 +4737,21 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 	if ((chr->chrflags & CHRCFLAG_HIDDEN) == 0 && (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)) {
 		f32 radius = chrGetHitRadius(chr);
 
+#ifndef PLATFORM_N64
+		// Headless server: a remote pawn's chr body model is never rendered,
+		// so model->matrices is never allocated — modelGetRootMtx below would
+		// return matrices+idx (a near-NULL non-NULL pointer) and the
+		// broad-phase read SIGSEGVs (twin of the netLagCompBegin two-player
+		// shot crash, 2026-06-11). A matrices-less chr can't be hit-tested;
+		// skip it. NOTE: with Net.Server.HitValidate >= 1 this means
+		// player-target hits can't be confirmed headless (validation
+		// logs/rejects them) — giving pawn body models real headless matrices
+		// is the prerequisite for trusting enforce mode.
+		if (chr->model == NULL || chr->model->matrices == NULL) {
+			return;
+		}
+#endif
+
 		if (prop->z - radius < shotdata->distance) {
 			struct model *model = chr->model;
 			s32 hitpart = 0;

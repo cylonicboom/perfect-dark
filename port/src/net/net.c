@@ -4317,7 +4317,13 @@ void netLagCompBegin(const struct netclient *shooter)
 		// past matrix[0] risks corrupting vertex buffers or other heap allocations.
 		// Narrow-phase hits (bone raycast) still test against the current frame's
 		// matrices, so those remain server-authoritative only — a safer tradeoff.
-		if (cl->player->prop->chr && cl->player->prop->chr->model) {
+		// matrices NULL = the pawn's body model was never rendered (headless
+		// dedicated server) — modelGetRootMtx would return matrices+idx, a
+		// near-NULL non-NULL pointer, and the reads below SIGSEGV (the
+		// 2026-06-11 "anyone shoots with two players connected" crash; with
+		// one client the loop never reaches another pawn).
+		if (cl->player->prop->chr && cl->player->prop->chr->model
+				&& cl->player->prop->chr->model->matrices) {
 			Mtxf *rootmtx = modelGetRootMtx(cl->player->prop->chr->model);
 			if (rootmtx) {
 				g_LagCompSaved[g_LagCompCount].rootmtx_xyz[0] = rootmtx->m[3][0];
@@ -4345,7 +4351,8 @@ void netLagCompEnd(void)
 			continue;
 		}
 		cl->player->prop->pos = g_LagCompSaved[i].pos;
-		if (g_LagCompSaved[i].has_rootmtx && cl->player->prop->chr && cl->player->prop->chr->model) {
+		if (g_LagCompSaved[i].has_rootmtx && cl->player->prop->chr && cl->player->prop->chr->model
+				&& cl->player->prop->chr->model->matrices) {
 			Mtxf *rootmtx = modelGetRootMtx(cl->player->prop->chr->model);
 			if (rootmtx) {
 				rootmtx->m[3][0] = g_LagCompSaved[i].rootmtx_xyz[0];

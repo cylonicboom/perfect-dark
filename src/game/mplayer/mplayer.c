@@ -929,6 +929,7 @@ void mpInit(bool resetplayers)
 	g_MpSetup.zonecapturetime = 0;
 	g_MpSetup.racelaps = 3;
 	g_MpSetup.racepitytime = 30;
+	g_MpSetup.respawndelay = 0; // Combat Sim More Options: 0 = instant respawn (default)
 	// elimlives / elimlivesmode default via func0f187fec below
 #endif
 
@@ -4799,6 +4800,10 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 	g_MpSetup.elimlives = 0;
 	g_MpSetup.racelaps = 3;
 	g_MpSetup.racepitytime = 30;
+	// Respawn Delay is session-only (wire-synced, not wad-persisted — the 80-byte
+	// block is full; the 3 paired option bits ride the saved options u64). Default
+	// it like racelaps/racepitytime so a loaded setup never inherits garbage.
+	g_MpSetup.respawndelay = 0;
 	for (i = 0; i < (s32)ARRAYCOUNT(g_MpSetup.ctcteambase); i++) {
 		g_MpSetup.ctcteambase[i] = 0;
 	}

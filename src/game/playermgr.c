@@ -453,6 +453,17 @@ void playermgrAllocatePlayer(s32 index)
 	g_Vars.players[index]->slayerrocket = NULL;
 	g_Vars.players[index]->badrockettime = 0;
 
+#ifndef PLATFORM_N64
+	// Fly-by-wire steering/latch state (proto 76) — reset with the rocket it
+	// belongs to so a recycled player slot can't inherit a stale engage latch.
+	g_Vars.players[index]->fbw_pitch = 0;
+	g_Vars.players[index]->fbw_yaw = 0;
+	g_Vars.players[index]->fbw_rsticky = 0;
+	g_Vars.players[index]->fbw_pendingframe = 0;
+	g_Vars.players[index]->fbw_spawnsyncid = 0;
+	g_Vars.players[index]->fbw_spawnframe = 0;
+#endif
+
 #if VERSION >= VERSION_JPN_FINAL
 	g_Vars.players[index]->visionmode = VISIONMODE_NORMAL;
 #endif

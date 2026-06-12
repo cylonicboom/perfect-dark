@@ -627,6 +627,23 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 
 	move->ucmd = pl->ucmd;
 
+	// Fly-by-wire steering capture (proto 76): the slayer steering block stored
+	// this tick's computed rotation rates on the player; quantize them into the
+	// move (radians ×8192) whenever the owner is flying its rocket. The tail is
+	// written on the wire only while UCMD_FLYBYWIRE is set; the fields are placed
+	// before animnum so netClientNeedMove's memcmp change-detects them (a held
+	// stick = constant rate = no resend; mouse motion resends at the clcrate).
+	// Fields stay zero (memset above) when not flying. Only ever set on the
+	// firing client's local move — the server's rebroadcast doesn't carry the
+	// FBW bits (the rocket flight rides SVC_PROP_MOVE for observers).
+	if (move->ucmd & UCMD_FLYBYWIRE) {
+		const f32 p = pl->fbw_pitch * 8192.f;
+		const f32 y = pl->fbw_yaw * 8192.f;
+		move->fbw_pitch = (s16)((p > 32767.f) ? 32767.f : (p < -32767.f) ? -32767.f : p);
+		move->fbw_yaw = (s16)((y > 32767.f) ? 32767.f : (y < -32767.f) ? -32767.f : y);
+		move->fbw_rsticky = pl->fbw_rsticky;
+	}
+
 	// Capture chr model animation state so remote viewers can keep
 	// non-input-driven anims (hit reactions, pickups, special transitions)
 	// in sync. Pure walk/run anims would converge from synced inputs alone,
@@ -2075,6 +2092,21 @@ static void netServerEvDisconnect(struct netclient *cl)
 	if (g_NetSpectateChr && cl->player && cl->player->prop
 			&& cl->player->prop->chr == g_NetSpectateChr) {
 		netSpectateStop();
+	}
+
+	// Fly-by-wire (proto 76): a client disconnecting mid-flight leaves its
+	// server-side pawn in VISIONMODE_SLAYERROCKET steering an authoritative
+	// rocket. Detonate it (the bondgun disarm idiom — timer240 = 0 frees +
+	// broadcasts the explosion through the normal path) and clear the vision mode
+	// so the recycled slot is clean. Don't rely on playerTick running for a
+	// clientless pawn.
+	if (cl->player && cl->player->visionmode == VISIONMODE_SLAYERROCKET) {
+		struct weaponobj *rocket = cl->player->slayerrocket;
+		if (rocket && rocket->base.prop) {
+			rocket->timer240 = 0;
+		}
+		cl->player->slayerrocket = NULL;
+		cl->player->visionmode = VISIONMODE_NORMAL;
 	}
 
 	// Combat Sim: kill the leaver's pawn through the normal death path
@@ -4902,8 +4934,11 @@ void netSpectateAutoUpdate(void)
 	const bool dead = (g_NetLocalClient->player->isdead != 0);
 
 	if (dead && !s_wasdead) {
-		// Just died — auto-spectate if we aren't already (manual target wins).
-		if (!g_NetSpectateChr) {
+		// Just died — auto-spectate a live player, but only when the host enabled
+		// "Spectate on Death" (proto 77, default OFF inverts the old always-on:
+		// off, you keep your own death-cam during the respawn delay). A manual
+		// /spec target still wins.
+		if ((g_MpSetup.options & MPOPTION_SPECTATEONDEATH) && !g_NetSpectateChr) {
 			netSpectateCycle(+1); // picks first live target; no-op if none exist
 		}
 	} else if (!dead && s_wasdead) {

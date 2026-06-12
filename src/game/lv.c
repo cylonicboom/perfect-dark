@@ -237,7 +237,14 @@ void lvUpdateMiscSfx(void)
 		usingrocket = false;
 
 		for (i = 0; i < PLAYERCOUNT(); i++) {
-			if (g_Vars.players[i]->visionmode == VISIONMODE_SLAYERROCKET) {
+			if (g_Vars.players[i]->visionmode == VISIONMODE_SLAYERROCKET
+#ifndef PLATFORM_N64
+					// Net (proto 76): a remote pawn flying its rocket runs only on
+					// the server's tick, not in any local viewport — don't loop the
+					// slayer hum/beep on the listen host for it.
+					&& !g_Vars.players[i]->isremote
+#endif
+					) {
 				usingrocket = true;
 			}
 		}

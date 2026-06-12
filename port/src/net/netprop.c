@@ -192,6 +192,24 @@ void netPropFreeSynced(struct prop *prop, u8 reason)
 		return;
 	}
 
+	// Fly-by-wire (proto 76): if any player's rocket-cam is locked onto the obj
+	// we're about to free (wire FREE / reconcile reap / spawn-collision replace /
+	// hard-free), drop the dangling pointer before objFreePermanently recycles
+	// the slot, or the camera follows garbage. The propobj.c explode loops only
+	// run on the machine doing the explode, so the client teardown choke point is
+	// the only place this fires for a wire-owned free. STATIC lets the local
+	// lvRender play the vanilla cut back to NORMAL.
+	for (s32 pi = 0; pi < PLAYERCOUNT(); pi++) {
+		struct player *fp = g_Vars.players[pi];
+		if (fp && fp->slayerrocket == (struct weaponobj *)prop->obj) {
+			fp->slayerrocket = NULL;
+			fp->visionmode = VISIONMODE_SLAYERROCKETSTATIC;
+		}
+		if (fp && fp->fbw_spawnsyncid && fp->fbw_spawnsyncid == (u16)prop->syncid) {
+			fp->fbw_spawnsyncid = 0;
+		}
+	}
+
 	// The engine's FULL teardown: objDetach from any parent chr, embedment/
 	// projectile free, wallhit/inventory/chr-ref/shieldhit clearing, model
 	// free, room dereg, delist, propFree. Anything less leaves a dangling

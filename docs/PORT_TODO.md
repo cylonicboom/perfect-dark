@@ -33,7 +33,7 @@ lobby window) are **not** repeated here.
 ## Netplay general (non-coop, from KNOWN_ISSUES)
 
 - Cloaking device not synced.
-- Slayer fly-by-wire / FarSight alt-fire don't work on clients.
+- Slayer fly-by-wire on clients — IMPLEMENTED proto 76 (compile-verified, runtime test pending). FarSight alt-fire still doesn't work on clients.
 - Punching + some weapon-anim sounds play first-person for every listener.
 - Lag-comp is broad-phase (sphere) only; narrow-phase bone rewind reverted (crashed).
 

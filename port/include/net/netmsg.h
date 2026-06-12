@@ -277,4 +277,11 @@ u32 netmsgSvcAdminRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgClcAdminSetupWrite(struct netbuf *dst);
 u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl);
 
+// Fly-by-wire (proto 76): the local fire of a FUNCFLAG_FLYBYWIRE weapon is gated
+// out on a client (bgunCreateFiredProjectile), so the rocket-cam engages on the
+// wire-synced rocket instead. Called from the bondgun client gate to latch the
+// fire; the matching SVC_PROP_SPAWN of the local pawn's powered projectile then
+// engages (netFbwOnSpawn). Covers both spawn/latch orderings.
+void netFbwLatchFired(void);
+
 #endif

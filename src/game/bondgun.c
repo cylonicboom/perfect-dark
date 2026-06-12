@@ -5085,6 +5085,20 @@ void bgunCreateFiredProjectile(s32 handnum)
 
 #ifndef PLATFORM_N64
 	if (g_NetMode == NETMODE_CLIENT) {
+		// The client can't create its own projectile (server-authoritative), but
+		// a fly-by-wire (Slayer secondary) fire must still engage the rocket-cam.
+		// Latch the fire here when the gset's function carries FUNCFLAG_FLYBYWIRE;
+		// the wire SVC_PROP_SPAWN of the local pawn's powered projectile then
+		// engages on the synced rocket (netFbwOnSpawn / netFbwLatchFired).
+		struct hand *fbwhand = g_Vars.currentplayer->hands + handnum;
+		struct weapon *fbwdef = weaponFindById(fbwhand->gset.weaponnum);
+		if (fbwdef) {
+			struct weaponfunc *fbwfn = fbwdef->functions[fbwhand->gset.weaponfunc];
+			if (fbwfn && fbwfn->type == INVENTORYFUNCTYPE_SHOOT_PROJECTILE
+					&& (((struct weaponfunc_shootprojectile *)fbwfn)->base.base.flags & FUNCFLAG_FLYBYWIRE)) {
+				netFbwLatchFired();
+			}
+		}
 		return;
 	}
 #endif
@@ -12647,6 +12661,17 @@ void bgunTickGameplay(bool triggeron)
 	s32 gunsfiring[2] = {false, false};
 	struct player *player = g_Vars.currentplayer;
 	s32 i;
+
+#ifndef PLATFORM_N64
+	// Respawn Invulnerability (proto 77): going on the offensive forfeits spawn
+	// protection. This is the fire convergence point for both the local host
+	// (bmoveTick) and a remote pawn on the server (bmoveProcessRemoteInput),
+	// each with currentplayer set to the firer — the same context the i-frame
+	// gates (playerDieByShooter / chraction player-damage) read.
+	if (triggeron && player->respawnprotect60 > 0) {
+		player->respawnprotect60 = 0;
+	}
+#endif
 
 	// Remove weapons if in passive mode
 	if (g_Vars.currentplayer->gunctrl.passivemode) {

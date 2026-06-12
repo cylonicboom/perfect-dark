@@ -3055,6 +3055,10 @@
 #define MPOPTION_CLASSIC_NODUALWIELD    0x0000080000000000ULL // options bit 43: no dual-wield
 #define MPOPTION_CLASSIC_IFRAMES        0x0000100000000000ULL // options bit 44: damage i-frames + fire lockout
 #define MPOPTION_CLASSIC_NOBLUR         0x0000200000000000ULL // options bit 45: no blur/dizzy effects
+// Port-only respawn / spectator options (Combat Sim "More Options", proto 77).
+#define MPOPTION_SPECTATEONDEATH        0x0000400000000000ULL // options bit 46: auto-spectate a live player on death (default OFF; was always-on)
+#define MPOPTION_FORCEDRESPAWN          0x0000800000000000ULL // options bit 47: force respawn 10s after the respawn-delay lockout ends
+#define MPOPTION_RESPAWNINVULN          0x0001000000000000ULL // options bit 48: 2s damage immunity on respawn
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

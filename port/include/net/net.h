@@ -5,7 +5,9 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 75 // 75: MAX_PLAYERS 8 -> 16 (NET_MAX_CLIENTS 17): chrslots widened u16 -> u32 in CLC_ADMIN_SETUP + SVC_STAGE_START; client ids now reach 16. Default server cap stays 8 (--maxclients 16 opts in). // 74: NET_MAX_CLIENTS = MAX_PLAYERS + 1 (9). A spectator host (dedicated / Host-Online, listen Host-Spectator) no longer burns a combatant slot — it sits on the extra +1 client slot so all MAX_PLAYERS (8) wire slots stay free for remote combatants (was 7 on dedicated). The lobby / SVC_STAGE_START manifests are count-prefixed and id-keyed, so the byte layout is unchanged for <=8 clients — but a 9-client server now emits client id 8, which only a proto-74 peer's netResolveWireClient accepts, so mixed versions must not join. "wire id 0 = host" is preserved.
+#define NET_PROTOCOL_VER 77 // 77: Combat Sim respawn / spectator options (More Options) — 3 new high-word MPOPTION bits (46 SPECTATEONDEATH, 47 FORCEDRESPAWN, 48 RESPAWNINVULN) ride g_MpSetup.options, plus a new u8 g_MpSetup.respawndelay (0-10s) appended after racepitytime in SVC_STAGE_START / CLC_ADMIN_SETUP / SVC_LOBBY_STATE. Old peers don't parse the extra byte — mixed versions must not join.
+// 76: client Slayer fly-by-wire — UCMD_FLYBYWIRE/_FBW_DETONATE/_FBW_SLOW bits + a conditional netplayermove tail {s16 fbw_pitch, s16 fbw_yaw, s8 fbw_rsticky} (per-tick steering radians ×8192) present only while UCMD_FLYBYWIRE is set; remote pawns now engage VISIONMODE_SLAYERROCKET on the server and steer their authoritative rocket from the wire rates. Old peers can't parse the tail — mixed versions must not join.
+// 75: MAX_PLAYERS 8 -> 16 (NET_MAX_CLIENTS 17): chrslots widened u16 -> u32 in CLC_ADMIN_SETUP + SVC_STAGE_START; client ids now reach 16. Default server cap stays 8 (--maxclients 16 opts in). // 74: NET_MAX_CLIENTS = MAX_PLAYERS + 1 (9). A spectator host (dedicated / Host-Online, listen Host-Spectator) no longer burns a combatant slot — it sits on the extra +1 client slot so all MAX_PLAYERS (8) wire slots stay free for remote combatants (was 7 on dedicated). The lobby / SVC_STAGE_START manifests are count-prefixed and id-keyed, so the byte layout is unchanged for <=8 clients — but a 9-client server now emits client id 8, which only a proto-74 peer's netResolveWireClient accepts, so mixed versions must not join. "wire id 0 = host" is preserved.
 // 73: SVC_RACE_STATE / SVC_ELIM_STATE per-combatant slices are now WIRE-KEYED (humans by netclient id, bots by mpchr index — the SVC_SCORE convention) instead of raw local slots, which differ per machine (netPlayersAllocate's local slot-0 swap) and made every client read the HOST's race progress / lives as its own. Same byte layout, different keying — mixed versions must not join.
 // 72: "Race" scenario (MPSCENARIO_RACE 8, checkpoint racing over the KoH hillpads) — new SVC_RACE_STATE (0x58: per-racer progress + finish order + finish timer), and g_MpSetup.racelaps/racepitytime u8s appended after elimlives in SVC_STAGE_START and CLC_ADMIN_SETUP. See docs/PORT_RACE.md
 // 71: Lives went GLOBAL (any scenario; Limits menu; elimlives 0 = off) and the short-lived Elimination scenario (id 8) was retired — same wire fields as 70 but gate semantics differ and id 8 no longer exists, so mixed versions must not join. See docs/PORT_ELIMINATION.md
@@ -332,9 +334,18 @@ struct netlobbystate {
 // dropped packet self-heals on the next one. Old peers ignore the bit — no
 // protocol bump.
 #define UCMD_CLOAKED (1 << 11)
+// Fly-by-wire (Slayer secondary, proto 76). FLYBYWIRE is a LEVEL bit: set every
+// move while the owner is flying its rocket — it gates the conditional steering
+// tail in netplayermove (fbw_pitch/fbw_yaw/fbw_rsticky) AND tells the server's
+// slayer steering branch the client considers itself engaged. FBW_DETONATE is a
+// one-shot (Z press; deduped server-side by inmove tick), FBW_SLOW a level
+// (slow-button held).
+#define UCMD_FLYBYWIRE (1 << 12)
+#define UCMD_FBW_DETONATE (1 << 13)
+#define UCMD_FBW_SLOW (1 << 14)
 #define UCMD_RESPAWN (1 << 27)
 #define UCMD_CHAT (1 << 28)
-#define UCMD_IMPORTANT_MASK (UCMD_FIRE | UCMD_ACTIVATE | UCMD_RELOAD | UCMD_AIMMODE | UCMD_SELECT | UCMD_SELECT_DUAL)
+#define UCMD_IMPORTANT_MASK (UCMD_FIRE | UCMD_ACTIVATE | UCMD_RELOAD | UCMD_AIMMODE | UCMD_SELECT | UCMD_SELECT_DUAL | UCMD_FLYBYWIRE | UCMD_FBW_DETONATE)
 #define UCMD_FL_FORCEPOS (1 << 29)
 #define UCMD_FL_FORCEANGLE (1 << 30)
 #define UCMD_FL_FORCEGROUND (1 << 31)
@@ -364,6 +375,15 @@ struct netplayermove {
 	f32 crosspos[2]; // crosshair position in aiming mode; normalized to default aspect ratio
 	s8 weaponnum; // switch to this weapon if UCMD_SELECT is set
 	struct coord pos; // player position at g_NetTick == tick
+	// Fly-by-wire steering (proto 76): per-60Hz-tick rotation in radians,
+	// fixed-point ×8192 (stick + mouse + invert already folded by the client —
+	// control-mode agnostic, and radians don't saturate on mouse flicks the way
+	// a raw stick value would). On the wire only while UCMD_FLYBYWIRE is set
+	// (conditional tail, the zoomfov/UCMD_AIMMODE pattern). Placed BEFORE
+	// animnum so netClientNeedMove's memcmp change-detects them.
+	s16 fbw_pitch;
+	s16 fbw_yaw;
+	s8 fbw_rsticky; // raw thrust-boost stick (-128..127)
 	s16 animnum; // chr->model->anim->animnum at write time, 0 if unknown
 	s16 animframe; // integer frame index of the active animation (chr->model->anim->framea)
 	u8 renderbehind; // client's g_NetInterpTicks at write time (server lag-comp render offset, proto 63). Appended after the anim tail so it's outside netClientNeedMove's memcmp (it's ~constant, must not force sends)
@@ -420,6 +440,7 @@ struct netclient {
 	u32 inmove_head; // index of newest entry in inmove[]
 	u32 inmovetick; // last inmove tick which was applied to the player
 	u32 oneshot_fwd_tick; // server: inmove tick whose one-shot ucmd bits (RELOAD/SELECT) were last forwarded into the rebroadcast — forwarding them every frame replayed a stale reload tap forever on observers
+	u32 fbw_detonate_tick; // server: inmove tick whose UCMD_FBW_DETONATE was consumed by the slayer steering (one-shot dedupe, the oneshot_fwd_tick pattern)
 	u8 renderbehind; // server-side: the firing client's render offset (g_NetInterpTicks) from its last applied inmove; lag-comp rewinds to inmovetick - renderbehind (proto 63)
 	u32 outmoveack; // last acked outmove tick
 	u32 forcetick; // tick on which the client's position was forced, or 0 if not forcing

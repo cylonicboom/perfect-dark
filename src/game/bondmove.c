@@ -260,6 +260,17 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 		}
 	}
 
+	// Remote pawns never run the local pad-read path that clears
+	// waitforzrelease (bmoveTick's joyGetButtons(Z_TRIG)==0 check), so the flag
+	// would latch forever. The slayer fly-by-wire steering sets it every tick
+	// while flying its rocket (player.c), so without this a remote flyer could
+	// never fire again ("one rocket per round"); it also affects any other
+	// waitforzrelease weapon (sniper zoom, etc.) for remote pawns. Mirror the
+	// local release off the wire: clear once the client is no longer holding fire.
+	if (pl->waitforzrelease && !(inmove->ucmd & UCMD_FIRE)) {
+		pl->waitforzrelease = false;
+	}
+
 	const bool fireguns = (inmove->ucmd & UCMD_FIRE) && !pl->waitforzrelease && allowc1buttons;
 
 	bgunTickGameplay(fireguns);

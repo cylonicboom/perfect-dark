@@ -650,6 +650,30 @@ MenuItemHandlerResult menuhandlerMpCheckboxPortOption(s32 operation, struct menu
 
 	return 0;
 }
+
+// Combat Sim "More Options": Respawn Delay slider (0-10 s lockout after death;
+// 0 = instant). Value-only like menuhandlerMpElimLives; session-only +
+// wire-synced (g_MpSetup.respawndelay).
+MenuItemHandlerResult menuhandlerMpRespawnDelay(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_MpSetup.respawndelay;
+		break;
+	case MENUOP_SET:
+		g_MpSetup.respawndelay = (u8)data->slider.value;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		if (data->slider.value == 0) {
+			sprintf(data->slider.label, "Off\n");
+		} else {
+			sprintf(data->slider.label, "%d sec\n", (s32)data->slider.value);
+		}
+		break;
+	}
+
+	return 0;
+}
 #endif
 
 MenuItemHandlerResult menuhandlerMpTeamsEnabled(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -7319,6 +7343,45 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"No Doors",
 		MPOPTION_NODOORS >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	// Port-only respawn / spectator options (proto 77).
+	{
+		// Auto-spectate a live player on death. Default OFF inverts the old
+		// always-on behaviour — off, you keep your own death-cam during the delay.
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Spectate on Death",
+		MPOPTION_SPECTATEONDEATH >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		// Seconds locked out of respawning after death (0 = instant). Tick-based,
+		// so it holds on the headless dedicated server too.
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LESSLEFTPADDING | MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Respawn Delay",
+		10,
+		menuhandlerMpRespawnDelay,
+	},
+	{
+		// Auto-respawn 10 s after the respawn delay ends (death + delay + 10 s).
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Forced Respawn",
+		MPOPTION_FORCEDRESPAWN >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		// 2 s of damage immunity on respawn (fixed duration).
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Respawn Invulnerability",
+		MPOPTION_RESPAWNINVULN >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 #endif

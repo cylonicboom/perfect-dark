@@ -522,6 +522,14 @@ void playerStartNewLife(void)
 
 	g_Vars.currentplayer->dostartnewlife = false;
 
+#ifndef PLATFORM_N64
+	// Respawn options (proto 77): clear the delay-lockout stamp now that we're
+	// respawning, and arm 2s of i-frames if Respawn Invulnerability is enabled.
+	g_Vars.currentplayer->respawnallowtick = 0;
+	g_Vars.currentplayer->respawnprotect60 =
+			(g_MpSetup.options & MPOPTION_RESPAWNINVULN) ? TICKS(120) : 0;
+#endif
+
 	if (g_Vars.coopplayernum < 0) {
 		struct prop *prop = g_Vars.currentplayer->prop->child;
 
@@ -3606,19 +3614,18 @@ void playerAutoWalk(s16 aimpad, u8 walkspeed, u8 turnspeed, u8 lookup, u8 dist)
 void playerLaunchSlayerRocket(struct weaponobj *rocket)
 {
 #ifndef PLATFORM_N64
-	// Net: never engage fly-by-wire for a REMOTE pawn. The server's fire
-	// mirror (pdmain.c §6.1 handsTickAttack) runs bgunCreateFiredProjectile
-	// for remote players' Slayer secondary; engaging VISIONMODE_SLAYERROCKET
-	// here hijacks the SERVER-side pawn — playerTick's slayer branch calls
-	// bmoveTick(0,0,0,1) (movement input ignored, pawn freezes while the
-	// client keeps walking = CSP rubber-band) and routes the client's stick
-	// input into rocket steering the client can't even see (its own
-	// bgunCreateFiredProjectile is client-gated, so the rocket-cam never
-	// engages there) — the 2026-06-11 "player becomes a random rocket"
-	// report. Degrade: a remote shooter's fly-by-wire rocket flies unguided;
-	// proper client-side fly-by-wire needs the client to own the rocket
-	// flight + camera (future work). Listen-host local player keeps vanilla.
-	if (g_NetMode != NETMODE_NONE && g_Vars.currentplayer->isremote) {
+	// Net (proto 76): block engagement only on a CLIENT's view of a REMOTE pawn.
+	// A client never legitimately reaches here for a remote pawn anyway (its
+	// fire path is gated in bgunCreateFiredProjectile), so this is defense only.
+	// The SERVER now DOES engage VISIONMODE_SLAYERROCKET for remote pawns: the
+	// firing client engaged the rocket-cam on its synced copy and steers via the
+	// wire (UCMD_FLYBYWIRE + fbw_pitch/yaw rates), and the server's steering
+	// branch (playerTick, fbw_srv_remote) flies the authoritative rocket from
+	// those rates. The bmoveTick(0,0,0,1) pawn freeze is now simultaneous on both
+	// machines (the client froze its own pawn when it engaged), so the only skew
+	// is engage-latency (~RTT), absorbed by CSP. Listen-host local player keeps
+	// the vanilla path (not isremote).
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.currentplayer->isremote) {
 		return;
 	}
 #endif
@@ -3909,6 +3916,29 @@ void playerTick(bool arg0)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Net (proto 76): the SLAYERROCKETSTATIC -> NORMAL transition lives only in
+	// lvRender, which never runs for a remote pawn on the server. Without this a
+	// remote flyer whose rocket died (detonate / out-of-bounds / death — every
+	// path above sets STATIC) would wedge at STATIC forever server-side. Bridge
+	// it straight to NORMAL (the client plays the vanilla static-then-normal cut
+	// from its own lvRender).
+	if (g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->visionmode == VISIONMODE_SLAYERROCKETSTATIC) {
+		g_Vars.currentplayer->visionmode = VISIONMODE_NORMAL;
+	}
+
+	// Respawn Invulnerability (proto 77): count down the i-frame window. Runs on
+	// the machine simulating the pawn (server for remote pawns, local for host),
+	// the same place playerDieByShooter gates on it.
+	if (g_Vars.currentplayer->respawnprotect60 > 0) {
+		g_Vars.currentplayer->respawnprotect60 -= g_Vars.lvupdate60;
+		if (g_Vars.currentplayer->respawnprotect60 < 0) {
+			g_Vars.currentplayer->respawnprotect60 = 0;
+		}
+	}
+#endif
+
 	if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
 		g_InCutscene = false;
 	}
@@ -4055,9 +4085,38 @@ void playerTick(bool arg0)
 				bool slow = false;
 				bool pause = false;
 				f32 newspeed;
+#ifndef PLATFORM_N64
+				// Fly-by-wire net roles (proto 76). fbw_srv_remote: the server
+				// flies a remote client's authoritative rocket from wire rates.
+				// fbw_client: the firing client engaged the rocket-cam on its
+				// synced copy — it captures the locally-computed rates for the wire
+				// and suppresses the local flight mutations (server is authority).
+				const bool fbw_srv_remote = g_NetMode == NETMODE_SERVER && g_Vars.currentplayer->isremote;
+				const bool fbw_client = g_NetMode == NETMODE_CLIENT && rocket->base.prop->syncid != 0;
+				const struct netplayermove *fbw_im =
+						(fbw_srv_remote && g_Vars.currentplayer->client)
+						? &g_Vars.currentplayer->client->inmove[g_Vars.currentplayer->client->inmove_head]
+						: NULL;
+#endif
 
 #ifndef PLATFORM_N64
-				if (mode == CONTROLMODE_NA) {
+				if (fbw_srv_remote) {
+					// Steering rides the firing client's wire move — never read the
+					// host's local pad/mouse/keyboard for a remote pawn (it would
+					// consume the host's input and could open the pause menu). slow/
+					// explode/rsticky come from the move; the pitch/yaw rates are
+					// applied to sp178/sp174 below (the local stick math produces
+					// zeros here since stickx/sticky stay 0).
+					if (fbw_im) {
+						slow = (fbw_im->ucmd & UCMD_FBW_SLOW) != 0;
+						explode = (fbw_im->ucmd & UCMD_FBW_DETONATE)
+								&& fbw_im->tick != g_Vars.currentplayer->client->fbw_detonate_tick;
+						if (explode) {
+							g_Vars.currentplayer->client->fbw_detonate_tick = fbw_im->tick;
+						}
+						rsticky = fbw_im->fbw_rsticky;
+					}
+				} else if (mode == CONTROLMODE_NA) {
 					// TODO
 				} else
 #endif
@@ -4129,7 +4188,7 @@ void playerTick(bool arg0)
 				}
 
 #ifndef PLATFORM_N64
-				if (g_PlayersWithControl[g_Vars.currentplayernum] && inputKeyJustPressed(VK_ESCAPE)) {
+				if (!fbw_srv_remote && g_PlayersWithControl[g_Vars.currentplayernum] && inputKeyJustPressed(VK_ESCAPE)) {
 					pause = true;
 				}
 #endif
@@ -4173,6 +4232,25 @@ void playerTick(bool arg0)
 				}
 #endif
 
+#ifndef PLATFORM_N64
+				if (fbw_srv_remote) {
+					// Authoritative per-tick rotation from the firing client
+					// (radians; invert-pitch + mouse already folded client-side;
+					// applied raw — both machines are tick-pinned 1/60).
+					sp178 = fbw_im ? fbw_im->fbw_pitch / 8192.f : 0.f;
+					sp174 = fbw_im ? fbw_im->fbw_yaw / 8192.f : 0.f;
+				} else if (fbw_client) {
+					// Capture this tick's computed rates for the wire; the server
+					// owns the flight, so the local mutations below are suppressed.
+					g_Vars.currentplayer->fbw_pitch = sp178;
+					g_Vars.currentplayer->fbw_yaw = sp174;
+					g_Vars.currentplayer->fbw_rsticky = rsticky;
+					g_Vars.currentplayer->ucmd |= UCMD_FLYBYWIRE
+							| (slow ? UCMD_FBW_SLOW : 0)
+							| (explode ? UCMD_FBW_DETONATE : 0);
+				}
+#endif
+
 				f20 = sqrtf(sp2ac.f[0] * sp2ac.f[0] + sp2ac.f[2] * sp2ac.f[2]);
 
 				sp2ac.x /= f20;
@@ -4194,6 +4272,11 @@ void playerTick(bool arg0)
 
 				quaternionMultQuaternion(sp15c, sp14c, sp13c);
 				quaternionToMtx(sp13c, &sp1fc);
+#ifndef PLATFORM_N64
+				// Client: server owns the rocket's flight; don't steer the local
+				// synced copy (it would fight the SVC_PROP_MOVE stream).
+				if (!fbw_client)
+#endif
 				mtx4RotateVecInPlace(&sp1fc, &projectile->speed);
 
 				projectile->powerlimit240 = -1;
@@ -4206,6 +4289,11 @@ void playerTick(bool arg0)
 					projectile->ownerprop = NULL;
 				}
 
+#ifndef PLATFORM_N64
+				// Client: the detonate press rides the wire (UCMD_FBW_DETONATE);
+				// the server flips the team and runs the authoritative explosion.
+				if (!fbw_client)
+#endif
 				if (explode) {
 					rocket->team = TEAM_00;
 				}
@@ -4247,25 +4335,40 @@ void playerTick(bool arg0)
 					}
 				}
 
-				projectile->speed.x = (projectile->speed.x * newspeed) / prevspeed;
-				projectile->speed.y = (projectile->speed.y * newspeed) / prevspeed;
-				projectile->speed.z = (projectile->speed.z * newspeed) / prevspeed;
+#ifndef PLATFORM_N64
+				// Client: speed magnitude (slow/boost) is server-authoritative and
+				// arrives on the SVC_PROP_MOVE stream — don't rescale locally.
+				if (!fbw_client)
+#endif
+				{
+					projectile->speed.x = (projectile->speed.x * newspeed) / prevspeed;
+					projectile->speed.y = (projectile->speed.y * newspeed) / prevspeed;
+					projectile->speed.z = (projectile->speed.z * newspeed) / prevspeed;
+				}
 
-				mtx3ToMtx4(sp2b8, &sp1bc);
-				quaternion0f097044(&sp1bc, sp12c);
-				quaternionMultQuaternion(sp13c, sp12c, sp11c);
-				quaternionToMtx(sp11c, &sp17c);
-				mtx4ToMtx3(&sp17c, sp2b8);
+#ifndef PLATFORM_N64
+				// Client: the rocket's orientation is driven by the wire (the
+				// camera basis is mirrored into realrot in netmsgSvcPropMoveRead);
+				// rewriting realrot here would fight it.
+				if (!fbw_client)
+#endif
+				{
+					mtx3ToMtx4(sp2b8, &sp1bc);
+					quaternion0f097044(&sp1bc, sp12c);
+					quaternionMultQuaternion(sp13c, sp12c, sp11c);
+					quaternionToMtx(sp11c, &sp17c);
+					mtx4ToMtx3(&sp17c, sp2b8);
 
-				rocket->base.realrot[0][0] = sp2b8[0][0] * sp2a8;
-				rocket->base.realrot[0][1] = sp2b8[0][1] * sp2a8;
-				rocket->base.realrot[0][2] = sp2b8[0][2] * sp2a8;
-				rocket->base.realrot[1][0] = sp2b8[1][0] * sp2a8;
-				rocket->base.realrot[1][1] = sp2b8[1][1] * sp2a8;
-				rocket->base.realrot[1][2] = sp2b8[1][2] * sp2a8;
-				rocket->base.realrot[2][0] = sp2b8[2][0] * sp2a8;
-				rocket->base.realrot[2][1] = sp2b8[2][1] * sp2a8;
-				rocket->base.realrot[2][2] = sp2b8[2][2] * sp2a8;
+					rocket->base.realrot[0][0] = sp2b8[0][0] * sp2a8;
+					rocket->base.realrot[0][1] = sp2b8[0][1] * sp2a8;
+					rocket->base.realrot[0][2] = sp2b8[0][2] * sp2a8;
+					rocket->base.realrot[1][0] = sp2b8[1][0] * sp2a8;
+					rocket->base.realrot[1][1] = sp2b8[1][1] * sp2a8;
+					rocket->base.realrot[1][2] = sp2b8[1][2] * sp2a8;
+					rocket->base.realrot[2][0] = sp2b8[2][0] * sp2a8;
+					rocket->base.realrot[2][1] = sp2b8[2][1] * sp2a8;
+					rocket->base.realrot[2][2] = sp2b8[2][2] * sp2a8;
+				}
 			}
 		}
 
@@ -5525,6 +5628,21 @@ Gfx *playerRenderHud(Gfx *gdl)
 						if (canrestart && !elimChrCanRespawn(chr)) {
 							canrestart = false;
 						}
+
+						// Respawn Delay lockout (proto 77): block respawn until the
+						// delay elapses. Tick-based off the death stamp, so the
+						// server enforces it for remote pawns identically to a
+						// rendered host (the anim/fade gate above is bypassed
+						// headless). Forced Respawn auto-respawns 10s after the delay.
+						if (g_Vars.mplayerisrunning
+								&& (u32)g_Vars.lvframe60 < g_Vars.currentplayer->respawnallowtick) {
+							canrestart = false;
+						}
+						if ((g_MpSetup.options & MPOPTION_FORCEDRESPAWN)
+								&& g_Vars.currentplayer->respawnallowtick
+								&& (u32)g_Vars.lvframe60 >= g_Vars.currentplayer->respawnallowtick + 600u) {
+							canrestart = true;
+						}
 #endif
 
 						if (canrestart) {
@@ -5638,10 +5756,18 @@ void playerDie(bool force)
 
 void playerDieByShooter(u32 shooter, bool force)
 {
-#if VERSION >= VERSION_NTSC_1_0
-	if (!g_Vars.currentplayer->isdead && (force || !g_Vars.currentplayer->invincible))
+#ifndef PLATFORM_N64
+	// Respawn Invulnerability (proto 77): block non-forced deaths during the 2s
+	// post-respawn i-frame window. `force` (kill-plane / disconnect kill) still
+	// bypasses. Reuses the invincibility-cheat gate; uses a separate timed field.
+	const bool iframeprotected = g_Vars.currentplayer->respawnprotect60 > 0;
 #else
-	if (!g_Vars.currentplayer->isdead && (force || !g_Vars.currentplayer->invincible || !g_Vars.currentplayer->training))
+	const bool iframeprotected = false;
+#endif
+#if VERSION >= VERSION_NTSC_1_0
+	if (!g_Vars.currentplayer->isdead && (force || (!g_Vars.currentplayer->invincible && !iframeprotected)))
+#else
+	if (!g_Vars.currentplayer->isdead && (force || ((!g_Vars.currentplayer->invincible || !g_Vars.currentplayer->training) && !iframeprotected)))
 #endif
 	{
 		u32 prevplayernum = g_MpPlayerNum;
@@ -5665,6 +5791,14 @@ void playerDieByShooter(u32 shooter, bool force)
 		}
 
 		g_Vars.currentplayer->isdead = true;
+#ifndef PLATFORM_N64
+		// Respawn Delay lockout stamp (proto 77): earliest lvframe60 a respawn is
+		// allowed = death frame + Respawn Delay seconds. lvframe60 is the local
+		// 60Hz counter and always advances, so the lockout holds on the headless
+		// server (which sets + enforces this for remote pawns) exactly as on a
+		// rendered host — unlike the anim/fade respawn gate, which is render-tier.
+		g_Vars.currentplayer->respawnallowtick = (u32)g_Vars.lvframe60 + 60u * g_MpSetup.respawndelay;
+#endif
 		g_Vars.currentplayer->bonddie = g_Vars.currentplayer->bond2;
 		g_Vars.currentplayer->thetadie = g_Vars.currentplayer->vv_theta;
 		g_Vars.currentplayer->vertadie = g_Vars.currentplayer->vv_verta;

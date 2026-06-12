@@ -4518,6 +4518,16 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		return;
 	}
 
+#ifndef PLATFORM_N64
+	// Respawn Invulnerability (proto 77): 2s of full damage immunity after a
+	// respawn — same early-out as the invincibility cheat above, so no chip
+	// damage gets through, not just no death. Kill-plane / disconnect kills use
+	// playerDieByShooter's `force` path and never reach this handler.
+	if (chr->prop == g_Vars.currentplayer->prop && g_Vars.currentplayer->respawnprotect60 > 0) {
+		return;
+	}
+#endif
+
 	if (ismelee) {
 		isshoot = false;
 	}

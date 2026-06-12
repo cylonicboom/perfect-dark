@@ -178,6 +178,13 @@ static inline u32 netbufWritePlayerMove(struct netbuf *buf, const struct netplay
 	if (in->ucmd & UCMD_AIMMODE) {
 		netbufWriteF32(buf, in->zoomfov);
 	}
+	// Fly-by-wire steering tail (proto 76): only while the owner is flying its
+	// slayer rocket. Same conditional pattern as the zoomfov tail above.
+	if (in->ucmd & UCMD_FLYBYWIRE) {
+		netbufWriteS16(buf, in->fbw_pitch);
+		netbufWriteS16(buf, in->fbw_yaw);
+		netbufWriteS8(buf, in->fbw_rsticky);
+	}
 	return buf->error;
 }
 
@@ -203,6 +210,15 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 	} else {
 		in->zoomfov = 0.f;
 	}
+	if (in->ucmd & UCMD_FLYBYWIRE) {
+		in->fbw_pitch = netbufReadS16(buf);
+		in->fbw_yaw = netbufReadS16(buf);
+		in->fbw_rsticky = netbufReadS8(buf);
+	} else {
+		in->fbw_pitch = 0;
+		in->fbw_yaw = 0;
+		in->fbw_rsticky = 0;
+	}
 	return buf->error;
 }
 
@@ -227,6 +243,127 @@ static inline struct prop *netSyncIdToProp(u32 syncid)
 		}
 	}
 	return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Client fly-by-wire engagement (proto 76, docs: the whimsical-booping-raccoon
+// plan). The client cannot create its own slayer rocket (bgunCreateFired-
+// Projectile is client-gated), so the rocket-cam engages on the WIRE copy: the
+// local fire of a FUNCFLAG_FLYBYWIRE weapon sets a short latch
+// (netFbwLatchFired, called from the bondgun client gate), and the first owned
+// powered-projectile SVC_PROP_SPAWN while the latch is live binds it
+// (playerLaunchSlayerRocket on the local pawn). Both orders are covered — the
+// server's fire mirror runs off the UCMD_FIRE move while the client's hand
+// state machine paces locally, so the spawn can arrive before or after the
+// local gate fires; the spawn side records, the latch side checks the record.
+// ---------------------------------------------------------------------------
+
+#define NET_FBW_LATCH_TICKS 120 // 2s: latch + spawn-record lifetime
+
+// Rebuild the local pawn's fly-by-wire rocket camera basis (obj->realrot) from
+// the rocket's authoritative VELOCITY each move. Why velocity and not the wire
+// rotation: the server's copy of this rocket has ownerprop == NULL (the slayer
+// steering nulls it), so projectileTick never fullticks it server-side and its
+// projectile->mtx is frozen at the headless launch pose — feeding the camera
+// from it locks the view at a wrong angle that never rotates. The velocity is
+// synced every tick and is correct (the rocket flies where it's steered), so the
+// chase-cam looks along the travel direction and tracks steering, starting at the
+// firing direction (no headless-muzzle skew). Built with the engine's own
+// orientation builder so the handedness/convention matches the vanilla rocket
+// realrot exactly: mtx00016b58 stores row0=right, row1=up, row2=-normalize(look),
+// and the camera (mtx000161b0 row-extract, player.c slayer branch) reads row 2 as
+// forward + row 1 as up — so passing look = -velocity makes the camera look along
+// the velocity. Scale-preserved (the model render also reads realrot).
+static void netFbwCameraFromVelocity(struct defaultobj *obj, const struct coord *vel)
+{
+	const f32 len = sqrtf(vel->x * vel->x + vel->y * vel->y + vel->z * vel->z);
+	if (len < 0.0001f) {
+		return; // no direction this tick — keep the last basis
+	}
+
+	// World up reference, swapped to a side axis when the rocket flies near-
+	// vertical (velocity parallel to up makes mtx00016b58's up x look degenerate).
+	const f32 ndy = vel->y / len;
+	f32 upx = 0.f, upy = 1.f, upz = 0.f;
+	if (ndy > 0.99f || ndy < -0.99f) {
+		upx = 0.f; upy = 0.f; upz = 1.f;
+	}
+
+	Mtxf m;
+	mtx00016b58(&m, 0.f, 0.f, 0.f, -vel->x, -vel->y, -vel->z, upx, upy, upz);
+
+	// Preserve the existing realrot scale (column-0 magnitude, the player.c idiom).
+	f32 s = sqrtf(
+			obj->realrot[0][0] * obj->realrot[0][0] +
+			obj->realrot[1][0] * obj->realrot[1][0] +
+			obj->realrot[2][0] * obj->realrot[2][0]);
+	if (s <= 0.0001f) {
+		s = 1.f;
+	}
+
+	for (s32 i = 0; i < 3; i++) {
+		obj->realrot[i][0] = m.m[i][0] * s;
+		obj->realrot[i][1] = m.m[i][1] * s;
+		obj->realrot[i][2] = m.m[i][2] * s;
+	}
+}
+
+static void netFbwEngage(struct player *pl, struct prop *rocketprop)
+{
+	const s32 playernum = playermgrGetPlayerNumByProp(pl->prop);
+	if (playernum < 0) {
+		return;
+	}
+	const s32 prevplayernum = g_Vars.currentplayernum;
+	setCurrentPlayerNum(playernum);
+	playerLaunchSlayerRocket((struct weaponobj *)rocketprop->obj);
+	setCurrentPlayerNum(prevplayernum);
+	pl->fbw_pendingframe = 0;
+	pl->fbw_spawnsyncid = 0;
+}
+
+void netFbwLatchFired(void)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient
+			|| !g_NetLocalClient->player || !g_NetLocalClient->player->prop) {
+		return;
+	}
+	struct player *pl = g_NetLocalClient->player;
+	pl->fbw_pendingframe = g_Vars.lvframe60 ? (u32)g_Vars.lvframe60 : 1u;
+
+	// Spawn-before-latch: an owned powered-projectile spawn already arrived.
+	if (pl->fbw_spawnsyncid
+			&& (u32)g_Vars.lvframe60 - pl->fbw_spawnframe < NET_FBW_LATCH_TICKS) {
+		struct prop *prop = netSyncIdToProp(pl->fbw_spawnsyncid);
+		if (prop && prop->type == PROPTYPE_WEAPON && prop->obj
+				&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
+			netFbwEngage(pl, prop);
+		}
+	}
+}
+
+// Called from the spawn read for every applied spawn; records owned powered
+// projectiles and engages if the fire latch is live.
+static void netFbwOnSpawn(struct prop *prop)
+{
+	if (g_NetMode != NETMODE_CLIENT || !g_NetLocalClient
+			|| !g_NetLocalClient->player || !g_NetLocalClient->player->prop) {
+		return;
+	}
+	if (!prop || prop->type != PROPTYPE_WEAPON || !prop->obj
+			|| (prop->obj->hidden & OBJHFLAG_PROJECTILE) == 0
+			|| !prop->obj->projectile
+			|| prop->obj->projectile->ownerprop != g_NetLocalClient->player->prop) {
+		return;
+	}
+	struct player *pl = g_NetLocalClient->player;
+	pl->fbw_spawnsyncid = (u16)prop->syncid;
+	pl->fbw_spawnframe = (u32)g_Vars.lvframe60;
+
+	if (pl->fbw_pendingframe
+			&& (u32)g_Vars.lvframe60 - pl->fbw_pendingframe < NET_FBW_LATCH_TICKS) {
+		netFbwEngage(pl, prop);
+	}
 }
 
 static inline u32 netbufWritePropPtr(struct netbuf *buf, const struct prop *prop)
@@ -488,6 +625,7 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.elimlives);
 	netbufWriteU8(dst, g_MpSetup.racelaps);
 	netbufWriteU8(dst, g_MpSetup.racepitytime);
+	netbufWriteU8(dst, g_MpSetup.respawndelay);
 	netbufWriteU8(dst, (u8)g_BotCount);
 	netbufWriteU8(dst, NET_MAX_BOTS);
 	for (s32 i = 0; i < NET_MAX_BOTS; ++i) {
@@ -529,6 +667,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	const u8 elimlives = netbufReadU8(src);
 	const u8 racelaps = netbufReadU8(src);
 	const u8 racepitytime = netbufReadU8(src);
+	const u8 respawndelay = netbufReadU8(src);
 	const u8 botcount = netbufReadU8(src);
 	const u8 numbots = netbufReadU8(src);
 
@@ -605,6 +744,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.elimlives = elimlives;
 	g_MpSetup.racelaps = racelaps;
 	g_MpSetup.racepitytime = racepitytime;
+	g_MpSetup.respawndelay = respawndelay;
 	strcpy(g_MpSetup.name, "server");
 
 	for (u8 i = 0; i < numbots; ++i) {
@@ -1037,6 +1177,8 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	// Race laps / finish timer (NET_PROTOCOL_VER >= 72). Same arrangement.
 	netbufWriteU8(dst, g_MpSetup.racelaps);
 	netbufWriteU8(dst, g_MpSetup.racepitytime);
+	// Respawn delay lockout (NET_PROTOCOL_VER >= 77).
+	netbufWriteU8(dst, g_MpSetup.respawndelay);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -1213,6 +1355,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.elimlives = netbufReadU8(src);
 	g_MpSetup.racelaps = netbufReadU8(src);
 	g_MpSetup.racepitytime = netbufReadU8(src);
+	g_MpSetup.respawndelay = netbufReadU8(src);
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {
@@ -2634,6 +2777,25 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 
 			if (projectile) {
 				prop->pos = pos;
+
+				// Fly-by-wire camera basis (proto 76): the rocket-cam reads
+				// obj->realrot (player.c slayer branch) for the local pawn's own
+				// rocket, but the server never updates this rocket's
+				// projectile->mtx (its ownerprop is NULL, so projectileTick
+				// doesn't fulltick it server-side) — so the wire rotation is
+				// frozen at the headless launch pose (camera stuck at a wrong
+				// angle, doesn't rotate). The rocket's VELOCITY is authoritative
+				// and synced every tick, so derive the camera orientation from it:
+				// look = travel direction, world up, recomputed right/up. Tracks
+				// steering (velocity rotates as steered) and starts correct (launch
+				// velocity = firing direction). Lags ~RTT, the documented limit.
+				if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
+						&& g_NetLocalClient->player
+						&& g_NetLocalClient->player->slayerrocket
+						&& prop->obj == (struct defaultobj *)g_NetLocalClient->player->slayerrocket
+						&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
+					netFbwCameraFromVelocity(prop->obj, &projectile->speed);
+				}
 			}
 		}
 	}
@@ -3408,6 +3570,10 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 	prop->pos = pos;
 
 	netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_RX, 0);
+
+	// Fly-by-wire: record/engage if this is the local pawn's own powered
+	// projectile (see netFbwOnSpawn above).
+	netFbwOnSpawn(prop);
 
 	return src->error;
 }

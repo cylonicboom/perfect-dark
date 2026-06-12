@@ -2865,6 +2865,27 @@ struct player {
 	/*0x1c84*/ u32 ucmd;
 	/*0x1c88*/ bool isremote;
 	/*0x1c8c*/ struct netclient *client;
+	// Fly-by-wire steering capture (proto 76, client side): the slayer steering
+	// block stores its computed per-tick rotation rates here each tick;
+	// netClientRecordMove copies them into the outgoing move when
+	// UCMD_FLYBYWIRE is set. fbw_pendingframe is the "I just fired a
+	// FLYBYWIRE-function weapon" latch (lvframe60, 0 = none) bridging the
+	// client fire gate to the wire spawn; fbw_spawnsyncid/spawnframe record the
+	// most recent owned powered-projectile spawn for the spawn-before-latch
+	// ordering.
+	f32 fbw_pitch;
+	f32 fbw_yaw;
+	s8 fbw_rsticky;
+	u32 fbw_pendingframe;
+	u16 fbw_spawnsyncid;
+	u32 fbw_spawnframe;
+	// Combat Sim respawn options (proto 77). respawnallowtick = the g_NetTick at
+	// or after which respawn is permitted (= deathtick + Respawn Delay), set at
+	// death, 0 = not pending; tick-based so the lockout behaves identically on the
+	// headless server (where the anim/fade respawn gate is bypassed) and rendered
+	// clients. respawnprotect60 = i-frame ticks remaining after a respawn.
+	u32 respawnallowtick;
+	s32 respawnprotect60;
 	// Host-spectator panel marker. Non-zero on the host's local panel slots
 	// when MPOPTION_HOSTSPECTATOR is on. Drives HUD suppression
 	// (playerRenderHud / bgunDraw* / radar) and routes lvTickPlayer through
@@ -4211,6 +4232,7 @@ struct mpsetup {
 	u8 elimlives; // global Lives (Limits menu): 0 = Off, 1-9 = lives. Solo: per combatant; Team: the team's TOTAL shared pool (port-only)
 	u8 racelaps; // Race: laps to finish, 1-10 (port-only)
 	u8 racepitytime; // Race: seconds after the first finisher before the match force-ends, 0-120; 0 = end with the winner (port-only)
+	u8 respawndelay; // Combat Sim "More Options": seconds (0-10) a player is locked out of respawning after death; 0 = instant (port-only, proto 77)
 	// Used to restore the non-player bits of chrslots upon entering Combat
 	// Simulator, after playing Co-Op/Counter-Op with a human sim.
 	u64 storedbotbits;

@@ -426,5 +426,13 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 			netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
 		}
 	}
+
+	// Killcam: latch the killer of the LOCAL pawn for SOLO / listen-host (the
+	// client path is SVC_KILL). Indices are local-consistent here (no wire), so
+	// resolve the chrs directly; netKillcamNoteKill self-filters to the local pawn.
+	if (g_NetMode != NETMODE_CLIENT && aplayernum >= 0 && aplayernum < MAX_MPCHRS
+			&& vplayernum >= 0 && vplayernum < MAX_MPCHRS) {
+		netKillcamNoteKill(g_MpAllChrPtrs[aplayernum], g_MpAllChrPtrs[vplayernum]);
+	}
 #endif
 }

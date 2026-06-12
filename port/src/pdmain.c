@@ -1164,7 +1164,14 @@ void mainTick(void)
 
 			if (!headless) {
 				if (mt_log) { netDiagLogf("mt_lvrender_pre", ""); }
+				// Killcam: while replaying, apply the recorded world poses (saving
+				// the live ones) so lvRender draws the historical scene from the
+				// killer's POV (g_NetSpectateChr), then restore live state after.
+				const s32 kc_replay = netKillcamRenderBegin();
 				gdl = lvRender(gdl);
+				if (kc_replay) {
+					netKillcamRenderEnd();
+				}
 				if (mt_log) {
 					netDiagLogf("mt_lvrender_post", "");
 					mt_logged++;

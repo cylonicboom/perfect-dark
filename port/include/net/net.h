@@ -74,6 +74,17 @@
 // between when the server replays a remote's shot and when its CLC_HIT lands.
 #define NET_SRVHIT_COUNT      12
 
+// Killcam (MPOPTION_KILLCAM): client-side ring of recent world poses replayed
+// from the killer's POV on death. 300 ticks = 5 s at 60 Hz (≈3 s preroll + a 2 s
+// post-death "story" tail). Records every MP combatant (player + sim) each tick;
+// bounded static buffer (~2 MB). Cosmetic, client-side only — no wire change.
+// See port/src/net/netkillcam.c.
+#define NET_KILLCAM_TICKS     300
+// Ticks to keep recording AFTER the local pawn dies before freezing for the
+// replay, so the killcam runs a couple of seconds past the kill (the killer's
+// reaction / the body dropping). 120 = 2 s. The replay start is delayed by this.
+#define NET_KILLCAM_POSTDEATH 120
+
 // Server-side keep-alive cadence (ticks) for KoH-state and lobby-state
 // broadcasts. ~1 second at 60 Hz. The KoH and lobby broadcasts use the same
 // interval but are phase-offset by half (NET_HEARTBEAT_INTERVAL / 2) so they
@@ -364,6 +375,49 @@ struct lagcomp_snapshot {
 	struct coord pos;
 };
 
+// Killcam: one combatant's full visual pose for a single recorded tick. `pose`
+// reuses the chr-state snapshot (body pos/anim/aim/rooms); the camera fields
+// (campos/theta/verta) capture a player's first-person eye so the replay can
+// render from the killer's exact historical view. valid = this combatant was
+// live and recordable this tick.
+struct netkillcamentry {
+	struct netchrpose pose;
+	struct coord campos;
+	f32 theta;
+	f32 verta;
+	// Final camera basis captured verbatim from the player's cam_pos/look/up
+	// (haspcam = this combatant was a player with a real first-person camera).
+	// Replaying these directly avoids re-deriving the view from angles (no
+	// convention mismatch); the killcam camera reads them via netKillcamGetCamera.
+	struct coord camlook;
+	struct coord camup;
+	s32 camroom;
+	u8 haspcam;
+	u8 gunfire;
+	u8 valid;
+};
+
+// One recorded tick: every MP combatant (index = g_MpAllChrPtrs slot).
+struct netkillcamframe {
+	u32 frame; // lvframe60 when recorded (0 = empty slot)
+	struct netkillcamentry ents[MAX_MPCHRS];
+};
+
+// Killcam runtime state (client-side, cosmetic). The ring records continuously
+// while MPOPTION_KILLCAM is set; on the local pawn's death it replays the window
+// ending at the death frame from the killer's POV.
+struct netkillcamstate {
+	s32 active;          // 1 = replaying
+	u32 head;            // newest ring index
+	u32 count;           // frames recorded since reset (caps at NET_KILLCAM_TICKS)
+	s32 playoffset;      // replay cursor: frames into the window (0..window-1)
+	s32 windowlen;       // number of frames to replay (<= NET_KILLCAM_TICKS)
+	s32 killerchrindex;  // g_MpAllChrPtrs slot of the killer (-1 = unknown)
+	s32 pendingkiller;   // latched killer index from the last kill of the local pawn
+	u32 deathframe;      // lvframe60 at death
+	struct netkillcamentry saved[MAX_MPCHRS]; // live poses saved across a replay-render bracket
+};
+
 struct netplayermove {
 	u32 tick; // g_NetTIck value when this struct was written; if 0, this struct is invalid
 	u32 ucmd; // player commands (UCMD_)
@@ -552,6 +606,25 @@ s32 netPlayerOwnsMouse(void);
 // Host Online: reload a fresh CITRAINING world and re-enter the Combat Sim
 // hosting UI through the post-match latch (menutick.c). Defined in netmenu.c.
 void netHostOnlineEnterSetup(void);
+
+// Killcam (MPOPTION_KILLCAM), port/src/net/netkillcam.c. Cosmetic, client-side.
+extern struct netkillcamstate g_NetKillcam;
+void netKillcamReset(void);                 // clear the ring (stage load)
+void netKillcamRecordTick(void);            // capture all combatants this tick
+void netKillcamNoteKill(struct chrdata *killer, struct chrdata *victim); // latch killer of local pawn (SVC_KILL / mpstats)
+struct chrdata *netKillcamFindChrByName(const char *name); // resolve a combatant chr by config name (cross-machine stable)
+void netKillcamOnLocalDeath(void);          // dead-edge: begin replay if enabled + a killer is latched
+s32 netKillcamActive(void);                 // 1 while replaying
+void netKillcamStop(void);                  // end replay (skip / respawn / stage end)
+// lvRender hook: when replaying, save live poses, apply the current replay frame,
+// and return the killer's g_MpAllChrPtrs slot to render from (-1 = not active).
+// Caller renders that combatant's viewport, then calls netKillcamRenderEnd().
+s32 netKillcamRenderBegin(void);
+void netKillcamRenderEnd(void);
+// Camera override for the replay: when active, fills the killer's recorded eye /
+// look / up / room for the current replay frame and returns 1 (netSpectateApply
+// uses it so the view follows the killer's HISTORICAL aim, not their live one).
+s32 netKillcamGetCamera(struct coord *eye, struct coord *look, struct coord *up, s32 *room);
 
 // net frame, ticks at 60 fps, starts at 0 when the server is started
 extern u32 g_NetTick;

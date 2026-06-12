@@ -7384,6 +7384,16 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		MPOPTION_RESPAWNINVULN >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
+	{
+		// On death, replay the last ~4s from the killer's eyes (client-side
+		// killcam; also works in solo Combat Sim against sims).
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Killcam",
+		MPOPTION_KILLCAM >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
 #endif
 	{ MENUITEMTYPE_END },
 };

@@ -268,6 +268,10 @@ void lvReset(s32 stagenum)
 {
 	lvFadeReset();
 
+#ifndef PLATFORM_N64
+	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
+#endif
+
 	var80084014 = false;
 	var80084010 = 0;
 
@@ -1288,6 +1292,12 @@ Gfx *lvRender(Gfx *gdl)
 				// further down), so order 0 is the only one that displays.
 				const bool jipspec = g_NetMode == NETMODE_CLIENT && g_NetLocalClient
 						&& !g_NetLocalClient->player && g_NetLocalClient->is_spectator;
+				// Player killer: render the killer's own first-person viewport (so
+				// their gun viewmodel + your body both show). The killcam overrides
+				// the killer player's cam_pos/look/up to the RECORDED basis in
+				// netKillcamRenderBegin, so this renders the historical view, not the
+				// killer's live aim. (A SIM killer isn't a player slot, so this
+				// redirect doesn't fire for it — it uses netSpectateApply's eye-cam.)
 				if (g_NetMode && g_NetSpectateChr && g_NetLocalClient
 						&& ((g_NetLocalClient->player
 								&& g_Vars.currentplayernum == g_NetLocalClient->playernum)
@@ -2404,6 +2414,13 @@ void lvTick(void)
 {
 	s32 j;
 	s32 i;
+
+#ifndef PLATFORM_N64
+	// Killcam (MPOPTION_KILLCAM): record the world this tick + detect the local
+	// pawn's death edge to start a replay. Early in the tick so a triggered
+	// killcam owns g_NetSpectateChr before lvTickPlayer's spectate-on-death check.
+	netKillcamRecordTick();
+#endif
 
 #ifndef PLATFORM_N64
 	// Heal a corrupted active-prop chain BEFORE any unbounded walk this frame

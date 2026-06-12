@@ -4092,6 +4092,13 @@ void netChrInterpolate(struct chrdata *chr)
 	if (!g_NetChrInterp || g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
 		return;
 	}
+	// Killcam: during a replay the world poses are the recorded ones applied by
+	// netKillcamRenderBegin. lvRender re-ticks chrs (propsTickPlayer -> chrTick ->
+	// here), which would otherwise stomp prop->pos back to the live interpolated
+	// position and freeze the replay on the live scene. Leave the applied pose.
+	if (g_NetKillcam.active) {
+		return;
+	}
 
 	const u32 head = chr->netsnaphead;
 	// INVARIANT CHECK: netsnaphead is only ever advanced `% NET_SNAPSHOT_COUNT`
@@ -4777,6 +4784,21 @@ void netSpectateApply(void)
 	struct player *pl = g_NetLocalClient ? g_NetLocalClient->player : NULL;
 	if (!pl || !pl->prop) {
 		return;
+	}
+
+	// Killcam replay: drive the camera from the killer's RECORDED eye/look for the
+	// current replay frame instead of their live pose, so the view follows their
+	// historical aim. Same playerSetCamProperties path as the live spectate below.
+	{
+		struct coord kceye, kclook, kcup;
+		s32 kcroom;
+		if (netKillcamGetCamera(&kceye, &kclook, &kcup, &kcroom)) {
+			const s32 kcprev = g_Vars.currentplayernum;
+			setCurrentPlayerNum(g_NetLocalClient->playernum);
+			playerSetCamPropertiesWithRoom(&kceye, &kcup, &kclook, kcroom);
+			setCurrentPlayerNum(kcprev);
+			return;
+		}
 	}
 
 	// Override the CAMERA only — leave prop->pos alone so the corpse stays

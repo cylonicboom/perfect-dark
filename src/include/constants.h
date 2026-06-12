@@ -3059,6 +3059,7 @@
 #define MPOPTION_SPECTATEONDEATH        0x0000400000000000ULL // options bit 46: auto-spectate a live player on death (default OFF; was always-on)
 #define MPOPTION_FORCEDRESPAWN          0x0000800000000000ULL // options bit 47: force respawn 10s after the respawn-delay lockout ends
 #define MPOPTION_RESPAWNINVULN          0x0001000000000000ULL // options bit 48: 2s damage immunity on respawn
+#define MPOPTION_KILLCAM                0x0002000000000000ULL // options bit 49: on death, replay the last 4s from the killer's POV (client-side; works in solo)
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

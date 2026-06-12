@@ -4480,6 +4480,10 @@ u32 netmsgSvcKillRead(struct netbuf *src, struct netclient *srccl)
 	}
 	if (victim && victim[0]) {
 		netKillFeedAdd(shooter, victim, shooter_team, victim_team);
+		// Killcam: latch the killer if the local pawn was the victim. The names
+		// resolve to chrs via g_MpAllChrConfigPtrs (cross-machine stable), the
+		// reliable trigger (chr->lastattacker isn't set on the victim's client).
+		netKillcamNoteKill(netKillcamFindChrByName(shooter), netKillcamFindChrByName(victim));
 	}
 	return src->error;
 }

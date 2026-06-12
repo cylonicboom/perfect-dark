@@ -1132,7 +1132,22 @@ void mainTick(void)
 					if (p && p->isremote && p->isdead && p->client && !mpIsPaused()
 							&& g_NumReasonsToEndMpMatch == 0) {
 						const struct netclient *cl_ = p->client;
-						if (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) {
+						bool wantrespawn = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
+						// Respawn Delay / Forced Respawn (proto 77): the player.c
+						// respawn grant (playerRenderHud, ~5615) is render-tier and
+						// never runs headless, so the delay lockout + forced respawn
+						// must be enforced here too or the dedicated server ignores
+						// them entirely. respawnallowtick is stamped in
+						// playerDieByShooter (runs server-side for remote-pawn deaths).
+						if ((u32)g_Vars.lvframe60 < p->respawnallowtick) {
+							wantrespawn = false;
+						}
+						if ((g_MpSetup.options & MPOPTION_FORCEDRESPAWN)
+								&& p->respawnallowtick
+								&& (u32)g_Vars.lvframe60 >= p->respawnallowtick + 600u) {
+							wantrespawn = true;
+						}
+						if (wantrespawn) {
 							netDiagLogf("respawn_ucmd_seen",
 									"pnum=%d cl=%u isdead=%d dostartnewlife=%d",
 									g_Vars.currentplayernum, (unsigned)cl_->id,

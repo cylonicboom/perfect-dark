@@ -783,6 +783,18 @@ void playerLoadDefaults(void)
 	g_Vars.currentplayer->globaldrawworldbgoffset.z = 0;
 
 	g_Vars.currentplayer->cameramode = CAMERAMODE_DEFAULT;
+#ifndef PLATFORM_N64
+	// Always respawn in normal vision. A pawn killed while flying its Slayer
+	// fly-by-wire rocket can reach here still in VISIONMODE_SLAYERROCKET/STATIC:
+	// the server respawns remote pawns via the pdmain headless mirror on a
+	// different timeline than the playerTick slayer-vision teardown (player.c
+	// ~3908 + the STATIC->NORMAL bypass), so without this it respawns stuck in the
+	// rocket-cam (a non-respawning "ghost"). Vanilla never hit this — its death
+	// sequence always exited slayer mode before respawn. cameramode was already
+	// reset above; do the same for the vision + rocket pointer.
+	g_Vars.currentplayer->visionmode = VISIONMODE_NORMAL;
+	g_Vars.currentplayer->slayerrocket = NULL;
+#endif
 	g_Vars.currentplayer->memcampos.x = 0;
 	g_Vars.currentplayer->memcampos.y = 0;
 	g_Vars.currentplayer->memcampos.z = 0;

@@ -7025,15 +7025,30 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 							quaternionMultQuaternion(sp270, sp260, sp250);
 							quaternionToMtx(sp250, &sp20c);
 
-							obj->realrot[0][0] = sp20c.m[0][0] * sp29c;
-							obj->realrot[0][1] = sp20c.m[0][1] * sp29c;
-							obj->realrot[0][2] = sp20c.m[0][2] * sp29c;
-							obj->realrot[1][0] = sp20c.m[1][0] * sp29c;
-							obj->realrot[1][1] = sp20c.m[1][1] * sp29c;
-							obj->realrot[1][2] = sp20c.m[1][2] * sp29c;
-							obj->realrot[2][0] = sp20c.m[2][0] * sp29c;
-							obj->realrot[2][1] = sp20c.m[2][1] * sp29c;
-							obj->realrot[2][2] = sp20c.m[2][2] * sp29c;
+#ifndef PLATFORM_N64
+							// Fly-by-wire: this rocket is ticked during its flyer's
+							// iteration (currentplayer == the flyer), whose rocket-cam
+							// steers the orientation each tick (player.c) and reads
+							// realrot. The port's full-axis pitch lets it ROLL through
+							// loops, so realrot diverges from the velocity direction.
+							// Don't let this flight-align overwrite realrot back to the
+							// (rollless) velocity orientation — that fights the steering
+							// and makes the camera flip/spin wildly. Position is still
+							// integrated. Observers (currentplayer != flyer) keep align.
+							if (!(g_Vars.currentplayer
+									&& g_Vars.currentplayer->slayerrocket == (struct weaponobj *)obj))
+#endif
+							{
+								obj->realrot[0][0] = sp20c.m[0][0] * sp29c;
+								obj->realrot[0][1] = sp20c.m[0][1] * sp29c;
+								obj->realrot[0][2] = sp20c.m[0][2] * sp29c;
+								obj->realrot[1][0] = sp20c.m[1][0] * sp29c;
+								obj->realrot[1][1] = sp20c.m[1][1] * sp29c;
+								obj->realrot[1][2] = sp20c.m[1][2] * sp29c;
+								obj->realrot[2][0] = sp20c.m[2][0] * sp29c;
+								obj->realrot[2][1] = sp20c.m[2][1] * sp29c;
+								obj->realrot[2][2] = sp20c.m[2][2] * sp29c;
+							}
 						}
 					}
 				}

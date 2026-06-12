@@ -318,6 +318,14 @@ static void netFbwEngage(struct player *pl, struct prop *rocketprop)
 	setCurrentPlayerNum(playernum);
 	playerLaunchSlayerRocket((struct weaponobj *)rocketprop->obj);
 	setCurrentPlayerNum(prevplayernum);
+	// Seed the rocket-cam orientation (realrot) from the launch direction so the
+	// client-local steering (player.c slayer branch) starts pointing forward,
+	// overriding the headless server's wrong spawn realrot. From here the client
+	// steers realrot itself each tick (rolls through loops).
+	if (rocketprop->obj && (rocketprop->obj->hidden & OBJHFLAG_PROJECTILE)
+			&& rocketprop->obj->projectile) {
+		netFbwCameraFromVelocity(rocketprop->obj, &rocketprop->obj->projectile->speed);
+	}
 	pl->fbw_pendingframe = 0;
 	pl->fbw_spawnsyncid = 0;
 }
@@ -2777,25 +2785,12 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 
 			if (projectile) {
 				prop->pos = pos;
-
-				// Fly-by-wire camera basis (proto 76): the rocket-cam reads
-				// obj->realrot (player.c slayer branch) for the local pawn's own
-				// rocket, but the server never updates this rocket's
-				// projectile->mtx (its ownerprop is NULL, so projectileTick
-				// doesn't fulltick it server-side) — so the wire rotation is
-				// frozen at the headless launch pose (camera stuck at a wrong
-				// angle, doesn't rotate). The rocket's VELOCITY is authoritative
-				// and synced every tick, so derive the camera orientation from it:
-				// look = travel direction, world up, recomputed right/up. Tracks
-				// steering (velocity rotates as steered) and starts correct (launch
-				// velocity = firing direction). Lags ~RTT, the documented limit.
-				if (g_NetMode == NETMODE_CLIENT && g_NetLocalClient
-						&& g_NetLocalClient->player
-						&& g_NetLocalClient->player->slayerrocket
-						&& prop->obj == (struct defaultobj *)g_NetLocalClient->player->slayerrocket
-						&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
-					netFbwCameraFromVelocity(prop->obj, &projectile->speed);
-				}
+				// NOTE: the fly-by-wire rocket-cam orientation (realrot) is now
+				// steered LOCALLY on the client each tick (player.c slayer branch,
+				// fbw_client) so it rolls through loops responsively. realrot is
+				// seeded once from the launch velocity at engage (netFbwEngage); the
+				// per-move velocity-derived camera was removed because it kept world
+				// up and so couldn't roll/loop.
 			}
 		}
 	}

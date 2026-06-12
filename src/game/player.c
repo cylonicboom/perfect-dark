@@ -4270,10 +4270,24 @@ void playerTick(bool arg0)
 
 				f20 = sinf(sp178);
 
+#ifndef PLATFORM_N64
+				// Pitch around the rocket's ACTUAL right axis (full 3D = sp2b8 row 0,
+				// already unit) instead of its horizontal projection. The original
+				// forces a level pitch axis (sp14c[2] = 0), which gimbal-locks at
+				// vertical — the rocket flips / levels off at the horizon and can't
+				// loop. Using the true right axis lets it pitch past vertical and loop
+				// the loop. Normal (level) flight is unchanged: the right axis is ~
+				// horizontal there, so this matches the projection. Port-only.
+				sp14c[0] = cosf(sp178);
+				sp14c[1] = sp2b8[0][0] * f20;
+				sp14c[2] = sp2b8[0][1] * f20;
+				sp14c[3] = sp2b8[0][2] * f20;
+#else
 				sp14c[0] = cosf(sp178);
 				sp14c[1] = sp2ac.f[0] * f20;
 				sp14c[2] = 0;
 				sp14c[3] = sp2ac.f[2] * f20;
+#endif
 
 				f20 = sinf(sp174);
 
@@ -4297,9 +4311,26 @@ void playerTick(bool arg0)
 				projectile->unk014 = 0;
 				projectile->unk010 = 0;
 
+#ifndef PLATFORM_N64
+				// Keep owner immunity until the rocket has cleared the shooter so a
+				// fly-by-wire rocket can't instantly collide with the pawn that
+				// fired it ("shooter clips into the rocket and blows it up") — worse
+				// on a headless server, where the sanitized muzzle spawns the rocket
+				// close to the pawn. Once it's clear, NULL ownerprop so flying back
+				// into yourself still detonates (vanilla intent).
+				if ((projectile->flags & PROJECTILEFLAG_LAUNCHING) == 0 && projectile->ownerprop) {
+					const f32 dx = rocket->base.prop->pos.x - projectile->ownerprop->pos.x;
+					const f32 dy = rocket->base.prop->pos.y - projectile->ownerprop->pos.y;
+					const f32 dz = rocket->base.prop->pos.z - projectile->ownerprop->pos.z;
+					if (dx * dx + dy * dy + dz * dz > 150.f * 150.f) {
+						projectile->ownerprop = NULL;
+					}
+				}
+#else
 				if ((projectile->flags & PROJECTILEFLAG_LAUNCHING) == 0) {
 					projectile->ownerprop = NULL;
 				}
+#endif
 
 #ifndef PLATFORM_N64
 				// Client: the detonate press rides the wire (UCMD_FBW_DETONATE);
@@ -4358,12 +4389,15 @@ void playerTick(bool arg0)
 					projectile->speed.z = (projectile->speed.z * newspeed) / prevspeed;
 				}
 
-#ifndef PLATFORM_N64
-				// Client: the rocket's orientation is driven by the wire (the
-				// camera basis is mirrored into realrot in netmsgSvcPropMoveRead);
-				// rewriting realrot here would fight it.
-				if (!fbw_client)
-#endif
+				// Client (fbw_client) now steers realrot LOCALLY for the camera:
+				// this gives a responsive, full-orientation rocket-cam that ROLLS
+				// through loops. The earlier velocity-derived camera kept world-up
+				// and so couldn't roll (the rocket inverted but the view stayed
+				// upright, making the controls feel inverted and never looking like a
+				// loop). Position/speed stay server-authoritative (suppressed above);
+				// only the camera orientation is client-local, initialised from the
+				// launch direction at engage (netFbwEngage) so it starts forward
+				// despite the headless-spawn realrot. Runs for everyone now.
 				{
 					mtx3ToMtx4(sp2b8, &sp1bc);
 					quaternion0f097044(&sp1bc, sp12c);

@@ -2770,7 +2770,40 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 			if (flags & (1 << 2)) {
 				struct coord initrot; netbufReadCoord(src, &initrot);
 				if (projectile) {
-					mtx4LoadRotation(&initrot, &projectile->mtx);
+#ifndef PLATFORM_N64
+					// The local flyer's OWN slayer rocket is fully client-local: its
+					// realrot is steered for the rocket-cam, and its projectile->mtx
+					// must stay velocity-aligned (set by the local projectileTick) for
+					// correct flight prediction. The server now sends realrot (with
+					// roll) in this rotation field for OBSERVERS — loading that rolled
+					// matrix into the flyer's own physics projectile->mtx made the
+					// local prediction fly off at an angle and fight the server snap
+					// (camera spin). So skip BOTH the mtx load and the realrot mirror
+					// for the flyer's own rocket; leave the wire rotation to observers.
+					const bool ownfbwrocket = (g_NetMode == NETMODE_CLIENT && prop->obj
+							&& g_NetLocalClient && g_NetLocalClient->player
+							&& prop->obj == (struct defaultobj *)g_NetLocalClient->player->slayerrocket);
+					if (!ownfbwrocket)
+#endif
+					{
+						mtx4LoadRotation(&initrot, &projectile->mtx);
+					}
+#ifndef PLATFORM_N64
+					// OBSERVERS: orient the rocket model along its synced VELOCITY.
+					// The slayer fly-by-wire rocket isn't flight-oriented by
+					// projectileTick, so realrot would stay frozen (static rocket).
+					// Velocity is authoritative and synced every tick, so it changes
+					// at exactly the right rate as the flyer steers — no euler
+					// round-trip, no rate math, so it can't over-/under-rotate. No roll
+					// for observers (the flyer's own cam keeps roll locally). EXCLUDE
+					// the flyer's own rocket (its realrot is steered locally for the
+					// cam). For a regular rocket projectileTick re-orients realrot
+					// anyway, so re-pointing it along velocity here is harmless.
+					if (!ownfbwrocket && prop->obj && (prop->obj->hidden & OBJHFLAG_PROJECTILE)
+							&& (projectile->flags & PROJECTILEFLAG_POWERED)) {
+						netFbwCameraFromVelocity(prop->obj, &projectile->speed);
+					}
+#endif
 				}
 			}
 

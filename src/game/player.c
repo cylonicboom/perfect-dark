@@ -4247,8 +4247,7 @@ void playerTick(bool arg0)
 #ifndef PLATFORM_N64
 				if (fbw_srv_remote) {
 					// Authoritative per-tick rotation from the firing client
-					// (radians; invert-pitch + mouse already folded client-side;
-					// applied raw — both machines are tick-pinned 1/60).
+					// (radians; invert-pitch + mouse already folded client-side).
 					sp178 = fbw_im ? fbw_im->fbw_pitch / 8192.f : 0.f;
 					sp174 = fbw_im ? fbw_im->fbw_yaw / 8192.f : 0.f;
 				} else if (fbw_client) {

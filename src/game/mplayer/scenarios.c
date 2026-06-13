@@ -255,25 +255,39 @@ static struct prop *carryResolveToken(u8 holderkind, s32 holdermpchr, s32 weapon
 	return carryFindGroundProp(weaponnum, team);
 }
 
-s32 carryGetHolders(s32 *holdermpchr, u8 *caseteams)
+// groundsyncids[i] = the on-ground case prop's syncid (0 when held/absent). CTC has 4
+// team cases, so resolving a dropped/returned ground case by weaponnum+team is unsafe:
+// SVC_PROP_SPAWN doesn't carry weapon->team and scenarioHandleDroppedToken sets it AFTER
+// the spawn broadcast, so a client's dropped case has team 0 and can't be matched. The
+// syncid is re-derived from ctc.tokens[] every broadcast, so it's always current.
+s32 carryGetHolders(s32 *holdermpchr, u8 *caseteams, u16 *groundsyncids)
 {
 	s32 i;
+	struct prop *tok;
 	if (g_MpSetup.scenario == MPSCENARIO_HOLDTHEBRIEFCASE) {
-		holdermpchr[0] = carryHolderOfToken(g_ScenarioData.htb.token);
+		tok = g_ScenarioData.htb.token;
+		holdermpchr[0] = carryHolderOfToken(tok);
 		caseteams[0] = 0;
+		groundsyncids[0] = (tok && tok->type == PROPTYPE_WEAPON) ? tok->syncid : 0;
 		return 1;
 	}
 	if (g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE) {
 		for (i = 0; i < 4; i++) {
-			holdermpchr[i] = carryHolderOfToken(g_ScenarioData.ctc.tokens[i]);
+			tok = g_ScenarioData.ctc.tokens[i];
+			holdermpchr[i] = carryHolderOfToken(tok);
 			caseteams[i] = (u8)i; // ctc.tokens[] is team-indexed
+			groundsyncids[i] = (tok && tok->type == PROPTYPE_WEAPON) ? tok->syncid : 0;
 		}
 		return 4;
 	}
 	return 0;
 }
 
-void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8 *caseteams, s32 count)
+// groundprops[i] is the syncid-resolved ground case prop (NULL when held/absent); netmsg
+// resolves it via netSyncIdToProp so this stays game-side. Held cases resolve to the
+// holder's chr prop directly.
+void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8 *caseteams,
+		struct prop **groundprops, s32 count)
 {
 	const bool isctc = (g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE);
 	s32 i;
@@ -284,12 +298,20 @@ void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8
 			if (team < 0 || team >= 4) {
 				continue;
 			}
-			g_ScenarioData.ctc.tokens[team] =
-				carryResolveToken(holderkinds[i], holdermpchr[i], WEAPON_BRIEFCASE2, team);
+			if (holderkinds[i] && holdermpchr[i] >= 0 && holdermpchr[i] < MAX_MPCHRS
+					&& g_MpAllChrPtrs[holdermpchr[i]] && g_MpAllChrPtrs[holdermpchr[i]]->prop) {
+				g_ScenarioData.ctc.tokens[team] = g_MpAllChrPtrs[holdermpchr[i]]->prop;
+			} else {
+				g_ScenarioData.ctc.tokens[team] = groundprops[i];
+			}
 		}
 	} else if (count >= 1) {
-		g_ScenarioData.htb.token =
-			carryResolveToken(holderkinds[0], holdermpchr[0], WEAPON_BRIEFCASE2, -1);
+		if (holderkinds[0] && holdermpchr[0] >= 0 && holdermpchr[0] < MAX_MPCHRS
+				&& g_MpAllChrPtrs[holdermpchr[0]] && g_MpAllChrPtrs[holdermpchr[0]]->prop) {
+			g_ScenarioData.htb.token = g_MpAllChrPtrs[holdermpchr[0]]->prop;
+		} else {
+			g_ScenarioData.htb.token = groundprops[0];
+		}
 		if (g_ScenarioData.htb.token) {
 			g_ScenarioData.htb.pos.x = g_ScenarioData.htb.token->pos.x;
 			g_ScenarioData.htb.pos.y = g_ScenarioData.htb.token->pos.y;

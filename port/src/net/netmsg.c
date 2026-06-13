@@ -5101,7 +5101,8 @@ u32 netmsgSvcCarryStateWrite(struct netbuf *dst)
 {
 	s32 holdermpchr[4];
 	u8 caseteams[4];
-	const s32 count = carryGetHolders(holdermpchr, caseteams);
+	u16 groundsyncids[4];
+	const s32 count = carryGetHolders(holdermpchr, caseteams, groundsyncids);
 
 	netbufWriteU8(dst, SVC_CARRY_STATE);
 	netbufWriteU8(dst, (u8)count);
@@ -5110,6 +5111,9 @@ u32 netmsgSvcCarryStateWrite(struct netbuf *dst)
 		netbufWriteU8(dst, kind);
 		netbufWriteU8(dst, kind ? netCarryHolderToWire(holdermpchr[i]) : 0xff);
 		netbufWriteU8(dst, caseteams[i]);
+		// On-ground case syncid (0 when held) — the client resolves it directly so a
+		// dropped/returned CTC case (whose weapon->team isn't on the wire) is found.
+		netbufWriteU16(dst, kind ? 0 : groundsyncids[i]);
 	}
 	return dst->error;
 }
@@ -5119,6 +5123,7 @@ u32 netmsgSvcCarryStateRead(struct netbuf *src, struct netclient *srccl)
 	u8 holderkinds[4];
 	s32 holdermpchr[4];
 	u8 caseteams[4];
+	struct prop *groundprops[4];
 	const u8 count = netbufReadU8(src);
 
 	if (count > 4) {
@@ -5130,6 +5135,8 @@ u32 netmsgSvcCarryStateRead(struct netbuf *src, struct netclient *srccl)
 		const u8 key = netbufReadU8(src);
 		holdermpchr[i] = (holderkinds[i] != 0) ? netCarryHolderFromWire(key) : -1;
 		caseteams[i] = netbufReadU8(src);
+		const u16 syncid = netbufReadU16(src);
+		groundprops[i] = syncid ? netSyncIdToProp(syncid) : NULL;
 	}
 	if (src->error) {
 		return src->error;
@@ -5137,7 +5144,7 @@ u32 netmsgSvcCarryStateRead(struct netbuf *src, struct netclient *srccl)
 	if (srccl->state >= CLSTATE_GAME
 			&& (g_MpSetup.scenario == MPSCENARIO_HOLDTHEBRIEFCASE
 				|| g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE)) {
-		carryApplyWireState(holderkinds, holdermpchr, caseteams, (s32)count);
+		carryApplyWireState(holderkinds, holdermpchr, caseteams, groundprops, (s32)count);
 	}
 	return src->error;
 }

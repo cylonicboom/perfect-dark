@@ -5,7 +5,7 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 78 // 78: carry-object scenarios made server-authoritative + synced — new SVC_CARRY_STATE (0x59: HTB/CTC per-token holder, wire-keyed, + CTC home team), SVC_HTM_STATE (0x5a: Hack-that-Mac uplink holder + active downloader + terminal team + progress), SVC_PAC_STATE (0x5b: Pop-a-Cap current victim). Clients no longer create local token/uplink ghosts (lifecycle is server-only); holder/victim state arrives on the wire. Mixed versions must not join.
+#define NET_PROTOCOL_VER 79 // 79: SVC_CARRY_STATE now carries the on-ground case syncid per token so CTC dropped/returned cases resolve by syncid (SVC_PROP_SPAWN doesn't carry weapon->team, and the team is set after the spawn broadcast). 78: carry-object scenarios made server-authoritative + synced — new SVC_CARRY_STATE (0x59: HTB/CTC per-token holder, wire-keyed, + CTC home team), SVC_HTM_STATE (0x5a: Hack-that-Mac uplink holder + active downloader + terminal team + progress), SVC_PAC_STATE (0x5b: Pop-a-Cap current victim). Clients no longer create local token/uplink ghosts (lifecycle is server-only); holder/victim state arrives on the wire. Mixed versions must not join.
 // 77: Combat Sim respawn / spectator options (More Options) — 3 new high-word MPOPTION bits (46 SPECTATEONDEATH, 47 FORCEDRESPAWN, 48 RESPAWNINVULN) ride g_MpSetup.options, plus a new u8 g_MpSetup.respawndelay (0-10s) appended after racepitytime in SVC_STAGE_START / CLC_ADMIN_SETUP / SVC_LOBBY_STATE. Old peers don't parse the extra byte — mixed versions must not join.
 // 76: client Slayer fly-by-wire — UCMD_FLYBYWIRE/_FBW_DETONATE/_FBW_SLOW bits + a conditional netplayermove tail {s16 fbw_pitch, s16 fbw_yaw, s8 fbw_rsticky} (per-tick steering radians ×8192) present only while UCMD_FLYBYWIRE is set; remote pawns now engage VISIONMODE_SLAYERROCKET on the server and steer their authoritative rocket from the wire rates. Old peers can't parse the tail — mixed versions must not join.
 // 75: MAX_PLAYERS 8 -> 16 (NET_MAX_CLIENTS 17): chrslots widened u16 -> u32 in CLC_ADMIN_SETUP + SVC_STAGE_START; client ids now reach 16. Default server cap stays 8 (--maxclients 16 opts in). // 74: NET_MAX_CLIENTS = MAX_PLAYERS + 1 (9). A spectator host (dedicated / Host-Online, listen Host-Spectator) no longer burns a combatant slot — it sits on the extra +1 client slot so all MAX_PLAYERS (8) wire slots stay free for remote combatants (was 7 on dedicated). The lobby / SVC_STAGE_START manifests are count-prefixed and id-keyed, so the byte layout is unchanged for <=8 clients — but a 9-client server now emits client id 8, which only a proto-74 peer's netResolveWireClient accepts, so mixed versions must not join. "wire id 0 = host" is preserved.
@@ -1021,13 +1021,16 @@ extern u8 g_MpRaceDirty;
 // The token lifecycle (create/respawn) is server-only; clients learn who holds each
 // token via SVC_CARRY_STATE. netmsg.c does the wire-keying; these scenario-side
 // functions deal in LOCAL mpchr indices (-1 = on ground / none).
-//   carryGetHolders: server fills holdermpchr[i] (-1 ground) + caseteams[i] per token,
+//   carryGetHolders: server fills holdermpchr[i] (-1 ground) + caseteams[i] +
+//     groundsyncids[i] (the on-ground case prop's syncid, 0 when held) per token,
 //     returns the token count (1 HTB, 4 CTC, 0 otherwise).
-//   carryApplyWireState: client applies — resolves token pointers + bot holder flags;
-//     never raises the dirty flag on a client. holderkinds[i]: 0 ground, 1 held.
+//   carryApplyWireState: client applies — resolves token pointers (held -> holder chr
+//     prop; ground -> groundprops[i], which netmsg resolves from the wire syncid) + bot
+//     holder flags; never raises the dirty flag on a client. holderkinds[i]: 0/1.
 // g_MpCarryDirty is the host's on-change broadcast signal.
-s32  carryGetHolders(s32 *holdermpchr, u8 *caseteams);
-void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8 *caseteams, s32 count);
+s32  carryGetHolders(s32 *holdermpchr, u8 *caseteams, u16 *groundsyncids);
+void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8 *caseteams,
+		struct prop **groundprops, s32 count);
 extern u8 g_MpCarryDirty;
 
 // "Hack that Mac" (MPSCENARIO_HACKERCENTRAL) shared state — uplink holder + the

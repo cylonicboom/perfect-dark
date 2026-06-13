@@ -411,6 +411,15 @@ void htmTick(void)
 	u32 prevplayernum = g_Vars.currentplayernum;
 	struct prop *prop;
 
+#ifndef PLATFORM_N64
+	if (g_NetMode == NETMODE_CLIENT) {
+		// Server-authoritative: the uplink holder arrives via SVC_HTM_STATE
+		// (htmApplyWireState sets htm.uplink). Never null/rescan/recreate here — that
+		// spawns an intangible local ghost uplink that "never respawns". No-op tick.
+		return;
+	}
+#endif
+
 	if (var800869ec && var800869ec->prop) {
 		if (g_ScenarioData.htm.uplink == NULL || g_ScenarioData.htm.uplink->type != PROPTYPE_WEAPON) {
 			var800869ec = NULL;
@@ -438,6 +447,22 @@ void htmTick(void)
 
 	// Check if a player is holding it
 	if (g_ScenarioData.htm.uplink == NULL) {
+#ifndef PLATFORM_N64
+		// Server: a REMOTE client holding the uplink isn't in local PLAYERCOUNT(),
+		// but its inventory lives on the server — scan ALL populated player slots.
+		const s32 htmscancount = (g_NetMode != NETMODE_NONE) ? MAX_PLAYERS : PLAYERCOUNT();
+		for (i = 0; i < htmscancount; i++) {
+			if (g_Vars.players[i] == NULL || g_Vars.players[i]->prop == NULL) {
+				continue;
+			}
+			setCurrentPlayerNum(i);
+
+			if (invHasDataUplink()) {
+				g_ScenarioData.htm.uplink = g_Vars.currentplayer->prop;
+				break;
+			}
+		}
+#else
 		for (i = 0; i < PLAYERCOUNT(); i++) {
 			setCurrentPlayerNum(i);
 
@@ -446,6 +471,7 @@ void htmTick(void)
 				break;
 			}
 		}
+#endif
 	}
 
 	setCurrentPlayerNum(prevplayernum);
@@ -462,6 +488,12 @@ void htmTick(void)
 
 	if (g_ScenarioData.htm.uplink == NULL) {
 		htbCreateUplink();
+#ifndef PLATFORM_N64
+		g_MpHtmDirty = 1; // server respawned the uplink — broadcast promptly
+		// Clients are gated out of htbCreateUplink (no local ghost); broadcast the
+		// mid-match respawn so they get the real prop (init is deterministic via htmInitProps).
+		netSyncPropSpawn(g_ScenarioData.htm.uplink);
+#endif
 	}
 }
 
@@ -472,6 +504,15 @@ void htmTickChr(struct chrdata *chr)
 	s32 playernum;
 	s32 i;
 	s32 *time;
+
+#ifndef PLATFORM_N64
+	if (g_NetMode == NETMODE_CLIENT) {
+		// Server-authoritative download: dlplayernum/dlterminalnum/dltime240 arrive
+		// via SVC_HTM_STATE (htmApplyWireState). Running the state machine here would
+		// fight the wire state. No-op on clients.
+		return;
+	}
+#endif
 
 	if (chr) {
 		hasuplink = chr->aibot->hasuplink;
@@ -607,8 +648,19 @@ void htmTickChr(struct chrdata *chr)
 			data->dlterminalnum = -1;
 			data->dlplayernum = -1;
 			*time = 0;
+#ifndef PLATFORM_N64
+			g_MpHtmDirty = 1; // download broke — clear the bar on clients promptly
+#endif
 		} else {
 			*time += g_Vars.lvupdate240;
+#ifndef PLATFORM_N64
+			// Download progressing — refresh the client's bar at ~15Hz (not every
+			// tick: SVC_HTM_STATE carries the 96-byte numpoints array on the reliable
+			// channel, so 60Hz would be needless congestion for a smooth-enough bar).
+			if ((g_Vars.lvframe60 & 3) == 0) {
+				g_MpHtmDirty = 1;
+			}
+#endif
 
 			if (*time > 20 * TICKS(240)) {
 				data->numpoints[playernum]++;

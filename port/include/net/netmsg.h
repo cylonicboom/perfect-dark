@@ -50,6 +50,9 @@
 #define SVC_ZONES_STATE  0x56 // "Zones" scenario: zone owners + team scores + score-cycle countdown (on-change + 1s heartbeat)
 #define SVC_ELIM_STATE   0x57 // global Lives system: per-combatant lives + team pools + eliminated set (on-change + 1s heartbeat)
 #define SVC_RACE_STATE   0x58 // "Race" scenario: per-racer checkpoint/lap progress + finish order + finish timer (on-change + 1s heartbeat)
+#define SVC_CARRY_STATE  0x59 // Hold-the-Briefcase + Capture-the-Case: per-token holder (wire-keyed) + CTC home team (on-change + 1s heartbeat)
+#define SVC_HTM_STATE    0x5a // Hack-that-Mac: uplink holder + active downloader + terminal team + download progress (on-change + 1s heartbeat)
+#define SVC_PAC_STATE    0x5b // Pop-a-Cap: current victim (wire-keyed) + age (on-change + 1s heartbeat)
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -225,6 +228,12 @@ u32 netmsgSvcElimStateWrite(struct netbuf *dst);
 u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcRaceStateWrite(struct netbuf *dst);
 u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcCarryStateWrite(struct netbuf *dst);
+u32 netmsgSvcCarryStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcHtmStateWrite(struct netbuf *dst);
+u32 netmsgSvcHtmStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcPacStateWrite(struct netbuf *dst);
+u32 netmsgSvcPacStateRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcExplosionWrite(struct netbuf *dst, s32 exptype, const struct coord *pos, const RoomNum *rooms);
 u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcLobbyStateWrite(struct netbuf *dst);

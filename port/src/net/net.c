@@ -2257,6 +2257,9 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_ZONES_STATE: rc = netmsgSvcZonesStateRead(&cl->in, cl); break;
 			case SVC_ELIM_STATE: rc = netmsgSvcElimStateRead(&cl->in, cl); break;
 			case SVC_RACE_STATE: rc = netmsgSvcRaceStateRead(&cl->in, cl); break;
+			case SVC_CARRY_STATE: rc = netmsgSvcCarryStateRead(&cl->in, cl); break;
+			case SVC_HTM_STATE: rc = netmsgSvcHtmStateRead(&cl->in, cl); break;
+			case SVC_PAC_STATE: rc = netmsgSvcPacStateRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;
@@ -3141,6 +3144,37 @@ void netEndFrame(void)
 					&& (g_MpRaceDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 5u)) {
 				g_MpRaceDirty = 0;
 				netmsgSvcRaceStateWrite(&g_NetMsgRel);
+			}
+
+			// Hold-the-Briefcase + Capture-the-Case: broadcast the per-token
+			// holder (wire-keyed) so clients track who carries the case without
+			// recreating a local ghost — on change (g_MpCarryDirty: pickup,
+			// drop, respawn) plus a 1s keep-alive at phase 12 (free — not a
+			// multiple of 5).
+			if ((g_MpSetup.scenario == MPSCENARIO_HOLDTHEBRIEFCASE
+						|| g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE)
+					&& (g_MpCarryDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 12u)) {
+				g_MpCarryDirty = 0;
+				netmsgSvcCarryStateWrite(&g_NetMsgRel);
+			}
+
+			// Hack-that-Mac: broadcast the uplink holder + active download
+			// (downloader/terminal/progress) on change (g_MpHtmDirty: pickup,
+			// respawn, download progress/break/complete — set every download
+			// tick for a smooth client bar) plus a 1s keep-alive at phase 17.
+			if (g_MpSetup.scenario == MPSCENARIO_HACKERCENTRAL
+					&& (g_MpHtmDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 17u)) {
+				g_MpHtmDirty = 0;
+				netmsgSvcHtmStateWrite(&g_NetMsgRel);
+			}
+
+			// Pop a Cap: broadcast the current victim (wire-keyed) + survival
+			// age on change (g_MpPacDirty: victim rotation) plus a 1s
+			// keep-alive at phase 22.
+			if (g_MpSetup.scenario == MPSCENARIO_POPACAP
+					&& (g_MpPacDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 22u)) {
+				g_MpPacDirty = 0;
+				netmsgSvcPacStateWrite(&g_NetMsgRel);
 			}
 
 			// Scoreboard heartbeat: SVC_SCORE only fires on kill events

@@ -40,6 +40,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "net/netprop.h"
 #endif
 
 /**
@@ -100,6 +101,17 @@ char *scenarioRemoveLineBreaks(char *src, s32 stringnum)
 #endif
 
 struct scenariodata g_ScenarioData;
+
+#ifndef PLATFORM_N64
+// Host on-change broadcast signals for the carry-object / victim scenarios (set
+// server-only at the pickup/drop/respawn/transition sites in the .inc files +
+// scenarioPickUp*; consumed + cleared by netEndFrame). The carry-object lifecycle
+// itself is server-authoritative; clients receive who-holds-what via SVC_CARRY_STATE
+// / SVC_HTM_STATE / SVC_PAC_STATE and never create local ghosts. See net/CLAUDE.md.
+u8 g_MpCarryDirty = 0;
+u8 g_MpHtmDirty = 0;
+u8 g_MpPacDirty = 0;
+#endif
 
 MenuItemHandlerResult menuhandlerMpDisplayTeam(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -182,6 +194,279 @@ MenuItemHandlerResult menuhandlerMpSlowMotion(s32 operation, struct menuitem *it
 #include "scenarios/zones.inc"
 #include "scenarios/elimination.inc"
 #include "scenarios/race.inc"
+#endif
+
+#ifndef PLATFORM_N64
+// --- Carry-object scenario sync (HTB / CTC) ---------------------------------------
+// Server gathers who-holds-what (carryGetHolders) for the SVC_CARRY_STATE writer;
+// clients apply it (carryApplyWireState) so the token pointers + sim holder flags
+// track the host. The token lifecycle is server-only (the .inc create/respawn paths
+// are gated on g_NetMode != NETMODE_CLIENT), so a client never spawns a local ghost.
+
+// mpchr index of the combatant whose prop this is (-1 if not a combatant prop).
+static s32 carryMpchrOfProp(struct prop *prop)
+{
+	s32 i;
+	if (prop == NULL) {
+		return -1;
+	}
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		if (g_MpAllChrPtrs[i] && g_MpAllChrPtrs[i]->prop == prop) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+// A token pointer is either the ground weapon prop (on ground) or the holder's chr
+// prop (held). Return the holder mpchr index, or -1 when on the ground / absent.
+static s32 carryHolderOfToken(struct prop *token)
+{
+	if (token == NULL || token->type == PROPTYPE_WEAPON) {
+		return -1;
+	}
+	return carryMpchrOfProp(token);
+}
+
+// Client: find the on-ground weapon prop for a carry object (optionally a specific
+// CTC team), so the token pointer can point at the live ground prop.
+static struct prop *carryFindGroundProp(s32 weaponnum, s32 team)
+{
+	struct prop *prop = g_Vars.activeprops;
+	while (prop) {
+		if (prop->type == PROPTYPE_WEAPON && prop->weapon
+				&& prop->weapon->weaponnum == weaponnum
+				&& (team < 0 || prop->weapon->team == team)) {
+			return prop;
+		}
+		prop = prop->next;
+	}
+	return NULL;
+}
+
+// Client: resolve a wire holder entry to a token prop (held -> holder chr prop;
+// ground -> the live ground weapon prop).
+static struct prop *carryResolveToken(u8 holderkind, s32 holdermpchr, s32 weaponnum, s32 team)
+{
+	if (holderkind != 0 && holdermpchr >= 0 && holdermpchr < MAX_MPCHRS
+			&& g_MpAllChrPtrs[holdermpchr] && g_MpAllChrPtrs[holdermpchr]->prop) {
+		return g_MpAllChrPtrs[holdermpchr]->prop;
+	}
+	return carryFindGroundProp(weaponnum, team);
+}
+
+s32 carryGetHolders(s32 *holdermpchr, u8 *caseteams)
+{
+	s32 i;
+	if (g_MpSetup.scenario == MPSCENARIO_HOLDTHEBRIEFCASE) {
+		holdermpchr[0] = carryHolderOfToken(g_ScenarioData.htb.token);
+		caseteams[0] = 0;
+		return 1;
+	}
+	if (g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE) {
+		for (i = 0; i < 4; i++) {
+			holdermpchr[i] = carryHolderOfToken(g_ScenarioData.ctc.tokens[i]);
+			caseteams[i] = (u8)i; // ctc.tokens[] is team-indexed
+		}
+		return 4;
+	}
+	return 0;
+}
+
+void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8 *caseteams, s32 count)
+{
+	const bool isctc = (g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE);
+	s32 i;
+
+	if (isctc) {
+		for (i = 0; i < count && i < 4; i++) {
+			const s32 team = caseteams[i];
+			if (team < 0 || team >= 4) {
+				continue;
+			}
+			g_ScenarioData.ctc.tokens[team] =
+				carryResolveToken(holderkinds[i], holdermpchr[i], WEAPON_BRIEFCASE2, team);
+		}
+	} else if (count >= 1) {
+		g_ScenarioData.htb.token =
+			carryResolveToken(holderkinds[0], holdermpchr[0], WEAPON_BRIEFCASE2, -1);
+		if (g_ScenarioData.htb.token) {
+			g_ScenarioData.htb.pos.x = g_ScenarioData.htb.token->pos.x;
+			g_ScenarioData.htb.pos.y = g_ScenarioData.htb.token->pos.y;
+			g_ScenarioData.htb.pos.z = g_ScenarioData.htb.token->pos.z;
+		}
+	}
+
+	// Sim holder flags: clear all sims then set the current holders (CTC can have
+	// several). Players' HUD/radar read the token pos; only sims need the flag.
+	for (i = MAX_PLAYERS; i < MAX_MPCHRS; i++) {
+		struct chrdata *chr = g_MpAllChrPtrs[i];
+		if (chr && chr->aibot) {
+			if (isctc) {
+				chr->aibot->hascase = false;
+			} else {
+				chr->aibot->hasbriefcase = false;
+			}
+		}
+	}
+	for (i = 0; i < count; i++) {
+		const s32 h = holdermpchr[i];
+		if (holderkinds[i] && h >= MAX_PLAYERS && h < MAX_MPCHRS
+				&& g_MpAllChrPtrs[h] && g_MpAllChrPtrs[h]->aibot) {
+			if (isctc) {
+				g_MpAllChrPtrs[h]->aibot->hascase = true;
+			} else {
+				g_MpAllChrPtrs[h]->aibot->hasbriefcase = true;
+			}
+		}
+	}
+}
+
+// --- Hack-that-Mac sync -----------------------------------------------------------
+void htmGetState(s32 *holdermpchr, u8 *dlactive, s32 *dldownloadermpchr,
+		s32 *dlterminalnum, u16 *dltime240, u8 *terminalteam, u8 *numpoints)
+{
+	struct scenariodata_htm *data = &g_ScenarioData.htm;
+	s32 i;
+	*holdermpchr = carryHolderOfToken(data->uplink);
+
+	// Scoreboard counts (htmCalculatePlayerScore reads them directly, but they only
+	// update server-side now). Clamp + hand to netmsg for wire-keying.
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		s32 p = data->numpoints[i];
+		numpoints[i] = (u8)(p < 0 ? 0 : (p > 0xff ? 0xff : p));
+	}
+	if (data->dlterminalnum >= 0 && data->dlplayernum >= 0 && data->dlplayernum < MAX_MPCHRS) {
+		s32 t = data->dltime240[data->dlplayernum];
+		*dlactive = 1;
+		*dldownloadermpchr = data->dlplayernum;
+		*dlterminalnum = data->dlterminalnum;
+		*dltime240 = (u16)(t < 0 ? 0 : (t > 0xffff ? 0xffff : t));
+		*terminalteam = (data->dlterminalnum < HTM_NUM_TERMINALS)
+				? data->terminals[data->dlterminalnum].team : 0;
+	} else {
+		*dlactive = 0;
+		*dldownloadermpchr = -1;
+		*dlterminalnum = -1;
+		*dltime240 = 0;
+		*terminalteam = 0;
+	}
+}
+
+void htmApplyWireState(s32 holdermpchr, u8 dlactive, s32 dldownloadermpchr,
+		s32 dlterminalnum, u16 dltime240, u8 terminalteam, const u8 *numpoints)
+{
+	struct scenariodata_htm *data = &g_ScenarioData.htm;
+	s32 i;
+
+	data->uplink = carryResolveToken(holdermpchr >= 0 ? 1 : 0, holdermpchr, WEAPON_DATAUPLINK, -1);
+
+	// Scoreboard counts (already de-keyed to LOCAL packed-mpchr index by netmsg).
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		data->numpoints[i] = (s32)numpoints[i];
+	}
+
+	// Sim holder flags: clear all, set the holder.
+	for (i = MAX_PLAYERS; i < MAX_MPCHRS; i++) {
+		if (g_MpAllChrPtrs[i] && g_MpAllChrPtrs[i]->aibot) {
+			g_MpAllChrPtrs[i]->aibot->hasuplink = false;
+		}
+	}
+	if (holdermpchr >= MAX_PLAYERS && holdermpchr < MAX_MPCHRS
+			&& g_MpAllChrPtrs[holdermpchr] && g_MpAllChrPtrs[holdermpchr]->aibot) {
+		g_MpAllChrPtrs[holdermpchr]->aibot->hasuplink = true;
+	}
+
+	if (dlactive && dldownloadermpchr >= 0 && dldownloadermpchr < MAX_MPCHRS && dlterminalnum >= 0) {
+		data->dlplayernum = dldownloadermpchr;
+		data->dlterminalnum = dlterminalnum;
+		data->dltime240[dldownloadermpchr] = (s32)dltime240; // local HUD bar reads its own slot
+		if (dlterminalnum < HTM_NUM_TERMINALS) {
+			data->terminals[dlterminalnum].team = terminalteam;
+		}
+	} else {
+		data->dlplayernum = -1;
+		data->dlterminalnum = -1;
+	}
+}
+
+// --- Pop-a-Cap sync ---------------------------------------------------------------
+void pacGetState(s32 *victimmpchr, u16 *age240, u8 *killcounts, u8 *survivalcounts)
+{
+	struct scenariodata_pac *data = &g_ScenarioData.pac;
+	s32 i;
+	if (data->victimindex >= 0 && data->victimindex < g_MpNumChrs) {
+		*victimmpchr = data->victims[data->victimindex];
+	} else {
+		*victimmpchr = -1;
+	}
+	*age240 = (u16)(data->age240 > 0xffff ? 0xffff : data->age240);
+
+	// The PAC scoreboard (pacCalculatePlayerScore) reads killcounts/survivalcounts
+	// directly, but they're only updated server-side (death handling is server-gated).
+	// Clamp + hand them to netmsg, which wire-keys the packed-mpchr index space.
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		s32 k = data->killcounts[i];
+		s32 s = data->survivalcounts[i];
+		killcounts[i] = (u8)(k < 0 ? 0 : (k > 0xff ? 0xff : k));
+		survivalcounts[i] = (u8)(s < 0 ? 0 : (s > 0xff ? 0xff : s));
+	}
+}
+
+void pacApplyWireState(s32 victimmpchr, u16 age240, const u8 *killcounts, const u8 *survivalcounts)
+{
+	struct scenariodata_pac *data = &g_ScenarioData.pac;
+	static s32 s_lastvictim = -1;
+	s32 n;
+
+	// Scoreboard counts (already de-keyed to LOCAL packed-mpchr index by netmsg).
+	for (n = 0; n < MAX_MPCHRS; n++) {
+		data->killcounts[n] = (s16)killcounts[n];
+		data->survivalcounts[n] = (s16)survivalcounts[n];
+	}
+
+	if (victimmpchr >= 0 && victimmpchr < MAX_MPCHRS) {
+		// Stash the current victim at slot 0 and point victimindex there — every
+		// read site uses victims[victimindex], so this is all clients need.
+		data->victims[0] = (s16)victimmpchr;
+		data->victimindex = 0;
+		data->age240 = age240;
+
+		// Announce the new victim to each local player (the server's pacApplyNextVictim
+		// only messages its own local players; remote clients learn it here).
+		if (victimmpchr != s_lastvictim && g_MpAllChrConfigPtrs[victimmpchr]) {
+			s32 i;
+			char text[64];
+			for (i = 0; i < PLAYERCOUNT(); i++) {
+				if (g_Vars.players[i] == NULL || g_Vars.players[i]->prop == NULL
+						|| g_Vars.players[i]->prop->chr == NULL) {
+					continue;
+				}
+				const s32 mpidx = mpPlayerGetIndex(g_Vars.players[i]->prop->chr);
+				if (mpidx == victimmpchr) {
+					sprintf(text, langGet(L_MPWEAPONS_013)); // "You are the victim!"
+				} else if (scenarioChrsAreSameTeam(victimmpchr, mpidx)) {
+#if VERSION >= VERSION_JPN_FINAL
+					sprintf(text, langGet(L_MPWEAPONS_014), scenarioRemoveLineBreaks(g_MpAllChrConfigPtrs[victimmpchr]->name, 0));
+#else
+					sprintf(text, langGet(L_MPWEAPONS_014), g_MpAllChrConfigPtrs[victimmpchr]->name); // "Protect %s!"
+#endif
+				} else {
+#if VERSION >= VERSION_JPN_FINAL
+					sprintf(text, langGet(L_MPWEAPONS_015), scenarioRemoveLineBreaks(g_MpAllChrConfigPtrs[victimmpchr]->name, 0));
+#else
+					sprintf(text, langGet(L_MPWEAPONS_015), g_MpAllChrConfigPtrs[victimmpchr]->name); // "Get %s!"
+#endif
+				}
+				scenarioCreateHudmsg(i, text);
+			}
+		}
+		s_lastvictim = victimmpchr;
+	} else {
+		data->victimindex = -1;
+		s_lastvictim = -1;
+	}
+}
 #endif
 
 // Define the scenario callbacks
@@ -1276,6 +1561,14 @@ s32 scenarioPickUpBriefcase(struct chrdata *chr, struct prop *prop)
 	char text3[64];
 	struct mpchrconfig *mpchr;
 
+#ifndef PLATFORM_N64
+	// Holder is changing — flag SVC_CARRY_STATE for a prompt broadcast (server-only;
+	// this also runs on clients via the SVC_PROP_PICKUP echo).
+	if (g_NetMode != NETMODE_CLIENT) {
+		g_MpCarryDirty = 1;
+	}
+#endif
+
 	if (g_MpSetup.scenario == MPSCENARIO_HOLDTHEBRIEFCASE) {
 		// Player or bot has picked up the briefcase
 		g_ScenarioData.htb.token = chr->prop;
@@ -1536,6 +1829,12 @@ void scenarioHandleDroppedToken(struct chrdata *chr, struct prop *prop)
 	Mtxf mtx;
 	RoomNum rooms[2];
 
+#ifndef PLATFORM_N64
+	if (g_NetMode != NETMODE_CLIENT) {
+		g_MpCarryDirty = 1; // token returned to base — broadcast promptly
+	}
+#endif
+
 	if (g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE) {
 		for (i = 0; i < ARRAYCOUNT(g_ScenarioData.ctc.tokens); i++) {
 			if (chr->prop == g_ScenarioData.ctc.tokens[i]) {
@@ -1574,6 +1873,12 @@ s32 scenarioPickUpUplink(struct chrdata *chr, struct prop *prop)
 	char message[64];
 	struct mpchrconfig *mpchr;
 	u32 playernum;
+
+#ifndef PLATFORM_N64
+	if (g_NetMode != NETMODE_CLIENT) {
+		g_MpHtmDirty = 1; // uplink holder changing — broadcast promptly
+	}
+#endif
 
 	if (g_MpSetup.scenario == MPSCENARIO_HACKERCENTRAL) {
 #if VERSION >= VERSION_NTSC_1_0

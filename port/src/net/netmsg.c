@@ -5059,6 +5059,208 @@ u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+// --- Carry-object scenario state (Hold-the-Briefcase, Capture-the-Case, Hack-that-
+// Mac, Pop-a-Cap) ------------------------------------------------------------------
+// These scenarios' carried object + holder/victim are server-authoritative; clients
+// receive who-holds-what here and never create local ghosts. A single-combatant
+// holder/victim is wire-keyed like SVC_SCORE (humans -> netclient id, bots -> mpchr
+// index; 0xff = none/unresolved) so it survives netPlayersAllocate's local slot-0
+// swap. The scenario-side getters/apply deal in LOCAL mpchr indices.
+
+static u8 netCarryHolderToWire(s32 mpchrindex)
+{
+	if (mpchrindex < 0 || mpchrindex >= MAX_MPCHRS) {
+		return 0xff;
+	}
+	if (mpchrindex < MAX_PLAYERS) {
+		const s32 cl_id = netScoreNetIdForSlot(mpchrindex);
+		return (cl_id >= 0 && cl_id < MAX_PLAYERS) ? (u8)cl_id : 0xff;
+	}
+	return (u8)mpchrindex;
+}
+
+static s32 netCarryHolderFromWire(u8 key)
+{
+	if (key == 0xff) {
+		return -1;
+	}
+	if (key < MAX_PLAYERS) {
+		const struct netclient *cl = &g_NetClients[key];
+		if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
+			return cl->playernum;
+		}
+		return -1;
+	}
+	return (key < MAX_MPCHRS) ? (s32)key : -1;
+}
+
+// SVC_CARRY_STATE: per-token holder for Hold-the-Briefcase (1 token) and Capture-the-
+// Case (4 team cases). Each entry: holderkind (0 ground / 1 held), wire-keyed holder,
+// home team. Clients resolve token pointers + bot holder flags via carryApplyWireState.
+u32 netmsgSvcCarryStateWrite(struct netbuf *dst)
+{
+	s32 holdermpchr[4];
+	u8 caseteams[4];
+	const s32 count = carryGetHolders(holdermpchr, caseteams);
+
+	netbufWriteU8(dst, SVC_CARRY_STATE);
+	netbufWriteU8(dst, (u8)count);
+	for (s32 i = 0; i < count; i++) {
+		const u8 kind = (holdermpchr[i] >= 0) ? 1 : 0;
+		netbufWriteU8(dst, kind);
+		netbufWriteU8(dst, kind ? netCarryHolderToWire(holdermpchr[i]) : 0xff);
+		netbufWriteU8(dst, caseteams[i]);
+	}
+	return dst->error;
+}
+
+u32 netmsgSvcCarryStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	u8 holderkinds[4];
+	s32 holdermpchr[4];
+	u8 caseteams[4];
+	const u8 count = netbufReadU8(src);
+
+	if (count > 4) {
+		sysLogPrintf(LOG_WARNING, "NET: SVC_CARRY_STATE bad token count %u", count);
+		return 1;
+	}
+	for (u8 i = 0; i < count; i++) {
+		holderkinds[i] = netbufReadU8(src);
+		const u8 key = netbufReadU8(src);
+		holdermpchr[i] = (holderkinds[i] != 0) ? netCarryHolderFromWire(key) : -1;
+		caseteams[i] = netbufReadU8(src);
+	}
+	if (src->error) {
+		return src->error;
+	}
+	if (srccl->state >= CLSTATE_GAME
+			&& (g_MpSetup.scenario == MPSCENARIO_HOLDTHEBRIEFCASE
+				|| g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE)) {
+		carryApplyWireState(holderkinds, holdermpchr, caseteams, (s32)count);
+	}
+	return src->error;
+}
+
+// SVC_HTM_STATE: Hack-that-Mac uplink holder + the active downloader's terminal +
+// progress (only the active downloader's HUD bar ever renders).
+u32 netmsgSvcHtmStateWrite(struct netbuf *dst)
+{
+	s32 holdermpchr, dldownloadermpchr, dlterminalnum;
+	u8 dlactive, terminalteam;
+	u16 dltime240;
+	u8 localpts[MAX_MPCHRS];
+	u8 wirepts[MAX_MPCHRS];
+	s32 i;
+	htmGetState(&holdermpchr, &dlactive, &dldownloadermpchr, &dlterminalnum, &dltime240, &terminalteam, localpts);
+
+	netChrArrayToWire(wirepts, localpts);
+
+	netbufWriteU8(dst, SVC_HTM_STATE);
+	netbufWriteU8(dst, (holdermpchr >= 0) ? 1 : 0);
+	netbufWriteU8(dst, (holdermpchr >= 0) ? netCarryHolderToWire(holdermpchr) : 0xff);
+	netbufWriteU8(dst, dlactive);
+	netbufWriteU8(dst, dlactive ? netCarryHolderToWire(dldownloadermpchr) : 0xff);
+	netbufWriteU8(dst, (u8)(dlterminalnum < 0 ? 0xff : dlterminalnum));
+	netbufWriteU16(dst, dltime240);
+	netbufWriteU8(dst, terminalteam);
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		netbufWriteU8(dst, wirepts[i]);
+	}
+	return dst->error;
+}
+
+u32 netmsgSvcHtmStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 holderkind = netbufReadU8(src);
+	const u8 holderkey = netbufReadU8(src);
+	const u8 dlactive = netbufReadU8(src);
+	const u8 dlkey = netbufReadU8(src);
+	const u8 dlterm = netbufReadU8(src);
+	const u16 dltime240 = netbufReadU16(src);
+	const u8 terminalteam = netbufReadU8(src);
+	u8 wirepts[MAX_MPCHRS];
+	u8 localpts[MAX_MPCHRS];
+	s32 i;
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		wirepts[i] = netbufReadU8(src);
+	}
+
+	if (src->error) {
+		return src->error;
+	}
+	if (srccl->state >= CLSTATE_GAME && g_MpSetup.scenario == MPSCENARIO_HACKERCENTRAL) {
+		const s32 holdermpchr = (holderkind != 0) ? netCarryHolderFromWire(holderkey) : -1;
+		const s32 dldownloadermpchr = (dlactive != 0) ? netCarryHolderFromWire(dlkey) : -1;
+		const s32 dlterminalnum = (dlterm == 0xff) ? -1 : (s32)dlterm;
+		netChrArrayFromWire(localpts, wirepts);
+		htmApplyWireState(holdermpchr, dlactive, dldownloadermpchr, dlterminalnum, dltime240, terminalteam, localpts);
+	}
+	return src->error;
+}
+
+// SVC_PAC_STATE: Pop-a-Cap current hunted victim + rotation age + the per-combatant
+// kill/survival counts (the scoreboard reads them directly, and they only update
+// server-side now that death handling is server-gated). The count arrays are wire-keyed
+// via netChrArrayToWire (humans by netclient id, bots by mpchr index).
+u32 netmsgSvcPacStateWrite(struct netbuf *dst)
+{
+	s32 victimmpchr;
+	u16 age240;
+	u8 localkills[MAX_MPCHRS];
+	u8 localsurv[MAX_MPCHRS];
+	u8 wirekills[MAX_MPCHRS];
+	u8 wiresurv[MAX_MPCHRS];
+	s32 i;
+	pacGetState(&victimmpchr, &age240, localkills, localsurv);
+
+	netChrArrayToWire(wirekills, localkills);
+	netChrArrayToWire(wiresurv, localsurv);
+
+	netbufWriteU8(dst, SVC_PAC_STATE);
+	netbufWriteU8(dst, (victimmpchr >= 0) ? 1 : 0);
+	netbufWriteU8(dst, (victimmpchr >= 0) ? netCarryHolderToWire(victimmpchr) : 0xff);
+	netbufWriteU16(dst, age240);
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		netbufWriteU8(dst, wirekills[i]);
+	}
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		netbufWriteU8(dst, wiresurv[i]);
+	}
+	return dst->error;
+}
+
+u32 netmsgSvcPacStateRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 victimkind = netbufReadU8(src);
+	const u8 victimkey = netbufReadU8(src);
+	const u16 age240 = netbufReadU16(src);
+	u8 wirekills[MAX_MPCHRS];
+	u8 wiresurv[MAX_MPCHRS];
+	u8 localkills[MAX_MPCHRS];
+	u8 localsurv[MAX_MPCHRS];
+	s32 i;
+
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		wirekills[i] = netbufReadU8(src);
+	}
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		wiresurv[i] = netbufReadU8(src);
+	}
+
+	if (src->error) {
+		return src->error;
+	}
+	if (srccl->state >= CLSTATE_GAME && g_MpSetup.scenario == MPSCENARIO_POPACAP) {
+		const s32 victimmpchr = (victimkind != 0) ? netCarryHolderFromWire(victimkey) : -1;
+		netChrArrayFromWire(localkills, wirekills);
+		netChrArrayFromWire(localsurv, wiresurv);
+		pacApplyWireState(victimmpchr, age240, localkills, localsurv);
+	}
+	return src->error;
+}
+
 // SVC_EXPLOSION: server notifies clients of an explosion visual at a world
 // position. Used when a timer-detonated networked prop (phoenix secondary,
 // grenade, etc.) explodes — the weapon's propExplode runs server-side only,

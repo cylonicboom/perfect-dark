@@ -5,7 +5,8 @@
 #include "constants.h"
 #include "net/netbuf.h"
 
-#define NET_PROTOCOL_VER 77 // 77: Combat Sim respawn / spectator options (More Options) — 3 new high-word MPOPTION bits (46 SPECTATEONDEATH, 47 FORCEDRESPAWN, 48 RESPAWNINVULN) ride g_MpSetup.options, plus a new u8 g_MpSetup.respawndelay (0-10s) appended after racepitytime in SVC_STAGE_START / CLC_ADMIN_SETUP / SVC_LOBBY_STATE. Old peers don't parse the extra byte — mixed versions must not join.
+#define NET_PROTOCOL_VER 78 // 78: carry-object scenarios made server-authoritative + synced — new SVC_CARRY_STATE (0x59: HTB/CTC per-token holder, wire-keyed, + CTC home team), SVC_HTM_STATE (0x5a: Hack-that-Mac uplink holder + active downloader + terminal team + progress), SVC_PAC_STATE (0x5b: Pop-a-Cap current victim). Clients no longer create local token/uplink ghosts (lifecycle is server-only); holder/victim state arrives on the wire. Mixed versions must not join.
+// 77: Combat Sim respawn / spectator options (More Options) — 3 new high-word MPOPTION bits (46 SPECTATEONDEATH, 47 FORCEDRESPAWN, 48 RESPAWNINVULN) ride g_MpSetup.options, plus a new u8 g_MpSetup.respawndelay (0-10s) appended after racepitytime in SVC_STAGE_START / CLC_ADMIN_SETUP / SVC_LOBBY_STATE. Old peers don't parse the extra byte — mixed versions must not join.
 // 76: client Slayer fly-by-wire — UCMD_FLYBYWIRE/_FBW_DETONATE/_FBW_SLOW bits + a conditional netplayermove tail {s16 fbw_pitch, s16 fbw_yaw, s8 fbw_rsticky} (per-tick steering radians ×8192) present only while UCMD_FLYBYWIRE is set; remote pawns now engage VISIONMODE_SLAYERROCKET on the server and steer their authoritative rocket from the wire rates. Old peers can't parse the tail — mixed versions must not join.
 // 75: MAX_PLAYERS 8 -> 16 (NET_MAX_CLIENTS 17): chrslots widened u16 -> u32 in CLC_ADMIN_SETUP + SVC_STAGE_START; client ids now reach 16. Default server cap stays 8 (--maxclients 16 opts in). // 74: NET_MAX_CLIENTS = MAX_PLAYERS + 1 (9). A spectator host (dedicated / Host-Online, listen Host-Spectator) no longer burns a combatant slot — it sits on the extra +1 client slot so all MAX_PLAYERS (8) wire slots stay free for remote combatants (was 7 on dedicated). The lobby / SVC_STAGE_START manifests are count-prefixed and id-keyed, so the byte layout is unchanged for <=8 clients — but a 9-client server now emits client id 8, which only a proto-74 peer's netResolveWireClient accepts, so mixed versions must not join. "wire id 0 = host" is preserved.
 // 73: SVC_RACE_STATE / SVC_ELIM_STATE per-combatant slices are now WIRE-KEYED (humans by netclient id, bots by mpchr index — the SVC_SCORE convention) instead of raw local slots, which differ per machine (netPlayersAllocate's local slot-0 swap) and made every client read the HOST's race progress / lives as its own. Same byte layout, different keying — mixed versions must not join.
@@ -1015,5 +1016,38 @@ void raceApplyWireState(const u8 *nextcp, const u8 *lapsdone, const u8 *finishpo
 		u8 finishcount, u8 humancount, u8 pitystarted, s32 pity240);
 bool raceShouldEndMatch(void);
 extern u8 g_MpRaceDirty;
+
+// Carry-object scenarios (Hold-the-Briefcase + Capture-the-Case) shared state.
+// The token lifecycle (create/respawn) is server-only; clients learn who holds each
+// token via SVC_CARRY_STATE. netmsg.c does the wire-keying; these scenario-side
+// functions deal in LOCAL mpchr indices (-1 = on ground / none).
+//   carryGetHolders: server fills holdermpchr[i] (-1 ground) + caseteams[i] per token,
+//     returns the token count (1 HTB, 4 CTC, 0 otherwise).
+//   carryApplyWireState: client applies — resolves token pointers + bot holder flags;
+//     never raises the dirty flag on a client. holderkinds[i]: 0 ground, 1 held.
+// g_MpCarryDirty is the host's on-change broadcast signal.
+s32  carryGetHolders(s32 *holdermpchr, u8 *caseteams);
+void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8 *caseteams, s32 count);
+extern u8 g_MpCarryDirty;
+
+// "Hack that Mac" (MPSCENARIO_HACKERCENTRAL) shared state — uplink holder + the
+// active downloader's terminal/progress. Holder/downloader are LOCAL mpchr indices
+// (-1 = none). g_MpHtmDirty is the host's on-change broadcast signal.
+// numpoints is a MAX_MPCHRS array in LOCAL packed-mpchr index space (netmsg wire-keys
+// it via netChrArrayToWire) — the HTM scoreboard reads it directly, so it must ride too.
+void htmGetState(s32 *holdermpchr, u8 *dlactive, s32 *dldownloadermpchr,
+		s32 *dlterminalnum, u16 *dltime240, u8 *terminalteam, u8 *numpoints);
+void htmApplyWireState(s32 holdermpchr, u8 dlactive, s32 dldownloadermpchr,
+		s32 dlterminalnum, u16 dltime240, u8 terminalteam, const u8 *numpoints);
+extern u8 g_MpHtmDirty;
+
+// "Pop a Cap" (MPSCENARIO_POPACAP) shared state — the current hunted victim (LOCAL
+// mpchr index, -1 = none) + rotation age. g_MpPacDirty is the host's signal.
+// killcounts/survivalcounts are MAX_MPCHRS arrays in LOCAL packed-mpchr index space
+// (netmsg wire-keys them via netChrArrayToWire, like the Elim lives array) — the PAC
+// scoreboard reads them directly, so they must ride the wire too.
+void pacGetState(s32 *victimmpchr, u16 *age240, u8 *killcounts, u8 *survivalcounts);
+void pacApplyWireState(s32 victimmpchr, u16 age240, const u8 *killcounts, const u8 *survivalcounts);
+extern u8 g_MpPacDirty;
 
 #endif // _IN_NET_H

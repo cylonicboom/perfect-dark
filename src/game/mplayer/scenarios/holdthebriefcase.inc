@@ -345,6 +345,22 @@ void htbTick(void)
 	u32 prevplayernum = g_Vars.currentplayernum;
 	struct prop *prop;
 
+#ifndef PLATFORM_N64
+	if (g_NetMode == NETMODE_CLIENT) {
+		// Server-authoritative: the briefcase holder arrives via SVC_CARRY_STATE
+		// (carryApplyWireState sets htb.token). NEVER null/rescan/recreate here — on
+		// a client the remote holder is undetectable, so the original code would call
+		// htbCreateToken() and spawn an intangible local ghost. Just refresh the
+		// HUD/radar position from the wire-set token.
+		if (g_ScenarioData.htb.token) {
+			g_ScenarioData.htb.pos.x = g_ScenarioData.htb.token->pos.x;
+			g_ScenarioData.htb.pos.y = g_ScenarioData.htb.token->pos.y;
+			g_ScenarioData.htb.pos.z = g_ScenarioData.htb.token->pos.z;
+		}
+		return;
+	}
+#endif
+
 	if (var800869ec && var800869ec->prop) {
 		if (g_ScenarioData.htb.token == NULL || g_ScenarioData.htb.token->type != PROPTYPE_WEAPON) {
 			var800869ec = NULL;
@@ -372,6 +388,23 @@ void htbTick(void)
 
 	// Check if a player is holding it
 	if (g_ScenarioData.htb.token == NULL) {
+#ifndef PLATFORM_N64
+		// Server: a REMOTE client holding the briefcase isn't in local PLAYERCOUNT(),
+		// but its inventory lives on the server — scan ALL populated player slots so the
+		// holder is found (otherwise the server would falsely respawn a second briefcase).
+		const s32 htbscancount = (g_NetMode != NETMODE_NONE) ? MAX_PLAYERS : PLAYERCOUNT();
+		for (i = 0; i < htbscancount; i++) {
+			if (g_Vars.players[i] == NULL || g_Vars.players[i]->prop == NULL) {
+				continue;
+			}
+			setCurrentPlayerNum(i);
+
+			if (invHasBriefcase()) {
+				g_ScenarioData.htb.token = g_Vars.currentplayer->prop;
+				break;
+			}
+		}
+#else
 		for (i = 0; i < PLAYERCOUNT(); i++) {
 			setCurrentPlayerNum(i);
 
@@ -380,6 +413,7 @@ void htbTick(void)
 				break;
 			}
 		}
+#endif
 	}
 
 	setCurrentPlayerNum(prevplayernum);
@@ -401,6 +435,13 @@ void htbTick(void)
 
 	if (g_ScenarioData.htb.token == NULL) {
 		htbCreateToken();
+#ifndef PLATFORM_N64
+		g_MpCarryDirty = 1; // server respawned the briefcase — broadcast promptly
+		// Clients are gated out of htbCreateToken (no local ghost), so the only way
+		// they learn of a mid-match respawn is an explicit spawn broadcast. (Init is
+		// deterministic on both sides via htbInitProps, so this only matters here.)
+		netSyncPropSpawn(g_ScenarioData.htb.token);
+#endif
 	}
 
 	if (g_ScenarioData.htb.token == NULL) {
@@ -423,7 +464,12 @@ void htbTickChr(struct chrdata *chr)
 
 			if (chr->aibot->htbheldtimer60 >= TICKS(7200)) {
 				sndStart(var80095200, SFX_MP_SCOREPOINT, NULL, -1, -1, -1, -1, -1);
-				g_MpAllChrConfigPtrs[mpPlayerGetIndex(chr)]->numpoints++;
+#ifndef PLATFORM_N64
+				if (g_NetMode != NETMODE_CLIENT) // numpoints is server-authoritative (SVC_SCORE)
+#endif
+				{
+					g_MpAllChrConfigPtrs[mpPlayerGetIndex(chr)]->numpoints++;
+				}
 				chr->aibot->htbheldtimer60 = 0;
 			}
 		} else {
@@ -435,6 +481,9 @@ void htbTickChr(struct chrdata *chr)
 
 			if (g_Vars.currentplayerstats->tokenheldtime >= TICKS(7200)) {
 				sndStart(var80095200, SFX_MP_SCOREPOINT, NULL, -1, -1, -1, -1, -1);
+#ifndef PLATFORM_N64
+				if (g_NetMode != NETMODE_CLIENT) // numpoints is server-authoritative (SVC_SCORE)
+#endif
 				g_MpAllChrConfigPtrs[g_Vars.currentplayernum]->numpoints++;
 #if VERSION >= VERSION_JPN_FINAL
 				hudmsgCreateWithFlags(langGet(L_MPWEAPONS_024), HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_NOWRAP); // "1 Point!"

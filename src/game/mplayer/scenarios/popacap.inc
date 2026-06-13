@@ -197,6 +197,12 @@ void pacApplyNextVictim(void)
 	char text[64];
 	s32 i;
 
+#ifndef PLATFORM_N64
+	if (g_NetMode != NETMODE_CLIENT) {
+		g_MpPacDirty = 1; // victim changed — broadcast SVC_PAC_STATE promptly
+	}
+#endif
+
 	data->victimindex++;
 
 	if (data->victimindex == g_MpNumChrs) {
@@ -232,6 +238,15 @@ void pacHandleDeath(s32 aplayernum, s32 vplayernum)
 {
 	struct scenariodata_pac *data = &g_ScenarioData.pac;
 
+#ifndef PLATFORM_N64
+	// Victim rotation + kill scoring are server-authoritative; clients receive the
+	// new victim via SVC_PAC_STATE. (Without this a client would rotate the victim
+	// independently off its own death events and diverge.)
+	if (g_NetMode == NETMODE_CLIENT) {
+		return;
+	}
+#endif
+
 	if (data->victimindex >= 0 && vplayernum == data->victims[data->victimindex]) {
 		if (aplayernum != vplayernum) {
 			if (aplayernum >= 0) {
@@ -259,6 +274,14 @@ void pacTick(void)
 {
 	struct scenariodata_pac *data = &g_ScenarioData.pac;
 
+#ifndef PLATFORM_N64
+	// Server-authoritative: clients get the current victim + survival age from
+	// SVC_PAC_STATE (pacApplyWireState). Running the rotation/age here would diverge.
+	if (g_NetMode == NETMODE_CLIENT) {
+		return;
+	}
+#endif
+
 	if (data->victimindex == -1) {
 		pacApplyNextVictim();
 		osSyncPrintf("PopACapTick : Current Victim = %d (Player %d)\n",
@@ -277,6 +300,9 @@ void pacTick(void)
 				data->age240 = 0;
 				data->survivalcounts[data->victims[data->victimindex]]++;
 				scenarioCreateHudmsg(data->victims[data->victimindex], langGet(L_MPWEAPONS_007)); // "Have a point for living!"
+#ifndef PLATFORM_N64
+				g_MpPacDirty = 1; // survival point scored — broadcast SVC_PAC_STATE promptly
+#endif
 			}
 		}
 	}

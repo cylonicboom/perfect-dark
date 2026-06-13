@@ -4283,7 +4283,21 @@ bool propExplode(struct prop *prop, s32 exptype)
 	bool net_useparentpos = false;
 #endif
 
-	if (prop->parent) {
+#ifndef PLATFORM_N64
+	// Only a prop genuinely EMBEDDED in a chr (mine/knife stuck in a body) should
+	// explode at the parent chr's position. A fired projectile (rocket / prox mine /
+	// dragon) whose hand-detach didn't run on the headless server keeps prop->parent
+	// = the FIRER but is NOT embedded — taking the parent->pos branch teleported the
+	// blast onto the instigator (both the SVC_EXPLOSION visual and the server-side
+	// damage). It flew correctly (prop->pos is the real detonation point), so a
+	// non-embedded parented prop must explode at its own pos via the branches below.
+	const bool useparentbranch = (prop->parent != NULL)
+			&& (obj->hidden & OBJHFLAG_EMBEDDED) != 0;
+#else
+	const bool useparentbranch = (prop->parent != NULL);
+#endif
+
+	if (useparentbranch) {
 		struct prop *parent = prop->parent;
 		struct coord pos;
 		RoomNum rooms[8];
@@ -4357,6 +4371,15 @@ bool propExplode(struct prop *prop, s32 exptype)
 	// spot; otherwise the prop's own pos — close enough for timer-detonated
 	// projectiles that are near their logical position when they detonate.
 	if (g_NetMode == NETMODE_SERVER && prop->syncid) {
+		// Diag: confirms the teleport root — parentpnum is the chr prop->parent
+		// resolves to (the firer if the hand-detach didn't run), emb the embedded
+		// flag. Pre-fix, a non-embedded parented projectile broadcast parentpos.
+		netDiagLogf("expl", "wn=%d owner=%d emb=%d useparent=%d parentpnum=%d ppos=(%.0f,%.0f,%.0f)",
+				(prop->type == PROPTYPE_WEAPON && prop->weapon) ? (s32)prop->weapon->weaponnum : -1,
+				playernum, (obj->hidden & OBJHFLAG_EMBEDDED) ? 1 : 0,
+				(s32)net_useparentpos,
+				(prop->parent && prop->parent->chr) ? mpPlayerGetIndex(prop->parent->chr) : -1,
+				prop->pos.x, prop->pos.y, prop->pos.z);
 		netmsgSvcExplosionWrite(&g_NetMsgRel, exptype,
 				net_useparentpos ? &net_exppos : &prop->pos,
 				net_useparentpos ? net_exprooms : prop->rooms);

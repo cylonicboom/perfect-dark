@@ -77,6 +77,10 @@ static void netKillcamCapture(struct chrdata *chr, struct netkillcamentry *e)
 	}
 	e->gunfire = (u8)((chrIsGunfireVisible(chr, HAND_RIGHT) ? 1 : 0)
 			| (chrIsGunfireVisible(chr, HAND_LEFT) ? 2 : 0));
+	for (s32 h = 0; h < 2; h++) {
+		e->heldweapon[h] = (chr->weapons_held[h] && chr->weapons_held[h]->weapon)
+				? (s16)chr->weapons_held[h]->weapon->weaponnum : -1;
+	}
 
 	const s32 pnum = playermgrGetPlayerNumByProp(prop);
 	if (pnum >= 0 && g_Vars.players[pnum]) {
@@ -90,6 +94,9 @@ static void netKillcamCapture(struct chrdata *chr, struct netkillcamentry *e)
 		e->camup = pl->cam_up;
 		e->camroom = pl->cam_room;
 		e->haspcam = 1;
+		// Only a NON-remote local player has a freshly-computed camera; a remote
+		// player's cam_pos is stale on this machine (see the demo player).
+		e->islocalplayer = pl->isremote ? 0 : 1;
 	} else {
 		e->campos = prop->pos;
 		e->theta = 0.f;
@@ -98,6 +105,7 @@ static void netKillcamCapture(struct chrdata *chr, struct netkillcamentry *e)
 		e->camup = prop->pos;
 		e->camroom = prop->rooms[0];
 		e->haspcam = 0;
+		e->islocalplayer = 0;
 	}
 	e->valid = 1;
 }
@@ -141,6 +149,14 @@ static void netKillcamApply(struct chrdata *chr, const struct netkillcamentry *e
 	// reads the killer's recorded eye/look/up straight from the ring). Writing a
 	// player's cam_pos here would clobber that — and we only stored cam_pos, not
 	// the full basis, so it'd produce a mixed/broken view. Bodies only.
+}
+
+// Public wrapper over the (static) interp-apply primitive — used by the demo
+// player (port/src/demo.c) to puppet combatants from a recorded frame, the same
+// way the killcam replay-render does. Bodies only (no camera); see netKillcamApply.
+void netKillcamApplyEntry(struct chrdata *chr, const struct netkillcamentry *e)
+{
+	netKillcamApply(chr, e);
 }
 
 void netKillcamReset(void)
@@ -230,6 +246,18 @@ void netKillcamRecordTick(void)
 
 	g_NetKillcam.head = (g_NetKillcam.head + 1) % NET_KILLCAM_TICKS;
 	struct netkillcamframe *f = &g_NetKillcamRing[g_NetKillcam.head];
+	netKillcamCaptureLiveFrame(f);
+
+	if (g_NetKillcam.count < NET_KILLCAM_TICKS) {
+		g_NetKillcam.count++;
+	}
+}
+
+// Capture the current live world (all MP combatants' poses + cameras) into a
+// frame. Shared by the killcam ring recorder above and the demo recorder
+// (port/src/demo.c) — the single Phase-1/Phase-2 capture primitive.
+void netKillcamCaptureLiveFrame(struct netkillcamframe *f)
+{
 	f->frame = g_Vars.lvframe60 ? (u32)g_Vars.lvframe60 : 1u;
 
 	for (s32 i = 0; i < MAX_MPCHRS; i++) {
@@ -239,10 +267,6 @@ void netKillcamRecordTick(void)
 		} else {
 			f->ents[i].valid = 0;
 		}
-	}
-
-	if (g_NetKillcam.count < NET_KILLCAM_TICKS) {
-		g_NetKillcam.count++;
 	}
 }
 

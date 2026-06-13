@@ -42,6 +42,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "net/demo.h"
 #include "net/netmsg.h"
 #include "net/netprop.h"
 #include "system.h" // sysLogPrintf/LOG_* for the proptick guards
@@ -2628,6 +2629,17 @@ void propsTickPlayer(bool islastplayer)
 					op = smokeTickPlayer(prop);
 				} else if (prop->type == PROPTYPE_PLAYER) {
 					splatTickChr(prop);
+#ifndef PLATFORM_N64
+					if (netDemoIsPlaying() && prop->chr != netDemoFollowedChr()) {
+						// Demo playback: pose OTHER players' bodies from the applied
+						// (recorded) chrinfo via chrTick, like a sim. playerTickThirdPerson
+						// rebuilds the body from live speed/aim fields we don't set, which
+						// ignores our recorded pose (static/wrong-facing body). The FOLLOWED
+						// player stays on playerTickThirdPerson so its first-person body is
+						// hidden (otherwise the camera clips into its own model).
+						op = chrTick(prop);
+					} else
+#endif
 					op = playerTickThirdPerson(prop);
 				}
 			}
@@ -2726,6 +2738,17 @@ void propsTickPlayer(bool islastplayer)
 					op = smokeTickPlayer(prop);
 				} else if (prop->type == PROPTYPE_PLAYER) {
 					splatTickChr(prop);
+#ifndef PLATFORM_N64
+					if (netDemoIsPlaying() && prop->chr != netDemoFollowedChr()) {
+						// Demo playback: pose OTHER players' bodies from the applied
+						// (recorded) chrinfo via chrTick, like a sim. playerTickThirdPerson
+						// rebuilds the body from live speed/aim fields we don't set, which
+						// ignores our recorded pose (static/wrong-facing body). The FOLLOWED
+						// player stays on playerTickThirdPerson so its first-person body is
+						// hidden (otherwise the camera clips into its own model).
+						op = chrTick(prop);
+					} else
+#endif
 					op = playerTickThirdPerson(prop);
 				}
 

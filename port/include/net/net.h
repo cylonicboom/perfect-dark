@@ -393,8 +393,15 @@ struct netkillcamentry {
 	struct coord camup;
 	s32 camroom;
 	u8 haspcam;
+	// islocalplayer = captured from a NON-remote local player, so campos/camlook/
+	// camup are a real, freshly-computed first-person basis. A remote player has a
+	// player slot (haspcam=1) but its cam is never computed on the recording host
+	// (stale → "floating"); the demo player uses this to fall back to a yaw-only
+	// eye-cam for non-local combatants. The killcam ignores this field.
+	u8 islocalplayer;
 	u8 gunfire;
 	u8 valid;
+	s16 heldweapon[2]; // weaponnum per hand (-1 = empty); for the demo first-person viewmodel
 };
 
 // One recorded tick: every MP combatant (index = g_MpAllChrPtrs slot).
@@ -611,6 +618,8 @@ void netHostOnlineEnterSetup(void);
 extern struct netkillcamstate g_NetKillcam;
 void netKillcamReset(void);                 // clear the ring (stage load)
 void netKillcamRecordTick(void);            // capture all combatants this tick
+void netKillcamCaptureLiveFrame(struct netkillcamframe *f); // shared capture primitive (killcam ring + demo recorder)
+void netKillcamApplyEntry(struct chrdata *chr, const struct netkillcamentry *e); // shared apply primitive (demo player puppets combatants)
 void netKillcamNoteKill(struct chrdata *killer, struct chrdata *victim); // latch killer of local pawn (SVC_KILL / mpstats)
 struct chrdata *netKillcamFindChrByName(const char *name); // resolve a combatant chr by config name (cross-machine stable)
 void netKillcamOnLocalDeath(void);          // dead-edge: begin replay if enabled + a killer is latched

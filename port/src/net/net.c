@@ -11,6 +11,7 @@
 #include "net/netbuf.h"
 #include "net/netmsg.h"
 #include "net/netprop.h"
+#include "net/demo.h"
 #include "net/netmaster.h"
 #include "net/playlist.h"
 #include "det.h"
@@ -5571,6 +5572,11 @@ s32 netConsoleCommand(const char *line)
 
 	if (strcmp(cmd, "lua") == 0) {
 		luaaiConsoleCommand(*arg ? arg : NULL);
+		return 1;
+	}
+
+	// Demo recorder (/demorec start|stop|status), port/src/demo.c.
+	if (netDemoConsoleCommand(cmd, arg)) {
 		return 1;
 	}
 

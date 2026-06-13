@@ -75,6 +75,7 @@
 #include "video.h"
 #include "input.h"
 #include "net/net.h"
+#include "net/demo.h"
 #include "net/netmsg.h"
 #include "mpsetups.h"
 #endif
@@ -6851,6 +6852,12 @@ s32 playerGetCount(void)
 
 s32 playerGetLocalCount(void)
 {
+	// Demo playback: one fullscreen viewport (a multi-human recording would
+	// otherwise splitscreen). The viewport quadrant math reads LOCALPLAYERCOUNT(),
+	// so this must return 1 too — not just the render loop's forcesingleplayer.
+	if (netDemoIsPlaying()) {
+		return 1;
+	}
 	if (g_NetMode) {
 		// Host spectator mode promotes the host to N panel viewports; the
 		// split-screen quadrant math in playerGetViewport*() is driven by

@@ -101,6 +101,7 @@
 #ifndef PLATFORM_N64
 #include "input.h"
 #include "net/net.h"
+#include "net/demo.h"
 #include "net/netmsg.h"
 #include "spectator.h"
 #include "video.h"
@@ -270,6 +271,7 @@ void lvReset(s32 stagenum)
 
 #ifndef PLATFORM_N64
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
+	netDemoStop();     // demo: close any open recording on stage load (port-only)
 #endif
 
 	var80084014 = false;
@@ -1237,6 +1239,13 @@ Gfx *lvRender(Gfx *gdl)
 		if (g_NetMode) {
 			// tick all players, we'll skip the rendering
 			forcesingleplayer = false;
+		}
+		// Demo playback (offline) of a multi-player recording spawns one local
+		// player per recorded human (would splitscreen). Always render a single
+		// fullscreen viewport following the chosen combatant; netDemoRenderBegin
+		// drives the camera (a future UI will switch which combatant is followed).
+		if (netDemoIsPlaying()) {
+			forcesingleplayer = true;
 		}
 #endif
 
@@ -2420,6 +2429,8 @@ void lvTick(void)
 	// pawn's death edge to start a replay. Early in the tick so a triggered
 	// killcam owns g_NetSpectateChr before lvTickPlayer's spectate-on-death check.
 	netKillcamRecordTick();
+	netDemoRecordTick(); // demo: append this tick's world pose if recording (port-only)
+	netDemoPlayTick();   // demo: advance playback (read next frame) if playing (port-only)
 #endif
 
 #ifndef PLATFORM_N64
@@ -2942,7 +2953,27 @@ void lvTickPlayer(void)
 	}
 #endif
 
-	if (var80075d64 == 2) {
+#ifndef PLATFORM_N64
+	// Demo playback puppets every pawn from the recording (netDemoRenderBegin).
+	// Running the live player tick re-drives this human pawn's movement + third-
+	// person animation each frame (and the non-host pawns have no controller, so
+	// they idle), overwriting the recorded pose — which is why human players looked
+	// static/floating while sims (not local players, so never re-ticked) were clean.
+	// Skip the live tick during playback so the recorded body pose sticks; the
+	// camera is overridden in netDemoRenderBegin.
+	//
+	// EXCEPTION: the FOLLOWED player keeps its tick so its first-person gun pipeline
+	// initializes + processes the equip (demo gives it the recorded weapon). Its
+	// body is hidden and its camera is overridden, so live movement isn't seen.
+	bool demoplaying = netDemoIsPlaying();
+	if (demoplaying && g_Vars.currentplayer && g_Vars.currentplayer->prop
+			&& g_Vars.currentplayer->prop->chr == netDemoFollowedChr()) {
+		demoplaying = false;
+	}
+#else
+	const bool demoplaying = false;
+#endif
+	if (!demoplaying && var80075d64 == 2) {
 		if (var80075d68 == 2) {
 			playerTick(true);
 		} else {

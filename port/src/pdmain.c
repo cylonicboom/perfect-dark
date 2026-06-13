@@ -77,6 +77,7 @@
 #include "system.h"
 #include "console.h"
 #include "net/net.h"
+#include "net/demo.h"
 #include "spectator.h"
 #include "net/netmsg.h"
 #include "headless.h"
@@ -1168,7 +1169,14 @@ void mainTick(void)
 				// the live ones) so lvRender draws the historical scene from the
 				// killer's POV (g_NetSpectateChr), then restore live state after.
 				const s32 kc_replay = netKillcamRenderBegin();
+				// Demo playback: puppet all combatants to the current recorded frame
+				// and drive the camera from the followed combatant's recorded eye,
+				// restoring live poses after the render (the killcam bracket pattern).
+				const s32 demo_replay = netDemoRenderBegin();
 				gdl = lvRender(gdl);
+				if (demo_replay) {
+					netDemoRenderEnd();
+				}
 				if (kc_replay) {
 					netKillcamRenderEnd();
 				}

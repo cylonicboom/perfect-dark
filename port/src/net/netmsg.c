@@ -945,6 +945,22 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	// A client must never report shooting its OWN pawn — hitscan excludes self.
+	// A self-targeted CLC_HIT means either the client's shotCalculateHits self-
+	// intersected, or the target syncid mis-resolved to the shooter on the server.
+	// Either way, applying it suicide-kills the victim and steals the real killer's
+	// credit (observed: "master shot slave, registered as a suicide"; the killing
+	// damage arrived with aprop == the victim). Reject it — the genuine killer's hit
+	// is a separate report. The diag distinguishes the two roots: tgtsid == shootersid
+	// means the client self-targeted; tgtsid != shootersid means a server-side syncid
+	// resolution mismatch (a real hit on someone else landing on the shooter).
+	if (srccl->player && srccl->player->prop && target == srccl->player->prop) {
+		netDiagLogf("clchit_self", "cl=%u pnum=%d shootersid=%u tgtsid=%u",
+				srccl->id, srccl->playernum,
+				(u32)srccl->player->prop->syncid, (u32)target_syncid);
+		return src->error;
+	}
+
 	// Enqueue for chrDamage in netEndFrame (after buffer reset, before flush)
 	// so SVC_CHR_DAMAGE is actually broadcast to clients. Calling chrDamage
 	// here during event processing would have it write to g_NetMsgRel just

@@ -5814,6 +5814,21 @@ void playerDieByShooter(u32 shooter, bool force)
 #else
 	const bool iframeprotected = false;
 #endif
+#ifndef PLATFORM_N64
+	// Diag: every player death attempt on the server — the shooter passed in, the
+	// victim (cur), whether it's a forced (env/kill-plane) death, the i-frame gate,
+	// and the victim's current lastattacker. A gunshot kill showing as a suicide will
+	// have shooter == cur here (it came via playerDie's suicide fallback, not
+	// chrDamage's playerDieByShooter(attacker)) — revealing the death routed through
+	// the env path instead of the gunfire path.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.mplayerisrunning && g_Vars.currentplayer) {
+		struct chrdata *vc = g_Vars.currentplayer->prop ? g_Vars.currentplayer->prop->chr : NULL;
+		netDiagLogf("pdie", "shooter=%u cur=%d force=%d isdead=%d iframe=%d latk=%d",
+				shooter, (s32)g_Vars.currentplayernum, (s32)force,
+				(s32)g_Vars.currentplayer->isdead, (s32)iframeprotected,
+				(vc && vc->lastattacker && vc->lastattacker->prop) ? mpPlayerGetIndex(vc->lastattacker) : -1);
+	}
+#endif
 #if VERSION >= VERSION_NTSC_1_0
 	if (!g_Vars.currentplayer->isdead && (force || (!g_Vars.currentplayer->invincible && !iframeprotected)))
 #else

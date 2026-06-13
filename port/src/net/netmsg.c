@@ -4512,6 +4512,58 @@ static s32 netScoreNetIdForSlot(s32 slot)
 	return -1;
 }
 
+// Canonical wire key for a LOCAL packed mpchr index (g_MpAllChrPtrs position):
+//   human -> netclient id            (0 .. MAX_PLAYERS-1)
+//   bot   -> MAX_PLAYERS + ordinal   (MAX_PLAYERS .. MAX_MPCHRS-1)
+//   none  -> 0xff
+//
+// IMPORTANT: bots are PACKED right after the human players in g_MpAllChrPtrs
+// (g_MpNumChrs counts up through players THEN bots), so a bot's packed index is
+// typically < MAX_PLAYERS and collides with the human netid range. The old
+// "idx < MAX_PLAYERS ? netid : raw-idx" scheme therefore mis-keyed every bot to
+// 0xff (the human lookup found no client), and the reader dropped it — sim scores
+// / lives / progress never synced. Keying a bot by MAX_PLAYERS + its ordinal
+// (position after the human players) is collision-free AND wire-stable: bots are
+// allocated deterministically and are never slot-swapped, and g_MpNumChrs/g_BotCount
+// match on every machine, so the same logical bot maps to the same key everywhere.
+// The HUMAN path is unchanged (still the netclient id), so player scoring is
+// byte-identical to before — only bots are newly correct.
+static u8 netMpchrToWireKey(s32 idx)
+{
+	if (idx < 0 || idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[idx]) {
+		return 0xff;
+	}
+	const s32 cl_id = netScoreNetIdForSlot(idx);
+	if (cl_id >= 0 && cl_id < MAX_PLAYERS) {
+		return (u8)cl_id; // human
+	}
+	// Bot: ordinal after the human players.
+	const s32 numplayers = g_MpNumChrs - g_BotCount;
+	const s32 ordinal = idx - numplayers;
+	if (ordinal >= 0 && (MAX_PLAYERS + ordinal) < MAX_MPCHRS) {
+		return (u8)(MAX_PLAYERS + ordinal);
+	}
+	return 0xff;
+}
+
+static s32 netMpchrFromWireKey(u8 key)
+{
+	if (key == 0xff) {
+		return -1;
+	}
+	if (key < MAX_PLAYERS) {
+		const struct netclient *cl = &g_NetClients[key];
+		if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
+			return cl->playernum; // human -> local slot
+		}
+		return -1;
+	}
+	// Bot ordinal -> local packed index.
+	const s32 numplayers = g_MpNumChrs - g_BotCount;
+	const s32 idx = numplayers + (key - MAX_PLAYERS);
+	return (idx >= 0 && idx < g_MpNumChrs) ? idx : -1;
+}
+
 u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count)
 {
 	// Wire schema: each entry's idx and the per-entry killcounts[0..MAX_PLAYERS-1]
@@ -4546,34 +4598,29 @@ u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count)
 			continue;
 		}
 		const struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[idx];
-		// Translate entry idx: humans → netclient ID (so the receiver can map
-		// to its local slot); bots → mpchr index unchanged.
-		u8 wireidx;
-		if (idx < MAX_PLAYERS) {
-			s32 cl_id = netScoreNetIdForSlot(idx);
-			wireidx = (cl_id >= 0 && cl_id < MAX_PLAYERS) ? (u8)cl_id : 0xff;
-		} else {
-			wireidx = (u8)idx;
-		}
-		netbufWriteU8(dst, wireidx);
+		// Entry key: human -> netclient id, bot -> MAX_PLAYERS + ordinal (see
+		// netMpchrToWireKey — bots are packed below MAX_PLAYERS so the old
+		// idx<MAX_PLAYERS test dropped them).
+		netbufWriteU8(dst, netMpchrToWireKey(idx));
 		netbufWriteS16(dst, mpchr->numdeaths);
 		netbufWriteS16(dst, mpchr->numpoints);
 		netbufWriteS8(dst, mpchr->placement);
 		netbufWriteS32(dst, mpchr->rankablescore);
-		// Killcounts: write [0..MAX_PLAYERS-1] in netclient ID order — entry k
-		// is "kills against netclient k". The receiver translates back through
-		// its own netclient → slot map. Bot entries follow at the same mpchr
-		// index on both sides.
-		for (s32 k = 0; k < MAX_PLAYERS; ++k) {
-			const struct netclient *cl = &g_NetClients[k];
-			if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
-				netbufWriteS16(dst, mpchr->killcounts[cl->playernum]);
-			} else {
-				netbufWriteS16(dst, 0);
+		// Killcounts, one slot per combatant keyed the same wire-stable way:
+		// wire_kc[netMpchrToWireKey(victim)] = kills against that victim. Both
+		// sides recompute the key from their own local index, so it round-trips.
+		s16 wire_kc[MAX_MPCHRS];
+		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+			wire_kc[k] = 0;
+		}
+		for (s32 v = 0; v < MAX_MPCHRS; ++v) {
+			const u8 key = netMpchrToWireKey(v);
+			if (key != 0xff) {
+				wire_kc[key] = mpchr->killcounts[v];
 			}
 		}
-		for (s32 k = MAX_PLAYERS; k < MAX_MPCHRS; ++k) {
-			netbufWriteS16(dst, mpchr->killcounts[k]);
+		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
+			netbufWriteS16(dst, wire_kc[k]);
 		}
 	}
 	return dst->error;
@@ -4610,19 +4657,10 @@ u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl)
 		if (wireidx == 0xff) {
 			continue;
 		}
-		// Translate wireidx: humans → look up the netclient and use its
-		// LOCAL playernum; bots → mpchr index directly.
-		s32 local_idx;
-		if (wireidx < MAX_PLAYERS) {
-			const struct netclient *cl = &g_NetClients[wireidx];
-			if (cl->state < CLSTATE_GAME || cl->playernum < 0 || cl->playernum >= MAX_MPCHRS) {
-				continue;
-			}
-			local_idx = cl->playernum;
-		} else {
-			local_idx = wireidx;
-		}
-		if (local_idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[local_idx]) {
+		// Resolve the entry key back to a LOCAL packed mpchr index (human ->
+		// netclient's local slot; bot -> ordinal after the players).
+		const s32 local_idx = netMpchrFromWireKey(wireidx);
+		if (local_idx < 0 || local_idx >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[local_idx]) {
 			continue;
 		}
 		struct mpchrconfig *mpchr = g_MpAllChrConfigPtrs[local_idx];
@@ -4630,18 +4668,14 @@ u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl)
 		mpchr->numpoints = numpoints;
 		mpchr->placement = placement;
 		mpchr->rankablescore = rankablescore;
-		// Map wire killcounts back to local mpchr index. Human positions
-		// (0..MAX_PLAYERS-1) are keyed by netclient ID; each maps to the
-		// LOCAL slot via g_NetClients[k].playernum. Bot positions index
-		// directly.
-		for (s32 k = 0; k < MAX_PLAYERS; ++k) {
-			const struct netclient *cl = &g_NetClients[k];
-			if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
-				mpchr->killcounts[cl->playernum] = wire_killcounts[k];
+		// Map wire killcounts back to local mpchr index: for each local victim v,
+		// its value lives at wire position netMpchrToWireKey(v) (same wire-stable
+		// key the writer used).
+		for (s32 v = 0; v < MAX_MPCHRS; ++v) {
+			const u8 key = netMpchrToWireKey(v);
+			if (key != 0xff) {
+				mpchr->killcounts[v] = wire_killcounts[key];
 			}
-		}
-		for (s32 k = MAX_PLAYERS; k < MAX_MPCHRS; ++k) {
-			mpchr->killcounts[k] = wire_killcounts[k];
 		}
 	}
 	return src->error;
@@ -4865,15 +4899,13 @@ static void netChrArrayToWire(u8 *wire, const u8 *local)
 		wire[i] = 0;
 	}
 
+	// Place each LOCAL combatant's value at its wire-stable key slot (human ->
+	// netid, bot -> MAX_PLAYERS + ordinal). See netMpchrToWireKey: this fixes the
+	// old test that dropped packed-below-MAX_PLAYERS bots.
 	for (i = 0; i < MAX_MPCHRS; i++) {
-		if (i < MAX_PLAYERS) {
-			const s32 cl_id = netScoreNetIdForSlot(i);
-
-			if (cl_id >= 0 && cl_id < MAX_PLAYERS) {
-				wire[cl_id] = local[i];
-			}
-		} else {
-			wire[i] = local[i];
+		const u8 key = netMpchrToWireKey(i);
+		if (key != 0xff) {
+			wire[key] = local[i];
 		}
 	}
 }
@@ -4886,15 +4918,11 @@ static void netChrArrayFromWire(u8 *local, const u8 *wire)
 		local[i] = 0;
 	}
 
+	// Symmetric inverse: each local combatant reads back from its own wire key.
 	for (i = 0; i < MAX_MPCHRS; i++) {
-		if (i < MAX_PLAYERS) {
-			const struct netclient *cl = &g_NetClients[i];
-
-			if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
-				local[cl->playernum] = wire[i];
-			}
-		} else {
-			local[i] = wire[i];
+		const u8 key = netMpchrToWireKey(i);
+		if (key != 0xff) {
+			local[i] = wire[key];
 		}
 	}
 }
@@ -5067,31 +5095,17 @@ u32 netmsgSvcRaceStateRead(struct netbuf *src, struct netclient *srccl)
 // index; 0xff = none/unresolved) so it survives netPlayersAllocate's local slot-0
 // swap. The scenario-side getters/apply deal in LOCAL mpchr indices.
 
+// Thin aliases over the canonical key helpers (kept for call-site readability in
+// the carry/htm/pac writers). Bots are packed below MAX_PLAYERS, so these MUST go
+// through netMpchrToWireKey (MAX_PLAYERS + ordinal) — not the raw index.
 static u8 netCarryHolderToWire(s32 mpchrindex)
 {
-	if (mpchrindex < 0 || mpchrindex >= MAX_MPCHRS) {
-		return 0xff;
-	}
-	if (mpchrindex < MAX_PLAYERS) {
-		const s32 cl_id = netScoreNetIdForSlot(mpchrindex);
-		return (cl_id >= 0 && cl_id < MAX_PLAYERS) ? (u8)cl_id : 0xff;
-	}
-	return (u8)mpchrindex;
+	return netMpchrToWireKey(mpchrindex);
 }
 
 static s32 netCarryHolderFromWire(u8 key)
 {
-	if (key == 0xff) {
-		return -1;
-	}
-	if (key < MAX_PLAYERS) {
-		const struct netclient *cl = &g_NetClients[key];
-		if (cl->state >= CLSTATE_GAME && cl->playernum >= 0 && cl->playernum < MAX_MPCHRS) {
-			return cl->playernum;
-		}
-		return -1;
-	}
-	return (key < MAX_MPCHRS) ? (s32)key : -1;
+	return netMpchrFromWireKey(key);
 }
 
 // SVC_CARRY_STATE: per-token holder for Hold-the-Briefcase (1 token) and Capture-the-

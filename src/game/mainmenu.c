@@ -5411,16 +5411,8 @@ struct menuitem g_MainMenuMenuItems[] = {
 		(void *)&g_AntiModeMenuDialog,
 #endif
 	},
-	{
-		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT,
-		L_OPTIONS_187, // "Change Agent..."
-		0x00000007,
-		(void *)&g_ChangeAgentMenuDialog,
-	},
-/*
 #ifndef PLATFORM_N64
+	// Port: "Exit Game" replaces "Change Agent" on the main menu.
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -5429,8 +5421,16 @@ struct menuitem g_MainMenuMenuItems[] = {
 		0x00000008,
 		(void *)&g_ExitGameMenuDialog,
 	},
+#else
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT,
+		L_OPTIONS_187, // "Change Agent..."
+		0x00000007,
+		(void *)&g_ChangeAgentMenuDialog,
+	},
 #endif
-*/
 	{ MENUITEMTYPE_END },
 };
 

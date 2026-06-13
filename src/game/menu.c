@@ -4586,6 +4586,20 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 		}
 
 		if (inputs->back) {
+#ifndef PLATFORM_N64
+			// Port: Back on the main (Perfect) menu drops into the Carrington
+			// Institute instead of being ignored (MENUDIALOGFLAG_IGNOREBACK). The
+			// menu opens over the paused CI (via the in-game PC), so close it and
+			// resume; if the CI isn't loaded (shown over the title), load it.
+			if (dialog->definition == &g_CiMenuViaPcMenuDialog) {
+				menuClose();
+				if (g_Vars.stagenum == STAGE_CITRAINING) {
+					playerUnpause();
+				} else {
+					mainChangeToStage(STAGE_CITRAINING);
+				}
+			} else
+#endif
 			if ((dialog->definition->flags & MENUDIALOGFLAG_DROPOUTONCLOSE) && g_Vars.unk000498) {
 				if (IS4MB()) {
 					menuPushDialog(&g_MpDropOut4MbMenuDialog);

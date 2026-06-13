@@ -2630,13 +2630,13 @@ void propsTickPlayer(bool islastplayer)
 				} else if (prop->type == PROPTYPE_PLAYER) {
 					splatTickChr(prop);
 #ifndef PLATFORM_N64
-					if (netDemoIsPlaying() && prop->chr != netDemoFollowedChr()) {
-						// Demo playback: pose OTHER players' bodies from the applied
-						// (recorded) chrinfo via chrTick, like a sim. playerTickThirdPerson
-						// rebuilds the body from live speed/aim fields we don't set, which
-						// ignores our recorded pose (static/wrong-facing body). The FOLLOWED
-						// player stays on playerTickThirdPerson so its first-person body is
-						// hidden (otherwise the camera clips into its own model).
+					if (netDemoIsPlaying() && (!g_Vars.players[0] || prop != g_Vars.players[0]->prop)) {
+						// Demo playback: pose every pawn EXCEPT player 0 (the render
+						// vehicle) from the applied (recorded) chrinfo via chrTick, like a
+						// sim. playerTickThirdPerson rebuilds the body from live speed/aim
+						// fields we don't set, ignoring our recorded pose. Player 0 stays on
+						// playerTickThirdPerson so its first-person body is hidden (it renders
+						// the followed combatant's view; see demo.c).
 						op = chrTick(prop);
 					} else
 #endif
@@ -2739,13 +2739,13 @@ void propsTickPlayer(bool islastplayer)
 				} else if (prop->type == PROPTYPE_PLAYER) {
 					splatTickChr(prop);
 #ifndef PLATFORM_N64
-					if (netDemoIsPlaying() && prop->chr != netDemoFollowedChr()) {
-						// Demo playback: pose OTHER players' bodies from the applied
-						// (recorded) chrinfo via chrTick, like a sim. playerTickThirdPerson
-						// rebuilds the body from live speed/aim fields we don't set, which
-						// ignores our recorded pose (static/wrong-facing body). The FOLLOWED
-						// player stays on playerTickThirdPerson so its first-person body is
-						// hidden (otherwise the camera clips into its own model).
+					if (netDemoIsPlaying() && (!g_Vars.players[0] || prop != g_Vars.players[0]->prop)) {
+						// Demo playback: pose every pawn EXCEPT player 0 (the render
+						// vehicle) from the applied (recorded) chrinfo via chrTick, like a
+						// sim. playerTickThirdPerson rebuilds the body from live speed/aim
+						// fields we don't set, ignoring our recorded pose. Player 0 stays on
+						// playerTickThirdPerson so its first-person body is hidden (it renders
+						// the followed combatant's view; see demo.c).
 						op = chrTick(prop);
 					} else
 #endif

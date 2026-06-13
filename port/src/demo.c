@@ -385,7 +385,11 @@ static void netDemoApplyCam(struct player *pl, const struct netkillcamentry *e)
 	const f32 s = sinf(a);
 	const f32 c = cosf(a);
 	struct coord eye = e->pose.pos;
-	eye.y += 160.0f; // approx eye height
+	// A player's recorded pos IS its eye/camera height (campos.y == pos.y), so no
+	// offset; a sim's pos is at the model root, so raise to approx eye height.
+	if (!e->haspcam) {
+		eye.y += 50.0f;
+	}
 	pl->cam_pos = eye;
 	pl->cam_look.x = eye.x - s;
 	pl->cam_look.y = eye.y;
@@ -430,25 +434,25 @@ static void netDemoApplyWeapons(struct chrdata *chr, const struct netkillcamentr
 	}
 }
 
-// First-person viewmodel for the followed player. The demo-loaded local pawn is
-// unarmed (the equip happens in a player tick we skip), so equip the recorded
-// weapon and run JUST the gun tick (not the full playerTick, which moved the audio
-// listener + took live input). bgunRender (lvRender) then draws the viewmodel.
-// The gun tick advances at 60Hz; the recorded muzzle flash is forced every frame.
+// First-person viewmodel. players[0] is ALWAYS the single rendered viewport (lv.c
+// forcesingleplayer), so it's the "render vehicle": we feed it the FOLLOWED
+// combatant's recorded view (camera elsewhere) + weapon here, regardless of which
+// combatant is followed. This is what makes /demoview switching work — following
+// another player still renders through players[0], just with that player's data.
+// The demo-loaded pawn is unarmed (equip happens in a skipped tick), so equip the
+// recorded weapon; players[0]'s real playerTick (lv.c) drives the gun pipeline.
 static void netDemoTickFollowedGun(void)
 {
-	struct chrdata *fchr = netDemoFollowedChr();
-	if (!fchr || !fchr->prop || g_DemoFollowIdx < 0) {
-		return;
-	}
-	const s32 pn = playermgrGetPlayerNumByProp(fchr->prop);
-	if (pn < 0 || !g_Vars.players[pn]) {
+	if (g_DemoFollowIdx < 0 || !g_Vars.players[0]) {
 		return;
 	}
 	const struct netkillcamentry *e = &g_DemoPlayFrame.ents[g_DemoFollowIdx];
+	if (!e->valid) {
+		return;
+	}
 
 	const s32 saved = g_Vars.currentplayernum;
-	setCurrentPlayerNum(pn);
+	setCurrentPlayerNum(0);
 
 	// Skip the Combat Sim spawn intro (third-person camera orbiting the body before
 	// it drops to first person): force first-person camera mode so the body isn't
@@ -623,6 +627,18 @@ s32 netDemoRenderBegin(void)
 		g_DemoPrevGunfire[i] = gf;
 	}
 
+	// Hide the FOLLOWED combatant's own body so we don't see ourselves from its eye
+	// when it isn't player 0 (player 0's body is already hidden by first-person). Its
+	// saved flags are restored in RenderEnd.
+	if (g_DemoFollowIdx >= 0 && g_DemoPlayFrame.ents[g_DemoFollowIdx].valid) {
+		struct chrdata *fchr = g_MpAllChrPtrs[g_DemoFollowIdx];
+		struct chrdata *p0chr = (g_Vars.players[0] && g_Vars.players[0]->prop)
+				? g_Vars.players[0]->prop->chr : NULL;
+		if (fchr && fchr != p0chr) {
+			fchr->chrflags |= CHRCFLAG_HIDDEN;
+		}
+	}
+
 	// First-person viewmodel: give/equip the followed player's recorded weapon + force
 	// the muzzle flash (its real playerTick ticks the gun; camera overridden above).
 	netDemoTickFollowedGun();
@@ -651,6 +667,27 @@ s32 netDemoConsoleCommand(const char *cmd, const char *arg)
 			netDemoPlayStop();
 		} else {
 			netDemoPlayStart(arg);
+		}
+		return 1;
+	}
+
+	// Switch which combatant the single view follows (the split-feature replacement).
+	if (strcmp(cmd, "demoview") == 0) {
+		if (g_DemoPlayState != DEMO_PLAY_PLAYING || !g_DemoPlayHasFrame) {
+			sysLogPrintf(LOG_CHAT, "DEMO: not playing");
+			return 1;
+		}
+		const s32 dir = (strcmp(arg, "prev") == 0) ? -1 : 1;
+		s32 idx = (g_DemoFollowIdx >= 0) ? g_DemoFollowIdx : 0;
+		for (s32 step = 0; step < MAX_MPCHRS; step++) {
+			idx = (idx + dir + MAX_MPCHRS) % MAX_MPCHRS;
+			if (g_DemoPlayFrame.ents[idx].valid && g_MpAllChrPtrs[idx]) {
+				g_DemoFollowIdx = idx;
+				g_DemoLastClip[0] = g_DemoLastClip[1] = -1; // re-detect reload for the new view
+				sysLogPrintf(LOG_CHAT, "DEMO: viewing combatant %d%s", idx,
+						g_DemoPlayFrame.ents[idx].haspcam ? " (player)" : " (sim)");
+				break;
+			}
 		}
 		return 1;
 	}

@@ -2962,12 +2962,13 @@ void lvTickPlayer(void)
 	// Skip the live tick during playback so the recorded body pose sticks; the
 	// camera is overridden in netDemoRenderBegin.
 	//
-	// EXCEPTION: the FOLLOWED player keeps its tick so its first-person gun pipeline
-	// initializes + processes the equip (demo gives it the recorded weapon). Its
-	// body is hidden and its camera is overridden, so live movement isn't seen.
+	// EXCEPTION: player 0 is the single rendered viewport (forcesingleplayer) and the
+	// demo "render vehicle" — keep its tick so its first-person gun pipeline runs. We
+	// feed it the followed combatant's recorded view/weapon (demo.c); its own body is
+	// hidden and its camera overridden. (/demoview switches the followed combatant,
+	// but rendering always goes through player 0.)
 	bool demoplaying = netDemoIsPlaying();
-	if (demoplaying && g_Vars.currentplayer && g_Vars.currentplayer->prop
-			&& g_Vars.currentplayer->prop->chr == netDemoFollowedChr()) {
+	if (demoplaying && g_Vars.currentplayernum == 0) {
 		demoplaying = false;
 	}
 #else

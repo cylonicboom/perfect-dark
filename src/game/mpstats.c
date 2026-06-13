@@ -252,6 +252,42 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 	const bool ownsStats = true;
 #endif
 
+#ifndef PLATFORM_N64
+	// CENTRAL attacker recovery (server authority). Any death path that couldn't
+	// resolve the shooter (aplayernum < 0) or that fell back to the victim itself
+	// (aplayernum == vplayernum, the dead-lastshooter suicide bug) is recovered here
+	// from the victim's most-recent damager (chr->lastattacker), the same derivation
+	// the victim's own client uses in netmsgSvcPlayerStatsRead. This is the single
+	// choke point for the kill feed (SVC_KILL) + score (SVC_SCORE), so it fixes
+	// gunfire, explosion, env/fall/knockback, AND chr-death paths at once — without
+	// it a player shot then finished by a non-gunfire trigger shows as "X died" /
+	// suicide with no credit. g_MpAllChrPtrs[vplayernum] is the victim chr for both
+	// player deaths (vplayernum == player slot == its g_MpAllChrPtrs index) and chr
+	// deaths (vplayernum == mpPlayerGetIndex). Only fires when we'd otherwise record
+	// no killer, so a genuine self/environment death (no recent attacker) still reads
+	// as a suicide.
+	if (ownsStats && g_Vars.normmplayerisrunning
+			&& (aplayernum < 0 || aplayernum == vplayernum)
+			&& vplayernum >= 0 && vplayernum < MAX_MPCHRS && g_MpAllChrPtrs[vplayernum]) {
+		struct chrdata *vchr = g_MpAllChrPtrs[vplayernum];
+		struct chrdata *atk = vchr->lastattacker;
+		s32 recovered = -1;
+		if (atk && atk->prop && atk != vchr) {
+			if (atk->prop->type == PROPTYPE_PLAYER) {
+				recovered = playermgrGetPlayerNumByProp(atk->prop);
+			} else if (atk->prop->type == PROPTYPE_CHR && atk->aibot) {
+				recovered = mpPlayerGetIndex(atk);
+			}
+		}
+		netDiagLogf("killattrib", "a_in=%d v=%d cur=%d latk=%d recovered=%d",
+				aplayernum, vplayernum, (s32)g_Vars.currentplayernum,
+				(atk && atk->prop) ? mpPlayerGetIndex(atk) : -1, recovered);
+		if (recovered >= 0 && recovered != vplayernum) {
+			aplayernum = recovered;
+		}
+	}
+#endif
+
 	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_POPACAP) {
 		pacHandleDeath(aplayernum, vplayernum);
 	}

@@ -359,7 +359,11 @@ void menuTick(void)
 			}
 
 #ifndef PLATFORM_N64
-			if (g_NetMode == NETMODE_SERVER && g_MenuData.prevmenuroot == -1) {
+			// A Host Online admin drives this setup menu as a CLIENT
+			// (g_NetHostOnlineMode), so it must also enumerate the other connected
+			// clients into chrslots or the teams menu shows only itself. Menu-only:
+			// mpStartMatch rebuilds chrslots authoritatively at match start.
+			if ((g_NetMode == NETMODE_SERVER || g_NetHostOnlineMode) && g_MenuData.prevmenuroot == -1) {
 				s32 slot = 1;
 				for (i = 1; i < g_NetMaxClients; ++i) {
 					if (g_NetClients[i].state >= CLSTATE_LOBBY) {

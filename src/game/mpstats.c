@@ -279,10 +279,15 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 				recovered = mpPlayerGetIndex(atk);
 			}
 		}
-		netDiagLogf("killattrib", "a_in=%d v=%d cur=%d latk=%d recovered=%d",
+		netDiagLogf("killattrib", "a_in=%d v=%d cur=%d latk=%d recovered=%d opt=%d",
 				aplayernum, vplayernum, (s32)g_Vars.currentplayernum,
-				(atk && atk->prop) ? mpPlayerGetIndex(atk) : -1, recovered);
-		if (recovered >= 0 && recovered != vplayernum) {
+				(atk && atk->prop) ? mpPlayerGetIndex(atk) : -1, recovered,
+				(g_MpSetup.options & MPOPTION_LASTATTACKERKILL) ? 1 : 0);
+		// "Last Attacker Attribution" (Combat Sim More Options) — only credit the
+		// recent attacker when the host enabled it, so pushes / knockback / suicide
+		// plays reward the attacker. Off = vanilla (these read as suicides).
+		if ((g_MpSetup.options & MPOPTION_LASTATTACKERKILL)
+				&& recovered >= 0 && recovered != vplayernum) {
 			aplayernum = recovered;
 		}
 	}

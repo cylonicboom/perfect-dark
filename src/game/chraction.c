@@ -4976,6 +4976,20 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 					}
 
 					g_Vars.currentplayer->bondhealth -= amount / healthscale;
+#ifndef PLATFORM_N64
+					// Diag: a SELF / no-attacker hit on a player overwrites
+					// chr->lastattacker (set just below), erasing the real recent
+					// killer — the suspected cause of "shot a player, no credit, shows
+					// as suicide". If a pdmg_self line appears just before that player's
+					// death, fall/splash self-damage clobbered the attacker.
+					if (g_NetMode == NETMODE_SERVER && g_Vars.normmplayerisrunning
+							&& (aprop == NULL || aprop == vprop)) {
+						netDiagLogf("pdmg_self", "v=%d atk=%d dmg=%.1f hp=%.2f",
+								g_Vars.currentplayernum,
+								(aprop && aprop->chr) ? mpPlayerGetIndex(aprop->chr) : -1,
+								amount, g_Vars.currentplayer->bondhealth);
+					}
+#endif
 
 					chr->lastattacker = (aprop ? aprop->chr : NULL);
 

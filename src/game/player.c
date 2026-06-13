@@ -5791,30 +5791,10 @@ void playerDie(bool force)
 		shooter = g_Vars.currentplayernum;
 	}
 
-#ifndef PLATFORM_N64
-	// `lastshooter` is dead code (never written — always -1), so the branch above
-	// always falls through to currentplayernum, i.e. SUICIDE. In multiplayer that
-	// mis-credits any death that doesn't go through the gunfire path
-	// (playerDieByShooter(aplayernum) in chrDamage) — e.g. a player shot/knocked
-	// into a hazard or kill-plane — as a self-kill ("killed another player but it
-	// shows as a suicide"). Recover the killer from chr->lastattacker (the most
-	// recent damager), the same way the client derives it in
-	// netmsgSvcPlayerStatsRead. Only kicks in when we'd otherwise suicide-attribute.
-	if (g_Vars.normmplayerisrunning && shooter == (s32)g_Vars.currentplayernum
-			&& chr->lastattacker && chr->lastattacker->prop && chr->lastattacker != chr) {
-		struct prop *ap = chr->lastattacker->prop;
-		s32 recovered = -1;
-		if (ap->type == PROPTYPE_PLAYER) {
-			recovered = playermgrGetPlayerNumByProp(ap);
-		} else if (ap->type == PROPTYPE_CHR && chr->lastattacker->aibot) {
-			recovered = mpPlayerGetIndex(chr->lastattacker);
-		}
-		if (recovered >= 0 && recovered != (s32)g_Vars.currentplayernum) {
-			shooter = recovered;
-		}
-	}
-#endif
-
+	// NOTE: env/fall/knockback deaths attribute to the victim here (lastshooter is
+	// dead code). The "Last Attacker Attribution" option recovers the real killer
+	// centrally in mpstatsRecordDeath (the single kill-feed + score choke point), so
+	// we don't duplicate that logic at this call site.
 	playerDieByShooter(shooter, force);
 
 #ifndef PLATFORM_N64

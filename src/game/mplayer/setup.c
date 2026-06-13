@@ -7394,6 +7394,17 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		MPOPTION_KILLCAM >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
+	{
+		// Credit env/fall/knockback/suicide-play deaths to the most recent
+		// attacker (chr->lastattacker) instead of the victim, so "push" kills
+		// reward the attacker. Off = vanilla (these read as suicides).
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Last Attacker Attribution",
+		MPOPTION_LASTATTACKERKILL >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
 #endif
 	{ MENUITEMTYPE_END },
 };

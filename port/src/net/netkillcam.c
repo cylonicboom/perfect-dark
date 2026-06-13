@@ -175,20 +175,6 @@ void netKillcamRecordTick(void)
 {
 	static bool s_wasdead = false;
 
-	// Throttled gate diagnostic (~once/sec) so one test pinpoints a no-trigger.
-	// Placed BEFORE the option gate so a missing option (opt=0 — e.g. not synced
-	// to this client) is visible in the log, which is the most common silent cause.
-	if (g_Vars.mplayerisrunning && !g_NetDedicatedMode && netKillcamLocalPlayer()) {
-		static u32 s_lastgatelog = 0xffffffffu;
-		if (g_Vars.lvframe60 != 0 && (u32)g_Vars.lvframe60 / 60u != s_lastgatelog) {
-			s_lastgatelog = (u32)g_Vars.lvframe60 / 60u;
-			sysLogPrintf(LOG_NOTE, "killcam: rec opt=%d count=%u dead=%d pend=%d active=%d",
-					(g_MpSetup.options & MPOPTION_KILLCAM) ? 1 : 0,
-					g_NetKillcam.count, netKillcamLocalPlayer()->isdead ? 1 : 0,
-					g_NetKillcam.pendingkiller, g_NetKillcam.active);
-		}
-	}
-
 	if (!g_Vars.mplayerisrunning || !(g_MpSetup.options & MPOPTION_KILLCAM)
 			|| g_NetDedicatedMode || netKillcamLocalPlayer() == NULL) {
 		s_wasdead = false;
@@ -213,6 +199,20 @@ void netKillcamRecordTick(void)
 	if (g_NetKillcam.active) {
 		return; // frozen while replaying
 	}
+
+	// Record at the LOGICAL 60Hz tick rate, not the render rate. lvTick (our
+	// caller) runs once per RENDER frame, so at high/VRR fps this function fires
+	// 2x+ per logical tick — which doubled the per-frame capture cost (the
+	// "stutter over time" report), filled the 5s ring in 2.5s, and halved the
+	// post-death window. Gate the post-death advance + capture on lvframe60
+	// actually moving so behaviour is framerate-independent. (Death-edge detection
+	// and respawn handling above still run every call — they're cheap + idempotent.)
+	static u32 s_lastrecframe = 0xffffffffu;
+	const u32 nowframe = (u32)g_Vars.lvframe60;
+	if (nowframe == s_lastrecframe) {
+		return; // already sampled this logical tick
+	}
+	s_lastrecframe = nowframe;
 
 	if (dead && !g_NetKillcamPlayedThisDeath) {
 		// Keep recording for a short window AFTER death so the replay can run a

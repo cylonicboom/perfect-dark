@@ -402,6 +402,8 @@ struct netkillcamentry {
 	u8 gunfire;
 	u8 valid;
 	s16 heldweapon[2]; // weaponnum per hand (-1 = empty); for the demo first-person viewmodel
+	s16 clipammo[2];   // loadedammo[0] per hand for a LOCAL player (-1 = unknown: remote/sim);
+	                   // demo replays the recorder's own clip + reload on the followed view
 };
 
 // One recorded tick: every MP combatant (index = g_MpAllChrPtrs slot).

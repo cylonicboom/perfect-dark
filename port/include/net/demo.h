@@ -18,7 +18,7 @@
 #include "types.h"
 
 #define DEMO_MAGIC      0x4d444450u // 'PDDM'
-#define DEMO_VERSION    2u // 2: netkillcamentry gained islocalplayer + heldweapon[2]
+#define DEMO_VERSION    3u // 3: netkillcamentry gained clipammo[2] (2: islocalplayer + heldweapon[2])
 
 // File header, written once at record start. Everything needed to reconstruct
 // the stage for playback (the SVC_STAGE_START payload, essentially): the full

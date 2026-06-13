@@ -80,6 +80,7 @@ static void netKillcamCapture(struct chrdata *chr, struct netkillcamentry *e)
 	for (s32 h = 0; h < 2; h++) {
 		e->heldweapon[h] = (chr->weapons_held[h] && chr->weapons_held[h]->weapon)
 				? (s16)chr->weapons_held[h]->weapon->weaponnum : -1;
+		e->clipammo[h] = -1; // unknown by default (remote players / sims)
 	}
 
 	const s32 pnum = playermgrGetPlayerNumByProp(prop);
@@ -97,6 +98,13 @@ static void netKillcamCapture(struct chrdata *chr, struct netkillcamentry *e)
 		// Only a NON-remote local player has a freshly-computed camera; a remote
 		// player's cam_pos is stale on this machine (see the demo player).
 		e->islocalplayer = pl->isremote ? 0 : 1;
+		// Clip ammo is only knowable for a NON-remote local player (the recorder's
+		// own gunctrl); record it so the demo shows the real HUD count + reloads on
+		// the followed view.
+		if (!pl->isremote) {
+			e->clipammo[HAND_RIGHT] = (s16)pl->hands[HAND_RIGHT].loadedammo[0];
+			e->clipammo[HAND_LEFT] = (s16)pl->hands[HAND_LEFT].loadedammo[0];
+		}
 	} else {
 		e->campos = prop->pos;
 		e->theta = 0.f;

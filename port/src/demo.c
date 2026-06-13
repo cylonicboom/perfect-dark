@@ -177,6 +177,7 @@ static struct netkillcamframe g_DemoPlayFrame;  // current recorded frame (appli
 static struct netkillcamframe g_DemoSavedFrame; // live poses saved across the render
 static u32 g_DemoSavedFlags[MAX_MPCHRS];
 static u8 g_DemoPrevGunfire[MAX_MPCHRS];         // last frame's gunfire bits (shoot-sound edge detect)
+static s32 g_DemoLastClip[2] = { -1, -1 };       // followed player's last clip per hand (reload edge detect)
 static bool g_DemoPlayHasFrame = false;
 static u32 g_DemoPlayFrameIdx = 0;
 static u32 g_DemoPlayLastFrame = 0xffffffffu;
@@ -213,6 +214,7 @@ void netDemoPlayStop(void)
 	g_DemoPlayLastFrame = 0xffffffffu;
 	g_DemoFollowIdx = -1;
 	memset(g_DemoPrevGunfire, 0, sizeof(g_DemoPrevGunfire));
+	g_DemoLastClip[0] = g_DemoLastClip[1] = -1;
 }
 
 static s32 netDemoPlayStart(const char *name)
@@ -312,6 +314,14 @@ void netDemoPlayTick(void)
 		netDemoPlayStop();
 		return;
 	}
+
+	// Skip the spawn intro's TICK gating: the intro drops these tick-mode globals
+	// off 2, so lvTickPlayer doesn't run the followed player's tick (no gun setup /
+	// processing) for the first few seconds. Force them to 2 every tick (this runs
+	// before lvTickPlayer in lvTick) so the followed player ticks from frame one.
+	// Pairs with the render-mode force (var80075d60) in netDemoRenderBegin.
+	var80075d64 = 2;
+	var80075d68 = 2;
 
 	// Advance at the logical 60Hz rate (one recorded frame per logical tick).
 	const u32 nowframe = (u32)g_Vars.lvframe60;
@@ -440,6 +450,12 @@ static void netDemoTickFollowedGun(void)
 	const s32 saved = g_Vars.currentplayernum;
 	setCurrentPlayerNum(pn);
 
+	// Skip the Combat Sim spawn intro (third-person camera orbiting the body before
+	// it drops to first person): force first-person camera mode so the body isn't
+	// drawn and the gun/HUD show immediately. var80075d60 (the render-mode global) is
+	// forced to 2 in netDemoRenderBegin so the HUD draws + the first-person path runs.
+	g_Vars.currentplayer->cameramode = CAMERAMODE_DEFAULT;
+
 	// Give the recorded weapon to inventory and REQUEST the switch. The followed
 	// player keeps its real playerTick during demo (lv.c), so its gun pipeline is
 	// initialized and processes this deferred switch over the next frame(s) — which
@@ -464,9 +480,42 @@ static void netDemoTickFollowedGun(void)
 		bgunEquipWeapon2(HAND_LEFT, wantdual ? want_l : WEAPON_NONE);
 	}
 
-	// Force the recorded muzzle flash (no live firing input, so bgunTick clears it).
-	g_Vars.currentplayer->hands[HAND_RIGHT].flashon = (e->gunfire & (1 << HAND_RIGHT)) ? true : false;
-	g_Vars.currentplayer->hands[HAND_LEFT].flashon = (e->gunfire & (1 << HAND_LEFT)) ? true : false;
+	// Reserve ammo: keep the equipped weapon's reserve topped up so the switch's
+	// reload fills the clip and a replayed reload (below) has ammo to draw from.
+	const s32 cw = g_Vars.currentplayer->gunctrl.weaponnum;
+	if (cw > WEAPON_UNARMED) {
+		const u32 atype = bgunGetAmmoTypeForWeapon((u32)cw, FUNC_PRIMARY);
+		if (atype != 0) {
+			bgunSetAmmoQuantity((s32)atype, 255);
+		}
+	}
+
+	// Recorded clip ammo (v3): show the recorder's real HUD count, and play the
+	// reload animation when the recorded clip jumps up (a reload happened). clipammo
+	// is -1 when following a remote player/sim (ammo unknown) — leave the clip alone.
+	for (s32 h = 0; h < 2; h++) {
+		const s32 clip = e->clipammo[h];
+		if (clip < 0) {
+			g_DemoLastClip[h] = -1;
+			continue;
+		}
+		if (g_DemoLastClip[h] >= 0 && clip > g_DemoLastClip[h]) {
+			bgunReloadIfPossible(h); // recorded reload — drive the reload animation
+		}
+		g_Vars.currentplayer->hands[h].loadedammo[0] = clip;
+		g_DemoLastClip[h] = clip;
+	}
+
+	// Force the recorded muzzle flash AND firing state from the gunfire bits (no live
+	// trigger, so bgunTick won't drive them). flashon = muzzle flash; firing drives
+	// the recoil/fire visual. Set after the gun tick; the fire LOGIC (ammo/sound/
+	// bullets) is gated on the live trigger (false here), so this is visual-only.
+	const bool fr = (e->gunfire & (1 << HAND_RIGHT)) != 0;
+	const bool fl = (e->gunfire & (1 << HAND_LEFT)) != 0;
+	g_Vars.currentplayer->hands[HAND_RIGHT].flashon = fr;
+	g_Vars.currentplayer->hands[HAND_LEFT].flashon = fl;
+	g_Vars.currentplayer->hands[HAND_RIGHT].firing = fr;
+	g_Vars.currentplayer->hands[HAND_LEFT].firing = fl;
 
 	setCurrentPlayerNum(saved);
 }
@@ -476,6 +525,12 @@ s32 netDemoRenderBegin(void)
 	if (g_DemoPlayState != DEMO_PLAY_PLAYING || !g_DemoPlayHasFrame) {
 		return 0;
 	}
+
+	// Force first-person render mode (skip the spawn intro): var80075d60 == 2 is the
+	// normal HUD/first-person path; the intro drops it to 0/1 (third-person body, no
+	// HUD). Set it before lvRender so the followed view renders first-person + HUD
+	// from the start. Paired with cameramode = DEFAULT in netDemoTickFollowedGun.
+	var80075d60 = 2;
 
 	// Override the camera FIRST: the positional-audio listener is players[0]->cam_pos
 	// (propsnd.c psCalculatePan2), and the followed player's live playerTick reset it

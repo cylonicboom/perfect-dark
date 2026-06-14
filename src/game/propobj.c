@@ -11255,15 +11255,21 @@ s32 objTickPlayer(struct prop *prop)
 	}
 
 #ifndef PLATFORM_N64
-	// BACKSTOP: never DELETING-reap a WIRE-OWNED CTC/HTM token (briefcase / data
-	// uplink with a syncid) on a client. The server owns its lifetime via
-	// SVC_PROP_FREE; a stray LOCAL OBJHFLAG_DELETING (the bot child-chain reap on
-	// a sim respawn, a mispredicted pickup, etc.) would otherwise destroy the
-	// enemy / returned case so it never renders (observed: returned CTC cases
-	// vanish client-side with no choke-point free). Clear the flag and keep the
-	// prop; an authoritative free still arrives over the wire.
+	// BACKSTOP: never DELETING-reap a CTC/HTM token (briefcase / data uplink) on
+	// a client. The server owns its lifetime via SVC_PROP_FREE; a stray LOCAL
+	// OBJHFLAG_DELETING (the bot child-chain reap on a sim respawn, a mispredicted
+	// pickup, etc.) would otherwise destroy the enemy / returned case so it never
+	// renders (observed: returned CTC cases vanish client-side with no choke-point
+	// free). This is NOT gated on prop->syncid: a token created by the client's
+	// deterministic ctcInitProps has no syncid until propActivate assigns one, and
+	// if a local reap flags it DELETING in that window the syncid-gated form let it
+	// through — the case was then freed before its first move, so it was missing at
+	// stage start on SOME loads (timing-dependent on when the reap raced the
+	// activate). Keyed on weaponnum alone, the token is protected the instant it
+	// exists. Clear the flag and keep the prop; an authoritative free (which frees
+	// by syncid via netPropFreeSynced, not through this DELETING path) still works.
 	if (g_NetMode == NETMODE_CLIENT && (obj->hidden & OBJHFLAG_DELETING)
-			&& prop->syncid && obj->type == OBJTYPE_WEAPON) {
+			&& obj->type == OBJTYPE_WEAPON) {
 		const s32 wn = ((struct weaponobj *)obj)->weaponnum;
 		if (wn == WEAPON_BRIEFCASE2 || wn == WEAPON_DATAUPLINK) {
 			obj->hidden &= ~OBJHFLAG_DELETING;

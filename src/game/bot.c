@@ -250,17 +250,26 @@ void botSpawn(struct chrdata *chr, u8 respawning)
 
 			if (obj) {
 #ifndef PLATFORM_N64
-				// CLIENT: never DELETING-reap a WIRE-OWNED prop (syncid != 0) found
-				// in the bot's child chain. botSpawn is only meant to clear the
-				// bot's own LOCAL held weapons (syncid 0). A synced CTC case that
-				// ends up linked into this chain on a client (the dual-use
-				// prop->next / child-chain class) would otherwise be reaped at the
-				// sim's first spawn — that's why an enemy case a sim stands on never
-				// rendered client-side. The server owns its lifetime via
-				// SVC_PROP_FREE.
-				if (g_NetMode == NETMODE_CLIENT && prop->syncid) {
-					prop = prop->next;
-					continue;
+				// CLIENT: never DELETING-reap a wire-owned prop found in the bot's
+				// child chain. botSpawn is only meant to clear the bot's own LOCAL
+				// held weapons. A synced CTC/HTM token that ends up linked into this
+				// chain on a client (the dual-use prop->next / child-chain class)
+				// would otherwise be reaped at the sim's first spawn — that's why an
+				// enemy case a sim stands on never rendered client-side. The server
+				// owns its lifetime via SVC_PROP_FREE. Skip a prop that EITHER has a
+				// syncid OR is a CTC/HTM token by weaponnum — a token from the
+				// client's deterministic ctcInitProps has no syncid until propActivate
+				// runs, so a syncid-only skip raced the case away on some loads.
+				if (g_NetMode == NETMODE_CLIENT) {
+					bool istoken = false;
+					if (obj->type == OBJTYPE_WEAPON) {
+						const s32 wn = ((struct weaponobj *)obj)->weaponnum;
+						istoken = (wn == WEAPON_BRIEFCASE2 || wn == WEAPON_DATAUPLINK);
+					}
+					if (prop->syncid || istoken) {
+						prop = prop->next;
+						continue;
+					}
 				}
 #endif
 				obj->hidden |= OBJHFLAG_DELETING;

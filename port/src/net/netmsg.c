@@ -3697,6 +3697,18 @@ u32 netmsgSvcPropPickupRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	// A pickup legitimately targets only WEAPON/OBJ props; every branch below
+	// ends in propExecuteTickOperation(prop, tickop). If a syncid aliases a
+	// PLAYER/CHR/DOOR prop (cross-build sim-count divergence, a recycled syncid,
+	// or a forged packet) a TICKOP_FREE would tear down the local pawn -> NULL-chr
+	// crash in lvRender/bmoveTick (crash ledger #24). Drop it; all bytes are
+	// already consumed so the packet stream stays aligned.
+	if (prop->type != PROPTYPE_WEAPON && prop->type != PROPTYPE_OBJ) {
+		sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_PICKUP for non-weapon/obj prop syncid %u type %d - dropped",
+				prop->syncid, prop->type);
+		return src->error;
+	}
+
 	if (clid == 0xff) {
 		// Sim pickup: no human player to attribute. Just execute the tickop
 		// (typically TICKOP_FREE) so the weapon / ammo crate disappears from

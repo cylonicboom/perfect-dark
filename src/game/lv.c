@@ -1381,6 +1381,20 @@ Gfx *lvRender(Gfx *gdl)
 					&& g_StageNum != STAGE_CITRAINING) {
 				continue;
 			}
+
+			// Pawn-less net combatant slot (crash ledger #24): a client's pawn
+			// can be torn down between tick and render - a round-transition race
+			// (#20/#21) or a wire message that freed the local pawn. The rest of
+			// this loop body dereferences currentplayer->prop->chr unconditionally;
+			// skip this slot's view for the frame rather than NULL-deref it. The
+			// client-spectator redirect above already swapped a LIVE target into
+			// currentplayer, so this only trips on a genuinely pawn-less slot,
+			// never while spectating.
+			if (g_NetMode != NETMODE_NONE
+					&& (!g_Vars.currentplayer || !g_Vars.currentplayer->prop
+						|| !g_Vars.currentplayer->prop->chr)) {
+				continue;
+			}
 #endif
 
 			// Calculate bluramount - this will be used later

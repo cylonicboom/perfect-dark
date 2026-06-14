@@ -499,7 +499,18 @@ bool ctcRadarChr(Gfx **gdl, struct prop *prop)
 {
 	s32 i;
 
-	if (g_MpSetup.options & MPOPTION_CTC_SHOWONRADAR) {
+	if (g_MpSetup.options & MPOPTION_CTC_SHOWONRADAR
+#ifndef PLATFORM_N64
+			// Port: always border the LOCAL carrier's own radar dot in the colour of
+			// the case it is holding (a personal "you have team i's case" indicator),
+			// even when Show-on-Radar is off. The loop below only matches when this
+			// player's prop IS one of the case tokens, so a non-carrying player still
+			// falls through to the default dot. Works in netplay too: ctc.tokens[] is
+			// wire-synced (carryApplyWireState points the carried team's token at the
+			// holder's chr prop), so the local pawn that holds a case is tokens[i].
+			|| prop == g_Vars.currentplayer->prop
+#endif
+			) {
 		for (i = 0; i < scenarioGetMaxTeams(); i++) {
 			if (prop == g_ScenarioData.ctc.tokens[i] &&
 					(g_ScenarioData.ctc.tokens[i]->type == PROPTYPE_CHR || g_ScenarioData.ctc.tokens[i]->type == PROPTYPE_PLAYER)) {

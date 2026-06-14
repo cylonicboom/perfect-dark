@@ -53,6 +53,7 @@
 #define SVC_CARRY_STATE  0x59 // Hold-the-Briefcase + Capture-the-Case: per-token holder (wire-keyed) + CTC home team (on-change + 1s heartbeat)
 #define SVC_HTM_STATE    0x5a // Hack-that-Mac: uplink holder + active downloader + terminal team + download progress (on-change + 1s heartbeat)
 #define SVC_PAC_STATE    0x5b // Pop-a-Cap: current victim (wire-keyed) + age (on-change + 1s heartbeat)
+#define SVC_CTC_CAPTURE  0x5c // Capture-the-Case: one-shot "case captured/scored" event (capturer wire-key + captured team) — drives the SFX_MP_SCOREPOINT + 3-way HUD on clients, since the scoring branch returns TICKOP_NONE so no SVC_PROP_PICKUP fires
 
 #define CLC_BAD      0x00 // trash
 #define CLC_NOP      0x01 // does nothing
@@ -234,6 +235,8 @@ u32 netmsgSvcHtmStateWrite(struct netbuf *dst);
 u32 netmsgSvcHtmStateRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcPacStateWrite(struct netbuf *dst);
 u32 netmsgSvcPacStateRead(struct netbuf *src, struct netclient *srccl);
+u32 netmsgSvcCtcCaptureWrite(struct netbuf *dst, s32 capturermpchr, s32 capturedteam);
+u32 netmsgSvcCtcCaptureRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcExplosionWrite(struct netbuf *dst, s32 exptype, const struct coord *pos, const RoomNum *rooms);
 u32 netmsgSvcExplosionRead(struct netbuf *src, struct netclient *srccl);
 u32 netmsgSvcLobbyStateWrite(struct netbuf *dst);

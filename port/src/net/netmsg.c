@@ -4625,14 +4625,22 @@ u32 netmsgSvcScoreWrite(struct netbuf *dst, const s32 *mpchrindexes, s32 count)
 		// Killcounts, one slot per combatant keyed the same wire-stable way:
 		// wire_kc[netMpchrToWireKey(victim)] = kills against that victim. Both
 		// sides recompute the key from their own local index, so it round-trips.
+		// NOTE: netMpchrToWireKey takes a PACKED g_MpAllChrConfigPtrs index, but
+		// mpchr->killcounts[] is indexed by SLOT (players 0..MAX_PLAYERS-1, bots
+		// MAX_PLAYERS+; the index func0f18d074 returns and MPCHR/
+		// scenarioCalculatePlayerScore consume). For humans packed==slot, but a
+		// bot's packed index != its slot, so the killcounts column must be read
+		// via func0f18d074(v), not killcounts[v] (the latter dropped every
+		// human-vs-bot kill from the wire — team scores then read 0).
 		s16 wire_kc[MAX_MPCHRS];
 		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
 			wire_kc[k] = 0;
 		}
 		for (s32 v = 0; v < MAX_MPCHRS; ++v) {
 			const u8 key = netMpchrToWireKey(v);
-			if (key != 0xff) {
-				wire_kc[key] = mpchr->killcounts[v];
+			const s32 slot = func0f18d074(v);
+			if (key != 0xff && slot >= 0 && slot < MAX_MPCHRS) {
+				wire_kc[key] = mpchr->killcounts[slot];
 			}
 		}
 		for (s32 k = 0; k < MAX_MPCHRS; ++k) {
@@ -4684,13 +4692,17 @@ u32 netmsgSvcScoreRead(struct netbuf *src, struct netclient *srccl)
 		mpchr->numpoints = numpoints;
 		mpchr->placement = placement;
 		mpchr->rankablescore = rankablescore;
-		// Map wire killcounts back to local mpchr index: for each local victim v,
-		// its value lives at wire position netMpchrToWireKey(v) (same wire-stable
-		// key the writer used).
+		// Map wire killcounts back to local mpchr index: for each local victim v
+		// (PACKED), its value lives at wire position netMpchrToWireKey(v) and must
+		// be stored at the SLOT column func0f18d074(v) — killcounts[] is
+		// slot-indexed, not packed (see SvcScoreWrite). Using killcounts[v]
+		// scattered every bot's column to the wrong slot, so team scores summed
+		// to 0 even though the entries themselves arrived.
 		for (s32 v = 0; v < MAX_MPCHRS; ++v) {
 			const u8 key = netMpchrToWireKey(v);
-			if (key != 0xff) {
-				mpchr->killcounts[v] = wire_killcounts[key];
+			const s32 slot = func0f18d074(v);
+			if (key != 0xff && slot >= 0 && slot < MAX_MPCHRS) {
+				mpchr->killcounts[slot] = wire_killcounts[key];
 			}
 		}
 	}
@@ -5294,6 +5306,37 @@ u32 netmsgSvcPacStateRead(struct netbuf *src, struct netclient *srccl)
 		netChrArrayFromWire(localkills, wirekills);
 		netChrArrayFromWire(localsurv, wiresurv);
 		pacApplyWireState(victimmpchr, age240, localkills, localsurv);
+	}
+	return src->error;
+}
+
+// SVC_CTC_CAPTURE: one-shot "case captured/scored" event. The CTC scoring branch
+// in scenarioPickUpBriefcase returns TICKOP_NONE, so propPickupByPlayer's
+// SVC_PROP_PICKUP broadcast (gated on a non-zero result) never fires — the score
+// itself rides SVC_SCORE, but the SFX_MP_SCOREPOINT + the 3-way "captured" HUD
+// would never reach clients. This carries the capturer (wire-keyed, so it survives
+// the local slot-0 swap and packs bots) + the captured team so each client can
+// replay the sound + HUD locally (ctcApplyCaptureEvent).
+u32 netmsgSvcCtcCaptureWrite(struct netbuf *dst, s32 capturermpchr, s32 capturedteam)
+{
+	netbufWriteU8(dst, SVC_CTC_CAPTURE);
+	netbufWriteU8(dst, netMpchrToWireKey(capturermpchr));
+	netbufWriteU8(dst, (u8)capturedteam);
+	return dst->error;
+}
+
+u32 netmsgSvcCtcCaptureRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 wirekey = netbufReadU8(src);
+	const u8 team = netbufReadU8(src);
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+	if (g_MpSetup.scenario == MPSCENARIO_CAPTURETHECASE) {
+		const s32 capturermpchr = netMpchrFromWireKey(wirekey);
+		if (capturermpchr >= 0) {
+			ctcApplyCaptureEvent(capturermpchr, (s32)team);
+		}
 	}
 	return src->error;
 }

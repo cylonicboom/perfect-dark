@@ -2260,6 +2260,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CARRY_STATE: rc = netmsgSvcCarryStateRead(&cl->in, cl); break;
 			case SVC_HTM_STATE: rc = netmsgSvcHtmStateRead(&cl->in, cl); break;
 			case SVC_PAC_STATE: rc = netmsgSvcPacStateRead(&cl->in, cl); break;
+			case SVC_CTC_CAPTURE: rc = netmsgSvcCtcCaptureRead(&cl->in, cl); break;
 			default:
 				rc = 1;
 				break;

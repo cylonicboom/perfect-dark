@@ -303,6 +303,17 @@ void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8
 				g_ScenarioData.ctc.tokens[team] = g_MpAllChrPtrs[holdermpchr[i]]->prop;
 			} else {
 				g_ScenarioData.ctc.tokens[team] = groundprops[i];
+				// SVC_PROP_SPAWN omits weapon->team, so a re-spawned (dropped /
+				// returned-to-base) case arrives team 0 on the client. Restore it from
+				// the wire-keyed team so (a) the SVC_PROP_PICKUP replay of
+				// scenarioPickUpBriefcase routes to the right own-vs-enemy branch
+				// (a team-0 picker would otherwise mis-route to the own-case path and
+				// skip the collection SFX/HUD), and (b) ctcHighlightProp tints the case
+				// in its real team colour.
+				if (groundprops[i] && groundprops[i]->type == PROPTYPE_WEAPON
+						&& groundprops[i]->weapon) {
+					groundprops[i]->weapon->team = (u8)team;
+				}
 			}
 		}
 	} else if (count >= 1) {
@@ -342,6 +353,84 @@ void carryApplyWireState(const u8 *holderkinds, const s32 *holdermpchr, const u8
 			}
 		}
 	}
+}
+
+// Client apply for SVC_CTC_CAPTURE: a combatant captured (scored) the briefcase.
+// The server's scoring branch in scenarioPickUpBriefcase returns TICKOP_NONE, so
+// no SVC_PROP_PICKUP echo fires; this replays the SFX_MP_SCOREPOINT + the same
+// 3-way "captured" HUD that scenarioPickUpBriefcase shows the host's local
+// players, and clears the local capturer's briefcase. Clearing it matters for the
+// RE-collection: the pickup branch (and its sound/HUD) only runs while
+// !invHasBriefcase(), but the case the client received on the first pickup is
+// never removed locally on a capture without this. capturermpchr/capturedteam are
+// already de-keyed to LOCAL packed-mpchr index space by netmsg.
+void ctcApplyCaptureEvent(s32 capturermpchr, s32 capturedteam)
+{
+	struct mpchrconfig *capturer;
+	struct mpchrconfig *localcfg;
+	s32 prevplayernum;
+	s32 i;
+	char text1[64];
+	char text2[64];
+	char text3[64];
+
+	if (g_MpSetup.scenario != MPSCENARIO_CAPTURETHECASE) {
+		return;
+	}
+	if (capturermpchr < 0 || capturermpchr >= MAX_MPCHRS || !g_MpAllChrConfigPtrs[capturermpchr]) {
+		return;
+	}
+	if (capturedteam < 0 || capturedteam >= MAX_TEAMS) {
+		return;
+	}
+	capturer = g_MpAllChrConfigPtrs[capturermpchr];
+
+	sndStart(var80095200, SFX_MP_SCOREPOINT, NULL, -1, -1, -1, -1, -1);
+
+#if VERSION >= VERSION_JPN_FINAL
+	sprintf(text1, langGet(L_MPWEAPONS_004), scenarioRemoveLineBreaks(g_BossFile.teamnames[capturedteam], 0));
+	sprintf(text2, langGet(L_MPWEAPONS_005), scenarioRemoveLineBreaks(capturer->name, 0));
+	sprintf(text3, langGet(L_MPWEAPONS_006), scenarioRemoveLineBreaks(capturer->name, 0), scenarioRemoveLineBreaks(g_BossFile.teamnames[capturedteam], 1));
+#elif VERSION >= VERSION_PAL_BETA
+	sprintf(text1, langGet(L_MPWEAPONS_004), g_BossFile.teamnames[capturedteam]);
+	sprintf(text2, langGet(L_MPWEAPONS_005), capturer->name);
+	sprintf(text3, langGet(L_MPWEAPONS_006), capturer->name, g_BossFile.teamnames[capturedteam]);
+#else
+	sprintf(text1, langGet(L_MPWEAPONS_004), g_BossFile.teamnames[capturedteam], bgunGetShortName(WEAPON_BRIEFCASE2));
+	sprintf(text2, langGet(L_MPWEAPONS_005), capturer->name, bgunGetShortName(WEAPON_BRIEFCASE2));
+	sprintf(text3, langGet(L_MPWEAPONS_006), capturer->name, g_BossFile.teamnames[capturedteam], bgunGetShortName(WEAPON_BRIEFCASE2));
+#endif
+
+	prevplayernum = g_Vars.currentplayernum;
+
+	for (i = 0; i < PLAYERCOUNT(); i++) {
+		setCurrentPlayerNum(i);
+		localcfg = MPCHR(g_Vars.playerstats[i].mpindex);
+
+		if (localcfg == capturer) {
+			// This local player is the capturer.
+#if VERSION >= VERSION_JPN_FINAL
+			hudmsgCreateWithFlags(text1, HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_NOWRAP);
+#else
+			hudmsgCreateWithFlags(text1, HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE);
+#endif
+			invRemoveItemByNum(WEAPON_BRIEFCASE2);
+		} else if (capturedteam == localcfg->team) {
+#if VERSION >= VERSION_JPN_FINAL
+			hudmsgCreateWithFlags(text2, HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_NOWRAP);
+#else
+			hudmsgCreateWithFlags(text2, HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE);
+#endif
+		} else {
+#if VERSION >= VERSION_JPN_FINAL
+			hudmsgCreateWithFlags(text3, HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_NOWRAP);
+#else
+			hudmsgCreateWithFlags(text3, HUDMSGTYPE_MPSCENARIO, HUDMSGFLAG_ONLYIFALIVE);
+#endif
+		}
+	}
+
+	setCurrentPlayerNum(prevplayernum);
 }
 
 // --- Hack-that-Mac sync -----------------------------------------------------------
@@ -1731,6 +1820,26 @@ s32 scenarioPickUpBriefcase(struct chrdata *chr, struct prop *prop)
 				}
 
 				setCurrentPlayerNum(prevplayernum);
+
+#ifndef PLATFORM_N64
+				// The scoring branch returns TICKOP_NONE, so propPickupByPlayer's
+				// SVC_PROP_PICKUP broadcast (gated on a non-zero result) never fires
+				// and clients see no capture SFX/HUD (only the score, via SVC_SCORE).
+				// Broadcast a one-shot capture event so every client replays the
+				// SFX_MP_SCOREPOINT + 3-way HUD (and clears the local capturer's
+				// briefcase). The HUD above already ran for the host's local players.
+				if (g_NetMode == NETMODE_SERVER) {
+					// APPEND to the accumulating reliable buffer (flushed in
+					// netEndFrame via netFlushSendBuffers) — do NOT
+					// netbufStartWrite/netSend here. That resets g_NetMsgRel and
+					// THROWS AWAY the returned case's SVC_PROP_SPAWN that
+					// weaponCreateForPlayerDrop just appended a few lines above (its
+					// objDrop -> netSyncPropSpawn uses this same append-and-defer
+					// pattern). Resetting here was why the capture SFX/HUD arrived
+					// but the returned case itself never reached the client.
+					netmsgSvcCtcCaptureWrite(&g_NetMsgRel, mpPlayerGetIndex(chr), caseteam);
+				}
+#endif
 			}
 
 			if (chr->aibot) {
@@ -1878,6 +1987,19 @@ void scenarioHandleDroppedToken(struct chrdata *chr, struct prop *prop)
 				rooms[1] = -1;
 
 				func0f06a730(obj, &pad.pos, &mtx, rooms, &pad.pos);
+
+#ifndef PLATFORM_N64
+				// objDrop already broadcast the case's spawn at the drop spot; it was
+				// just warped back to its home base. Append an explicit move (pos +
+				// rooms) so the client's existing case prop follows to base — no
+				// free/realloc (a re-spawn would hit "latest spawn wins" and risk
+				// dropping the rebuild under weapon-slot pressure). Server-only;
+				// syncid is valid by now (objDrop's propActivate assigned it).
+				if (g_NetMode == NETMODE_SERVER && prop->syncid
+						&& g_NetLocalClient && g_NetLocalClient->state == CLSTATE_GAME) {
+					netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);
+				}
+#endif
 			}
 		}
 	}

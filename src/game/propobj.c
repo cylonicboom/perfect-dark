@@ -11254,6 +11254,23 @@ s32 objTickPlayer(struct prop *prop)
 		return TICKOP_RETICK;
 	}
 
+#ifndef PLATFORM_N64
+	// BACKSTOP: never DELETING-reap a WIRE-OWNED CTC/HTM token (briefcase / data
+	// uplink with a syncid) on a client. The server owns its lifetime via
+	// SVC_PROP_FREE; a stray LOCAL OBJHFLAG_DELETING (the bot child-chain reap on
+	// a sim respawn, a mispredicted pickup, etc.) would otherwise destroy the
+	// enemy / returned case so it never renders (observed: returned CTC cases
+	// vanish client-side with no choke-point free). Clear the flag and keep the
+	// prop; an authoritative free still arrives over the wire.
+	if (g_NetMode == NETMODE_CLIENT && (obj->hidden & OBJHFLAG_DELETING)
+			&& prop->syncid && obj->type == OBJTYPE_WEAPON) {
+		const s32 wn = ((struct weaponobj *)obj)->weaponnum;
+		if (wn == WEAPON_BRIEFCASE2 || wn == WEAPON_DATAUPLINK) {
+			obj->hidden &= ~OBJHFLAG_DELETING;
+		}
+	}
+#endif
+
 	if (obj->hidden & OBJHFLAG_DELETING) {
 		pass = false;
 

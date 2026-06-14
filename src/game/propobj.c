@@ -18562,15 +18562,43 @@ struct weaponobj *weaponCreate(bool musthaveprop, bool musthavemodel, struct mod
 	if (g_NetMode == NETMODE_CLIENT) {
 		s32 localoff = -1;
 		s32 localany = -1;
+		// LAST-RESORT projectile victims. A client renders remote/sim weapon fire
+		// as syncid-0 LOCAL projectiles; when the client falls behind the dedicated
+		// server these flood all 50 weapon slots and weaponCreate returns NULL —
+		// starving every AUTHORITATIVE spawn (dropped weapons, CTC cases, etc.), so
+		// the host's prop-reconcile keeps re-sending them and the client keeps
+		// dropping them (observed: 1400+ "prop with syncid N does not exist" on a
+		// returned CTC case). A gameplay prop must win over a transient visual
+		// rocket: allow reaping a FREE-FLYING local projectile, but only after the
+		// non-projectile victims above are exhausted (so a normal swap never evicts
+		// a live projectile), and prefer an off-screen one. This also self-caps the
+		// local projectile pool at the slot count instead of letting it grow
+		// unbounded. vanilla weaponCreate never recycles projectiles; this is the
+		// client-only escape valve.
+		s32 projoff = -1;
+		s32 projany = -1;
 		s32 j;
 		for (j = 0; j < g_MaxWeaponSlots; j++) {
 			struct weaponobj *w = &g_WeaponSlots[j];
 			if (w->base.prop == NULL || w->base.prop->syncid != 0) {
 				continue;
 			}
-			if ((w->base.hidden & OBJHFLAG_PROJECTILE)
-					|| (w->base.hidden2 & OBJH2FLAG_CANREGEN)
+			if ((w->base.hidden2 & OBJH2FLAG_CANREGEN)
 					|| (w->base.flags & OBJFLAG_HELDROCKET)) {
+				continue;
+			}
+			const bool offscreen = (w->base.prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ONANYSCREENTHISTICK | PROPFLAG_ONANYSCREENPREVTICK)) == 0;
+			if (w->base.hidden & OBJHFLAG_PROJECTILE) {
+				// Only a free-flying one (no parent — never a held or embedded
+				// mine/knife, which belong to a chr's state).
+				if (w->base.prop->parent == NULL) {
+					if (projany < 0) {
+						projany = j;
+					}
+					if (offscreen && projoff < 0) {
+						projoff = j;
+					}
+				}
 				continue;
 			}
 			if (w->base.prop->parent && (w->base.hidden & OBJHFLAG_EMBEDDED) == 0) {
@@ -18579,12 +18607,16 @@ struct weaponobj *weaponCreate(bool musthaveprop, bool musthavemodel, struct mod
 			if (localany < 0) {
 				localany = j;
 			}
-			if ((w->base.prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ONANYSCREENTHISTICK | PROPFLAG_ONANYSCREENPREVTICK)) == 0) {
+			if (offscreen) {
 				localoff = j;
 				break;
 			}
 		}
-		s32 pick = (localoff >= 0) ? localoff : localany;
+		// Priority: off-screen non-proj > any non-proj > off-screen proj > any proj.
+		s32 pick = (localoff >= 0) ? localoff
+				: (localany >= 0) ? localany
+				: (projoff >= 0) ? projoff
+				: projany;
 		if (pick >= 0) {
 			// Through the teardown choke point (same objFreePermanently
 			// underneath) so the eviction lands in the lifecycle ring.

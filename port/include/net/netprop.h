@@ -93,6 +93,15 @@ void netPropFreeSynced(struct prop *prop, u8 reason);
 // the old inline sites lacked. Safe to call from any server-side spawn site.
 void netSyncPropSpawn(struct prop *prop);
 
+// True once a syncid's SVC_PROP_SPAWN has been confirmed broadcast (set inside
+// netSyncPropSpawn on a successful reliable write; cleared per stage). The
+// dynamic-prop move loop (net.c netEndFrame) uses this to guarantee a client is
+// never streamed a MOVE for a synced weapon/obj prop it was never told to spawn
+// — re-spawning any prop whose bit is still clear, so a spawn lost to
+// reliable-buffer pressure self-heals. Returns true for syncid 0 / over-cap so
+// the loop doesn't spin. Server-side only in practice.
+bool netPropWasSpawnBroadcast(u32 syncid);
+
 // ---------------------------------------------------------------------------
 // Invariant auditor (Phase 2 soak harness)
 // ---------------------------------------------------------------------------

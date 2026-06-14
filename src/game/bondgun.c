@@ -6835,6 +6835,19 @@ void bgunDisarm(struct prop *attackerprop)
 		weaponDeleteFromChr(chr, HAND_RIGHT);
 		weaponDeleteFromChr(chr, HAND_LEFT);
 
+#ifndef PLATFORM_N64
+		// Client: the authoritative dropped weapon arrives over the wire via the
+		// server's netSyncPropSpawn (below, server-only). Creating + objDrop'ing a
+		// local copy here too left a duplicate syncid-0 world prop that no
+		// pickup/free ever referenced — the uncollectable "ghost" gun on the floor
+		// when a player is disarmed (two weapons: one collectable, one stuck). The
+		// weapon is still removed from the hand + inventory; only the WORLD drop is
+		// skipped, so the wire copy is the one and only gun.
+		if (g_NetMode == NETMODE_CLIENT) {
+			drop = false;
+		}
+#endif
+
 		// Actually drop the weapon
 		modelnum = playermgrGetModelOfWeapon(weaponnum);
 

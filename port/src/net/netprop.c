@@ -64,12 +64,25 @@ static const char *netPropEvName(u8 ev)
 static struct { u32 syncid; u32 frame; } g_NetSpawnRecent[8];
 static u32 g_NetSpawnRecentHead = 0;
 
+// Per-syncid "spawn-broadcast confirmed" bitmap. A bit is set only when
+// netSyncPropSpawn actually writes the spawn to the reliable buffer WITHOUT
+// error; the §5.2 dynamic-prop move loop (net.c netEndFrame) consults it via
+// netPropWasSpawnBroadcast and re-spawns any synced weapon/obj prop whose bit
+// is still clear before moving it. So a spawn lost to reliable-buffer pressure
+// (8-sim death/drop churn on a headless server) self-heals instead of leaving
+// the client streaming MOVEs for a prop it was never told to spawn (the
+// "prop with syncid N does not exist" flood). Cleared per stage in
+// netPropLogReset — syncids restart, so a stale bit would suppress a real spawn.
+#define NETSPAWN_MAXSYNCID 65536 // mirrors NET_RECONCILE_MAXSYNCID (netmsg.c)
+static u8 g_NetSpawnBroadcast[NETSPAWN_MAXSYNCID / 8];
+
 void netPropLogReset(void)
 {
 	g_NetPropLogHead = 0;
 	memset(g_NetPropLog, 0, sizeof(g_NetPropLog));
 	memset(g_NetSpawnRecent, 0, sizeof(g_NetSpawnRecent));
 	g_NetSpawnRecentHead = 0;
+	memset(g_NetSpawnBroadcast, 0, sizeof(g_NetSpawnBroadcast));
 }
 
 void netPropLogEvent(struct prop *prop, u8 ev, u16 extra)
@@ -279,6 +292,26 @@ void netSyncPropSpawn(struct prop *prop)
 	netmsgSvcPropSpawnWrite(&g_NetMsgRel, prop);
 	netmsgSvcPropMoveWrite(&g_NetMsgRel, prop, NULL);
 	netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_TX, 0);
+
+	// Confirm the spawn ONLY if the reliable write actually went out. If
+	// g_NetMsgRel overflowed this frame (high churn), leave the bit clear so the
+	// move loop re-attempts the spawn on a later tick once the buffer drains —
+	// the dedupe above paces those retries to one per syncid per ~4 frames.
+	if (!g_NetMsgRel.error && prop->syncid < NETSPAWN_MAXSYNCID) {
+		g_NetSpawnBroadcast[prop->syncid >> 3] |= (u8)(1 << (prop->syncid & 7));
+	}
+}
+
+// True once this syncid's SVC_PROP_SPAWN has been confirmed on the wire — or for
+// an invalid (0) / over-cap syncid, so the move loop never spins trying to spawn
+// one it can't cover. The §5.2 dynamic-prop move loop gates a spawn-before-move
+// re-attempt on this so a spawn lost to reliable-buffer pressure self-heals.
+bool netPropWasSpawnBroadcast(u32 syncid)
+{
+	if (syncid == 0 || syncid >= NETSPAWN_MAXSYNCID) {
+		return true;
+	}
+	return (g_NetSpawnBroadcast[syncid >> 3] & (1 << (syncid & 7))) != 0;
 }
 
 // ---------------------------------------------------------------------------

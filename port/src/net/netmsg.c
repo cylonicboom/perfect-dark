@@ -11,6 +11,7 @@
 #include "lib/model.h"
 #include "lib/anim.h"
 #include "game/mplayer/mplayer.h"
+#include "game/challenge.h"
 #include "game/chr.h"
 #include "game/lv.h"
 #include "game/chraction.h"
@@ -766,6 +767,16 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 		bot->base.name[sizeof(bot->base.name) - 1] = '\0';
 	}
 	g_BotCount = botcount;
+
+	// Mirror the local apply paths (mpApplyConfig / the wad-load tail at
+	// mplayer.c) which all end with this. It force-unlocks the features implied
+	// by the committed setup (one-hit kills, slow motion, 8 bots, sim/body/head
+	// requirements...) into g_MpFeaturesForceUnlocked + reruns
+	// challengeDetermineUnlockedFeatures. Without it mpStartMatch's unlock-gate
+	// strips those options on a headless/dedicated server, which has no
+	// save-based unlocks of its own (e.g. a one-hit-kills challenge pushed by an
+	// admin would silently lose the option).
+	challengeForceUnlockBotFeatures();
 
 	netAdminReply(srccl, "setup: starting match (stage=0x%02x scenario=%d bots=%d)",
 			(u32)stagenum, (s32)scenario, (s32)botcount);

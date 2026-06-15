@@ -3450,9 +3450,20 @@ struct menuitem g_FilemgrFileSelectMenuItems[] = {
 
 struct menudialogdef g_FilemgrFileSelectMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
+#ifndef PLATFORM_N64
+	// Port: agent/file-select screen title. Edit this string to rename it.
+	// Using a literal (with MENUDIALOGFLAG_LITERAL_TEXT below) bypasses the
+	// mod lang override that otherwise forces "Perfect Dark: All In One".
+	(uintptr_t)"Perfect Dark Kai: All In One Netplay\n",
+#else
 	L_OPTIONS_095, // "Perfect Dark"
+#endif
 	g_FilemgrFileSelectMenuItems,
 	filemgrMainMenuDialog,
+#ifndef PLATFORM_N64
+	MENUDIALOGFLAG_IGNOREBACK | MENUDIALOGFLAG_LITERAL_TEXT,
+#else
 	MENUDIALOGFLAG_IGNOREBACK,
+#endif
 	&g_FilemgrOperationsMenuDialog,
 };

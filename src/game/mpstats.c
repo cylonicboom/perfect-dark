@@ -328,6 +328,25 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Diag: sim-victim kill attribution (the "wrong human credited for a sim
+	// kill" bug). Fires on the server for any aibot-victim kill with a resolved
+	// attacker. `cur` is the shooter playernum the damage path ran under (set by
+	// the CLC_HIT drain / shot sim); `a` is the attacker mpPlayerGetIndex resolved
+	// from aprop->chr. If a != cur, aprop->chr resolved to a DIFFERENT index than
+	// the actual shooter (g_MpAllChrPtrs aliasing). `aisbot` flags whether the
+	// resolved attacker chr is itself a bot. numchrs/pc expose the player/bot
+	// packing boundary.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.normmplayerisrunning
+			&& vplayernum >= PLAYERCOUNT() && aplayernum >= 0 && aplayernum < MAX_MPCHRS) {
+		struct chrdata *achr = g_MpAllChrPtrs[aplayernum];
+		netDiagLogf("simkill", "a=%d cur=%d v=%d aname=%s aisbot=%d numchrs=%d pc=%d",
+				aplayernum, (s32)g_Vars.currentplayernum, vplayernum,
+				g_MpAllChrConfigPtrs[aplayernum] ? g_MpAllChrConfigPtrs[aplayernum]->name : "?",
+				(achr && achr->aibot) ? 1 : 0, g_MpNumChrs, PLAYERCOUNT());
+	}
+#endif
+
 	if (vplayernum >= 0 && aplayernum == vplayernum) {
 		// Player suicide
 		if (vmpchr && vmpindex >= 0 && ownsStats) {

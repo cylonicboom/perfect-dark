@@ -562,6 +562,11 @@ extern f32 g_ViShakeIntensityMult;
 extern u32 g_TexFilter2D;
 extern s32 g_HudCenter;
 extern s32 g_MenuMouseControl;
+#ifndef PLATFORM_N64
+extern s32 g_MenuColourScheme;
+s32 menuApplyColourScheme(s32 type);
+u32 menuSchemeColour(u32 intensity);
+#endif
 extern u32 g_HudAlignModeL;
 extern u32 g_HudAlignModeR;
 extern s32 g_PrevFrameFb;

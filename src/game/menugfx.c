@@ -494,12 +494,20 @@ Gfx *menugfxDrawDropdownBackground(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2)
 	vertices[4].colour = 8;
 	vertices[5].colour = 8;
 
-	colour1 = text0f1543ac((x1 + x2) / 2, (y2 + y1) / 2, 0xffffffff) & 0xff;
-	colour2 = (text0f1543ac((x1 + x2) / 2, (y2 + y1) / 2, 0xffffff7f) & 0xff) | 0x00006f00;
+#ifndef PLATFORM_N64
+	u32 tint1 = menuSchemeColour(0x6f);
+	u32 tint2 = menuSchemeColour(0x3f);
+#else
+	u32 tint1 = 0x00006f00;
+	u32 tint2 = 0x00003f00;
+#endif
 
-	colours[0].word = PD_BE32(colour1 | 0x00006f00);
+	colour1 = text0f1543ac((x1 + x2) / 2, (y2 + y1) / 2, 0xffffffff) & 0xff;
+	colour2 = (text0f1543ac((x1 + x2) / 2, (y2 + y1) / 2, 0xffffff7f) & 0xff) | tint1;
+
+	colours[0].word = PD_BE32(colour1 | tint1);
 	colours[1].word = PD_BE32(colour2);
-	colours[2].word = PD_BE32(colour1 | 0x00003f00);
+	colours[2].word = PD_BE32(colour1 | tint2);
 
 	gSPColor(gdl++, osVirtualToPhysical(colours), 3);
 	gSPVertex(gdl++, osVirtualToPhysical(vertices), 6, 0);
@@ -577,16 +585,24 @@ Gfx *menugfxDrawListGroupHeader(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, s32 x3
 	alpha2 = text0f1543ac((x1 + x2) / 2, (y1 + y2) / 2, 0xffffff7f) & 0xff;
 #endif
 
-	colours[0].word = PD_BE32(0x00006f00 | alpha1);
-	colours[1].word = PD_BE32(0x00006f00 | alpha2);
-#if VERSION >= VERSION_NTSC_1_0
-	colours[2].word = PD_BE32(0x00003f00 | alpha2);
+#ifndef PLATFORM_N64
+	u32 tint1 = menuSchemeColour(0x6f);
+	u32 tint2 = menuSchemeColour(0x3f);
 #else
-	colours[2].word = PD_BE32(0x00003f00 | alpha1);
+	u32 tint1 = 0x00006f00;
+	u32 tint2 = 0x00003f00;
+#endif
+
+	colours[0].word = PD_BE32(tint1 | alpha1);
+	colours[1].word = PD_BE32(tint1 | alpha2);
+#if VERSION >= VERSION_NTSC_1_0
+	colours[2].word = PD_BE32(tint2 | alpha2);
+#else
+	colours[2].word = PD_BE32(tint2 | alpha1);
 #endif
 	colours[3].word = PD_BE32(0xffffff00);
-	colours[4].word = PD_BE32((0x00006f00 | alpha2) & 0xffffff00);
-	colours[5].word = PD_BE32((0x00003f00 | alpha1) & 0xffffff00);
+	colours[4].word = PD_BE32((tint1 | alpha2) & 0xffffff00);
+	colours[5].word = PD_BE32((tint2 | alpha1) & 0xffffff00);
 	colours[6].word = PD_BE32(0x6f6f6f00 | alpha1);
 
 	gSPColor(gdl++, osVirtualToPhysical(colours), 7);
@@ -906,9 +922,15 @@ Gfx *menugfxRenderSlider(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, s32 markerx, 
 	vertices[4].colour = 8;
 	vertices[5].colour = 8;
 
+#ifndef PLATFORM_N64
+	u32 accent = menuSchemeColour(0xff);
+#else
+	u32 accent = 0x0000ff00;
+#endif
+
 	colours[0].word = PD_BE32((colour & 0xffffff00) | 0x4f);
 	colours[1].word = PD_BE32(0xffffffff);
-	colours[2].word = PD_BE32(0x0000ff4f);
+	colours[2].word = PD_BE32(accent | 0x4f);
 
 	gSPColor(gdl++, osVirtualToPhysical(colours), 3);
 	gSPVertex(gdl++, osVirtualToPhysical(vertices), 6, 0);
@@ -923,11 +945,11 @@ Gfx *menugfxRenderSlider(Gfx *gdl, s32 x1, s32 y1, s32 x2, s32 y2, s32 markerx, 
 	gDPPipeSync(gdl++);
 	gDPSetRenderMode(gdl++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
 
-	// Line to the left of the marker: blue -> white gradient
-	gdl = menugfxDrawLine(gdl, x1, y2, markerx, y2 + 1, 0x0000ffff, 0xffffffff);
+	// Line to the left of the marker: accent -> white gradient
+	gdl = menugfxDrawLine(gdl, x1, y2, markerx, y2 + 1, accent | 0xff, 0xffffffff);
 
-	// Line to the right of the marker: solid blue
-	gdl = menugfxDrawLine(gdl, markerx, y2, x2, y2 + 1, 0x0000ffff, 0x0000ffff);
+	// Line to the right of the marker: solid accent
+	gdl = menugfxDrawLine(gdl, markerx, y2, x2, y2 + 1, accent | 0xff, accent | 0xff);
 
 	return gdl;
 }

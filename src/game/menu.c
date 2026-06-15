@@ -132,6 +132,54 @@ const struct menucolourpalette g_MenuWave2Colours[] = {
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 };
 
+#ifndef PLATFORM_N64
+// Port: user-selectable menu colour scheme (Extended Options > Video).
+// Recolours the standard (blue) menu dialogs by remapping their palette row.
+// 0 = Perfect (blue), 1 = Shinku (red), 2 = Complete (green), 3 = Missing (white).
+// Persisted as "Game.MenuColourScheme" in pd.ini.
+s32 g_MenuColourScheme = 0;
+
+s32 menuApplyColourScheme(s32 type)
+{
+	static const u8 schemerows[] = {
+		MENUDIALOGTYPE_DEFAULT, // Perfect (blue)
+		MENUDIALOGTYPE_DANGER,  // Shinku (red)
+		MENUDIALOGTYPE_SUCCESS, // Complete (green)
+		MENUDIALOGTYPE_4,       // Missing (white)
+	};
+
+	// Only the default (blue) dialogs follow the scheme; danger/success dialogs
+	// keep their semantic colours.
+	if (type == MENUDIALOGTYPE_DEFAULT
+			&& g_MenuColourScheme > 0
+			&& g_MenuColourScheme < (s32)ARRAYCOUNT(schemerows)) {
+		return schemerows[g_MenuColourScheme];
+	}
+
+	return type;
+}
+
+// Recolours the hardcoded-blue menu accents (slider marker/line, dropdown
+// background) to match the active scheme. `intensity` is the blue-channel value
+// the original code used; it is re-mapped onto the scheme's hue. Returns RGB in
+// the top 3 bytes (0xRRGGBBAA) with the alpha byte left 0 for the caller to OR.
+u32 menuSchemeColour(u32 intensity)
+{
+	intensity &= 0xff;
+
+	switch (g_MenuColourScheme) {
+	case 1: // Shinku (red)
+		return intensity << 24;
+	case 2: // Complete (green)
+		return intensity << 16;
+	case 3: // Missing (white)
+		return (intensity << 24) | (intensity << 16) | (intensity << 8);
+	default: // Perfect (blue)
+		return intensity << 8;
+	}
+}
+#endif
+
 #if VERSION >= VERSION_NTSC_1_0
 char *g_StringPointer = g_CheatMarqueeString;
 char *g_StringPointer2 = &g_CheatMarqueeString[VERSION >= VERSION_PAL_FINAL ? 150 : 125];
@@ -1495,6 +1543,9 @@ void menuOpenDialog(struct menudialogdef *dialogdef, struct menudialog *dialog, 
 	dialogInitItems(dialog);
 
 	dialog->type = dialogdef->type;
+#ifndef PLATFORM_N64
+	dialog->type = menuApplyColourScheme(dialog->type);
+#endif
 	dialog->transitionfrac = -1;
 	dialog->redrawtimer = 0;
 	dialog->unk4c = RANDOMFRAC() * M_TAU;
@@ -4184,6 +4235,9 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 		// Transition not yet started
 		if (dialog == g_Menus[g_MpPlayerNum].curdialog) {
 			transitiontotype = definition->type;
+#ifndef PLATFORM_N64
+			transitiontotype = menuApplyColourScheme(transitiontotype);
+#endif
 
 			if (mpIsPlayerLockedOut(g_MpPlayerNum) && (dialog->definition->flags & MENUDIALOGFLAG_MPLOCKABLE)) {
 				transitiontotype = MENUDIALOGTYPE_DANGER;

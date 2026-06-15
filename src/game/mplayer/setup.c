@@ -6,6 +6,7 @@
 #include "game/menu.h"
 #include "game/mainmenu.h"
 #include "game/filemgr.h"
+#include "game/bossfile.h"
 #include "game/game_1531a0.h"
 #include "game/music.h"
 #include "game/mplayer/ingame.h"
@@ -5320,6 +5321,23 @@ MenuDialogHandlerResult menudialogMpSelectTune(s32 operation, struct menudialogd
 	return false;
 }
 
+#ifndef PLATFORM_N64
+// Port: the soundtrack selection (track list + "Multiple Tunes") lives in
+// g_BossFile and is flagged MODFILE_MPSETUP. Stock PD only flushes that flag
+// when a match begins (menutick.c), so editing the soundtrack and backing out
+// without starting a match never wrote it to disk. Persist it when the
+// Soundtrack menu closes.
+MenuDialogHandlerResult menudialogMpSoundtrack(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_CLOSE && (g_Vars.modifiedfiles & MODFILE_MPSETUP)) {
+		bossfileSave();
+		g_Vars.modifiedfiles &= ~MODFILE_MPSETUP;
+	}
+
+	return false;
+}
+#endif
+
 char *mpMenuTextCurrentTrack(struct menuitem *item)
 {
 	s32 slotnum;
@@ -5548,7 +5566,11 @@ struct menudialogdef g_MpSoundtrackMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	L_MPMENU_062, // "Soundtrack"
 	g_MpSoundtrackMenuItems,
+#ifndef PLATFORM_N64
+	menudialogMpSoundtrack,
+#else
 	NULL,
+#endif
 	MENUDIALOGFLAG_MPLOCKABLE,
 	NULL,
 };

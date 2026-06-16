@@ -179,9 +179,14 @@ Every entry is one of two families, and both trace to **one systemic condition**
   `g_Vars.activeprops` and chr child chains. A prop's `->next` is **dual-use** (active
   list vs. child sibling chain), so a stray re-link / re-activate / free-without-delist
   bridges or loops the chains. Surfaces at *every* walk site.
-- **Family B — force-recycle free crashes** (#7, #10): when the 50 weapon slots
+- **Family B — force-recycle free crashes** (#7, #10): when the weapon slots
   (`g_MaxWeaponSlots`) fill, `weaponCreate` force-frees the oldest *live* slot; if that
-  slot's obj union is stale/garbage, `objFree` AVs.
+  slot's obj union is stale/garbage, `objFree` AVs. **Mitigated 2026-06-16:** the pool
+  was a fixed N64-memory artifact at 50 slots; `g_WeaponSlots` is heap-allocated
+  (`mempAlloc`, MEMPOOL_STAGE), so the port now sizes it to **256** (setup.c, N64 stays
+  50). That keeps the pool from saturating in normal play, so the force-recycle path
+  rarely fires — but the guards stay: a larger pool reduces the *frequency*, it doesn't
+  make recycling a stale slot safe, so the family is **not** closed by capacity alone.
 
 **The single systemic condition feeding both:** the client cannot cleanly keep up with
 the dedicated server's high-churn prop/weapon stream. It runs **behind** (sustained

@@ -179,10 +179,25 @@ void propsReset(void)
 		g_Lifts[i] = NULL;
 	}
 
+#ifdef PLATFORM_N64
 	g_MaxWeaponSlots = 50;
 	g_MaxHatSlots = 10;
 	g_MaxAmmoCrates = 20;
 	g_MaxDebrisSlots = 15;
+#else
+	// Port: these object pools are fixed N64-memory artifacts, but g_WeaponSlots /
+	// g_HatSlots / g_AmmoCrates / g_DebrisSlots are all heap-allocated below
+	// (mempAlloc, MEMPOOL_STAGE), so the port can afford much larger pools. The
+	// weapon pool in particular saturates under netplay churn at 50 slots, which
+	// forces weaponCreate to recycle/evict live weapons (crash-ledger family B + the
+	// client force-recycle escape valve in propobj.c); a roomier pool keeps those
+	// paths from firing in normal play. The others are grown to match so dense
+	// custom (AIO) maps don't exhaust them.
+	g_MaxWeaponSlots = 256;
+	g_MaxHatSlots = 32;
+	g_MaxAmmoCrates = 48;
+	g_MaxDebrisSlots = 48;
+#endif
 	g_MaxProjectiles = IS4MB() ? 20 : 100;
 	g_MaxEmbedments = IS4MB() ? 40 : 80;
 

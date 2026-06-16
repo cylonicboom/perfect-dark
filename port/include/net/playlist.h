@@ -4,7 +4,9 @@
 #include <PR/ultratypes.h>
 
 // Maximum entries the playlist can hold. Keeps the menu / vote ballot bounded.
-#define PLAYLIST_MAX_ENTRIES 64
+// Port-only file (no N64 constraint); the array it sizes is heap/global, not a
+// wire format, so this is just generous headroom for long map rotations.
+#define PLAYLIST_MAX_ENTRIES 256
 #define PLAYLIST_NAME_MAXLEN 32
 #define PLAYLIST_PRESET_MAXLEN 18
 

@@ -3437,8 +3437,8 @@ void netEndFrame(void)
 					chr->actiontype, chr->maxdamage - chr->damage);
 			}
 		}
-		// Client weapon-slot census (Open #2 instrumentation). Is the 50-slot
-		// g_WeaponSlots pool riding near full? synced = host-tracked props (mirror
+		// Client weapon-slot census (Open #2 instrumentation). Is the
+		// g_WeaponSlots pool (g_MaxWeaponSlots) riding near full? synced = host-tracked props (mirror
 		// the server); local = syncid-0 client-side weapons (sim hand-weapons +
 		// client-physics drops). If occ approaches max here, the client is forcing
 		// weaponCreate's recycle path — the saturation precondition the crash family

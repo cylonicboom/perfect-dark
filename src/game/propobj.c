@@ -18570,7 +18570,8 @@ struct weaponobj *weaponCreate(bool musthaveprop, bool musthavemodel, struct mod
 		s32 localany = -1;
 		// LAST-RESORT projectile victims. A client renders remote/sim weapon fire
 		// as syncid-0 LOCAL projectiles; when the client falls behind the dedicated
-		// server these flood all 50 weapon slots and weaponCreate returns NULL —
+		// server these flood every weapon slot (g_MaxWeaponSlots) and weaponCreate
+		// returns NULL —
 		// starving every AUTHORITATIVE spawn (dropped weapons, CTC cases, etc.), so
 		// the host's prop-reconcile keeps re-sending them and the client keeps
 		// dropping them (observed: 1400+ "prop with syncid N does not exist" on a
@@ -18684,7 +18685,7 @@ struct weaponobj *func0f08a364(void)
  * whose union no longer points back (freed => prop->obj NULL, or recycled to a
  * different obj). Such orphan slots count as occupied AND, being projectile-flagged,
  * are EXCLUDED from weaponCreate's recycle scan, so they accumulate (diag census
- * projdead ~14-19 of proj ~26) until the 50-slot pool saturates: weaponCreate then
+ * projdead ~14-19 of proj ~26) until the weapon-slot pool saturates: weaponCreate then
  * returns NULL (the SVC_PROP_SPAWN write-at-0 crash) and force-recycle evicts the
  * live host props (synced->0 => sync collapse => rooms stop loading / void). This is
  * the open Family-A free-without-clear corruption: clients CRASH on it; the headless

@@ -43,8 +43,10 @@
 #define NET_MASTER_MSG_HOST_GRANT    0x07 // master -> client: str addr ("ip:port"), str admin_token
 #define NET_MASTER_MSG_HOST_DENY     0x08 // master -> client: str reason
 
-// Browser list capacity and per-entry name length.
-#define NET_BROWSER_MAX        64
+// Browser list capacity and per-entry name length. Client-side storage only (the
+// master feeds entries one at a time, capped by a >= NET_BROWSER_MAX guard), so
+// this is free to grow - more listed servers, no wire-format impact.
+#define NET_BROWSER_MAX        256
 #define NET_BROWSER_NAME_LEN   64
 
 // Sentinel ping (ms) meaning "queried, no reply yet / timed out".

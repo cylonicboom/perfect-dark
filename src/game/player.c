@@ -186,10 +186,21 @@ bool g_PlayerTriggerGeFadeIn = false;
 u32 var80070748 = 0;
 u32 var8007074c = 0;
 
+// One entry per player slot, indexed by g_Vars.currentplayernum / playernum. On a
+// netplay server currentplayernum is set to a REMOTE client's slot (net.c
+// setCurrentPlayerNum(cl->playernum), 0..MAX_PLAYERS-1) while running e.g. the
+// rocket/missile guidance path in playerProcessControl, so this must be MAX_PLAYERS
+// wide or clients 8..15 read/write out of bounds (stomps g_PlayerInvincible). The
+// ladder grew 4->8 for the first widening but missed the 8->16 one. N64 (MAX_PLAYERS
+// 4) keeps the original 4 entries, byte-identical.
 bool g_PlayersWithControl[] = {
 	true, true, true, true,
 #if MAX_PLAYERS > 4
-	true, true, true, true
+	true, true, true, true,
+#endif
+#if MAX_PLAYERS > 8
+	true, true, true, true,
+	true, true, true, true,
 #endif
 };
 

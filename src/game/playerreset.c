@@ -154,6 +154,19 @@ void playerReset(void)
 	g_PlayersWithControl[6] = true;
 	g_PlayersWithControl[7] = true;
 #endif
+#if MAX_PLAYERS > 8
+	// 16-player netplay: slots 8..15 must be reset too (the array and its index
+	// range — currentplayernum on a server can be any remote slot — are MAX_PLAYERS
+	// wide). See the g_PlayersWithControl definition note in player.c.
+	g_PlayersWithControl[8] = true;
+	g_PlayersWithControl[9] = true;
+	g_PlayersWithControl[10] = true;
+	g_PlayersWithControl[11] = true;
+	g_PlayersWithControl[12] = true;
+	g_PlayersWithControl[13] = true;
+	g_PlayersWithControl[14] = true;
+	g_PlayersWithControl[15] = true;
+#endif
 	g_PlayerInvincible = false;
 
 	playerSetTickMode(TICKMODE_GE_FADEIN);

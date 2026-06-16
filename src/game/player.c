@@ -257,6 +257,17 @@ f32 playerChooseSpawnLocation(f32 chrradius, struct coord *dstpos, RoomNum *dstr
 	RoomNum neighbours[20];
 #endif
 
+#ifndef PLATFORM_N64
+	// Backstop for the documented "24+ pads" overflow above: custom maps can
+	// hand more pads than these fixed 24-element stack arrays hold, which stomps
+	// adjacent locals and crashes the g_Vars.players[] loop below on a garbage
+	// pointer. The primary clamp is at the g_SpawnPoints population site
+	// (playerreset.c); guard here too so every caller is safe.
+	if (numpads > ARRAYCOUNT(verybadpads)) {
+		numpads = ARRAYCOUNT(verybadpads);
+	}
+#endif
+
 	// Iterate all spawn pads and populate the category arrays
 	for (p = 0; p < numpads; p++) {
 		bestsqdist = U32_MAX;

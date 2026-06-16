@@ -174,7 +174,21 @@ void playerReset(void)
 			switch (cmd->type) {
 			case INTROCMD_SPAWN:
 				if (cmd->param2 == 0) {
-					g_SpawnPoints[g_NumSpawnPoints++] = cmd->param1;
+#ifndef PLATFORM_N64
+					// Port: custom maps (AIO mod stages) can declare more spawn
+					// pads than the stock N64 stages' max of 24. g_SpawnPoints is a
+					// fixed 24-entry array, and playerChooseSpawnLocation indexes
+					// 24-element STACK arrays (verybadpads/badpads/padsqdists) by
+					// numpads == g_NumSpawnPoints. Overflowing here stomps BSS and
+					// then that function's stack frame, driving an OOB g_Vars.players[]
+					// read off a garbage pointer -> crash. Clamp to the array size
+					// (g_SpawnPoints is declared s16 g_SpawnPoints[24] in player.c;
+					// extern-as-[] here so sizeof isn't available).
+					if (g_NumSpawnPoints < 24)
+#endif
+					{
+						g_SpawnPoints[g_NumSpawnPoints++] = cmd->param1;
+					}
 				}
 				cmd = (struct cmd32 *)((uintptr_t)cmd + 12);
 				break;

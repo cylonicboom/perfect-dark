@@ -303,5 +303,37 @@ generic deref sites, + the weapon-switch path clears a leftover sentinel. N64 by
 
 | 26 | `audioStop` via `bgunTickGameplay2` zero-update stop loop | AV read 0x69 (handle = sentinel 0x1) | crash | remote reaper-spin audio sentinel `(sndstate*)1` in `hand->audiohandle` reached generic audio derefs when the spectator redirect ran the gun tick on a remote pawn's hands (zero-update frames routine under the netplay tick pin) | `bgunAudioHandleReal()` guard at all generic deref sites + sentinel clear on weapon switch | fixed (source) |
 
+## #27 Custom-map spawn-pad overflow: `g_SpawnPoints[24]` + spawn-selection stack arrays (2026-06-16)
+
+**NOT a netplay bug** (no net guard, no churn) — a plain fixed-array overflow that only
+surfaces with **custom maps**, which the AIO build ships (goldfinger/kakariko/dark_noon…).
+User crash on the master AIO client (`pd.x86_64.exe` md5 `5ec441d4…`, == `build_debug_sdl3`):
+`mainLoop → lvReset → playerReset → scenarioChooseSpawnLocation →
+playerChooseGeneralSpawnLocation → playerChooseSpawnLocation` AV at player.c:280
+(`g_Vars.players[i]->prop`), `FAULT: read at -1` but **RAX=0x7fffffff00000000** (garbage
+pointer, not NULL → sailed past the existing `!g_Vars.players[i]` net guard). The smoking
+gun is **RDX=0x2a=42**: RDX holds the player-loop index `+12` at the faulting
+`mov 0xd8(%rax),%rax`, so **i=30** — far past `playercount ≤ MAX_PLAYERS`. The loop counter
+was **stomped**.
+
+Root: `playerReset` (playerreset.c:177) populates `g_SpawnPoints` from the stage intro
+(`INTROCMD_SPAWN` with `param2==0`) via `g_SpawnPoints[g_NumSpawnPoints++] = …` with **no
+bound check**. `g_SpawnPoints` is a fixed `s16[24]` (player.c:122). A custom map with >24
+spawn pads overflows the BSS array and sets `g_NumSpawnPoints>24`; then
+`playerChooseGeneralSpawnLocation` passes `numpads = g_NumSpawnPoints` to
+`playerChooseSpawnLocation`, whose `for (p=0; p<numpads; p++)` writes the **24-element STACK
+arrays** `verybadpads`/`badpads`/`padsqdists` out of bounds, stomping the adjacent
+`i`/`playercount`/`prop` locals → OOB `g_Vars.players[30]` read → garbage ptr → `->prop`
+deref. This is exactly the `@dangerous` "24+ pads" note in the function's own header comment.
+Stock N64 stages never exceed 24 pads, so the original decompiled code never overflowed.
+
+Fix (two clamps, both `#ifndef PLATFORM_N64`, N64 byte-identical): (1) **root** — clamp the
+population at playerreset.c:177 to `g_NumSpawnPoints < 24` (also protects the race/paint
+`.inc` readers that loop over `g_SpawnPoints[]`); (2) **backstop** — clamp `numpads >
+ARRAYCOUNT(verybadpads)` at the top of `playerChooseSpawnLocation` so any caller / future
+custom content is safe (the race/paint callers already cap their candidate arrays at 24).
+
+| 27 | `playerChooseSpawnLocation` player.c:280 | AV read (garbage ptr `0x7fffffff…`, RDX→i=30) | crash | custom map (>24 `INTROCMD_SPAWN` pads) overflows `g_SpawnPoints[24]` → `numpads>24` overflows the fn's 24-element stack arrays → stomps the player-loop counter → OOB `g_Vars.players[i]` deref | clamp population to <24 (playerreset.c) + `numpads` backstop in playerChooseSpawnLocation; both `#ifndef PLATFORM_N64` | fixed (source) |
+
 > Keep appending here on every new crash: site, fault, root, fix, status. The table is
 > the map; the pattern section is the territory.

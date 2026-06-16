@@ -37,6 +37,12 @@ lobby window) are **not** repeated here.
 - Punching + some weapon-anim sounds play first-person for every listener.
 - Lag-comp is broad-phase (sphere) only; narrow-phase bone rewind reverted (crashed).
 
+## 16-player widening (proto 75) follow-ups
+
+- **`obj->hidden` attacker/owner field is 4-bit = exactly full at `MAX_PLAYERS` 16.** Before any further widening past 16, widen the field or add a `MAX_PLAYERS <= 16` static guard — otherwise attacker/owner playernums (kill credit, mine/autogun/dropped-weapon ownership) silently truncate to the low 4 bits with no compile error. Details in `PORT_NET_KNOWN_ISSUES.md`.
+- **Scoreboard / lobby-menu row layouts clip beyond 8 players** (cosmetic; backing data arrays are correctly `MAX_*`-sized). Fixed UI row layouts need extending for the 9-16-player roster.
+- *Done 2026-06-16:* stranded literal-sized combatant arrays `g_MaxThrownLaptops` (12 → `MAX_MPCHRS`) and `g_PlayersWithControl` (8 → 16, latent OOB) fixed; a full combatant-array audit was otherwise clean (every other per-combatant array is `MAX_MPCHRS`/`MAX_PLAYERS`/`MAX_TEAMS`-sized). The signature to re-check on the next widening: **runtime-assigned pool sizes and initializer-list arrays**, not `[MACRO]` declarations.
+
 ## Larger staged workstream
 
 - **Determinism foundation** (`~/.claude/plans/...` determinism plan): same-inputs →

@@ -61,7 +61,15 @@ uintptr_t gfxFramebuffer;
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
 
-#define TEXTURE_CACHE_MAX_SIZE 1024
+// Max distinct textures held in the GPU texture cache. This is a COUNT cap, not a
+// memory cap (the "I set 256MB" knob doesn't change it). 1024 is an N64-era value;
+// AIO HD-texture sets blow past it, and with /dlcache on every eviction clears the
+// whole display-list cache (dlcacheInvalidateAll) -> re-record churn -> within-frame
+// texture thrash -> textures bind to evicted/reused ids and go black, worsening as
+// the visible working set grows. Raised so a level's HD working set fits without
+// eviction; memory is still bounded by the textures actually loaded. (fast3d is
+// desktop-only - there is no N64 build of this file.)
+#define TEXTURE_CACHE_MAX_SIZE 4096
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
@@ -282,6 +290,12 @@ static constexpr float clampf(const float x, const float min, const float max) {
 struct DlCacheSegment {
     struct ShaderProgram* prg;
     uint32_t tex_id[2];
+    // The owning texture-cache node, for refreshing the LRU at replay. A live
+    // segment's texture is guaranteed still in the cache (any eviction/delete calls
+    // dlcacheInvalidateAll, which drops every segment), so this never dangles.
+    // Without the refresh, textures shown ONLY via cached replay never touch the LRU,
+    // drift to the front, and get evicted while on screen -> invalidate churn -> black.
+    TextureCacheNode* tex_node[2];
     bool tex_used[2];
     bool tex_linear[2];
     uint8_t tex_cms[2], tex_cmt[2];
@@ -379,6 +393,7 @@ static void dlcacheCloseSegment(void) {
     for (int i = 0; i < 2; i++) {
         TextureCacheNode* n = rendering_state.textures[i];
         seg.tex_used[i] = (n != NULL);
+        seg.tex_node[i] = n;
         seg.tex_id[i] = n ? n->second.texture_id : 0;
         seg.tex_linear[i] = n ? n->second.linear_filter : false;
         seg.tex_cms[i] = n ? n->second.cms : 0;
@@ -2922,6 +2937,13 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
                 if (seg.tex_used[i]) {
                     gfx_rapi->select_texture(i, seg.tex_id[i], seg.tex_linear[i]);
                     gfx_rapi->set_sampler_parameters(i, seg.tex_linear[i], seg.tex_cms[i], seg.tex_cmt[i], seg.tex_lod);
+                    // Mark this texture most-recently-used so the LRU eviction below
+                    // doesn't drop a texture that's actively on screen via cached
+                    // replay (which otherwise never refreshes the cache LRU).
+                    if (seg.tex_node[i]) {
+                        gfx_texture_cache.lru.splice(gfx_texture_cache.lru.end(), gfx_texture_cache.lru,
+                                                     seg.tex_node[i]->second.lru_location);
+                    }
                 }
             }
             if (seg.prg != curprg) {

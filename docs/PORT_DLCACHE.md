@@ -221,9 +221,25 @@ change:
   prevents a reused leaf-gdl address from replaying a previous level's geometry.
 - `gfx_texture_cache_delete` / `_delete_range` — dyntex / animated-texture
   invalidation.
-- LRU eviction in `gfx_texture_cache_lookup` (texture cache full, >1024).
+- LRU eviction in `gfx_texture_cache_lookup` (texture cache full).
 
 Also cleared by `/dlcache off` and `/dlcache clear`.
+
+> **Texture-cache size + LRU refresh (fixed 2026-06-16 — "progressive black
+> textures").** `TEXTURE_CACHE_MAX_SIZE` is a **count** cap, not a memory cap (a
+> bigger configured memory pool does *not* raise it). It was `1024` (N64-era);
+> AIO HD-texture sets exceed that, and because every eviction calls
+> `dlcacheInvalidateAll`, a full cache makes the dlcache re-record constantly,
+> the per-frame working set thrashes past the cap, and textures bind to
+> evicted/reused ids → **progressively black**. Two fixes: (1) the cap is raised
+> to `4096` (memory still bounded by the textures actually loaded); (2) **replay
+> now refreshes the texture-cache LRU** for every texture it binds
+> (`dlcacheReplay`, via a stored `DlCacheSegment::tex_node`). Without (2),
+> textures shown *only* through cached replay never touched the LRU, drifted to
+> the front, and were evicted **while still on screen** — so the cache evicted
+> exactly the hot static-room textures the dlcache depends on. The node pointer
+> never dangles: any eviction/delete calls `dlcacheInvalidateAll`, which drops
+> every segment, so a live segment's texture is always still in the cache.
 
 > Side effect: a gun switch (gun-mem free) or any dyntex delete clears the
 > **whole** cache, forcing a one-frame re-record. Safe, but it means the cache

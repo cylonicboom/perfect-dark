@@ -102,6 +102,9 @@ const struct menucolourpalette g_MenuColours[] = {
 	{ 0x00bf007f, 0x0050007f, 0x00ff007f, 0xffff00ff, 0x002f009f, 0x00ff0028, 0x55ff55ff, 0x006f00af, 0xffffffff, 0x00000000, 0x004400ff, 0x003000ff, 0xffff00ff, 0xffffffff, 0x44ff447f },
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff9f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00000000, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 	{ 0xaaaaaaff, 0xaaaaaa7f, 0xaaaaaaff, 0xffffffff, 0xffffff9f, 0xffffffff, 0xffffffff, 0xffffffff, 0xff8888ff, 0xffffffff, 0x00000000, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
+#ifndef PLATFORM_N64
+	{ 0xbf69007f, 0x502c007f, 0xff8c007f, 0xffff00ff, 0x2f1a007f, 0x6f3d007f, 0xffa050ff, 0x7f4600ff, 0xffff00ff, 0xffb870ff, 0x442500ff, 0x332000ff, 0xffff00ff, 0xffffffff, 0xffa0447f }, // 6 MENUDIALOGTYPE_AMBER (port custom scheme)
+#endif
 };
 #else
 const struct menucolourpalette g_MenuColours[] = {
@@ -111,6 +114,9 @@ const struct menucolourpalette g_MenuColours[] = {
 	{ 0x00bf007f, 0x0050007f, 0x00ff007f, 0xffff00ff, 0x002f007f, 0x00ff0028, 0x55ff55ff, 0x006f00af, 0xffffffff, 0x00000000, 0x004400ff, 0x003000ff, 0xffff00ff, 0xffffffff, 0x44ff447f },
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00000000, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 	{ 0xaaaaaaff, 0xaaaaaa7f, 0xaaaaaaff, 0xffffffff, 0xffffff2f, 0xffffffff, 0xffffffff, 0xffffffff, 0xff8888ff, 0xffffffff, 0x00000000, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
+#ifndef PLATFORM_N64
+	{ 0xbf69007f, 0x502c007f, 0xff8c007f, 0xffff00ff, 0x2f1a007f, 0x6f3d007f, 0xffa050ff, 0x7f4600ff, 0xffff00ff, 0xffb870ff, 0x442500ff, 0x332000ff, 0xffff00ff, 0xffffffff, 0xffa0447f }, // 6 MENUDIALOGTYPE_AMBER (port custom scheme)
+#endif
 };
 #endif
 
@@ -121,6 +127,9 @@ const struct menucolourpalette g_MenuWave1Colours[] = {
 	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xff7f0000, 0xffffff00, 0xffffff00, 0x00ffff00, 0x006f6faf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 },
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
+#ifndef PLATFORM_N64
+	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x006f6faf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }, // 6 AMBER (port; = blue wave row)
+#endif
 };
 
 const struct menucolourpalette g_MenuWave2Colours[] = {
@@ -130,30 +139,56 @@ const struct menucolourpalette g_MenuWave2Colours[] = {
 	{ 0x44444400, 0x44444400, 0x44444400, 0x00ff0000, 0x44444400, 0x44444400, 0xffff0000, 0x006f6faf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 },
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
+#ifndef PLATFORM_N64
+	{ 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x006f6faf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }, // 6 AMBER (port; = blue wave row)
+#endif
 };
 
 #ifndef PLATFORM_N64
-// Port: user-selectable menu colour scheme (Extended Options > Video).
+// Port: user-selectable menu colour scheme (Extended Options > Experiments).
 // Recolours the standard (blue) menu dialogs by remapping their palette row.
 // 0 = Perfect (blue), 1 = Shinku (red), 2 = Complete (green), 3 = Missing (white).
 // Persisted as "Game.MenuColourScheme" in pd.ini.
 s32 g_MenuColourScheme = 0;
 
+// HARDCODED-SCHEME SCAFFOLD (reference). A build can bake in a menu colour scheme
+// with NO user toggle by defining MENU_HARDCODE_SCHEME to a scheme index, e.g.
+// build with -DMENU_HARDCODE_SCHEME=4, or uncomment the line below. Left undefined
+// (the default) the runtime-selectable dropdown is used and nothing changes.
+//   0 Perfect (blue)   1 Shinku (red)   2 Complete (green)   3 Missing (white)
+//   4 Amber (custom palette row -- the Recipe-2 reference, NOT in the dropdown)
+// See docs/PORT_MENU_COLOUR_SCHEMES.md.
+// #define MENU_HARDCODE_SCHEME 4
+
+// The effective scheme: the compile-time hardcode if defined, else the live
+// dropdown value. Both dispatch functions below read through this, so a hardcoded
+// build overrides the dropdown without touching the rest of the menu code.
+static s32 menuActiveColourScheme(void)
+{
+#ifdef MENU_HARDCODE_SCHEME
+	return MENU_HARDCODE_SCHEME;
+#else
+	return g_MenuColourScheme;
+#endif
+}
+
 s32 menuApplyColourScheme(s32 type)
 {
 	static const u8 schemerows[] = {
-		MENUDIALOGTYPE_DEFAULT, // Perfect (blue)
-		MENUDIALOGTYPE_DANGER,  // Shinku (red)
-		MENUDIALOGTYPE_SUCCESS, // Complete (green)
-		MENUDIALOGTYPE_4,       // Missing (white)
+		MENUDIALOGTYPE_DEFAULT, // 0 Perfect (blue)
+		MENUDIALOGTYPE_DANGER,  // 1 Shinku (red)
+		MENUDIALOGTYPE_SUCCESS, // 2 Complete (green)
+		MENUDIALOGTYPE_4,       // 3 Missing (white)
+		MENUDIALOGTYPE_AMBER,   // 4 Amber (port custom row; hardcode-only - Recipe 2)
 	};
+	s32 scheme = menuActiveColourScheme();
 
 	// Only the default (blue) dialogs follow the scheme; danger/success dialogs
 	// keep their semantic colours.
 	if (type == MENUDIALOGTYPE_DEFAULT
-			&& g_MenuColourScheme > 0
-			&& g_MenuColourScheme < (s32)ARRAYCOUNT(schemerows)) {
-		return schemerows[g_MenuColourScheme];
+			&& scheme > 0
+			&& scheme < (s32)ARRAYCOUNT(schemerows)) {
+		return schemerows[scheme];
 	}
 
 	return type;
@@ -167,13 +202,15 @@ u32 menuSchemeColour(u32 intensity)
 {
 	intensity &= 0xff;
 
-	switch (g_MenuColourScheme) {
+	switch (menuActiveColourScheme()) {
 	case 1: // Shinku (red)
 		return intensity << 24;
 	case 2: // Complete (green)
 		return intensity << 16;
 	case 3: // Missing (white)
 		return (intensity << 24) | (intensity << 16) | (intensity << 8);
+	case 4: // Amber (R + ~9/16 G) - matches the MENUDIALOGTYPE_AMBER palette row
+		return (intensity << 24) | (((intensity * 9) >> 4) << 16);
 	default: // Perfect (blue)
 		return intensity << 8;
 	}

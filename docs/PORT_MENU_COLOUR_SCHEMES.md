@@ -8,6 +8,22 @@ shows how to bake a scheme in instead of exposing it.
 All of this is **port-only** (`#ifndef PLATFORM_N64`); the N64 path stays
 byte-identical.
 
+> **A working reference scaffold is already in the tree** (added alongside the
+> selectable feature, off by default):
+> - `MENU_HARDCODE_SCHEME` — a compile-time `#define` in `src/game/menu.c`. Leave
+>   it undefined (default) and the runtime dropdown is used unchanged; build with
+>   `-DMENU_HARDCODE_SCHEME=N` (or uncomment the line) to bake scheme `N` in with
+>   no user toggle. Both dispatch functions read the effective scheme through
+>   `menuActiveColourScheme()`.
+> - **Scheme 4 = "Amber"** — a worked **custom-hue palette row** (the Recipe-2
+>   example): row index `6` / `MENUDIALOGTYPE_AMBER`, appended port-only to all
+>   three palette tables, wired into `menuApplyColourScheme`'s `schemerows[]` and
+>   `menuSchemeColour`'s `case 4`. It is intentionally **not** in the Experiments
+>   dropdown — it's reachable only via `MENU_HARDCODE_SCHEME=4`, demonstrating a
+>   hardcoded-only scheme. Tune the 15 amber field values to taste.
+>
+> The sections below explain the architecture and how to add your own.
+
 ---
 
 ## 1. Where menu colours come from (two layers)

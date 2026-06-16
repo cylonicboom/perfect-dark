@@ -1742,6 +1742,12 @@
 #define MENUDIALOGTYPE_SUCCESS 3
 #define MENUDIALOGTYPE_4       4
 #define MENUDIALOGTYPE_WHITE   5
+#ifndef PLATFORM_N64
+// Port-only custom menu-scheme palette row (the Recipe-2 reference in
+// docs/PORT_MENU_COLOUR_SCHEMES.md). Indexes the appended row 6 in
+// g_MenuColours / g_MenuWave1Colours / g_MenuWave2Colours.
+#define MENUDIALOGTYPE_AMBER   6
+#endif
 
 #define MENUITEMFLAG_NEWCOLUMN               0x00000001
 #define MENUITEMFLAG_00000002                0x00000002

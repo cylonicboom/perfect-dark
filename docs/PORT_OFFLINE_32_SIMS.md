@@ -65,10 +65,28 @@ Add/Edit-Simulant → character-config sub-stack overflowed `rows[]` into the
 adjacent `rowend`/`cols[]`/`blocks[]` fields, corrupting the menu — symptom: every
 Combat-Sim item draws at row 0, navigation dead (only Begin Match / Alt-F4),
 self-heals on a stage load (`menuClose` resets the counters). Fix (port-only,
-N64 byte-identical): the three arrays are enlarged (`256` / `32` / `160`) in
+N64 byte-identical): the three arrays are enlarged (`256` / `32` / `320`) in
 `struct menu` (types.h — `g_Menus` is pure runtime BSS, no save/wire/sizeof
 dependency), **and** `func0f0f1d6c` got a port-only bounds guard that stops
 appending before it can overrun them (graceful: extra items don't lay out).
+(`blocks` is `320` because the Team Control carousel below is the heaviest open
+stack: 36 `MENUITEMTYPE_DROPDOWN` rows × 4 item-blocks each = 144 blocks.)
+
+## Team Control carousel (mplayer/setup.c)
+
+The Team Control menu got the same 4-page carousel so all 36 offline combatants
+(up to 4 humans + 32 sims) can be assigned teams. Team rows are keyed by the
+**compacted combatant ordinal** — `menuhandlerMpTeamSlot` / `mpMenuTextChrNameForTeamSetup`
+resolve `item->param` through `mpGetChrConfigBySlotNum`, which walks the set
+`chrslots` bits **players-first then sims**, so the humans always occupy the
+lowest ordinals. Page 1 is the original `g_MpTeamsMenuItems` (ordinals 0-11 = every
+human + the first sims, the "max 12" first page); pages 2-4 (`g_MpTeams2/3/4MenuDialog`,
+the `MP_TEAMPAGE_*` macros) carry ordinals 12-19 / 20-27 / 28-35, chained via
+`nextsibling` and flagged `MENUDIALOGFLAG_NETPLAY_HIDDEN` (offline only — net games
+cap bots at `NET_MAX_BOTS`, so those ordinals never exist online; the online team
+menu is unchanged). Overflowing rows on the last page (e.g. only 1 human + 32 sims =
+33 combatants) are auto-disabled by the existing `mpGetChrConfigBySlotNum`-returns-NULL
+→ `CHECKDISABLED` gate.
 
 ## Preset / save / challenge containment
 

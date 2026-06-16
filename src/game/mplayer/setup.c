@@ -5193,13 +5193,85 @@ struct menuitem g_MpTeamsMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
+#ifndef PLATFORM_N64
+// Offline-32-sims (docs/PORT_OFFLINE_32_SIMS.md): Team Control carousel pages 2-4,
+// the Simulants-carousel pattern. Team rows are keyed by the COMPACTED combatant
+// ordinal (mpGetChrConfigBySlotNum walks set chrslots bits, players first then
+// sims), so page 1 (g_MpTeamsMenuItems, ordinals 0-11) always holds every human
+// plus the first sims up to 12, and pages 2-4 carry the remaining sims (ordinals
+// 12-19 / 20-27 / 28-35) - up to 4 humans + 32 sims = 36 combatants. Rows reuse the
+// page-1 handlers (menuhandlerMpTeamSlot / mpMenuTextChrNameForTeamSetup) verbatim.
+// Hidden online via MENUDIALOGFLAG_NETPLAY_HIDDEN like the Simulants carousel (net
+// games cap bots at NET_MAX_BOTS, so the extra ordinals never exist online).
+#define MP_TEAMPAGE_ROW(slot) \
+	{ \
+		MENUITEMTYPE_DROPDOWN, \
+		slot, \
+		MENUITEMFLAG_LOCKABLEMINOR, \
+		(uintptr_t)&mpMenuTextChrNameForTeamSetup, \
+		0, \
+		menuhandlerMpTeamSlot, \
+	}
+
+#define MP_TEAMPAGE_ITEMS(a) \
+	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LESSLEFTPADDING, L_MPMENU_072 /* "Teams:" */, 0, menuhandlerMpTeamsLabel }, \
+	MP_TEAMPAGE_ROW((a) + 0), \
+	MP_TEAMPAGE_ROW((a) + 1), \
+	MP_TEAMPAGE_ROW((a) + 2), \
+	MP_TEAMPAGE_ROW((a) + 3), \
+	MP_TEAMPAGE_ROW((a) + 4), \
+	MP_TEAMPAGE_ROW((a) + 5), \
+	MP_TEAMPAGE_ROW((a) + 6), \
+	MP_TEAMPAGE_ROW((a) + 7), \
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL }, \
+	{ MENUITEMTYPE_SELECTABLE, 0, MENUITEMFLAG_SELECTABLE_CLOSESDIALOG, L_MPMENU_074 /* "Back" */, 0, NULL }, \
+	{ MENUITEMTYPE_END }
+
+struct menuitem g_MpTeamsMenuItems2[] = { MP_TEAMPAGE_ITEMS(12) };
+struct menuitem g_MpTeamsMenuItems3[] = { MP_TEAMPAGE_ITEMS(20) };
+struct menuitem g_MpTeamsMenuItems4[] = { MP_TEAMPAGE_ITEMS(28) };
+
+struct menudialogdef g_MpTeams4MenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Team Control 29-36\n",
+	g_MpTeamsMenuItems4,
+	NULL,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_NETPLAY_HIDDEN,
+	NULL,
+};
+
+struct menudialogdef g_MpTeams3MenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Team Control 21-28\n",
+	g_MpTeamsMenuItems3,
+	NULL,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_NETPLAY_HIDDEN,
+	&g_MpTeams4MenuDialog,
+};
+
+struct menudialogdef g_MpTeams2MenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t) "Team Control 13-20\n",
+	g_MpTeamsMenuItems2,
+	NULL,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_NETPLAY_HIDDEN,
+	&g_MpTeams3MenuDialog,
+};
+#endif
+
 struct menudialogdef g_MpTeamsMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	L_MPMENU_070, // "Team Control"
 	g_MpTeamsMenuItems,
 	NULL,
 	MENUDIALOGFLAG_MPLOCKABLE,
+#ifndef PLATFORM_N64
+	// Offline-32-sims Team Control carousel: pages 2-4 (ordinals 12-35), hidden
+	// online via MENUDIALOGFLAG_NETPLAY_HIDDEN (menuPushDialog skips them).
+	&g_MpTeams2MenuDialog,
+#else
 	NULL,
+#endif
 };
 
 u32 var80085ce8[] = {

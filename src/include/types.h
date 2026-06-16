@@ -4075,7 +4075,7 @@ struct menu {
 	s32 rowend;
 	struct menucolumn cols[32];
 	s32 colend;
-	u32 blocks[160]; // for menuitemdata
+	u32 blocks[320]; // for menuitemdata (port: 4-page Teams carousel = 36 DROPDOWNs x 4 blocks each)
 #endif
 	/*0x81c*/ s32 blockend;
 	/*0x820*/ u8 unk820;

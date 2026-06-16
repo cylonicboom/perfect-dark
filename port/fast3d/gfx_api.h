@@ -79,5 +79,7 @@ int gfx_dlcache_get_frontface(void);
 void gfx_dlcache_set_cullmode(int mode); // 0 auto, 1 off, 2 force-back, 3 force-front
 int gfx_dlcache_get_cullmode(void);
 void gfx_dlcache_get_stats(uint32_t *entries, uint32_t *bad, uint32_t *segments, uint32_t *tris, uint32_t *reasons);
+void gfx_dlcache_set_palette(int on); // diagnostic: 0 = baked shade (isolate vertex-shading bugs)
+int gfx_dlcache_get_palette(void);
 
 #endif

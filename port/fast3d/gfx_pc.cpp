@@ -356,6 +356,13 @@ static bool g_DlCacheFrontCcw = true;   // GL front-face winding for cached cull
 // a clean test, `/dlcache cull off` is an instant live escape (draws both faces;
 // opaque is z-buffer-identical).
 static int g_DlCacheCullMode = 0;
+// Diagnostic: when false, cached replay skips the shader-side GPU palette (live
+// vertex-shade substitution) and draws with the BAKED record-time shade instead.
+// Geometry + textures are still cached, so this isolates "is the bad surface a
+// vertex-shading/palette bug or a geometry/texture bake bug?" Lighting goes static
+// (no muzzle-flash brightening) while off — that's expected. `/dlcache palette
+// on|off`; read live at replay, no re-record. Default on (palette active).
+static bool g_DlCachePaletteEnabled = true;
 static uint32_t g_DlCacheFrameSegments; // segments replayed last frame
 static uint32_t g_DlCacheFrameTris;     // tris replayed last frame
 static uint32_t g_DlCacheFrameDraws;    // cache_draw calls issued last frame
@@ -2871,7 +2878,8 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     // Shader-side GPU palette: bind the live palette texture + enable the lookup so
     // shade is resolved on the GPU (dynamic lighting at cache speed). Per-segment
     // shade routing is set in the state-group block below.
-    if (e->palette_ok) {
+    const bool use_palette = e->palette_ok && g_DlCachePaletteEnabled;
+    if (use_palette) {
         gfx_rapi->cache_bind_palette(e->palette_tex, e->palette_count);
         gfx_rapi->set_palette_enable(1);
     }
@@ -2973,7 +2981,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             gfx_rapi->set_fog_params(seg.fog_compute ? 0 : 1, seg.fog_mul, seg.fog_off);
             // Shader-side palette: route the live shade colour into this combiner's
             // shade input slots (after load_shader so it targets this program).
-            if (e->palette_ok) {
+            if (use_palette) {
                 gfx_rapi->set_shade_routing(seg.shade_route);
             }
             applied_group = seg.state_group;
@@ -3018,7 +3026,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     }
     g_DlCacheFrameSegments += drawn_batches;
 
-    if (e->palette_ok) {
+    if (use_palette) {
         gfx_rapi->set_palette_enable(0); // back to baked combiner inputs for the immediate path
     }
     gfx_rapi->set_mvp(g_DlCacheIdentity);
@@ -3066,6 +3074,14 @@ extern "C" int gfx_dlcache_get_cullmode(void) {
 
 extern "C" void gfx_dlcache_set_gap_tris(int tris) {
     g_DlCacheGapTris = tris < 0 ? 0 : tris; // read live at replay; no re-record
+}
+
+extern "C" void gfx_dlcache_set_palette(int on) {
+    g_DlCachePaletteEnabled = (on != 0); // read live at replay; no re-record
+}
+
+extern "C" int gfx_dlcache_get_palette(void) {
+    return g_DlCachePaletteEnabled ? 1 : 0;
 }
 
 extern "C" int gfx_dlcache_get_gap_tris(void) {

@@ -259,6 +259,7 @@ net session.
 | `/dlcache stats` | cached/bad entry counts, last-frame replayed segments + tris, front-face winding |
 | `/dlcache clear` | drop all cached buffers (re-record next frame) |
 | `/dlcache ff` (alias `frontface`) | **calibration:** flip the GL front-face winding used for cached backface culling. If cached geometry shows inside-out / missing faces vs `/dlcache off`, flip this once. Read live at replay (no re-record). |
+| `/dlcache palette [on\|off]` | **diagnostic isolation:** `off` makes cached replay skip the shader-side GPU palette (the live vertex-shade substitution) and draw with the **baked record-time shade** instead. Geometry + textures stay cached, so it splits "is this bad surface a vertex-shading/palette bug or a geometry/texture bake bug?" Lighting goes **static** while off (no muzzle-flash brightening) — expected. Read live at replay (no re-record). Default on. |
 | `/dlcache cull [auto\|off\|back\|front]` | cached backface-cull mode. **`auto` is the default** (per-segment recorded `G_CULL_*` mode + the `ff` winding). The "turn-around → rooms missing" symptom was a baked *scissor* (now fixed), not culling, so culling is back on for the perf win. `off` draws both faces (opaque z-buffer-identical) — an instant live escape if anything still drops; `back`/`front` force a single `glCullFace`. Read live; no re-record. |
 
 Renderer side is reached via `extern "C"` shims in `gfx_api.h`
@@ -320,6 +321,28 @@ rebuilds that leaf's VBO each changed frame.
 > Particle/sprite effects (sparks, muzzle flash, tracers) are separate props, not
 > cached, so they render regardless — this is specifically about their *illumination
 > of room surfaces*.
+
+> **Diagnosing a dark / "texture-not-loading" surface that also won't flash when
+> shot near it.** A surface that the muzzle flash *doesn't* brighten is the
+> signature of the **vertex-shade path**, not texture loading: the flash brightens
+> walls only by re-uploading the room palette (or re-recording), so a wall that
+> never flashes is one whose shade isn't being driven live — most likely its shade
+> stays frozen at the (possibly dark) record-time baked value because the
+> per-segment shade routing missed its combiner slot, or its `G_COL`/colour index
+> doesn't resolve to the palette the flash updates. **Isolate it with `/dlcache
+> palette off`:** that forces *every* cached leaf to draw the baked record-time
+> shade (geometry + textures unchanged, lighting static everywhere).
+> - If the dark surface now renders **correctly** (just with static lighting like
+>   the rest of the room) → it's the **GPU palette / shade-routing** path. Look at
+>   `g_DlCacheSegShadeRoute` derivation (`gfx_pc.cpp`, the `shader_input_mapping`
+>   scan) and the `aShadeIdx`/`uShadeRoute` lookup in the VS (`gfx_opengl.cpp`).
+> - If it's **still dark/untextured** with palette off → the bug is in the
+>   **geometry/texture bake** (texture id binding, a `bad` leaf, or a culled batch),
+>   *not* vertex shading — pursue `/dlcache stats`, `/dlcache cull off`, and the
+>   texture-cache LRU instead.
+>
+> This split is exactly what `/dlcache palette off` exists for; it's a live,
+> reversible replay-time switch (no re-record).
 
 This is also the hook a "per-vertex lighting" mod would use: poke a room's colours
 and the affected leaves re-record and show it. The perf-preserving, true-GPU

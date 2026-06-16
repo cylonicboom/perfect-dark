@@ -6549,6 +6549,8 @@ s32 netConsoleCommand(const char *line)
 		extern int gfx_dlcache_get_cullmode(void);
 		extern void gfx_dlcache_set_gap_tris(int tris);
 		extern int gfx_dlcache_get_gap_tris(void);
+		extern void gfx_dlcache_set_palette(int on);
+		extern int gfx_dlcache_get_palette(void);
 		extern int gfx_dlcache_get_frame_draws(void);
 		extern void gfx_dlcache_get_vis_stats(u32 *drawn, u32 *culled, u32 *absorbed);
 		extern void gfx_dlcache_get_stats(u32 *entries, u32 *bad, u32 *segments, u32 *tris, u32 *reasons);
@@ -6601,6 +6603,24 @@ s32 netConsoleCommand(const char *line)
 					mode == 1 ? "OFF (draw both faces)" :
 					mode == 2 ? "force BACK" :
 					mode == 3 ? "force FRONT" : "auto (per-segment)");
+		} else if (strncmp(arg, "palette", 7) == 0) {
+			// /dlcache palette [on|off] — diagnostic: turn the shader-side GPU
+			// palette (live vertex-shade) off to draw cached geometry with the
+			// BAKED record-time shade. Isolates a vertex-shading/palette bug
+			// from a geometry/texture bake bug. Lighting goes static while off.
+			const char *m = (arg[7] == ' ') ? arg + 8 : "";
+			int on;
+			if (strcmp(m, "off") == 0 || strcmp(m, "0") == 0) {
+				on = 0;
+			} else if (strcmp(m, "on") == 0 || strcmp(m, "1") == 0) {
+				on = 1;
+			} else {
+				on = !gfx_dlcache_get_palette();
+			}
+			gfx_dlcache_set_palette(on);
+			sysLogPrintf(LOG_CHAT, "DLCACHE: GPU palette (live vertex-shade) = %s%s",
+					on ? "ON" : "OFF",
+					on ? "" : " (cached rooms show baked record-time shade; lighting static)");
 		} else if (strncmp(arg, "gap", 3) == 0) {
 			// /dlcache gap <tris> — octree interop: max octree-culled hole (in
 			// tris) absorbed into a merged cached draw instead of splitting it.
@@ -6659,6 +6679,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /dlcache [on|off|stats|clear|ff]  cache static room geometry on the GPU");
 		sysLogPrintf(LOG_CHAT, "  /dlcache cull [auto|off|back|front] cached backface-cull mode (debug missing rooms)");
 		sysLogPrintf(LOG_CHAT, "  /dlcache gap [tris]              octree-hole absorb size for merged cached draws");
+		sysLogPrintf(LOG_CHAT, "  /dlcache palette [on|off]        GPU vertex-shade off = baked shade (debug black/no-flash walls)");
 		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");

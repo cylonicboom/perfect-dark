@@ -312,7 +312,13 @@ void propsReset(void)
 	g_AutogunDamageRxScale = 1;
 	g_AmmoQuantityScale = 1;
 
-	g_MaxThrownLaptops = g_Vars.normmplayerisrunning ? 12 : PLAYERCOUNT();
+	// One laptop-sentry slot per MP combatant, indexed by mpPlayerGetIndex (0..roster).
+	// The original literal 12 was exactly the N64 MAX_MPCHRS (4 players + 8 bots); with
+	// 16-player / 32-bot netplay that range is MAX_MPCHRS (48), so a flat 12 silently
+	// blocked every combatant past index 11 from deploying a laptop. MAX_MPCHRS is 12 on
+	// N64 (byte-identical) and auto-grows on the port - the "per-player arrays auto-grow"
+	// idiom from the MAX_PLAYERS 8->16 widening. Heap pool (MEMPOOL_STAGE).
+	g_MaxThrownLaptops = g_Vars.normmplayerisrunning ? MAX_MPCHRS : PLAYERCOUNT();
 
 	g_ThrownLaptops = mempAlloc(ALIGN16(g_MaxThrownLaptops * sizeof(struct autogunobj)), MEMPOOL_STAGE);
 	g_ThrownLaptopBeams = mempAlloc(ALIGN16(g_MaxThrownLaptops * sizeof(struct beam)), MEMPOOL_STAGE);

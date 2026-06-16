@@ -54,6 +54,22 @@ Hiding online: pages carry `MENUDIALOGFLAG_NETPLAY_HIDDEN`;
 documented `@bug` soft-lock (dialogs[] full → infinite loop) is fixed with
 an else-break while there. Caps: 5 siblings/layer (we use 4), 10 dialogs[].
 
+**Menu layout-array overflow (fixed 2026-06-16).** Opening the carousel pushes
+all 4 pages as *simultaneously-open* sibling dialogs, and `func0f0f1d6c` (menu.c)
+appends **every open dialog's** rows/columns/item-blocks into the fixed
+`struct menu` arrays `rows[88]` / `cols[12]` / `blocks[80]` with **no bound** —
+they only reset on a full `menuClose` (and roll back correctly per dialog in
+`menuCloseDialog`). The N64 Simulants menu was a *single* page (~13 rows); the
+4-page carousel (~52 rows) plus the parent Combat-Sim stack plus a deep open
+Add/Edit-Simulant → character-config sub-stack overflowed `rows[]` into the
+adjacent `rowend`/`cols[]`/`blocks[]` fields, corrupting the menu — symptom: every
+Combat-Sim item draws at row 0, navigation dead (only Begin Match / Alt-F4),
+self-heals on a stage load (`menuClose` resets the counters). Fix (port-only,
+N64 byte-identical): the three arrays are enlarged (`256` / `32` / `160`) in
+`struct menu` (types.h — `g_Menus` is pure runtime BSS, no save/wire/sizeof
+dependency), **and** `func0f0f1d6c` got a port-only bounds guard that stops
+appending before it can overrun them (graceful: extra items don't lay out).
+
 ## Preset / save / challenge containment
 
 `mpApplyConfig` and the wad load loop read exactly `MAX_BOTS_PRESET` records

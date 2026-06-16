@@ -991,6 +991,20 @@ void func0f0f1d6c(struct menudialogdef *dialogdef, struct menudialog *dialog, st
 		bool newcolumn = true;
 
 		while (item->type != MENUITEMTYPE_END) {
+#ifndef PLATFORM_N64
+			// Port: this loop appends one row (and possibly a new column + item
+			// blocks) per item, accumulating across EVERY open dialog, with no
+			// bound in the original. The offline-32-sims 4-page Simulants carousel
+			// opens 4 sibling dialogs at once, so a deep open stack can exceed the
+			// (now-enlarged) rows[]/cols[]/blocks[] arrays. Stop before writing out
+			// of bounds rather than corrupting adjacent struct menu state - extra
+			// items just don't lay out (graceful) instead of trashing the menu.
+			if (rowindex >= (s32)ARRAYCOUNT(menu->rows)
+					|| colindex + 1 >= (s32)ARRAYCOUNT(menu->cols)
+					|| blockindex + 5 > (s32)ARRAYCOUNT(menu->blocks)) {
+				break;
+			}
+#endif
 			if (item->flags & MENUITEMFLAG_NEWCOLUMN) {
 				newcolumn = true;
 			}

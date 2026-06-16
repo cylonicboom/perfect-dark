@@ -4056,11 +4056,27 @@ struct menu {
 	/*0x464*/ struct menulayer layers[6];
 	/*0x4f4*/ s16 depth; // index into layers. 1-indexed?
 	/*0x4f8*/ struct menudialog *curdialog;
+	// Port: these per-render layout arrays accumulate EVERY currently-open dialog's
+	// rows/columns/item-blocks (func0f0f1d6c appends, never bounded). The offline-32-
+	// sims Simulants menu is a 4-page carousel that opens all 4 pages as sibling
+	// dialogs at once (~52 rows vs the N64 single page's ~13), so a deep open stack
+	// overflowed the N64-sized arrays into adjacent struct menu fields and corrupted
+	// the Combat Sim menu (every item drawn at row 0). g_Menus is pure runtime BSS
+	// (no save/wire/sizeof dependency), so the port just sizes them generously. N64
+	// keeps the original sizes, byte-identical. See docs/PORT_OFFLINE_32_SIMS.md.
+#ifdef PLATFORM_N64
 	/*0x4fc*/ struct menurow rows[VERSION >= VERSION_NTSC_1_0 ? 88 : 80];
 	/*0x65c*/ s32 rowend;
 	/*0x660*/ struct menucolumn cols[VERSION >= VERSION_NTSC_1_0 ? 12 : 10];
 	/*0x6d8*/ s32 colend;
 	/*0x6dc*/ u32 blocks[80]; // for menuitemdata
+#else
+	struct menurow rows[256];
+	s32 rowend;
+	struct menucolumn cols[32];
+	s32 colend;
+	u32 blocks[160]; // for menuitemdata
+#endif
 	/*0x81c*/ s32 blockend;
 	/*0x820*/ u8 unk820;
 	/*0x824*/ s32 xrepeattimer60;

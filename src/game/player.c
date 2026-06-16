@@ -119,7 +119,7 @@ f32 g_CutsceneCurTotalFrame60f;
 s32 g_CutsceneTweenDuration60;
 f32 g_CutsceneTweenFrac; // 0 when bars across the top and bottom, 1 when fullscreen
 u32 var8009de34;
-s16 g_SpawnPoints[24];
+s16 g_SpawnPoints[MAX_SPAWN_POINTS];
 s32 g_NumSpawnPoints;
 
 struct vimode g_ViModes[] = {
@@ -225,9 +225,9 @@ s32 g_NumDeathAnimations = 0;
  */
 f32 playerChooseSpawnLocation(f32 chrradius, struct coord *dstpos, RoomNum *dstrooms, struct prop *prop, s16 *pads, s32 numpads)
 {
-	u8 verybadpads[24];
-	u8 badpads[24];
-	f32 padsqdists[24];
+	u8 verybadpads[MAX_SPAWN_POINTS];
+	u8 badpads[MAX_SPAWN_POINTS];
+	f32 padsqdists[MAX_SPAWN_POINTS];
 
 	u8 stack1[0x10];
 	f32 xdiff;
@@ -258,11 +258,12 @@ f32 playerChooseSpawnLocation(f32 chrradius, struct coord *dstpos, RoomNum *dstr
 #endif
 
 #ifndef PLATFORM_N64
-	// Backstop for the documented "24+ pads" overflow above: custom maps can
-	// hand more pads than these fixed 24-element stack arrays hold, which stomps
-	// adjacent locals and crashes the g_Vars.players[] loop below on a garbage
-	// pointer. The primary clamp is at the g_SpawnPoints population site
-	// (playerreset.c); guard here too so every caller is safe.
+	// Backstop for the documented "24+ pads" overflow above. The port sizes
+	// g_SpawnPoints[] and these scratch arrays to MAX_SPAWN_POINTS (256) so custom
+	// maps (AIO mod stages) no longer overflow them at realistic pad counts. This
+	// final clamp keeps any caller safe even if a map somehow exceeds that cap:
+	// without it, numpads > the array size would stomp adjacent locals and crash
+	// the g_Vars.players[] loop below on a garbage pointer.
 	if (numpads > ARRAYCOUNT(verybadpads)) {
 		numpads = ARRAYCOUNT(verybadpads);
 	}

@@ -327,13 +327,18 @@ arrays** `verybadpads`/`badpads`/`padsqdists` out of bounds, stomping the adjace
 deref. This is exactly the `@dangerous` "24+ pads" note in the function's own header comment.
 Stock N64 stages never exceed 24 pads, so the original decompiled code never overflowed.
 
-Fix (two clamps, both `#ifndef PLATFORM_N64`, N64 byte-identical): (1) **root** — clamp the
-population at playerreset.c:177 to `g_NumSpawnPoints < 24` (also protects the race/paint
-`.inc` readers that loop over `g_SpawnPoints[]`); (2) **backstop** — clamp `numpads >
-ARRAYCOUNT(verybadpads)` at the top of `playerChooseSpawnLocation` so any caller / future
-custom content is safe (the race/paint callers already cap their candidate arrays at 24).
+Fix — **enlarge the arrays** (the PC port has no N64 BSS-size constraint, so the right fix is
+capacity, not truncation): new `MAX_SPAWN_POINTS` in constants.h — `24` on N64 (BSS/stack
+layout byte-identical), `256` on the port. `g_SpawnPoints[]` (player.c) and the
+`verybadpads`/`badpads`/`padsqdists` scratch arrays in `playerChooseSpawnLocation` are sized
+to it, so custom maps at realistic pad counts simply fit instead of being silently dropped.
+Two `#ifndef PLATFORM_N64` bound guards are kept purely as backstops against a map exceeding
+even the 256 cap: the population write in playerreset.c (`g_NumSpawnPoints < MAX_SPAWN_POINTS`,
+which also protects the race/paint `.inc` readers) and the `numpads > ARRAYCOUNT(verybadpads)`
+clamp at the top of `playerChooseSpawnLocation`. (Earlier revision clamped both to 24, which
+stopped the crash but truncated valid spawn pads on big custom maps.)
 
-| 27 | `playerChooseSpawnLocation` player.c:280 | AV read (garbage ptr `0x7fffffff…`, RDX→i=30) | crash | custom map (>24 `INTROCMD_SPAWN` pads) overflows `g_SpawnPoints[24]` → `numpads>24` overflows the fn's 24-element stack arrays → stomps the player-loop counter → OOB `g_Vars.players[i]` deref | clamp population to <24 (playerreset.c) + `numpads` backstop in playerChooseSpawnLocation; both `#ifndef PLATFORM_N64` | fixed (source) |
+| 27 | `playerChooseSpawnLocation` player.c:280 | AV read (garbage ptr `0x7fffffff…`, RDX→i=30) | crash | custom map (>24 `INTROCMD_SPAWN` pads) overflows `g_SpawnPoints[24]` → `numpads>24` overflows the fn's 24-element stack arrays → stomps the player-loop counter → OOB `g_Vars.players[i]` deref | enlarge `g_SpawnPoints[]` + scratch arrays to `MAX_SPAWN_POINTS` (24 N64 / 256 port); keep population + `numpads` bound guards as `#ifndef PLATFORM_N64` backstops | fixed (source) |
 
 > Keep appending here on every new crash: site, fault, root, fix, status. The table is
 > the map; the pattern section is the territory.

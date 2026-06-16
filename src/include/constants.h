@@ -63,6 +63,17 @@
 #else
 #define MAX_ONSCREEN_PROPS 1024
 #endif
+// Capacity of g_SpawnPoints[] and the spawn-selection scratch arrays
+// (verybadpads/badpads/padsqdists) in playerChooseSpawnLocation. Stock N64 stages
+// declare at most 24 INTROCMD_SPAWN pads, so N64 keeps 24 and the original
+// BSS/stack layout stays byte-identical. The port enlarges it: custom maps (AIO
+// mod stages) can declare more pads, and the original fixed 24-entry arrays
+// overflowed -> crash (see docs/PORT_NET_CRASH_LEDGER.md #27).
+#ifdef PLATFORM_N64
+#define MAX_SPAWN_POINTS 24
+#else
+#define MAX_SPAWN_POINTS 256
+#endif
 #define MAX_SQUADRONS          16
 #define MAX_TEAMS              8
 #define MAX_PLAYERNAME         15

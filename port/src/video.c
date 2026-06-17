@@ -91,6 +91,12 @@ static s32 texExternal = false;
 // go black with /dlcache (the recorder imports off-screen textures, overflowing the
 // cap -> on-screen textures get LRU-evicted). Live override: /texcache N.
 static s32 texCacheSize = 4096;
+// Cached display-list backface-cull mode (see /dlcache cull). "auto" = per-segment
+// recorded G_CULL_* + winding (perf default). Some GPU drivers cull cached geometry
+// the immediate (CPU-culled) path doesn't, dropping whole walls (black on GL /
+// see-through on Vulkan); "off" draws both faces (opaque is z-buffer-identical) and
+// is the persistent form of /dlcache cull off. Values: auto|off|back|front.
+static char vidDlCacheCull[16] = "auto";
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -129,6 +135,21 @@ s32 videoInit(void)
 	{
 		extern void gfx_set_texture_cache_size(int n);
 		gfx_set_texture_cache_size(texCacheSize);
+	}
+
+	// Persisted cached-cull mode (Video.DlCacheCull). Lets a driver that mis-culls
+	// cached geometry pin "off" permanently instead of re-typing /dlcache cull off.
+	{
+		extern void gfx_dlcache_set_cullmode(int mode);
+		int cm = 0; // auto
+		if (strcmp(vidDlCacheCull, "off") == 0) {
+			cm = 1;
+		} else if (strcmp(vidDlCacheCull, "back") == 0) {
+			cm = 2;
+		} else if (strcmp(vidDlCacheCull, "front") == 0) {
+			cm = 3;
+		}
+		gfx_dlcache_set_cullmode(cm);
 	}
 
 #ifdef USE_SDLGPU
@@ -932,4 +953,5 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterFloat("Video.OverexposureScale", &vidOverexposureScale, 0.f, 1.f);
 	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
 	configRegisterInt("Video.TextureCacheSize", &texCacheSize, 256, 262144);
+	configRegisterString("Video.DlCacheCull", vidDlCacheCull, sizeof(vidDlCacheCull));
 }

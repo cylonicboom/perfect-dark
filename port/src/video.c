@@ -97,6 +97,12 @@ static s32 texCacheSize = 4096;
 // see-through on Vulkan); "off" draws both faces (opaque is z-buffer-identical) and
 // is the persistent form of /dlcache cull off. Values: auto|off|back|front.
 static char vidDlCacheCull[16] = "auto";
+// Display-list cache master enable (Video.DlCache; mirrors /dlcache on|off and the
+// Extended>Video "Display List Cache" checkbox). Default on. Turn off to skip the
+// GPU-resident cache entirely on hardware where it mis-renders (black/stretched/
+// mis-coloured cached geometry) -- see docs/PORT_DLCACHE_BLACK_TEXTURES.md. Off is
+// byte-identical to a non-cached build.
+static s32 vidDlCache = 1;
 // Cached display-list front-face winding (see /dlcache ff). The cache GPU-culls
 // with this winding; the immediate path CPU-culls and is unaffected. The CORRECT
 // winding is PER-RENDERER: Vulkan/SDL_GPU flips Y in NDC, which reverses triangle
@@ -156,6 +162,17 @@ s32 videoInit(void)
 	{
 		extern void gfx_set_texture_cache_size(int n);
 		gfx_set_texture_cache_size(texCacheSize);
+	}
+
+	// Persisted display-list-cache master enable (Video.DlCache). Default on; off
+	// skips the cache (correct on hardware where it mis-renders).
+	{
+		extern bool g_DlCacheEnabled;
+		extern void gfx_dlcache_clear(void);
+		g_DlCacheEnabled = (bool)vidDlCache;
+		if (!vidDlCache) {
+			gfx_dlcache_clear();
+		}
 	}
 
 	// Persisted cached-cull mode (Video.DlCacheCull). Lets a driver that mis-culls
@@ -759,6 +776,25 @@ void videoSetExternalTextures(s32 external)
 	videoResetTextureCache();
 }
 
+// Display-list cache master enable (Extended > Video "Display List Cache" +
+// Video.DlCache). Off skips the GPU-resident cache (byte-identical to non-cached).
+s32 videoGetDlCacheEnabled(void)
+{
+	extern bool g_DlCacheEnabled;
+	return g_DlCacheEnabled;
+}
+
+void videoSetDlCacheEnabled(s32 on)
+{
+	extern bool g_DlCacheEnabled;
+	extern void gfx_dlcache_clear(void);
+	vidDlCache = !!on;
+	g_DlCacheEnabled = (bool)vidDlCache;
+	if (!on) {
+		gfx_dlcache_clear(); // drop any recorded buffers when disabling
+	}
+}
+
 // Cached display-list cull winding for the LIVE renderer (Extended > Video "DL
 // Cache Flip Winding" + Video.DlCacheFrontFaceGL/GPU). off = default ccw, on = cw
 // (the persistent /dlcache ff). Per-renderer so flipping it for Vulkan can't break
@@ -998,6 +1034,7 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterFloat("Video.OverexposureScale", &vidOverexposureScale, 0.f, 1.f);
 	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
 	configRegisterInt("Video.TextureCacheSize", &texCacheSize, 256, 262144);
+	configRegisterInt("Video.DlCache", &vidDlCache, 0, 1);
 	configRegisterString("Video.DlCacheCull", vidDlCacheCull, sizeof(vidDlCacheCull));
 	configRegisterString("Video.DlCacheFrontFaceGL", vidDlCacheFrontGL, sizeof(vidDlCacheFrontGL));
 	configRegisterString("Video.DlCacheFrontFaceGPU", vidDlCacheFrontGpu, sizeof(vidDlCacheFrontGpu));

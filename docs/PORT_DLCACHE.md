@@ -272,7 +272,7 @@ net session.
 
 | Command | Effect |
 |---|---|
-| `/dlcache` or `on` / `off` | toggle `g_DlCacheEnabled` (`bg.c`); `off` also clears the cache |
+| `/dlcache` or `on` / `off` | toggle `g_DlCacheEnabled` (`bg.c`); `off` also clears the cache. **Persist with `Video.DlCache = 0\|1` in `pd.ini` or the Extended > Video "Display List Cache" checkbox** (default on) — the clean off-switch for hardware where the cache mis-renders (see `docs/PORT_DLCACHE_BLACK_TEXTURES.md`); off is byte-identical to a non-cached build |
 | `/dlcache stats` | cached/bad entry counts, last-frame replayed segments + tris, front-face winding |
 | `/dlcache clear` | drop all cached buffers (re-record next frame) |
 | `/dlcache ff` (alias `frontface`) | **calibration:** flip the front-face winding used for cached backface culling. If cached geometry shows inside-out / missing faces vs `/dlcache off`, flip this once. Read live at replay (no re-record). **Persist per-renderer with `Video.DlCacheFrontFaceGL` / `Video.DlCacheFrontFaceGPU = ccw\|cw` in `pd.ini`, or the "DL Cache Flip Winding" checkbox in Extended > Video** (off = `ccw`, on = `cw`; `menuhandlerDlCacheWinding` → `videoSet/GetDlCacheFlipWinding`, which read/write the **live renderer's** key + apply live). **The winding is per-renderer** — Vulkan/SDL_GPU reverses NDC Y vs OpenGL, so the same machine can need `ccw` on GL and `cw` on Vulkan; a single shared winding forced the wrong value on the other backend (every back face rendered). The override is applied in `videoInit` *after* the SDL_GPU probe settles `renderingAPI`, so the right backend value is used. Defaults `ccw`/`ccw` are unchanged; an affected machine pins just the affected backend (e.g. `DlCacheFrontFaceGPU=cw`) instead of re-typing `/dlcache ff`. |

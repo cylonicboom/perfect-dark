@@ -1179,6 +1179,22 @@ static MenuItemHandlerResult menuhandlerExternalTex(s32 operation, struct menuit
 	return 0;
 }
 
+// Display-list cache master enable. Off skips the GPU-resident cache entirely
+// (byte-identical to a non-cached build) -- the escape on hardware where the cache
+// mis-renders. See docs/PORT_DLCACHE_BLACK_TEXTURES.md.
+static MenuItemHandlerResult menuhandlerDlCache(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return videoGetDlCacheEnabled();
+	case MENUOP_SET:
+		videoSetDlCacheEnabled(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
 // DL Cache cull winding (the persistent /dlcache ff). Off = default CCW; On = CW,
 // for GPU drivers that cull cached geometry the wrong way (walls black on GL /
 // see-through on Vulkan). See docs/PORT_DLCACHE.md.
@@ -1542,6 +1558,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		(uintptr_t)"External Textures",
 		0,
 		menuhandlerExternalTex,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Display List Cache",
+		0,
+		menuhandlerDlCache,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

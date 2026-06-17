@@ -87,6 +87,8 @@ void videoSetTextureFilter2D(s32 filter);
 void videoSetAnisotropicFilter(u32 filter);
 void videoSetDetailTextures(s32 detail);
 void videoSetExternalTextures(s32 external);
+s32 videoGetDlCacheEnabled(void);
+void videoSetDlCacheEnabled(s32 on);
 s32 videoGetDlCacheFlipWinding(void);
 void videoSetDlCacheFlipWinding(s32 flip);
 void videoSetDisplayMode(const s32 index);

@@ -94,6 +94,52 @@ non-cached build).
 
 ---
 
+## BUG C — Vulkan/SDL_GPU per-vertex cache glitches — OPEN
+
+**Symptom (screenshots, 2026-06-17):** with `/dlcache on` and the **correct** winding
+(toggle off / ccw — the default is right for this machine's Vulkan), the level is
+mostly correct but a *few* vertices per area are wrong: **stretched/smeared textures**
+(a vertex UV way off — "stretched one way, repeating the other"), **mis-coloured
+vertices** (e.g. a vivid blue bleed on a stone wall), and the occasional **missing
+vertex**. `BAD 0`, `TEX` well under cap. **Intermittent — moving away and back fixes
+it** (re-record / colour-dirty re-record settles it).
+
+**Important correction to Bug A's story:** on this machine the correct Vulkan cull
+winding is the **default ccw** (enabling the flip = all back faces). The earlier
+"`/dlcache ff` fixed Vulkan" reading didn't survive later builds — treat Bug A's fix
+as "persist the winding the machine wants," not "Vulkan always wants cw."
+
+**Audited and RULED OUT (SDL_GPU cache path is correct on paper):**
+- Buffer upload — whole `memcpy` of `num_floats*4`, correct (`gfx_sdlgpu_cache_create_buffer`).
+- Vertex **pitch** — `(num_floats+1)*4`, correct (the trailing `aShadeIdx`).
+- Vertex **attribute offsets** — `aShadeIdx` at offset `num_floats`, matches the record side.
+- Not winding/cull (correct winding set), not eviction (`TEX` low), not `BAD`.
+
+**Leading read:** same family as Bug B — the **2023 driver mishandling the GPU-resident
+cache**, here as transient per-vertex glitches the code path doesn't explain. Dev can't
+repro. Intermittent + self-healing + driver-specific = a driver/timing quirk, not a
+clean code bug.
+
+**Next probe if resumed:** `/dlcache palette off` on the *colour* glitch — if the blue
+bleed clears, the colour **index** (`aShadeIdx`) is being misread for some vertices
+(implicates the trailing-float attribute on that driver); the UV stretch is separate.
+
+---
+
+## Verdict for this machine + the off-switch
+
+The dlcache mis-renders on this user's 2023 driver on **both** backends (Bug B black
+GL textures, Bug C Vulkan per-vertex glitches), with the data path correct on paper.
+The cache is **on by default** (`g_DlCacheEnabled = true`, `bg.c`). Shipped a
+persistent **off-switch** so affected hardware can opt out cleanly:
+- `Video.DlCache = 0` in `pd.ini`, or **Extended > Video → "Display List Cache"** (off),
+  or `/dlcache off`. Off is **byte-identical to a non-cached build** — zero glitches.
+
+Recommend this user run with the cache **off** until/unless the driver-class issues are
+solved. Same recommendation pre-emptively for the OG Xbox target below.
+
+---
+
 ## Diagnostics / levers added today (all in `docs/PORT_DLCACHE.md`)
 - `/dlcache palette [on|off]` — isolate the shader-side shade path (baked vs live).
 - `/texcache N` + `Video.TextureCacheSize` + `tex used/max` in `/dlcache stats` and the

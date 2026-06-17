@@ -1179,6 +1179,22 @@ static MenuItemHandlerResult menuhandlerExternalTex(s32 operation, struct menuit
 	return 0;
 }
 
+// DL Cache cull winding (the persistent /dlcache ff). Off = default CCW; On = CW,
+// for GPU drivers that cull cached geometry the wrong way (walls black on GL /
+// see-through on Vulkan). See docs/PORT_DLCACHE.md.
+static MenuItemHandlerResult menuhandlerDlCacheWinding(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return videoGetDlCacheFlipWinding();
+	case MENUOP_SET:
+		videoSetDlCacheFlipWinding(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerTexFilter2D(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -1526,6 +1542,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		(uintptr_t)"External Textures",
 		0,
 		menuhandlerExternalTex,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"DL Cache Flip Winding",
+		0,
+		menuhandlerDlCacheWinding,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

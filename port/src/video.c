@@ -743,6 +743,20 @@ void videoSetExternalTextures(s32 external)
 	videoResetTextureCache();
 }
 
+// Cached display-list cull winding (Extended > Video "DL Cache Flip Winding" +
+// Video.DlCacheFrontFace). off = default ccw, on = cw (the persistent /dlcache ff).
+s32 videoGetDlCacheFlipWinding(void)
+{
+	return strcmp(vidDlCacheFront, "cw") == 0;
+}
+
+void videoSetDlCacheFlipWinding(s32 flip)
+{
+	extern void gfx_dlcache_set_frontface(int ccw);
+	strcpy(vidDlCacheFront, flip ? "cw" : "ccw");
+	gfx_dlcache_set_frontface(flip ? 0 : 1); // cw = front-face NOT ccw
+}
+
 s32 videoCreateFramebuffer(u32 w, u32 h, s32 upscale, s32 autoresize)
 {
 	if (!wmAPI) return -1;

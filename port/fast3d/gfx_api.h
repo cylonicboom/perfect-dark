@@ -81,5 +81,7 @@ int gfx_dlcache_get_cullmode(void);
 void gfx_dlcache_get_stats(uint32_t *entries, uint32_t *bad, uint32_t *segments, uint32_t *tris, uint32_t *reasons);
 void gfx_dlcache_set_palette(int on); // diagnostic: 0 = baked shade (isolate vertex-shading bugs)
 int gfx_dlcache_get_palette(void);
+void gfx_set_texture_cache_size(int n);          // texture-cache COUNT cap (black-texture fix lever)
+void gfx_get_texture_cache_fill(int* used, int* max);
 
 #endif

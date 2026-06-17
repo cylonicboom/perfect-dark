@@ -6536,6 +6536,21 @@ s32 netConsoleCommand(const char *line)
 			g_BgOctreeEnabled = on;
 			sysLogPrintf(LOG_CHAT, "OCTREE: culling %s", on ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "texcache") == 0) {
+		// /texcache [N]   texture-cache COUNT cap. The usual /dlcache "black textures"
+		// cause: the recorder imports a leaf's OFF-screen textures too (clip-reject is
+		// off while recording), so with HD packs the working set overflows the cap and
+		// LRU-evicts on-screen textures -> they sample black. Raise N until the fill
+		// reads tex used < max with no FULL while standing where the black appears.
+		extern void gfx_set_texture_cache_size(int n);
+		extern void gfx_get_texture_cache_fill(int *used, int *max);
+		int texused = 0, texmax = 0;
+		if (arg[0]) {
+			gfx_set_texture_cache_size(atoi(arg));
+		}
+		gfx_get_texture_cache_fill(&texused, &texmax);
+		sysLogPrintf(LOG_CHAT, "TEXCACHE: used=%d max=%d%s", texused, texmax,
+				(texused >= texmax) ? "  FULL -> evicting on-screen textures (black); raise max" : "");
 	} else if (strcmp(cmd, "dlcache") == 0) {
 		// /dlcache [on|off]   GPU-resident caching of static room display lists
 		// /dlcache stats      print cache counters
@@ -6559,9 +6574,16 @@ s32 netConsoleCommand(const char *line)
 			u32 visdrawn = 0, visculled = 0, visabsorbed = 0;
 			gfx_dlcache_get_stats(&entries, &bad, &segments, &tris, &reasons);
 			gfx_dlcache_get_vis_stats(&visdrawn, &visculled, &visabsorbed);
-			sysLogPrintf(LOG_CHAT, "DLCACHE: %s  cached=%u bad=%u  front=%s",
-					g_DlCacheEnabled ? "ON" : "OFF", entries, bad,
-					gfx_dlcache_get_frontface() ? "CCW" : "CW");
+			{
+				int texused = 0, texmax = 0;
+				extern void gfx_get_texture_cache_fill(int *used, int *max);
+				gfx_get_texture_cache_fill(&texused, &texmax);
+				sysLogPrintf(LOG_CHAT, "DLCACHE: %s  cached=%u bad=%u  front=%s  tex=%d/%d%s",
+						g_DlCacheEnabled ? "ON" : "OFF", entries, bad,
+						gfx_dlcache_get_frontface() ? "CCW" : "CW",
+						texused, texmax,
+						(texused >= texmax) ? " FULL(evicting->black)" : "");
+			}
 			sysLogPrintf(LOG_CHAT, "DLCACHE: replayed last frame: batches=%u tris=%u draws=%d (gap=%d)",
 					segments, tris, gfx_dlcache_get_frame_draws(), gfx_dlcache_get_gap_tris());
 			if (visdrawn || visculled || visabsorbed) {
@@ -6680,6 +6702,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /dlcache cull [auto|off|back|front] cached backface-cull mode (debug missing rooms)");
 		sysLogPrintf(LOG_CHAT, "  /dlcache gap [tris]              octree-hole absorb size for merged cached draws");
 		sysLogPrintf(LOG_CHAT, "  /dlcache palette [on|off]        GPU vertex-shade off = baked shade (debug black/no-flash walls)");
+		sysLogPrintf(LOG_CHAT, "  /texcache [N]                    texture-cache size cap (raise to fix dlcache black textures)");
 		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");

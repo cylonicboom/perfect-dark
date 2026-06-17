@@ -69,7 +69,15 @@ uintptr_t gfxFramebuffer;
 // the visible working set grows. Raised so a level's HD working set fits without
 // eviction; memory is still bounded by the textures actually loaded. (fast3d is
 // desktop-only - there is no N64 build of this file.)
-#define TEXTURE_CACHE_MAX_SIZE 4096
+#define TEXTURE_CACHE_DEFAULT_SIZE 4096
+
+// Runtime-adjustable (live: /texcache N). The dlcache RECORDER additionally
+// imports a leaf's OFF-screen textures (clip-reject is disabled while recording,
+// gfx_sp_tri1), so with HD packs the working set can exceed the fixed cap and
+// LRU-evict on-screen textures -> they sample black, and the eviction churns the
+// dlcache (PORT_DLCACHE.md). Raise this until the level's working set fits without
+// eviction; watch the fill via /texcache or /dlcache stats (tex=used/max).
+static int g_TextureCacheMaxSize = TEXTURE_CACHE_DEFAULT_SIZE;
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
@@ -769,7 +777,7 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
         return true;
     }
 
-    if (gfx_texture_cache.map.size() >= TEXTURE_CACHE_MAX_SIZE) {
+    if (gfx_texture_cache.map.size() >= (size_t)g_TextureCacheMaxSize) {
         // Remove the texture that was least recently used
         dlcacheInvalidateAll(); // the evicted texture id may be referenced by a cached segment
         it = gfx_texture_cache.lru.front().it;
@@ -3078,6 +3086,20 @@ extern "C" void gfx_dlcache_set_gap_tris(int tris) {
 
 extern "C" void gfx_dlcache_set_palette(int on) {
     g_DlCachePaletteEnabled = (on != 0); // read live at replay; no re-record
+}
+
+// Texture-cache COUNT cap + current fill. The cap is the usual cause of dlcache
+// "black textures": the recorder imports off-screen textures too, overflowing the
+// cap -> LRU evicts on-screen textures (PORT_DLCACHE.md). Raising the cap live lets
+// the working set fit; nothing is freed, so it takes effect on the next imports.
+extern "C" void gfx_set_texture_cache_size(int n) {
+    if (n < 256) n = 256;
+    g_TextureCacheMaxSize = n;
+}
+
+extern "C" void gfx_get_texture_cache_fill(int* used, int* max) {
+    if (used) *used = (int)gfx_texture_cache.map.size();
+    if (max) *max = g_TextureCacheMaxSize;
 }
 
 extern "C" int gfx_dlcache_get_palette(void) {

@@ -87,6 +87,10 @@ static s32 texDetail = false;
 static s32 texMipmapFilter = MIPMAP_LINEAR;
 static u32 texAnisotropicFilter = 4;
 static s32 texExternal = false;
+// Texture-cache COUNT cap (see gfx_pc.cpp). Default 4096; raise for HD packs that
+// go black with /dlcache (the recorder imports off-screen textures, overflowing the
+// cap -> on-screen textures get LRU-evicted). Live override: /texcache N.
+static s32 texCacheSize = 4096;
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -119,6 +123,13 @@ s32 videoInit(void)
 #else
 	wmAPI = &gfx_sdl;
 	renderingAPI = &gfx_opengl_api;
+
+	// Push the configured texture-cache cap into the renderer (Video.TextureCacheSize
+	// from pd.ini). Sets a renderer global read live at texture import; safe pre-context.
+	{
+		extern void gfx_set_texture_cache_size(int n);
+		gfx_set_texture_cache_size(texCacheSize);
+	}
 
 #ifdef USE_SDLGPU
 	// Optional SDL_GPU (Vulkan) renderer. Probed before the window exists so
@@ -920,4 +931,5 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterFloat("Video.GlareBrightness", &vidGlareBrightness, 0.f, 1.f);
 	configRegisterFloat("Video.OverexposureScale", &vidOverexposureScale, 0.f, 1.f);
 	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
+	configRegisterInt("Video.TextureCacheSize", &texCacheSize, 256, 262144);
 }

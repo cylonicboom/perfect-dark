@@ -246,6 +246,23 @@ Also cleared by `/dlcache off` and `/dlcache clear`.
 > doesn't persist across those events yet — a Phase-3 "purge only affected
 > textures" change (the existing `bgunFreeGunMem` TODO) would fix it.
 
+> **Black textures with `/dlcache on` (the recorder texture-import amplifier).**
+> The record frame draws the **whole leaf with clip-reject disabled** (`gfx_sp_tri1`,
+> so off-screen geometry is captured), which means it also runs `import_texture` for
+> the leaf's **off-screen** textures — textures the immediate path never loads. On a
+> large/HD texture set this inflates the working set past `TEXTURE_CACHE_MAX_SIZE`
+> (the **count** cap), so the LRU evicts **on-screen** textures; they bind to
+> evicted/reused ids and render **black**. Every eviction also wipes the dlcache
+> (`dlcacheInvalidateAll`), so leaves re-record, re-import, and the thrash sustains
+> itself — which is why `/dlcache clear` (recording stays on) does **not** recover
+> but `/dlcache off` (recording stops) does. Diagnosis: `/dlcache stats` (or
+> `/texcache`) shows `tex=used/max`; if it reads `FULL` while surfaces are black,
+> this is it. Fix/lever: **`/texcache N`** raises the cap live (`g_TextureCacheMaxSize`,
+> default 4096), and **`Video.TextureCacheSize`** in `pd.ini` persists it — raise it
+> until the level's working set fits without eviction (memory is still bounded by the
+> textures actually loaded). This is distinct from the 2026-06-16 fix below, which
+> addressed eviction *churn*; this is eviction caused by the recorder's extra imports.
+
 ---
 
 ## `/dlcache` console command (`net.c`)

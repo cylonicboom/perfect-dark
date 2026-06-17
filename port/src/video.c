@@ -97,12 +97,15 @@ static s32 texCacheSize = 4096;
 // see-through on Vulkan); "off" draws both faces (opaque is z-buffer-identical) and
 // is the persistent form of /dlcache cull off. Values: auto|off|back|front.
 static char vidDlCacheCull[16] = "auto";
-// Cached display-list front-face winding (see /dlcache ff). The cache uses GPU
-// face-culling with this winding; it's driver-dependent (one user's 2023 Vulkan
-// driver culled cached walls that the default CCW kept, fixed by flipping to CW /
-// /dlcache ff). Persist the per-machine override here so culling (and its perf)
-// stays on with the correct winding. Values: ccw (default) | cw.
-static char vidDlCacheFront[8] = "ccw";
+// Cached display-list front-face winding (see /dlcache ff). The cache GPU-culls
+// with this winding; the immediate path CPU-culls and is unaffected. The CORRECT
+// winding is PER-RENDERER: Vulkan/SDL_GPU flips Y in NDC, which reverses triangle
+// winding vs OpenGL, so a machine can want ccw on GL and cw on Vulkan at once. A
+// single global breaks the other renderer (forces every back face), so it's split
+// per backend. off/ccw = default; cw = the persistent /dlcache ff. The active
+// renderer's value is applied at videoInit + by the Extended>Video toggle.
+static char vidDlCacheFrontGL[8] = "ccw";
+static char vidDlCacheFrontGpu[8] = "ccw";
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -115,6 +118,18 @@ static s32 videoInitDisplayModes(void);
 static s32 videoVRRCap(void);
 static s32 videoEffectiveLimit(s32 userlimit);
 void optionsMenuInit();
+
+// The cached-cull winding string for the renderer that is currently live. Vulkan
+// reverses winding vs OpenGL, so each backend keeps its own value.
+static char *videoDlCacheFrontActive(void)
+{
+#ifdef USE_SDLGPU
+	if (renderingAPI == &gfx_sdlgpu_api) {
+		return vidDlCacheFrontGpu;
+	}
+#endif
+	return vidDlCacheFrontGL;
+}
 
 s32 videoInit(void)
 {
@@ -158,13 +173,6 @@ s32 videoInit(void)
 		gfx_dlcache_set_cullmode(cm);
 	}
 
-	// Persisted cached front-face winding (Video.DlCacheFrontFace = ccw|cw). The
-	// driver-dependent /dlcache ff fix, made permanent.
-	{
-		extern void gfx_dlcache_set_frontface(int ccw);
-		gfx_dlcache_set_frontface(strcmp(vidDlCacheFront, "cw") == 0 ? 0 : 1);
-	}
-
 #ifdef USE_SDLGPU
 	// Optional SDL_GPU (Vulkan) renderer. Probed before the window exists so
 	// a missing/broken Vulkan driver falls back to OpenGL cleanly.
@@ -188,6 +196,14 @@ s32 videoInit(void)
 		}
 	}
 #endif
+
+	// Persisted cached front-face winding for the NOW-FINALISED renderer
+	// (Video.DlCacheFrontFaceGL / ...GPU). Applied here, after the SDL_GPU probe
+	// settles renderingAPI, so the right per-backend value is used.
+	{
+		extern void gfx_dlcache_set_frontface(int ccw);
+		gfx_dlcache_set_frontface(strcmp(videoDlCacheFrontActive(), "cw") == 0 ? 0 : 1);
+	}
 
 	gfx_current_native_viewport.width = 320;
 	gfx_current_native_viewport.height = 220;
@@ -743,17 +759,19 @@ void videoSetExternalTextures(s32 external)
 	videoResetTextureCache();
 }
 
-// Cached display-list cull winding (Extended > Video "DL Cache Flip Winding" +
-// Video.DlCacheFrontFace). off = default ccw, on = cw (the persistent /dlcache ff).
+// Cached display-list cull winding for the LIVE renderer (Extended > Video "DL
+// Cache Flip Winding" + Video.DlCacheFrontFaceGL/GPU). off = default ccw, on = cw
+// (the persistent /dlcache ff). Per-renderer so flipping it for Vulkan can't break
+// OpenGL (and vice versa).
 s32 videoGetDlCacheFlipWinding(void)
 {
-	return strcmp(vidDlCacheFront, "cw") == 0;
+	return strcmp(videoDlCacheFrontActive(), "cw") == 0;
 }
 
 void videoSetDlCacheFlipWinding(s32 flip)
 {
 	extern void gfx_dlcache_set_frontface(int ccw);
-	strcpy(vidDlCacheFront, flip ? "cw" : "ccw");
+	strcpy(videoDlCacheFrontActive(), flip ? "cw" : "ccw");
 	gfx_dlcache_set_frontface(flip ? 0 : 1); // cw = front-face NOT ccw
 }
 
@@ -981,5 +999,6 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
 	configRegisterInt("Video.TextureCacheSize", &texCacheSize, 256, 262144);
 	configRegisterString("Video.DlCacheCull", vidDlCacheCull, sizeof(vidDlCacheCull));
-	configRegisterString("Video.DlCacheFrontFace", vidDlCacheFront, sizeof(vidDlCacheFront));
+	configRegisterString("Video.DlCacheFrontFaceGL", vidDlCacheFrontGL, sizeof(vidDlCacheFrontGL));
+	configRegisterString("Video.DlCacheFrontFaceGPU", vidDlCacheFrontGpu, sizeof(vidDlCacheFrontGpu));
 }

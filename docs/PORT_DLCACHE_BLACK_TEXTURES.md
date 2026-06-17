@@ -30,7 +30,7 @@ both.
 - `/dlcache ff` (flip winding, cull still **on**) → **also fixed** ⇒ **pure winding mismatch**, not cull-vs-no-cull. Culling + its perf can stay on.
 
 **Fixes shipped (per-machine overrides; defaults unchanged so other machines untouched):**
-- `Video.DlCacheFrontFace = ccw|cw` (pd.ini) — preferred (keeps culling + perf).
+- `Video.DlCacheFrontFaceGL|GPU = ccw|cw` (per-renderer — Vulkan reverses winding vs GL) (pd.ini) — preferred (keeps culling + perf).
 - **Extended > Video → "DL Cache Flip Winding"** checkbox — same backing store, applies live.
 - `Video.DlCacheCull = auto|off|back|front` (pd.ini) — the cull-off escape, also persisted.
 - Console: `/dlcache ff`, `/dlcache cull off` (live, non-persistent).

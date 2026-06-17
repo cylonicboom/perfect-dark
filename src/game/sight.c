@@ -1708,6 +1708,19 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 		sight = SIGHT_CLASSIC;
 	}
 
+	// Universal Crosshair: force the custom reticle (colour/size from the
+	// crosshair settings) for every weapon, replacing weapon-specific sights
+	// like the classic GE crosshair, the Maian triangles (Phoenix/Callisto/
+	// FarSight) and the Mauler/Reaper charge reticle. SIGHT_DEFAULT routes
+	// through sightDrawDefault + sightDrawTarget, both of which honour
+	// SIGHT_COLOUR/SIGHT_SCALE. Takes precedence over Force Classic when both
+	// are on. SIGHT_NONE (melee/scanner) is preserved so they stay
+	// reticle-less. Zoom-capable weapons keep their FOV change (handled in the
+	// gun code) but lose the corner-bracket/scope overlay.
+	if (sight != SIGHT_NONE && PLAYER_EXTCFG().crosshairuniversal) {
+		sight = SIGHT_DEFAULT;
+	}
+
 	if (g_Vars.currentplayer->bondhealth <= 0.0f) {
 		// Hide crosshair during death animation
 		sight = SIGHT_NONE;

@@ -6390,6 +6390,7 @@ struct extplayerconfig {
 	s32 crosshairhealth;
 	s32 crosshairforceclassic;
 	s32 crosshairhideunlessaiming;
+	s32 crosshairuniversal;
 	s32 usereloads;
 };
 

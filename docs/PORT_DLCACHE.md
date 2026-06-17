@@ -286,13 +286,17 @@ Renderer side is reached via `extern "C"` shims in `gfx_api.h`
 
 `/dlcache stats` is a one-shot console snapshot. For a **live** readout there's a
 Lua binding `pd.dlcache_stats()` (in `src/game/luaai_api.c`, `#ifndef PLATFORM_N64`)
-returning `{ enabled, cached, bad, batches, tris, fog, lighting, cullboth, empty }`
-straight off `gfx_dlcache_get_stats` + `g_DlCacheEnabled`.
+returning `{ enabled, cached, bad, batches, tris, fog, lighting, cullboth, empty,
+texgen, tex_used, tex_max }` straight off `gfx_dlcache_get_stats` +
+`gfx_get_texture_cache_fill` + `g_DlCacheEnabled`.
 `scripts/dlcache_overlay.lua` draws those top-right (below the octree + perf
 overlays) every frame while `/dlcache` is on — so you can watch `cached` climb as
 rooms record, the replayed `batches`/`tris` rise and fall as you move (and as the
-octree culls), and the `bad:` reason flags appear. Wired into `scripts/init.lua`;
-comment that `load(...)` line out to hide it. Mirrors `scripts/octree_overlay.lua`.
+octree culls), the **`tex used/max` line turn red `FULL`** the moment the texture
+cache overflows (the recorder evicting on-screen textures → black surfaces; raise
+with `/texcache` or `Video.TextureCacheSize`), and the `bad:` reason flags appear.
+Wired into `scripts/init.lua`; comment that `load(...)` line out to hide it.
+Mirrors `scripts/octree_overlay.lua`.
 
 ---
 

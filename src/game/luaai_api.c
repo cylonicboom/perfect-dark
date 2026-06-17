@@ -583,17 +583,23 @@ static int l_pd_octree_stats(lua_State *L)
 }
 
 /* pd.dlcache_stats() -> table { enabled, cached, bad, batches, tris, fog,
- * lighting, cullboth, empty }. Live counters from the display-list cache (see
- * docs/PORT_DLCACHE.md): cached/bad leaf counts, batches/tris replayed last
- * frame, and the reason flags for leaves that fell back to legacy. Unlike
- * `/dlcache stats` (a one-shot console print) this updates every frame. */
+ * lighting, cullboth, empty, texgen, tex_used, tex_max }. Live counters from the
+ * display-list cache (see docs/PORT_DLCACHE.md): cached/bad leaf counts,
+ * batches/tris replayed last frame, the reason flags for leaves that fell back to
+ * legacy, and the texture-cache fill (tex_used/tex_max) -- when used hits max the
+ * recorder is evicting on-screen textures, which renders them black (raise via
+ * /texcache or Video.TextureCacheSize). Unlike `/dlcache stats` (a one-shot
+ * console print) this updates every frame. */
 static int l_pd_dlcache_stats(lua_State *L)
 {
 	extern void gfx_dlcache_get_stats(u32 *entries, u32 *bad, u32 *segments, u32 *tris, u32 *reasons);
+	extern void gfx_get_texture_cache_fill(int *used, int *max);
 	u32 cached = 0, bad = 0, batches = 0, tris = 0, reasons = 0;
+	int texused = 0, texmax = 0;
 	gfx_dlcache_get_stats(&cached, &bad, &batches, &tris, &reasons);
+	gfx_get_texture_cache_fill(&texused, &texmax);
 
-	lua_createtable(L, 0, 9);
+	lua_createtable(L, 0, 12);
 	lua_pushboolean(L, g_DlCacheEnabled); lua_setfield(L, -2, "enabled");
 	lua_pushinteger(L, cached);           lua_setfield(L, -2, "cached");
 	lua_pushinteger(L, bad);              lua_setfield(L, -2, "bad");
@@ -604,6 +610,8 @@ static int l_pd_dlcache_stats(lua_State *L)
 	lua_pushboolean(L, reasons & 0x04);   lua_setfield(L, -2, "cullboth"); /* GFX_DLC_ABORT_CULLBOTH */
 	lua_pushboolean(L, reasons & 0x08);   lua_setfield(L, -2, "empty");    /* GFX_DLC_ABORT_EMPTY */
 	lua_pushboolean(L, reasons & 0x10);   lua_setfield(L, -2, "texgen");   /* GFX_DLC_ABORT_TEXGEN */
+	lua_pushinteger(L, texused);          lua_setfield(L, -2, "tex_used");
+	lua_pushinteger(L, texmax);           lua_setfield(L, -2, "tex_max");
 	return 1;
 }
 #endif

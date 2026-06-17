@@ -97,6 +97,12 @@ static s32 texCacheSize = 4096;
 // see-through on Vulkan); "off" draws both faces (opaque is z-buffer-identical) and
 // is the persistent form of /dlcache cull off. Values: auto|off|back|front.
 static char vidDlCacheCull[16] = "auto";
+// Cached display-list front-face winding (see /dlcache ff). The cache uses GPU
+// face-culling with this winding; it's driver-dependent (one user's 2023 Vulkan
+// driver culled cached walls that the default CCW kept, fixed by flipping to CW /
+// /dlcache ff). Persist the per-machine override here so culling (and its perf)
+// stays on with the correct winding. Values: ccw (default) | cw.
+static char vidDlCacheFront[8] = "ccw";
 
 static u32 dlcount = 0;
 static u32 frames = 0;
@@ -150,6 +156,13 @@ s32 videoInit(void)
 			cm = 3;
 		}
 		gfx_dlcache_set_cullmode(cm);
+	}
+
+	// Persisted cached front-face winding (Video.DlCacheFrontFace = ccw|cw). The
+	// driver-dependent /dlcache ff fix, made permanent.
+	{
+		extern void gfx_dlcache_set_frontface(int ccw);
+		gfx_dlcache_set_frontface(strcmp(vidDlCacheFront, "cw") == 0 ? 0 : 1);
 	}
 
 #ifdef USE_SDLGPU
@@ -954,4 +967,5 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.ExternalTextures", &texExternal, 0, 1);
 	configRegisterInt("Video.TextureCacheSize", &texCacheSize, 256, 262144);
 	configRegisterString("Video.DlCacheCull", vidDlCacheCull, sizeof(vidDlCacheCull));
+	configRegisterString("Video.DlCacheFrontFace", vidDlCacheFront, sizeof(vidDlCacheFront));
 }

@@ -235,8 +235,9 @@ are read by `scripts/ap/client.lua` from the server's `slot_data`:
 
 | Option | Values | Drives |
 |---|---|---|
-| `difficulties` | agent / +special / +perfect | which mission checks exist (§3.1) |
-| `bonus_stages` | off / on | include the 4 bonus stages |
+| `mission_order` | **shuffle (default)** / campaign | **shuffle** decouples stage access from the vanilla order — every stage is an AP item, placed anywhere in the multiworld; you progress as unlocks arrive. `campaign` keeps the vanilla beat-N-⇒-N+1 chain and shuffles only *within* levels. See §9.2 #1. |
+| `difficulties` | agent / +special / +perfect | which mission checks exist (§3.1) and which difficulty unlocks are items (§5/§9.2 #5) |
+| `bonus_stages` | off / on | include the 4 bonus stages in the shuffle pool |
 | `cheat_time_checks` | off / on / all-difficulties | timed-cheat challenges (§3.2) |
 | `objective_checks` | off / on | per-objective granularity (§3.3) |
 | `challenge_checks` | off / on (+`challenge_playercount`) | Combat-Sim challenges (§3.4) |
@@ -244,8 +245,17 @@ are read by `scripts/ap/client.lua` from the server's `slot_data`:
 | `milestone_checks` | off / on | kill/room/weapon milestones (§3.6) |
 | `weapon_logic` | vanilla / shuffled / starting-pistol-only | how weapon items gate solo play |
 | `traps` | off / low / med / high | proportion of trap items |
-| `goal` | final-stage / full-campaign / percent | victory condition (§4) |
+| `goal` | all-missions (default) / final-stage / percent | victory condition (§4) |
 | `death_link` | off / on | AP DeathLink: `pd.on("kill")` on player death → broadcast; inbound kills the player |
+
+**Mission order is shuffled by default.** Each of the (enabled-difficulty) stages
+is a progression **item**; the campaign opens up as those items arrive from the
+multiworld, so the play order is randomized (you might get Skedar Ruins before
+Defection — expected for a randomizer). `mission_order: campaign` is the
+opt-in for players who want the canonical story order with only intra-level
+shuffle. The default `goal` is **all-missions** (clear every enabled stage on its
+highest enabled difficulty), which suits a stage-shuffle seed better than a single
+final-stage goal.
 
 `death_link` is almost free: outbound uses the existing player-death path; inbound
 needs a `pd.kill_player([n])` accessor (a thin wrapper over `playerDie`).
@@ -462,7 +472,7 @@ field/function to flip.
 
 | # | Gate | Vector | Lever (engine site) | Notes |
 |---|---|---|---|---|
-| 1 | **Stage + difficulty access** | A | `isStageDifficultyUnlocked()` (mainmenu.c:1026) | **The spine.** Vanilla derives access from the `besttimes` chain ("beat N ⇒ N+1 unlocks"). AP mode must **decouple**: return true iff the AP unlock set holds this `(stage,difficulty)`. One added branch; controls the whole campaign flow. |
+| 1 | **Stage + difficulty access** | A | `isStageDifficultyUnlocked()` (mainmenu.c:1026) | **The spine — full stage shuffle is the default.** Vanilla derives access from the `besttimes` chain ("beat N ⇒ N+1 unlocks"); in the default `mission_order: shuffle` AP mode this function returns true iff the AP unlock set holds this `(stage,difficulty)`, so each stage becomes a placed item and the play order is randomized. One added branch gates the whole campaign. (`mission_order: campaign` leaves the vanilla chain intact and shuffles only intra-level.) |
 | 2 | **Weapon use** | A | `objTestForPickup()` (propobj.c:18042) to refuse the pickup; **and/or** `bgunPrimaryFunctionDisabled()` (bondgun.c:3456) to deny fire | Pickup-deny = "can't even hold it"; fire-deny = "holds but can't shoot". Pick one per `weapon_logic` option. Both already exist as choke points. |
 | 3 | **Starting loadout** | A | intro-weapon loop in `playerLoadDefaults()` (player.c:705) | Skip `INTROCMD_WEAPON` grants for not-yet-unlocked guns ⇒ start missions with pistol only. |
 | 4 | **Gadgets / devices** | A | `currentPlayerSetDeviceActive()` (game_0b0fd0.c:388) — refuse to set the `devicesactive` bit | Single point for all 11 devices (Night Vision, IR/X-Ray, Cloak, Eyespy, R-Tracker, …). Locked device just won't toggle on. |

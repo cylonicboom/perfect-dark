@@ -5937,6 +5937,20 @@ const char var7f1b27a4[] = "Tune Selector - mode %d\n";
 u32 menuChooseMusic(void)
 {
 	s32 missionsuccess = MUSIC_MISSION_SUCCESS;
+#ifndef PLATFORM_N64
+	// "Randomise Menu Music": cache one random track for the Combat Sim menu so
+	// repeated menuChooseMusic calls during a single visit return the same track
+	// (no restart stutter), and re-roll it whenever music is chosen for anything
+	// that isn't the CS menu (match end, pause, main menu …) so each return to
+	// the CS menu gets a fresh track.
+	extern s32 g_MpRandomiseMenuMusic;
+	extern s32 mpChooseMenuMusic(void);
+	static s32 s_mpMenuMusicCache = -1;
+
+	if (g_MenuData.root != MENUROOT_MPSETUP && g_MenuData.root != MENUROOT_4MBMAINMENU) {
+		s_mpMenuMusicCache = -1;
+	}
+#endif
 
 	if (g_StageIndex == STAGEINDEX_DEFENSE) {
 		missionsuccess = MUSIC_MISSION_UNKNOWN;
@@ -5976,6 +5990,16 @@ u32 menuChooseMusic(void)
 	}
 
 	if (g_MenuData.root == MENUROOT_MPSETUP || g_MenuData.root == MENUROOT_4MBMAINMENU) {
+#ifndef PLATFORM_N64
+		if (g_MpRandomiseMenuMusic) {
+			if (s_mpMenuMusicCache < 0) {
+				s_mpMenuMusicCache = mpChooseMenuMusic();
+			}
+			if (s_mpMenuMusicCache >= 0) {
+				return s_mpMenuMusicCache;
+			}
+		}
+#endif
 		return MUSIC_COMBATSIM_MENU;
 	}
 

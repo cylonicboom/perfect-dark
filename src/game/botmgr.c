@@ -47,7 +47,26 @@ void botmgrAllocateBot(s32 chrnum, s32 aibotnum)
 		bodynum = BODY_DDSHOCK;
 	}
 
+#ifndef PLATFORM_N64
+	// "Randomise Heights" sim toggle: tell body.c whether to apply the height
+	// variation to this sim's model. The height RNG is consumed regardless (so
+	// the deterministic allocation stream matches across peers); only the
+	// applied scale is gated, and only for the duration of this bot's alloc.
+	{
+		extern s32 g_MpVarySimHeight;
+		extern u8 g_MpSimFixedHeight;
+		g_MpSimFixedHeight = g_MpVarySimHeight ? 0 : 1;
+	}
+#endif
+
 	model = bodyAllocateModel(bodynum, headnum, 0);
+
+#ifndef PLATFORM_N64
+	{
+		extern u8 g_MpSimFixedHeight;
+		g_MpSimFixedHeight = 0;
+	}
+#endif
 
 	if (model != NULL) {
 		struct coord pos = {0.0f, 0.0f, 0.0f};

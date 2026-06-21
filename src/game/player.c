@@ -504,8 +504,21 @@ f32 playerChooseSpawnLocation(f32 chrradius, struct coord *dstpos, RoomNum *dstr
 
 		dstangle = slangles[p];
 	} else {
+#ifndef PLATFORM_N64
+		// No shortlisted pads — every pad looked occupied. With many sims (32-bot
+		// matches) this branch is hit constantly, and the original random pick
+		// repeatedly lands several sims on the same pad (often the player's, since
+		// the player occupies one). Rotate through the pads round-robin instead so
+		// a full lobby spreads evenly across all of them. The static cursor is
+		// shared by every spawn call (humans + sims + scenario subsets); the modulo
+		// adapts to each call's pad count. Server-side / offline only matters here
+		// (net sim positions are wire-authoritative), so the cursor needs no sync.
+		static u32 s_spawnFallbackPad = 0;
+		padUnpack(pads[s_spawnFallbackPad++ % (u32)numpads], PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
+#else
 		// No shortlisted pads, so pick a random one from the full selection
 		padUnpack(pads[rngRandom() % numpads], PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
+#endif
 
 		dstrooms[0] = pad.room;
 		dstrooms[1] = -1;

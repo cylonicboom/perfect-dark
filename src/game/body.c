@@ -27,6 +27,14 @@
 #include "system.h" // sysLogPrintf for the bodyAllocateModel NULL-definition guard
 #endif
 
+#ifndef PLATFORM_N64
+// Set by botmgrAllocateBot around its bodyAllocateModel call when the
+// "Randomise Heights" sim toggle is off: the height RNG is still consumed (so
+// the deterministic bot-allocation stream stays in lockstep on every peer and
+// build) but the resulting scale is neutralised. Scoped to sim bodies only.
+extern u8 g_MpSimFixedHeight;
+#endif
+
 s32 g_NumActiveHeadsPerGender;
 u32 var8009cd24;
 s32 g_ActiveMaleHeads[8];
@@ -245,7 +253,15 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 					if (g_HeadsAndBodies[bodynum].canvaryheight && varyheight) {
 						// Set height to between 95% and 115%
 						f32 frac = RANDOMFRAC() * 0.05f;
-						scale *= 2.0f * frac - 0.05f + 1.0f;
+						f32 mult = 2.0f * frac - 0.05f + 1.0f;
+#ifndef PLATFORM_N64
+						// Sim "Randomise Heights" off: RNG already consumed above
+						// (keeps peers in sync) — just don't apply the variation.
+						if (g_MpSimFixedHeight) {
+							mult = 1.0f;
+						}
+#endif
+						scale *= mult;
 					}
 				}
 
@@ -267,7 +283,14 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 			if (g_HeadsAndBodies[bodynum].canvaryheight && varyheight && bodynum == BODY_SKEDAR) {
 				// Set height to between 65% and 85%
 				f32 frac = RANDOMFRAC();
-				scale *= 2.0f * (0.1f * frac) - 0.1f + 0.75f;
+				f32 mult = 2.0f * (0.1f * frac) - 0.1f + 0.75f;
+#ifndef PLATFORM_N64
+				// Sim "Randomise Heights" off: RNG already consumed — don't apply.
+				if (g_MpSimFixedHeight) {
+					mult = 1.0f;
+				}
+#endif
+				scale *= mult;
 			}
 
 			if (1);

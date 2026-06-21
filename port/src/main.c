@@ -301,11 +301,35 @@ PD_CONSTRUCTOR static void gameConfigInit(void)
 	configRegisterInt("MP.Profile.Head", &g_MpProfileHead, -1, 255);
 	configRegisterInt("MP.Profile.Body", &g_MpProfileBody, -1, 255);
 
-	// When set, mpGenerateBotNames picks from a fixed dictionary of fun
-	// first names ("BobSim", "AliceSim", ...) instead of the profile-based
-	// "MeatSim:N" scheme. Set to 0 in pd.ini to restore the original
-	// behaviour. The name is broadcast in SVC_STAGE_START's bot config
-	// block, so clients see whatever the host has configured.
+	// Configure Simulants toggles (Combat Sim > Simulants > Configure
+	// Simulants). All three persist here.
+	//
+	// Random Names: when set, mpGenerateBotNames picks from a fixed dictionary
+	// of fun first names ("BobSim", "AliceSim", ...) instead of the profile-
+	// based "MeatSim:N" scheme. The name is broadcast in SVC_STAGE_START's bot
+	// config block, so clients see whatever the host has configured. Default OFF.
 	extern s32 g_MpAutoRenameSims;
 	configRegisterInt("MP.AutoRenameSims", &g_MpAutoRenameSims, 0, 1);
+
+	// Randomise Body: pick a random head+body when adding a sim. Default OFF
+	// (sims get a deterministic per-slot appearance instead).
+	extern s32 g_MpRandomiseSimBody;
+	configRegisterInt("MP.RandomiseSimBody", &g_MpRandomiseSimBody, 0, 1);
+
+	// Randomise Heights: apply the ±height variation to sim models. Default ON.
+	extern s32 g_MpVarySimHeight;
+	configRegisterInt("MP.VarySimHeight", &g_MpVarySimHeight, 0, 1);
+
+	// Fill All (Configure Simulants): difficulty range (0=Meat .. 5=Dark) and
+	// whether to mix in random Special bot types.
+	extern s32 g_MpFillDiffFrom;
+	extern s32 g_MpFillDiffTo;
+	extern s32 g_MpFillRandomSpecial;
+	configRegisterInt("MP.FillDiffFrom", &g_MpFillDiffFrom, 0, 5);
+	configRegisterInt("MP.FillDiffTo", &g_MpFillDiffTo, 0, 5);
+	configRegisterInt("MP.FillRandomSpecial", &g_MpFillRandomSpecial, 0, 1);
+
+	// Soundtrack > "Randomise Menu Music": random track in the Combat Sim menu.
+	extern s32 g_MpRandomiseMenuMusic;
+	configRegisterInt("MP.RandomiseMenuMusic", &g_MpRandomiseMenuMusic, 0, 1);
 }

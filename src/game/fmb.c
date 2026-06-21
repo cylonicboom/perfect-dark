@@ -789,7 +789,12 @@ struct menuitem g_AdvancedSetup4MbMenuItems[] = {
 		MENUITEMFLAG_SELECTABLE_OPENSDIALOG,
 		L_MPMENU_025, // "Simulants"
 		0,
+#ifndef PLATFORM_N64
+		// Port: open the Modify/Configure chooser (same as the main CS setup).
+		(void *)&g_MpSimulantsRootMenuDialog,
+#else
 		(void *)&g_MpSimulantsMenuDialog,
+#endif
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

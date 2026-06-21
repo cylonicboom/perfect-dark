@@ -482,6 +482,10 @@ extern struct menudialogdef g_MpLimitsMenuDialog;
 extern struct menudialogdef g_MpHandicapsMenuDialog;
 extern struct menudialogdef g_MpReadyMenuDialog;
 extern struct menudialogdef g_MpSimulantsMenuDialog;
+#ifndef PLATFORM_N64
+// Port: intermediate Modify/Configure chooser the "Simulants" item opens.
+extern struct menudialogdef g_MpSimulantsRootMenuDialog;
+#endif
 extern struct menudialogdef g_MpTeamsMenuDialog;
 extern struct menudialogdef g_MpChallengeListOrDetailsMenuDialog;
 extern struct menudialogdef g_MpChallengeListOrDetailsViaAdvChallengeMenuDialog;

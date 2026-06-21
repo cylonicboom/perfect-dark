@@ -39,6 +39,13 @@ struct menudialogdef g_MpChangeSimulantMenuDialog;
 struct menudialogdef g_MpChangeTeamNameMenuDialog;
 struct menudialogdef g_MpEditSimulantMenuDialog;
 struct menudialogdef g_MpSaveSetupNameMenuDialog;
+#ifndef PLATFORM_N64
+// Port: the "Simulants" item opens an intermediate Modify/Configure chooser
+// (g_MpSimulantsRootMenuDialog, declared in data.h). The Modify list (and its
+// 9-32 carousel pages) replaces the chooser rather than nesting on it (dialog-
+// stack budget), so its Back must re-open the chooser explicitly.
+MenuItemHandlerResult menuhandlerMpSimulantsBack(s32 operation, struct menuitem *item, union handlerdata *data);
+#endif
 
 extern struct menudialogdef g_ManageSettingsDialog;
 extern struct menudialogdef g_FilemgrFileSavedMenuDialog;
@@ -4494,10 +4501,18 @@ struct menuitem g_MpSimulantsMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
+#ifndef PLATFORM_N64
+		// Back re-opens the Modify/Configure chooser (this list replaced it).
+		0,
+		L_MPMENU_094, // "Back"
+		0,
+		menuhandlerMpSimulantsBack,
+#else
 		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
 		L_MPMENU_094, // "Back"
 		0,
 		NULL,
+#endif
 	},
 	{ MENUITEMTYPE_END },
 };
@@ -4555,10 +4570,10 @@ char *mpMenuTextSimulantSlotLabel(struct menuitem *item)
 	{ \
 		MENUITEMTYPE_SELECTABLE, \
 		0, \
-		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG, \
-		L_MPMENU_094, /* "Back" */ \
 		0, \
-		NULL, \
+		L_MPMENU_094, /* "Back" - re-opens the Modify/Configure chooser */ \
+		0, \
+		menuhandlerMpSimulantsBack, \
 	}, \
 	{ MENUITEMTYPE_END }
 
@@ -4608,6 +4623,305 @@ struct menudialogdef g_MpSimulantsMenuDialog = {
 	NULL,
 #endif
 };
+
+#ifndef PLATFORM_N64
+// Configure Simulants (Combat Sim > Simulants > Configure Simulants): three
+// player-facing toggles for the sim auto-randomisation that used to be forced.
+// All three are local prefs persisted in pd.ini (see port/src/main.c) — Random
+// Body / Random Names act on the host's authoritative bot config (synced to
+// clients via SVC_STAGE_START), Randomise Heights is netplay-safe local-only
+// (see body.c / botmgr.c).
+extern s32 g_MpRandomiseSimBody;
+extern s32 g_MpAutoRenameSims;
+extern s32 g_MpVarySimHeight;
+extern s32 g_MpFillDiffFrom;
+extern s32 g_MpFillDiffTo;
+extern s32 g_MpFillRandomSpecial;
+extern void mpApplySimAppearances(void);
+extern void mpFillAllSimulants(void);
+
+MenuItemHandlerResult menuhandlerMpRandomiseSimBody(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_MpRandomiseSimBody ? true : false;
+	case MENUOP_SET:
+		g_MpRandomiseSimBody = data->checkbox.value ? 1 : 0;
+		// Re-apply appearances to the existing sims so the toggle is visible
+		// immediately (otherwise it would only affect sims added afterwards).
+		mpApplySimAppearances();
+		break;
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerMpRandomNames(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_MpAutoRenameSims ? true : false;
+	case MENUOP_SET:
+		g_MpAutoRenameSims = data->checkbox.value ? 1 : 0;
+		// Re-name the already-added sims so the change is visible immediately.
+		mpGenerateBotNames();
+		break;
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerMpVarySimHeight(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_MpVarySimHeight ? true : false;
+	case MENUOP_SET:
+		g_MpVarySimHeight = data->checkbox.value ? 1 : 0;
+		break;
+	}
+
+	return 0;
+}
+
+// Fill All difficulty range. item->param selects the bound: 0 = From, 1 = To.
+// Options are the six GENERAL difficulties Meat..Dark (option index == BOTDIFF
+// value), shown unconditionally (the port doesn't gate the fill on unlocks).
+MenuItemHandlerResult menuhandlerMpFillDifficulty(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 *diff = (item->param == 0) ? &g_MpFillDiffFrom : &g_MpFillDiffTo;
+
+	switch (operation) {
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = *diff;
+		break;
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = BOTDIFF_DISABLED; // Meat..Dark = 6 options
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		// "Meat", "Easy", "Normal", "Hard", "Perfect", "Dark"
+		return (uintptr_t)langGet(L_MISC_082 + data->dropdown.value);
+	case MENUOP_SET:
+		*diff = data->dropdown.value;
+		break;
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerMpFillRandomSpecial(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return g_MpFillRandomSpecial ? true : false;
+	case MENUOP_SET:
+		g_MpFillRandomSpecial = data->checkbox.value ? 1 : 0;
+		break;
+	}
+
+	return 0;
+}
+
+// Green "Done!" confirmation shown after Fill All.
+struct menuitem g_MpFillDoneMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"OK\n",
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpFillDoneMenuDialog = {
+	MENUDIALOGTYPE_SUCCESS,
+	(uintptr_t)"Done!",
+	g_MpFillDoneMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_CLOSEONSELECT,
+	NULL,
+};
+
+MenuItemHandlerResult menuhandlerMpFillAll(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		mpFillAllSimulants();
+		menuPushDialog(&g_MpFillDoneMenuDialog);
+	}
+
+	return 0;
+}
+
+struct menuitem g_MpSimulantsConfigMenuItems[] = {
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Randomise Body\n",
+		0,
+		menuhandlerMpRandomiseSimBody,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Random Names\n",
+		0,
+		menuhandlerMpRandomNames,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Randomise Heights\n",
+		0,
+		menuhandlerMpVarySimHeight,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0, // From
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Fill From\n",
+		0,
+		menuhandlerMpFillDifficulty,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		1, // To
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Fill To\n",
+		0,
+		menuhandlerMpFillDifficulty,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Randomise Special Types\n",
+		0,
+		menuhandlerMpFillRandomSpecial,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Fill All\n",
+		0,
+		menuhandlerMpFillAll,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Back\n",
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpSimulantsConfigMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Configure Simulants\n",
+	g_MpSimulantsConfigMenuItems,
+	NULL,
+	MENUDIALOGFLAG_MPLOCKABLE | MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
+// The Modify list REPLACES the chooser (close + push) rather than nesting on
+// it. The menu dialog stack is bounded (struct menu: dialogs[10] / layers[6])
+// and the deep offline path Game Setup(4) > chooser > Modify(+3 carousel) >
+// Edit > Character already needs all 10 slots, so a persistent chooser dialog
+// underneath would push Edit/Character over the budget and silently refuse to
+// open. So Modify replaces the chooser, and its Back re-opens the chooser
+// (menuhandlerMpSimulantsBack) to give the expected "Back returns to the
+// Simulants menu" behaviour. Configure is shallow, so it just nests
+// (MENUITEMFLAG_SELECTABLE_OPENSDIALOG) and its Back returns to the chooser
+// for free.
+MenuItemHandlerResult menuhandlerMpModifySimulants(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		func0f0f3704(&g_MpSimulantsMenuDialog);
+	}
+
+	return 0;
+}
+
+MenuItemHandlerResult menuhandlerMpSimulantsBack(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		func0f0f3704(&g_MpSimulantsRootMenuDialog);
+	}
+
+	return 0;
+}
+
+// Intermediate "Simulants" menu: Modify (the original list) vs Configure (the
+// randomisation toggles above).
+struct menuitem g_MpSimulantsRootMenuItems[] = {
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Modify Simulants\n",
+		0,
+		menuhandlerMpModifySimulants,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Configure Simulants\n",
+		0,
+		(void *)&g_MpSimulantsConfigMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Back\n",
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_MpSimulantsRootMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	L_MPMENU_083, // "Simulants"
+	g_MpSimulantsRootMenuItems,
+	NULL,
+	MENUDIALOGFLAG_MPLOCKABLE,
+	NULL,
+};
+#endif
 
 MenuItemHandlerResult menuhandlerMpNTeams(s32 operation, struct menuitem *item, union handlerdata *data, s32 numteams)
 {
@@ -5440,6 +5754,25 @@ MenuItemHandlerResult menuhandlerMpMultipleTunes(s32 operation, struct menuitem 
 	return 0;
 }
 
+#ifndef PLATFORM_N64
+// "Randomise Menu Music": play a random soundtrack track in the Combat Sim menu
+// instead of the fixed menu theme. Local cosmetic pref (MP.RandomiseMenuMusic).
+MenuItemHandlerResult menuhandlerMpRandomiseMenuMusic(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	extern s32 g_MpRandomiseMenuMusic;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return g_MpRandomiseMenuMusic ? true : false;
+	case MENUOP_SET:
+		g_MpRandomiseMenuMusic = data->checkbox.value ? 1 : 0;
+		break;
+	}
+
+	return 0;
+}
+#endif
+
 MenuItemHandlerResult mpTeamNameMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	char *name = data->keyboard.string;
@@ -5615,6 +5948,16 @@ struct menuitem g_MpSoundtrackMenuItems[] = {
 		0,
 		menuhandlerMpMultipleTunes,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Randomise Menu Music\n",
+		0,
+		menuhandlerMpRandomiseMenuMusic,
+	},
+#endif
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
@@ -6986,7 +7329,13 @@ struct menuitem g_MpAdvancedSetupMenuItems[] = {
 		MENUITEMFLAG_SELECTABLE_OPENSDIALOG,
 		L_MPMENU_025, // "Simulants"
 		0,
+#ifndef PLATFORM_N64
+		// Port: "Simulants" opens an intermediate menu (Modify / Configure)
+		// instead of jumping straight to the modify list.
+		(void *)&g_MpSimulantsRootMenuDialog,
+#else
 		(void *)&g_MpSimulantsMenuDialog,
+#endif
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,

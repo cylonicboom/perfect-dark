@@ -3595,6 +3595,54 @@ s32 mpGetCurrentTrackSlotNum(void)
 }
 
 #ifndef PLATFORM_N64
+// "Randomise Menu Music" (Soundtrack menu): when set, the Combat Sim setup menu
+// plays a random soundtrack track instead of the fixed MUSIC_COMBATSIM_MENU.
+// Persisted as MP.RandomiseMenuMusic in pd.ini.
+s32 g_MpRandomiseMenuMusic = 0;
+
+// Pick a random track for the Combat Sim menu. Returns a music num, or -1 if
+// there are no unlocked tracks. Honours the Multiple Tunes selection when it's
+// on (random among the ticked slots; if none are ticked, any unlocked track),
+// otherwise picks any unlocked track. Menu music is local/cosmetic, so plain
+// rngRandom() is fine here — it doesn't need to be wire-synced.
+s32 mpChooseMenuMusic(void)
+{
+	s32 numunlocked = mpGetNumUnlockedTracks();
+	s32 i;
+
+	if (numunlocked <= 0) {
+		return -1;
+	}
+
+	if (mpGetUsingMultipleTunes()) {
+		s32 numselected = 0;
+
+		for (i = 0; i < numunlocked; i++) {
+			if (mpIsMultiTrackSlotEnabled(i)) {
+				numselected++;
+			}
+		}
+
+		if (numselected > 0) {
+			s32 sel = rngRandom() % numselected;
+			s32 count = 0;
+
+			for (i = 0; i < numunlocked; i++) {
+				if (mpIsMultiTrackSlotEnabled(i)) {
+					if (count == sel) {
+						return mpGetTrackMusicNum(i);
+					}
+					count++;
+				}
+			}
+		}
+	}
+
+	return mpGetTrackMusicNum(rngRandom() % numunlocked);
+}
+#endif
+
+#ifndef PLATFORM_N64
 // In netplay, advance a dedicated music seed instead of g_RngSeed so that
 // other RNG consumers (AI, sims, particles — which the server runs and the
 // client doesn't) don't drift the host and client out of music sync. Seeded
@@ -3773,6 +3821,31 @@ u8 mpFindUnusedTeamNum(void)
 	return teamnum;
 }
 
+#ifndef PLATFORM_N64
+// Configure Simulants toggles (Combat Sim > Simulants > Configure Simulants),
+// persisted in pd.ini (port/src/main.c). See the menu handlers in setup.c.
+//
+// Randomise Body: when set, a sim gets a random head+body on add; when clear
+// (default) it gets a deterministic per-slot appearance so the same lobby
+// reproduces the same look without rolling the RNG.
+s32 g_MpRandomiseSimBody = 0;
+// Randomise Heights: apply the ±height variation to sim models (default on).
+// Netplay-safe — see body.c / botmgr.c: the height RNG is ALWAYS consumed so
+// the deterministic bot-allocation stream stays in lockstep across peers and
+// builds; only the *application* of the scale is gated, and only for sim
+// bodies (via the transient g_MpSimFixedHeight, not solo guards/players).
+s32 g_MpVarySimHeight = 1;
+// Transient set by botmgrAllocateBot around its bodyAllocateModel call:
+// 0 = vary height normally, 1 = consume the height RNG but keep height fixed.
+u8 g_MpSimFixedHeight = 0;
+// "Fill All" (Configure Simulants): difficulty range for the GENERAL bots and
+// whether to mix in random Special types (Peace/Shield/Rocket/…). See
+// mpFillAllSimulants below + the menu handlers in setup.c.
+s32 g_MpFillDiffFrom = BOTDIFF_MEAT;
+s32 g_MpFillDiffTo = BOTDIFF_DARK;
+s32 g_MpFillRandomSpecial = 0;
+#endif
+
 void mpCreateBotFromProfile(s32 botnum, u8 profilenum)
 {
 	s32 headnum = 0;
@@ -3807,8 +3880,101 @@ void mpCreateBotFromProfile(s32 botnum, u8 profilenum)
 	}
 
 	g_BotConfigsArray[botnum].base.mpheadnum = headnum;
-	g_BotConfigsArray[botnum].base.mpbodynum = g_BotBodies[rngRandom() % ARRAYCOUNT(g_BotBodies)];
+
+#ifndef PLATFORM_N64
+	// Randomise Body toggle (Configure Simulants). The original game (and the
+	// N64 build) set the body from the bot's difficulty/type profile; commit
+	// 909abb166 hardcoded a random roll over g_BotBodies instead. The toggle
+	// restores the choice: ON = the port's random body, OFF (default) = the
+	// original profile/difficulty body.
+	if (g_MpRandomiseSimBody) {
+		g_BotConfigsArray[botnum].base.mpbodynum = g_BotBodies[rngRandom() % ARRAYCOUNT(g_BotBodies)];
+	} else {
+		g_BotConfigsArray[botnum].base.mpbodynum = g_BotProfiles[profilenum].body;
+	}
+#else
+	g_BotConfigsArray[botnum].base.mpbodynum = g_BotProfiles[profilenum].body;
+#endif
 }
+
+#ifndef PLATFORM_N64
+// Re-apply a body to every CURRENT sim per the "Randomise Body" toggle.
+// mpCreateBotFromProfile only assigns the body at add-time, so existing sims
+// (incl. ones loaded from a saved setup) keep whatever body they were created
+// with — flipping the toggle would otherwise appear to do nothing. The
+// Configure Simulants handler calls this on change so the toggle takes effect
+// immediately on the sims already in the list, the same way Random Names
+// re-runs mpGenerateBotNames. OFF = the original profile/difficulty body, ON =
+// the port's random roll. Heads are left as-is (head selection is unchanged
+// from vanilla); only the body is governed by this toggle.
+void mpApplySimAppearances(void)
+{
+	s32 botnum;
+
+	for (botnum = 0; botnum < MAX_BOTS; botnum++) {
+		if (!(g_MpSetup.chrslots & MPCHRSLOT(botnum + MAX_PLAYERS))) {
+			continue;
+		}
+
+		if (g_MpRandomiseSimBody) {
+			g_BotConfigsArray[botnum].base.mpbodynum = g_BotBodies[rngRandom() % ARRAYCOUNT(g_BotBodies)];
+		} else {
+			s32 profilenum = mpFindBotProfile(g_BotConfigsArray[botnum].type, g_BotConfigsArray[botnum].difficulty);
+
+			if (profilenum >= 0 && profilenum < ARRAYCOUNT(g_BotProfiles)) {
+				g_BotConfigsArray[botnum].base.mpbodynum = g_BotProfiles[profilenum].body;
+			}
+		}
+	}
+}
+
+// "Fill All" (Configure Simulants): clear every sim slot, then fill all the
+// available slots (mpGetMaxBotSlots: 32 offline / NET_MAX_BOTS online). Each
+// bot is a GENERAL type at a random difficulty within [g_MpFillDiffFrom,
+// g_MpFillDiffTo]; when g_MpFillRandomSpecial is set, ~half the slots instead
+// get a random Special type (Peace/Shield/Rocket/… — g_BotProfiles indices
+// past the 6 GENERAL difficulty rows). Profile index == difficulty for the
+// GENERAL rows (g_BotProfiles[0..5] = MEAT..DARK in order).
+void mpFillAllSimulants(void)
+{
+	const s32 numgeneral = BOTDIFF_DISABLED; // count of GENERAL difficulty profiles (rows 0..5)
+	const s32 numspecial = ARRAYCOUNT(g_BotProfiles) - numgeneral;
+	s32 maxslots = mpGetMaxBotSlots();
+	s32 lo = g_MpFillDiffFrom;
+	s32 hi = g_MpFillDiffTo;
+	s32 slot;
+
+	if (lo > hi) {
+		s32 tmp = lo;
+		lo = hi;
+		hi = tmp;
+	}
+	if (lo < BOTDIFF_MEAT) {
+		lo = BOTDIFF_MEAT;
+	}
+	if (hi > BOTDIFF_DARK) {
+		hi = BOTDIFF_DARK;
+	}
+
+	for (slot = 0; slot < MAX_BOTS; slot++) {
+		mpRemoveSimulant(slot);
+	}
+
+	for (slot = 0; slot < maxslots; slot++) {
+		s32 profilenum;
+
+		if (g_MpFillRandomSpecial && numspecial > 0 && (rngRandom() & 1)) {
+			profilenum = numgeneral + (rngRandom() % numspecial);
+		} else {
+			profilenum = lo + (rngRandom() % (hi - lo + 1));
+		}
+
+		mpCreateBotFromProfile(slot, profilenum);
+	}
+
+	mpGenerateBotNames();
+}
+#endif
 
 void mpSetBotDifficulty(s32 botnum, s32 difficulty)
 {
@@ -3973,45 +4139,55 @@ s32 mpFindBotProfile(s32 type, s32 difficulty)
 }
 
 #ifndef PLATFORM_N64
-// Dictionary of first names for auto-generated sim names. Picked so each name
-// fits in MAX_PLAYERNAME (15) once "Sim" is appended — keep the longest stem
-// at 11 chars or less so a ":N" disambiguation suffix still fits when two
-// sims happen to land on the same slot index. Intentionally mixes proper
-// names, archaic / playful options and a couple of in-universe references
-// so the lobby reads as varied rather than focus-grouped.
+// Dictionary of first names for auto-generated sim names — Rareware characters
+// from the Perfect Dark era (Rare games up to ~2000: Banjo-Kazooie/Tooie,
+// Donkey Kong 64, Jet Force Gemini, Killer Instinct, Diddy Kong Racing,
+// Conker). First names / single-word handles only; each stem is <= 10 chars so
+// it still fits in name[16] once "Sim\n" is appended. Must stay longer than
+// MAX_BOTS (32) so the unique-name forward scan in mpGenerateBotNamesDictionary
+// always finds a free entry (currently 33).
 static const char *g_MpBotNameDict[] = {
-	"Bob",     "Alice",   "Carlos",  "Dana",
-	"Eve",     "Felix",   "Greta",   "Hank",
-	"Ivy",     "Jorge",   "Kira",    "Liam",
-	"Mira",    "Nico",    "Otis",    "Pia",
-	"Quinn",   "Rosa",    "Sven",    "Tara",
-	"Uma",     "Vega",    "Wade",    "Xan",
-	"Yuki",    "Zane",    "Bishop",  "Cinder",
-	"Drift",   "Echo",    "Frost",   "Gunner",
-	"Hex",     "Iris",    "Jett",    "Kit",
+	// Banjo-Kazooie / Tooie
+	"Banjo",   "Kazooie", "Mumbo",   "Bottles",
+	"Grunty",  "Tooty",   "Klungo",  "Humba",
+	"Jinjo",
+	// Donkey Kong 64
+	"Diddy",   "Dixie",   "Lanky",   "Tiny",
+	"Chunky",  "Cranky",  "Funky",   "Candy",
+	// Jet Force Gemini
+	"Juno",    "Vela",    "Lupus",   "Mizar",
+	// Killer Instinct
+	"Jago",    "Orchid",  "Fulgore", "Glacius",
+	"Spinal",  "Riptor",
+	// Diddy Kong Racing
+	"Timber",  "Pipsy",   "Tiptup",  "Drumstick",
+	// Conker
+	"Conker",  "Berri",
 };
 
-// Set true (default) to apply the dictionary names; clear to keep the
-// original "MeatSim:N" / "TurtleSim:N" profile-based naming. Registered as
-// MP.AutoRenameSims in pd.ini.
-s32 g_MpAutoRenameSims = 1;
+// Set true to apply the fun dictionary names ("BobSim", "AliceSim", ...);
+// clear (default) to keep the original "MeatSim:N" / "TurtleSim:N" profile-
+// based naming. Exposed as "Random Names" in Configure Simulants and persisted
+// as MP.AutoRenameSims in pd.ini. Default OFF.
+s32 g_MpAutoRenameSims = 0;
 
 static void mpGenerateBotNamesDictionary(void)
 {
 	char name[16];
 	u8 used[ARRAYCOUNT(g_MpBotNameDict)] = { 0 };
-	// Walk slot indices in order so the assignment is deterministic per
-	// match setup — restarting the same lobby (or hosting → client view)
-	// yields the same name for the same slot. We rotate through the
-	// dictionary by slot, then duplicate-check the chosen entry against
-	// `used` so two enabled sims in the same match never collide.
+	// Pick a RANDOM dictionary name per sim (not a fixed per-slot rotation), so
+	// "Random Names" lives up to its name. We start at a random entry, then scan
+	// forward for the first unused one, so two enabled sims never collide
+	// (dict_len > MAX_BOTS so an unused entry always exists). This runs host-side
+	// at menu time; names are synced to clients via SVC_STAGE_START, so the roll
+	// doesn't need to be reproducible across machines.
 	const s32 dict_len = (s32)ARRAYCOUNT(g_MpBotNameDict);
 	for (s32 slot = 0; slot < MAX_BOTS; slot++) {
 		const s32 mpchrIdx = MAX_PLAYERS + slot;
 		if (!(g_MpSetup.chrslots & MPCHRSLOT(mpchrIdx))) {
 			continue;
 		}
-		s32 pick = slot % dict_len;
+		s32 pick = rngRandom() % dict_len;
 		// Scan forward for the first unused entry. dict_len > MAX_BOTS so
 		// this always finds one — we never need a numeric suffix.
 		for (s32 step = 0; step < dict_len; step++) {

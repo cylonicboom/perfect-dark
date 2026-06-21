@@ -442,6 +442,16 @@ implementation time (a ~150-line WS client in C is the self-contained option).
 
 ## 7. Implementation phases (value-to-effort)
 
+> **Status (landed so far):** the per-frame `"tick"` event; the
+> `missioncomplete` / `firingrange` / `weaponfound` check-detection emitters at
+> their hook sites; the §4.1 bonus/buff `pd.*` API (`player_heal`,
+> `player_set_shield`, `refill_ammo`, `give_ammo`, `give_weapon`, `device_on`,
+> `invincible`) and the **Perfect Buddy** (`pd.spawn_ally`); and a no-server **Lua
+> testing harness** (`scripts/ap/test.lua`) that registers a check board, listens
+> to those events, and exposes console + Director-menu tools to complete checks
+> and apply every bonus. Still to do: the `ap.*` socket/WS bridge, the gating
+> branches (§9), and the `cheatunlock` / `challengecomplete` / `objective` events.
+
 1. **Proof of life (pure Lua, no engine change).** `scripts/ap/` with the
    milestone checks (kills/rooms/weaponfire) using the **already-shipped** events,
    plus a stub `ap.*` that logs to console. Proves the mapping/state-machine

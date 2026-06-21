@@ -158,6 +158,10 @@ void luaEmitKill(s32 chrnum, s32 killerplayernum);
 void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount);
 void luaEmitSpawn(s32 chrnum);
 void luaEmitRoomEnter(s32 room, s32 fromroom);
+/* Archipelago check-detection emitters (port-only; no-op if nothing listens). */
+void luaEmitMissionComplete(s32 stageindex, s32 difficulty, s32 secs, s32 cheated);
+void luaEmitFiringRange(s32 weaponindex, s32 medal);
+void luaEmitWeaponFound(s32 weaponnum);
 
 /** chr-state bridges for the X-ray (defined in chrai.c). */
 s32 chraiLuaGetChrNum(void);
@@ -231,6 +235,17 @@ s32 chraiLuaChrSetShield(s32 chrnum, f32 value);
 s32 chraiLuaChrAlert(s32 chrnum);
 s32 chraiLuaChrSetBody(s32 chrnum, s32 bodynum, s32 headnum); /* runtime model swap, solo only */
 s32 chraiLuaSetChrPos(s32 chrnum, f32 x, f32 y, f32 z); /* move a chr prop (no physics) */
+
+/* Archipelago bonus/buff bridges (chraction.c). Apply to the local player on
+ * receipt of an AP "bonus" item; server/solo only, no-op without a live player. */
+s32 chraiLuaPlayerHeal(void);                 /* full HP */
+s32 chraiLuaPlayerSetShield(f32 frac);        /* shield 0..1 (>=1 = full) */
+s32 chraiLuaRefillAmmo(void);                 /* top all ammo to capacity */
+s32 chraiLuaGiveAmmo(s32 ammotype, s32 qty);  /* grant ammo (+ matching weapon) */
+s32 chraiLuaGiveWeaponToPlayer(s32 weaponnum);/* add a weapon to inventory */
+s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) */
+s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
+s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
 
 /* ------------------------------------------------------------------------- *
  * Controllable entity / possession (port/src/possess.c + chraction.c bridges).

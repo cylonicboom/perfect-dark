@@ -8130,6 +8130,138 @@ s32 chraiLuaSpawnAtPos(s32 refchrnum, s32 weaponnum, f32 x, f32 y, f32 z)
 	return 1;
 }
 
+// ---- Archipelago bonus / buff bridges (luaai_ap) ------------------------
+// Apply instant boosts to the LOCAL player on receipt of an AP "bonus" item.
+// All are server/solo authoritative (no-op on a net client) and no-op when there
+// is no live player chr (title/menu). They reuse the engine's own setters so the
+// behaviour matches the in-game pickups/cheats they mirror. Backed pd.* wrappers
+// live in luaai_api.c.
+
+// Resolve the local player's chr, or NULL if there isn't one right now.
+static struct chrdata *apLuaPlayerChr(void)
+{
+	if (g_NetMode == NETMODE_CLIENT) {
+		return NULL; // bonuses apply on the save-owning machine (host/solo)
+	}
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		return NULL;
+	}
+	return g_Vars.currentplayer->prop->chr;
+}
+
+// pd.player_heal(): restore the player to full health.
+s32 chraiLuaPlayerHeal(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	g_Vars.currentplayer->bondhealth = 1.0f;
+	return 1;
+}
+
+// pd.player_set_shield(frac): set the player's shield (0..1; >=1 = full).
+s32 chraiLuaPlayerSetShield(f32 frac)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (frac < 0.0f) frac = 0.0f;
+	if (frac > 1.0f) frac = 1.0f;
+	playerSetShieldFrac(frac);
+	return 1;
+}
+
+// pd.refill_ammo(): top every ammo type to capacity (covers the current weapon).
+s32 chraiLuaRefillAmmo(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	bgunGiveMaxAmmo(true);
+	return 1;
+}
+
+// pd.give_ammo(ammotype, qty): grant ammo (auto-gives the matching weapon).
+s32 chraiLuaGiveAmmo(s32 ammotype, s32 qty)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	ammoHandlePickup(ammotype, qty, true, true);
+	return 1;
+}
+
+// pd.give_weapon(weaponnum): add a weapon to the player's inventory.
+s32 chraiLuaGiveWeaponToPlayer(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	invGiveSingleWeapon(weaponnum);
+	return 1;
+}
+
+// pd.device_on(weaponnum): activate a device (e.g. WEAPON_CLOAKINGDEVICE).
+s32 chraiLuaDeviceOn(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	currentPlayerSetDeviceActive(weaponnum, true);
+	return 1;
+}
+
+// pd.invincible(on): toggle player invincibility (Lua manages any timer).
+s32 chraiLuaSetInvincible(s32 on)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	g_Vars.currentplayer->invincible = on ? 1 : 0;
+	return 1;
+}
+
+// pd.spawn_ally(): spawn a friendly "Perfect Buddy" that fights alongside the
+// player. Mirrors the campaign buddy spawn (player.c) -- TEAM_ALLY + a buddy
+// ailist; solo allegiance is the bitwise chrCompareTeams test, so it targets
+// enemies and won't shoot the player. Returns the new chrnum, or -1.
+s32 chraiLuaSpawnAlly(void)
+{
+	struct prop *prop;
+	struct chrdata *chr;
+
+	if (apLuaPlayerChr() == NULL) {
+		return -1;
+	}
+
+	prop = chrSpawnAtCoord(BODY_DARK_COMBAT, HEAD_VD,
+			&g_Vars.currentplayer->prop->pos,
+			g_Vars.currentplayer->prop->rooms,
+			BADDEG2RAD(g_Vars.currentplayer->vv_theta / 2),
+			ailistFindById(GAILIST_INIT_DEFAULT_BUDDY),
+			SPAWNFLAG_ALLOWONSCREEN);
+
+	if (prop == NULL || prop->chr == NULL) {
+		return -1;
+	}
+
+	chr = prop->chr;
+	chr->flags |= CHRFLAG0_SKIPSAFETYCHECKS;
+	chr->team = TEAM_ALLY;
+	chr->squadron = SQUADRON_01;
+	chr->hidden |= CHRHFLAG_DETECTED;
+	chr->voicebox = VOICEBOX_FEMALE;
+	chr->teamscandist = 50;
+	chr->accuracyrating = 100;
+	chr->speedrating = 100;
+	chrAddHealth(chr, 20);
+	chrSetMaxDamage(chr, 4);
+	chr->chrflags |= CHRCFLAG_NEVERSLEEP;
+	chrGiveWeapon(chr, MODEL_CHRFALCON2, WEAPON_FALCON2, 0);
+
+	return chr->chrnum;
+}
+
 // ---- Toolkit framework bridges (all-actor iteration + per-chr mutators) ----
 // These back pd.all_chrs / pd.chr_anim / pd.chr_set_shield / pd.chr_alert. They
 // are thin wrappers over existing engine setters so the toolkit is easy to grow:

@@ -227,7 +227,7 @@ What the AP server can hand back. Each maps to a `pd.grant_*` accessor (§6.4).
 | **Classic firing-range weapon** | PP9i/CC13/… unlocked | `firingrangescores` set to gold for the gating weapons, or a direct unlock flag |
 | **Combat-Sim feature** | character / scenario / 8-bots / stage | `g_MpFeaturesUnlocked[]` |
 | **Trap items** (optional) | DK Mode, Small Jo, Marquis (one-hit), Enemy Rockets, Perfect Darkness | `cheatActivate()` for a timed nuisance — classic AP "trap" flavour |
-| **Filler** | extra ammo / shield top-up on receipt | `pd.spawn` / `pd.chr_set_shield` (shipped) |
+| **Bonus / filler** | instant player boosts — HP, shield, ammo, grenade, cloak, **Perfect Buddy ally**, … (§4.1) | applied live to the local player on receipt |
 
 Traps are a natural fit because PD's cheat list already contains
 self-sabotaging modes (`CHEAT_DKMODE`, `CHEAT_SMALLJO`, `CHEAT_MARQUIS`,
@@ -238,6 +238,53 @@ flips them on live.
 (default: Skedar Ruins / Special Agent), or "all 17 main missions on Agent", or
 "N% of all checks". Victory reported from Lua when the goal predicate over
 `besttimes`/checks is satisfied.
+
+### 4.1 Bonus / filler items (received-side boosts)
+
+A pool of **instant, in-mission boosts** the multiworld can hand the player —
+ideal for the common case where this player has *fewer checks to give* than
+others, so the generator pads their item pool with harmless bonuses instead of
+dead "nothing" items. These are **never progression** (always "useful"/"filler"
+class, §9.3); they apply live to the local player on receipt and are no-ops on the
+title/menu. All are thin wrappers over confirmed engine calls, exposed as new
+`pd.*` functions (server/solo authoritative).
+
+| Bonus | Effect | Apply hook |
+|---|---|---|
+| **Full HP** | restore player to full health | `g_Vars.currentplayer->bondhealth = 1.0f` (player.c) / `chrAddHealth` (chr.c:1057) |
+| **Full Shield** | shield to max | `playerSetShieldFrac(1.0f)` → `chrSetShield(chr, 8.0f)` (player.c:6310 / chraction.c:4109) |
+| **Super Shield** | shield to max + flagged super | `cheatSetActive(CHEAT_SUPERSHIELD)` (cheats.c) — mechanically a guaranteed full top-up |
+| **Ammo for current weapon** | refill held weapon to capacity | current = `bgunGetWeaponNum(HAND_RIGHT)`; `bgunSetAmmoQuantity(ammotype, bgunGetCapacityByAmmotype(ammotype))` (bondgun.c) |
+| **Max ammo (all weapons)** | top every ammo type | `bgunGiveMaxAmmo(true)` (bondgun.c:13081) |
+| **Grenade** | give one grenade | `ammoHandlePickup(AMMOTYPE_GRENADE, 1, …)` (propobj.c:17447) |
+| **Cloaking device (timed)** | grant + engage cloak | `ammoHandlePickup(AMMOTYPE_CLOAK, ticks, …)` + `currentPlayerSetDeviceActive(WEAPON_CLOAKINGDEVICE, true)` (game_0b0fd0.c:369) |
+| **Combat boost** | speed/damage boost charge | `ammoHandlePickup(AMMOTYPE_BOOST, 1, …)` |
+| **Timed invincibility** | brief god-mode | set `currentplayer->invincible` (as `CHEAT_INVINCIBLE` does, cheats.c:298) + a Lua countdown to clear it |
+| **Deployable** (laptop sentry / mines) | give a deployable | `invGiveSingleWeapon(WEAPON_LAPTOPGUN)` / `ammoHandlePickup(AMMOTYPE_*_MINE, n, …)` |
+| **Perfect Buddy** | spawn a friendly AI ally that fights for you | see below |
+
+New Lua surface (mostly one-liners): `pd.player_heal()`, `pd.player_set_shield(frac)`,
+`pd.player_super_shield()`, `pd.refill_ammo()`, `pd.give_ammo(type, n)`,
+`pd.give_weapon(weaponnum)`, `pd.device_on(weaponnum)`, `pd.invincible(secs)`,
+`pd.spawn_ally(...)`.
+
+**Perfect Buddy — feasible, low-risk.** PD already has a campaign buddy system
+(`g_Vars.perfectbuddynum`; the buddy is spawned via `chrSpawnAtCoord` with a
+buddy ailist and put on `TEAM_ALLY` with `CHRCFLAG_NOFRIENDLYFIRE`, player.c
+~4542). We reuse it: a small server-side bridge `chraiLuaSpawnAlly(body, head,
+[weapon])` mirrors that path — `chrSpawnAtCoord(...)` near the player,
+`chr->team = TEAM_ALLY`, optional `chrGiveWeapon` — exposed as
+`pd.spawn_ally(...)`. Because solo allegiance is the bitwise-overlap test in
+`chrCompareTeams` (chraction.c), a `TEAM_ALLY` chr automatically fights enemies
+and won't shoot the player. Solo needs no net sync; in co-op the existing
+`chrSpawnAtCoord` co-op broadcast handles it. ~45 lines of new C (one bridge +
+one wrapper) reusing proven infrastructure — the only bonus that isn't already a
+one-liner, and the standout "wow" item. (Exact `TEAM_ALLY` value and buddy ailist
+ids to be confirmed against the headers at implementation.)
+
+> These bonuses are also what a **DeathLink**-heavy or trap-heavy seed wants on
+> the other side of the ledger, and they double as the `traps`-option's benign
+> counterweight. Keep them weighted as filler so logic never depends on them.
 
 ---
 
@@ -542,7 +589,7 @@ so all gates share a single source of truth.
 
 | File | Change | Half |
 |---|---|---|
-| `src/game/luaai_api.c` | `"tick"` dispatch; `luaEmit{MissionComplete,CheatUnlock,ChallengeComplete,FiringRange,WeaponFound,Objective}`; register `pd.*` read/grant/lock fns | both |
+| `src/game/luaai_api.c` | `"tick"` dispatch; `luaEmit{MissionComplete,CheatUnlock,ChallengeComplete,FiringRange,WeaponFound,Objective}`; register `pd.*` read/grant/lock fns + the §4.1 bonus fns (`player_heal`/`player_set_shield`/`refill_ammo`/`give_ammo`/`device_on`/`invincible`/`spawn_ally`) | both |
 | `src/include/game/luaai.h` | declare the new emitters + bridge accessors | both |
 | `src/game/endscreen.c` | emit `missioncomplete` + `cheatunlock` at the existing best-time/unlock sites | checks |
 | `src/game/objectives.c` | edge-triggered `objective` emit in `objectivesCheckAll` | checks |
@@ -551,12 +598,13 @@ so all gates share a single source of truth.
 | `src/game/cheats.c` / `gamefile.c` | grant helpers + AP-granted marker bit + `g_ApUnlocks` set | both |
 | `src/game/mainmenu.c` | AP-aware branch in `isStageDifficultyUnlocked` (stage/difficulty gate #1/#5) | gating |
 | `src/game/propobj.c` | AP gate in `objTestForPickup` (optional whole-weapon pickup deny, #2 under `starting-pistol-only`) | gating |
-| `src/game/bondgun.c` | AP branch in **both** `bgunPrimaryFunctionDisabled` and `bgunSecondaryFunctionDisabled` (weapon-fire #2 — primary/secondary locked independently) | gating |
-| `src/game/player.c` | AP filter in the `playerLoadDefaults` intro-weapon loop (loadout #3) | gating |
-| `src/game/game_0b0fd0.c` | AP gate in `currentPlayerSetDeviceActive` (gadgets #4) | gating |
+| `src/game/bondgun.c` | AP branch in **both** `bgunPrimaryFunctionDisabled` and `bgunSecondaryFunctionDisabled` (weapon-fire #2 — primary/secondary locked independently); bonus refill via `bgunSetAmmoQuantity`/`bgunGiveMaxAmmo` (§4.1) | gating + bonus |
+| `src/game/player.c` | AP filter in the `playerLoadDefaults` intro-weapon loop (loadout #3); bonus heal/shield (`bondhealth`/`playerSetShieldFrac`) (§4.1) | gating + bonus |
+| `src/game/game_0b0fd0.c` | AP gate in `currentPlayerSetDeviceActive` (gadgets #4); also the bonus cloak-on path (§4.1) | gating + bonus |
+| `src/game/chraction.c` | **new** `chraiLuaSpawnAlly()` bridge — Perfect Buddy via `chrSpawnAtCoord` + `TEAM_ALLY` (§4.1) | bonus |
 | `src/game/luaai_ap.c` | **new** — `ap.*` socket/WS bridge | transport |
 | `scripts/init.lua` | load `scripts/ap/client.lua` | both |
-| `scripts/ap/*.lua` | **new** — client state machine, id tables, JSON, per-level override gates | both |
+| `scripts/ap/*.lua` | **new** — client state machine, id tables, JSON, check/item/bonus mapping | both |
 | `docs/archipelago_blueprint.md` | this document | — |
 
 All engine edits are additive, port-only (`#ifndef PLATFORM_N64`), and the gates

@@ -3281,6 +3281,13 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 			gdl = menugfxDrawDialogChevron(gdl, dialogleft - 5, (dialogtop + dialogbottom) / 2, 9, 1, colour, colour, menuGetSinOscFrac(20));
 			gdl = menugfxDrawDialogChevron(gdl, dialogright + 5, (dialogtop + dialogbottom) / 2, 9, 3, colour, colour, menuGetSinOscFrac(20));
 
+#ifndef PLATFORM_N64
+			// Hide the rotated prev/next page names in multiplayer splitscreen —
+			// the narrow per-player viewports make the side titles overlap the
+			// menu content (and the other viewport). The navigation chevrons
+			// above still show, so players know they can swipe L/R.
+			if (g_MpNumJoined <= 1)
+#endif
 			{
 				char *title;
 				s32 textheight;

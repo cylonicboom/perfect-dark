@@ -682,6 +682,90 @@ MenuItemHandlerResult menuhandlerMpRespawnDelay(s32 operation, struct menuitem *
 
 	return 0;
 }
+
+// Splitscreen-aware labels for the port-added Combat Sim options. In multi-
+// player (g_MpNumJoined > 1) each player's setup viewport is narrow and the
+// full labels truncate, so return a shortened variant. Used as the param2
+// text-callback on the relevant menu items, with item->param carrying the row
+// index below. Safe because those items' handlers key off item->param3 (the
+// option bit) — never item->param — so the row index is free to reuse. Items
+// whose handler DOES read item->param (e.g. the Fill From/To dropdowns) keep
+// their literal labels; they're already short.
+enum {
+	// Classic Options (GoldenEye Style breakdown)
+	MPOPTLABEL_GOLDENEYE = 0,
+	MPOPTLABEL_SNAPLEAN,
+	MPOPTLABEL_NOCROUCHACC,
+	MPOPTLABEL_RELOAD,
+	MPOPTLABEL_LEDGEWALL,
+	MPOPTLABEL_SIGHT,
+	MPOPTLABEL_HIDESIGHT,
+	MPOPTLABEL_GEHUD,
+	MPOPTLABEL_NOSECONDARY,
+	MPOPTLABEL_NOMIDCROUCH,
+	MPOPTLABEL_NODUALWIELD,
+	MPOPTLABEL_IFRAMES,
+	MPOPTLABEL_NOBLUR,
+	// More Options
+	MPOPTLABEL_NOPLAYERONRADAR,
+	MPOPTLABEL_CONTROLLERSONLY,
+	MPOPTLABEL_SPECTATEONDEATH,
+	MPOPTLABEL_FORCEDRESPAWN,
+	MPOPTLABEL_RESPAWNINVULN,
+	MPOPTLABEL_LASTATTACKER,
+	// Configure Simulants
+	MPOPTLABEL_RANDBODY,
+	MPOPTLABEL_RANDHEIGHT,
+	MPOPTLABEL_RANDSPECIAL,
+	MPOPTLABEL_MODIFYSIMS,
+	MPOPTLABEL_CONFIGSIMS,
+	// Soundtrack
+	MPOPTLABEL_RANDMUSIC,
+};
+
+// Both columns end with '\n' — the menu text renderer treats it as the
+// end-of-label marker (same as the lang strings), and labels resolved through a
+// param2 callback need it just like literal labels do.
+static const char *const g_MpOptLabels[][2] = {
+	// full label,                       short label (splitscreen)
+	{ "GoldenEye Style\n",              "GoldenEye\n"      },
+	{ "Snap Lean\n",                    "Snap Lean\n"      },
+	{ "No Crouch Accuracy\n",           "No Crouch Acc\n"  },
+	{ "Classic Reloads\n",              "Classic Reload\n" },
+	{ "Ledge Walls\n",                  "Ledge Walls\n"    },
+	{ "Classic Crosshair\n",            "Classic Xhair\n"  },
+	{ "Hide Crosshair Unless Aiming\n", "Hide Xhair\n"     },
+	{ "GoldenEye HUD\n",                "GE HUD\n"         },
+	{ "No Secondary Functions\n",       "No Secondary\n"   },
+	{ "No Mid-Crouch\n",                "No Mid-Crouch\n"  },
+	{ "No Dual Wield\n",                "No Dual Wield\n"  },
+	{ "Damage Invulnerability\n",       "I-Frames\n"       },
+	{ "No Blur Effects\n",              "No Blur\n"        },
+	{ "No Player on Radar\n",           "No Radar Blip\n"  },
+	{ "Controllers Only\n",             "Pads Only\n"      },
+	{ "Spectate on Death\n",            "Spectate Death\n" },
+	{ "Forced Respawn\n",               "Force Respawn\n"  },
+	{ "Respawn Invulnerability\n",      "Respawn Invuln\n" },
+	{ "Last Attacker Attribution\n",    "Last Attacker\n"  },
+	{ "Randomise Body\n",               "Random Body\n"    },
+	{ "Randomise Heights\n",            "Random Height\n"  },
+	{ "Randomise Special Types\n",      "Random Special\n" },
+	{ "Modify Simulants\n",             "Modify Sims\n"    },
+	{ "Configure Simulants\n",          "Config Sims\n"    },
+	{ "Randomise Menu Music\n",         "Random Music\n"   },
+};
+
+char *mpMenuTextOptLabel(struct menuitem *item)
+{
+	s32 i = item->param;
+	s32 col = (g_MpNumJoined > 1) ? 1 : 0;
+
+	if (i < 0 || i >= (s32)ARRAYCOUNT(g_MpOptLabels)) {
+		i = 0;
+	}
+
+	return (char *)g_MpOptLabels[i][col];
+}
 #endif
 
 MenuItemHandlerResult menuhandlerMpTeamsEnabled(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -4757,9 +4841,9 @@ MenuItemHandlerResult menuhandlerMpFillAll(s32 operation, struct menuitem *item,
 struct menuitem g_MpSimulantsConfigMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
+		MPOPTLABEL_RANDBODY,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Randomise Body\n",
+		(uintptr_t)&mpMenuTextOptLabel,
 		0,
 		menuhandlerMpRandomiseSimBody,
 	},
@@ -4773,9 +4857,9 @@ struct menuitem g_MpSimulantsConfigMenuItems[] = {
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
+		MPOPTLABEL_RANDHEIGHT,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Randomise Heights\n",
+		(uintptr_t)&mpMenuTextOptLabel,
 		0,
 		menuhandlerMpVarySimHeight,
 	},
@@ -4805,9 +4889,9 @@ struct menuitem g_MpSimulantsConfigMenuItems[] = {
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
+		MPOPTLABEL_RANDSPECIAL,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Randomise Special Types\n",
+		(uintptr_t)&mpMenuTextOptLabel,
 		0,
 		menuhandlerMpFillRandomSpecial,
 	},
@@ -4880,17 +4964,17 @@ MenuItemHandlerResult menuhandlerMpSimulantsBack(s32 operation, struct menuitem 
 struct menuitem g_MpSimulantsRootMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
+		MPOPTLABEL_MODIFYSIMS,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Modify Simulants\n",
+		(uintptr_t)&mpMenuTextOptLabel,
 		0,
 		menuhandlerMpModifySimulants,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
-		0,
-		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Configure Simulants\n",
+		MPOPTLABEL_CONFIGSIMS,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG,
+		(uintptr_t)&mpMenuTextOptLabel,
 		0,
 		(void *)&g_MpSimulantsConfigMenuDialog,
 	},
@@ -5951,9 +6035,9 @@ struct menuitem g_MpSoundtrackMenuItems[] = {
 #ifndef PLATFORM_N64
 	{
 		MENUITEMTYPE_CHECKBOX,
+		MPOPTLABEL_RANDMUSIC,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Randomise Menu Music\n",
+		(uintptr_t)&mpMenuTextOptLabel,
 		0,
 		menuhandlerMpRandomiseMenuMusic,
 	},
@@ -7757,9 +7841,9 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Player on Radar",
+		MPOPTLABEL_NOPLAYERONRADAR,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_NOPLAYERONRADAR,
 		menuhandlerMpCheckboxOption,
 	},
@@ -7771,9 +7855,9 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		// input layer. Useful for "fair" lobbies that want to rule out
 		// mouse-aim and instant keyboard strafes.
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Controllers Only",
+		MPOPTLABEL_CONTROLLERSONLY,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CONTROLLERS_ONLY,
 		menuhandlerMpCheckboxOption,
 	},
@@ -7788,14 +7872,24 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		MPOPTION_NODOORS >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
+	// Port-only: "Auto Lifts" — lifts can't be called, they cycle on timers.
+	// Deterministic / server-authoritative so it avoids online lift desyncs.
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Auto Lifts\n",
+		MPOPTION_AUTOLIFTS >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
 	// Port-only respawn / spectator options (proto 77).
 	{
 		// Auto-spectate a live player on death. Default OFF inverts the old
 		// always-on behaviour — off, you keep your own death-cam during the delay.
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Spectate on Death",
+		MPOPTLABEL_SPECTATEONDEATH,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_SPECTATEONDEATH >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
@@ -7812,18 +7906,18 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 	{
 		// Auto-respawn 10 s after the respawn delay ends (death + delay + 10 s).
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Forced Respawn",
+		MPOPTLABEL_FORCEDRESPAWN,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_FORCEDRESPAWN >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		// 2 s of damage immunity on respawn (fixed duration).
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Respawn Invulnerability",
+		MPOPTLABEL_RESPAWNINVULN,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_RESPAWNINVULN >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
@@ -7842,9 +7936,9 @@ struct menuitem g_MpExtGameOptionsMenuItems[] = {
 		// attacker (chr->lastattacker) instead of the victim, so "push" kills
 		// reward the attacker. Off = vanilla (these read as suicides).
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Last Attacker Attribution",
+		MPOPTLABEL_LASTATTACKER,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_LASTATTACKERKILL >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
@@ -7878,12 +7972,14 @@ struct menudialogdef g_ExtGameOptionsMenuDialog = {
 // in the high 32 bits of g_MpSetup.options, so they use the high-word
 // checkbox handler (param3 = BIT >> 32, shifted back up by 32). A behaviour
 // is active when the master OR its own bit is set (classicOptionActive).
+// The label (param2) is the shared mpMenuTextOptLabel callback and param holds
+// the MPOPTLABEL_* row index so the labels shorten in splitscreen.
 struct menuitem g_MpClassicOptionsMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"GoldenEye Style",
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_GOLDENEYE,
 		menuhandlerMpCheckboxOption,
 	},
@@ -7897,97 +7993,97 @@ struct menuitem g_MpClassicOptionsMenuItems[] = {
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Snap Lean",
+		1,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_SNAPLEAN >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Crouch Accuracy",
+		2,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_NOCROUCHACC >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Classic Reloads",
+		3,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_RELOAD >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Ledge Walls",
+		4,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_LEDGEWALL >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Classic Crosshair",
+		5,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_SIGHT >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Hide Crosshair Unless Aiming",
+		6,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_HIDESIGHT >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"GoldenEye HUD",
+		7,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_GEHUD >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Secondary Functions",
+		8,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_NOSECONDARY >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Mid-Crouch",
+		9,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_NOMIDCROUCH >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Dual Wield",
+		10,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_NODUALWIELD >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Damage Invulnerability",
+		11,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_IFRAMES >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LOCKABLEMINOR | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"No Blur Effects",
+		12,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_NOBLUR >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},

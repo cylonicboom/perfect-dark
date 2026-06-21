@@ -458,10 +458,15 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 				(aplayernum < 0 || aplayernum == vplayernum || !aName)
 				? NULL : aName;
 			// Team bytes for kill-feed colouring. 0xff = unknown — render falls
-			// back to the green/red palette. Mpchrconfig stores team as 0..7
-			// for MPTEAM_1..MPTEAM_8, which maps directly to g_TeamColours[].
-			const u8 vTeam = g_MpAllChrConfigPtrs[vplayernum]->team;
-			const u8 aTeam = (shooterPass && aplayernum >= 0 && aplayernum < MAX_MPCHRS
+			// back to the green/red palette (local player red, everyone else
+			// green). Mpchrconfig stores team as 0..7 for MPTEAM_1..MPTEAM_8,
+			// which maps directly to g_TeamColours[]. Only pass real teams in a
+			// TEAM game — in a free-for-all every player has a distinct team
+			// value, which would otherwise colour the feed by those per-player
+			// teams instead of the intended green/red.
+			const bool teamgame = (g_MpSetup.options & MPOPTION_TEAMSENABLED) != 0;
+			const u8 vTeam = teamgame ? g_MpAllChrConfigPtrs[vplayernum]->team : 0xff;
+			const u8 aTeam = (teamgame && shooterPass && aplayernum >= 0 && aplayernum < MAX_MPCHRS
 					&& g_MpAllChrConfigPtrs[aplayernum])
 				? g_MpAllChrConfigPtrs[aplayernum]->team : 0xff;
 			netKillFeedAdd(shooterPass, vName, aTeam, vTeam);
@@ -484,6 +489,38 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 			netbufStartWrite(&g_NetMsgRel);
 			netmsgSvcScoreWrite(&g_NetMsgRel, score_indexes, score_count);
 			netSend(NULL, &g_NetMsgRel, true, NETCHAN_CONTROL);
+		}
+	}
+
+	// Offline Combat Sim kill feed (single machine — no SVC_KILL broadcast).
+	// Colour locally: in a free-for-all, local human players are red
+	// (NET_KILLFEED_TEAM_LOCAL) and simulants green (NET_KILLFEED_TEAM_NONE);
+	// a team game uses the real team colours.
+	if (g_NetMode == NETMODE_NONE && g_Vars.normmplayerisrunning) {
+		const char *aName = (aplayernum >= 0 && aplayernum < MAX_MPCHRS
+				&& g_MpAllChrConfigPtrs[aplayernum])
+			? g_MpAllChrConfigPtrs[aplayernum]->name : NULL;
+		const char *vName = (vplayernum >= 0 && vplayernum < MAX_MPCHRS
+				&& g_MpAllChrConfigPtrs[vplayernum])
+			? g_MpAllChrConfigPtrs[vplayernum]->name : NULL;
+
+		if (vName) {
+			// Suicide / environment kill: NULL shooter renders "victim [died]".
+			const char *shooterPass =
+				(aplayernum < 0 || aplayernum == vplayernum || !aName) ? NULL : aName;
+			const bool teamgame = (g_MpSetup.options & MPOPTION_TEAMSENABLED) != 0;
+			u8 vTeam, aTeam;
+
+			if (teamgame) {
+				vTeam = g_MpAllChrConfigPtrs[vplayernum]->team;
+				aTeam = shooterPass ? g_MpAllChrConfigPtrs[aplayernum]->team : NET_KILLFEED_TEAM_NONE;
+			} else {
+				// Players 0..PLAYERCOUNT()-1 are local humans; bots are above.
+				vTeam = (vplayernum < PLAYERCOUNT()) ? NET_KILLFEED_TEAM_LOCAL : NET_KILLFEED_TEAM_NONE;
+				aTeam = (shooterPass && aplayernum < PLAYERCOUNT()) ? NET_KILLFEED_TEAM_LOCAL : NET_KILLFEED_TEAM_NONE;
+			}
+
+			netKillFeedAdd(shooterPass, vName, aTeam, vTeam);
 		}
 	}
 

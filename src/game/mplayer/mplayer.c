@@ -217,6 +217,10 @@ void mpStartMatch(void)
 	s32 stagenum;
 
 #ifndef PLATFORM_N64
+	// Clear the kill feed so entries from the previous match don't carry over
+	// (offline keys expiry off lvframe60, which resets each stage).
+	netKillFeedClear();
+
 	// Offline-32-sims: net games are capped at NET_MAX_BOTS - strip the
 	// session-only extra bot bits (slots 8-31) for ANY net role (server,
 	// joining client, Host Online admin) before the match builds.

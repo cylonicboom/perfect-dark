@@ -3149,6 +3149,19 @@ Gfx *playerRenderHealthBarGE(Gfx *gdl)
 	const s32 viewright  = viewleft + viewwidth - 1;
 	const s32 cy         = viewtop + viewheight / 2;
 
+	// Scale the arc to the viewport. arc_layout below is tuned for a full-screen
+	// (1-player) viewport; in 2-4 player splitscreen each viewport is half-width
+	// and/or half-height, so the fixed offsets (y_off up to ±88) would render
+	// off the top/bottom and the two side arcs would cross. Shrink uniformly by
+	// this viewport's smaller fraction of the whole screen so the arc keeps its
+	// shape and fits. scale == 1.0 for a single player (byte-identical layout).
+	f32 sx = (f32)viGetViewWidth() / (f32)viGetWidth();
+	f32 sy = (f32)viGetViewHeight() / (f32)viGetHeight();
+	f32 scale = (sx < sy) ? sx : sy;
+	if (scale > 1.0f) {
+		scale = 1.0f;
+	}
+
 	// Reversed half-arc bracket: 8 segments along a half-circle of
 	// radius ~90px, vertically centered on the viewport. The whole
 	// arc is inset 24px from each side edge so blank space remains
@@ -3201,19 +3214,28 @@ Gfx *playerRenderHealthBarGE(Gfx *gdl)
 		const bool hp_on = (i < hp_filled);
 		const bool sh_on = (i < sh_filled);
 
-		const s32 hp_cx = viewleft + arc_layout[i].x;
-		const s32 hp_cyy = cy + arc_layout[i].y_off;
-		const s32 hp_x1 = hp_cx - arc_layout[i].w / 2;
-		const s32 hp_y1 = hp_cyy - arc_layout[i].h / 2;
-		const s32 hp_x2 = hp_x1 + arc_layout[i].w - 1;
-		const s32 hp_y2 = hp_y1 + arc_layout[i].h - 1;
+		// Viewport-scaled segment geometry (full size at scale 1.0). Widths/
+		// heights floor to at least 1px so a heavily-shrunk arc stays visible.
+		s32 ax = (s32)(arc_layout[i].x * scale);
+		s32 ay = (s32)(arc_layout[i].y_off * scale);
+		s32 aw = (s32)(arc_layout[i].w * scale);
+		s32 ah = (s32)(arc_layout[i].h * scale);
+		if (aw < 1) aw = 1;
+		if (ah < 1) ah = 1;
 
-		const s32 sh_cx = viewright - arc_layout[i].x;
-		const s32 sh_cyy = cy + arc_layout[i].y_off;
-		const s32 sh_x1 = sh_cx - arc_layout[i].w / 2;
-		const s32 sh_y1 = sh_cyy - arc_layout[i].h / 2;
-		const s32 sh_x2 = sh_x1 + arc_layout[i].w - 1;
-		const s32 sh_y2 = sh_y1 + arc_layout[i].h - 1;
+		const s32 hp_cx = viewleft + ax;
+		const s32 hp_cyy = cy + ay;
+		const s32 hp_x1 = hp_cx - aw / 2;
+		const s32 hp_y1 = hp_cyy - ah / 2;
+		const s32 hp_x2 = hp_x1 + aw - 1;
+		const s32 hp_y2 = hp_y1 + ah - 1;
+
+		const s32 sh_cx = viewright - ax;
+		const s32 sh_cyy = cy + ay;
+		const s32 sh_x1 = sh_cx - aw / 2;
+		const s32 sh_y1 = sh_cyy - ah / 2;
+		const s32 sh_x2 = sh_x1 + aw - 1;
+		const s32 sh_y2 = sh_y1 + ah - 1;
 
 		const u32 hp_col = hp_on ? playerLerpRGBA(health_bot, health_top, t) : bgcol;
 		const u32 sh_col = sh_on ? playerLerpRGBA(shield_bot, shield_top, t) : bgcol;

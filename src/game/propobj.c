@@ -141,6 +141,18 @@ struct autogunobj *g_ThrownLaptops = NULL;
 struct beam *g_ThrownLaptopBeams = NULL;
 s32 g_MaxThrownLaptops = 0;
 
+#ifndef PLATFORM_N64
+// "Auto Lifts" Combat Sim option (MPOPTION_AUTOLIFTS): lifts can't be called by
+// players/NPCs — they cycle their stops on their own (the liftTick idle branch
+// auto-advances). This keeps lift motion deterministic and server-authoritative
+// so it doesn't desync online. The option rides g_MpSetup.options (wire-synced),
+// and is only ever set in Combat Sim, so the chrslots check is implicit.
+static inline bool mpAutoLiftsActive(void)
+{
+	return g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_AUTOLIFTS);
+}
+#endif
+
 /**
  * Attempt to call a lift from the given door.
  *
@@ -163,8 +175,24 @@ bool doorCallLift(struct prop *doorprop, bool allowclose)
 
 #ifndef PLATFORM_N64
 	if (g_NetMode == NETMODE_CLIENT) {
-		// don't automatically do anything with lifts
+		// Clients never drive lifts (server-authoritative). For a LIFT DOOR,
+		// consume the activation (return "handled" = true) so the client doesn't
+		// open it locally and expose an empty shaft the player could fall into —
+		// the door's open arrives via SVC_PROP_DOOR when the lift is actually
+		// present. Non-lift doors are handled normally.
+		if (door->base.hidden & OBJHFLAG_LIFTDOOR) {
+			return true;
+		}
 		return handled;
+	}
+
+	if (mpAutoLiftsActive() && (door->base.hidden & OBJHFLAG_LIFTDOOR)) {
+		// Auto Lifts: a lift door can't be opened by the player — the lift opens
+		// it itself when it arrives (liftTick). Consume the activation so
+		// doorsActivate doesn't open an empty shaft the player could fall into /
+		// get stuck in. The lift is never called; it cycles on its own. Non-lift
+		// doors fall through and work normally.
+		return true;
 	}
 #endif
 
@@ -8251,6 +8279,16 @@ void liftTick(struct prop *prop)
 	lift->prevpos.x = prop->pos.x;
 	lift->prevpos.y = prop->pos.y;
 	lift->prevpos.z = prop->pos.z;
+
+#ifndef PLATFORM_N64
+	// Auto Lifts: never let the lift sit deactivated / trigger-disabled waiting
+	// to be called — clear those flags so the idle branch below keeps advancing
+	// it to the next stop on its own. Applied on server and client alike (both
+	// read the synced option) so each side moves the lift toward the same aim.
+	if (mpAutoLiftsActive()) {
+		obj->flags &= ~(OBJFLAG_DEACTIVATED | OBJFLAG_LIFT_TRIGGERDISABLE);
+	}
+#endif
 
 	if (lift->levelcur != lift->levelaim) {
 		// Lift is not at the desired level. So try to move, but not if the lift

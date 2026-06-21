@@ -486,8 +486,10 @@ static u32 g_LagCompLastRewindTicks = 0;
 
 // Forward declaration: the kill-feed buffer and its clear helper live below,
 // near the render code, but netDisconnect needs to wipe the feed on session
-// teardown — declare it here so the dispatch order doesn't break.
-static void netKillFeedClear(void);
+// teardown — declare it here so the dispatch order doesn't break. Also called
+// from mpStartMatch (mplayer.c) to clear stale entries between matches (offline
+// keys expiry off lvframe60, which resets each stage), so it's non-static.
+void netKillFeedClear(void);
 
 s32 netParseAddr(ENetAddress *out, const char *str)
 {
@@ -3232,6 +3234,29 @@ void netEndFrame(void)
 			// mine free path). Backstop only — SVC_PROP_FREE is the primary path.
 			if ((g_NetTick % (NET_HEARTBEAT_INTERVAL / 2u)) == 10u) {
 				netmsgSvcPropReconcileWrite(&g_NetMsgRel);
+			}
+
+			// Moving-lift heartbeat: SVC_PROP_LIFT is otherwise only sent on a stop
+			// change (+ the JIP snapshot), so a client that drifts mid-travel
+			// (timing skew on when the move began, a lift that started before its
+			// world finished loading, or float drift) has no correction until the
+			// NEXT stop. Re-broadcast any lift currently in motion ~twice a second
+			// (phase 25) so it continuously re-converges. Idle/settled lifts are
+			// skipped, so this is near-free when nothing is moving.
+			if ((g_NetTick % (NET_HEARTBEAT_INTERVAL / 2u)) == 25u) {
+				for (s32 li = 0; li < g_Vars.maxprops; ++li) {
+					struct prop *lprop = &g_Vars.props[li];
+
+					if (lprop->syncid && lprop->type == PROPTYPE_OBJ && lprop->obj
+							&& lprop->obj->type == OBJTYPE_LIFT) {
+						struct liftobj *lift = (struct liftobj *)lprop->obj;
+
+						if (lift->levelcur != lift->levelaim
+								|| lift->speed != 0.0f || lift->dist != 0.0f) {
+							netmsgSvcPropLiftWrite(&g_NetMsgRel, lprop);
+						}
+					}
+				}
 			}
 #endif
 			if (g_NetNextUpdate <= g_NetTick) {
@@ -6767,7 +6792,12 @@ struct netlobbystate g_NetLobbyState;
 // is the "unknown / no team" sentinel — return the supplied fallback.
 static inline u32 netKillFeedTeamColor(u8 team, u32 fallback)
 {
-	if (team == 0xff) {
+	// Offline "local human" sentinel — always red, regardless of name-match
+	// (there's no g_NetLocalClient offline). Set by mpstatsRecordDeath.
+	if (team == NET_KILLFEED_TEAM_LOCAL) {
+		return NET_KILLFEED_COL_VICTIM;
+	}
+	if (team == NET_KILLFEED_TEAM_NONE) {
 		return fallback;
 	}
 	// g_TeamColours has 8 entries (one per MPTEAM). Out-of-range teams
@@ -6779,7 +6809,16 @@ static inline u32 netKillFeedTeamColor(u8 team, u32 fallback)
 	return g_TeamColours[team] | 0xffu;
 }
 
-static void netKillFeedClear(void)
+// Tick source for the kill feed's expiry. g_NetTick only advances in net games,
+// so offline (where the feed is now also shown for local Combat Sim) we key off
+// the level frame counter instead. Both run at 60Hz, matching
+// NET_KILLFEED_DURATION_TICKS.
+static inline u32 netKillFeedNow(void)
+{
+	return g_NetMode ? g_NetTick : (u32)g_Vars.lvframe60;
+}
+
+void netKillFeedClear(void)
 {
 	memset(g_NetKillFeed, 0, sizeof(g_NetKillFeed));
 }
@@ -6815,7 +6854,7 @@ void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8
 		g_NetKillFeed[i] = g_NetKillFeed[i - 1];
 	}
 
-	g_NetKillFeed[0].expire_tick = g_NetTick + NET_KILLFEED_DURATION_TICKS;
+	g_NetKillFeed[0].expire_tick = netKillFeedNow() + NET_KILLFEED_DURATION_TICKS;
 	killFeedCopyName(g_NetKillFeed[0].shooter, shooter);
 	killFeedCopyName(g_NetKillFeed[0].victim, victim);
 	g_NetKillFeed[0].shooter_team = shooter_team;
@@ -6824,7 +6863,9 @@ void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8
 
 Gfx *netKillFeedRender(Gfx *gdl)
 {
-	if (!g_NetMode) {
+	// Net games OR an offline Combat Sim match (vs simulants). Solo campaign and
+	// the front-end have no kill feed.
+	if (!g_NetMode && !g_Vars.normmplayerisrunning) {
 		return gdl;
 	}
 
@@ -6852,7 +6893,7 @@ Gfx *netKillFeedRender(Gfx *gdl)
 		if (!e->victim[0]) {
 			continue;
 		}
-		if (g_NetTick >= e->expire_tick) {
+		if (netKillFeedNow() >= e->expire_tick) {
 			// Expired — clear so it doesn't get re-rendered after a wraparound.
 			e->victim[0] = '\0';
 			e->shooter[0] = '\0';

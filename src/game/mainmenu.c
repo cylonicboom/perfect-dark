@@ -5189,12 +5189,19 @@ char *mainMenuTextLabel(struct menuitem *item)
 	};
 
 #ifndef PLATFORM_N64
-	// Mirror and Tonal Inversion are cosmetic-only (never count as cheating) —
-	// ignore them when deciding whether to relabel the menus "Cheat Solo
-	// Missions" etc.
-	if (g_CheatsEnabledBank0 ||
-			(g_CheatsEnabledBank1 & ~((1 << (CHEAT_MIRROR - 32)) | (1 << (CHEAT_TONALINVERSION - 32))))) {
-		return langGet(withcheats[item->param]);
+	// The port-only "Experiments" cheats (CHEAT_GOLDENEYE..CHEAT_CLASSIC_NOBLUR,
+	// all bank 1) are cosmetic / quality-of-life toggles that never count as
+	// cheating — ignore them when deciding whether to relabel the menus "Cheat
+	// Solo Missions" etc.
+	{
+		u32 expmask = 0;
+		s32 expcheat;
+		for (expcheat = CHEAT_GOLDENEYE; expcheat <= CHEAT_CLASSIC_NOBLUR; expcheat++) {
+			expmask |= 1 << (expcheat - 32);
+		}
+		if (g_CheatsEnabledBank0 || (g_CheatsEnabledBank1 & ~expmask)) {
+			return langGet(withcheats[item->param]);
+		}
 	}
 #else
 	if (g_CheatsEnabledBank0 || g_CheatsEnabledBank1) {

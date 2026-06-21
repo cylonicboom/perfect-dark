@@ -4204,7 +4204,11 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		gSPSegment(gdl++, SPSEGMENT_BG_COL, OS_PHYSICAL_TO_K0(v0));
 
 #ifndef PLATFORM_N64
-		if (g_DlCacheEnabled && (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
+		// Wireframe forces dlcache off (some old GL drivers black-texture the
+		// cached path - the user disables it implicitly by toggling wireframe).
+		// Gating here rather than mutating g_DlCacheEnabled means turning
+		// wireframe back off restores the user's real dlcache setting.
+		if (g_DlCacheEnabled && !gfx_wireframe_mode && (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer
 			// keys the cache by block->gdl, peeked from the gSPDisplayList between
 			// the two markers. Dyntex rooms are excluded (their textures change).

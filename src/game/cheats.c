@@ -158,6 +158,22 @@ static const char *const s_cheat_literal_names[] = {
 	[CHEAT_CLASSIC_NOBLUR]      = "No Blur Effects",
 };
 
+// The port-only "Experiments" cheats (Extended Options > Experiments and its
+// Classic Options sub-menu): GoldenEye Style + Wireframe + Mirror + Tonal
+// Inversion + the per-behaviour Classic Options. These are cosmetic / quality-
+// of-life toggles, not gameplay advantages, so they must NOT flag a run as
+// cheated — mission completion, saving, unlocks and challenges all still count
+// with them on. They live entirely in the ENABLED banks: never copied into the
+// active banks (cheatActivate / cheatsReset skip them) and cheatIsActive reads
+// their enabled bit directly, so every gate (goldeneyeStyleActive,
+// classicOptionActive, the wireframe/mirror/tonal sync) still works while the
+// active banks — which challenge.c / endscreen.c test for "was this cheated?" —
+// stay clear.
+static bool cheatIsExperiment(s32 cheat_id)
+{
+	return cheat_id >= CHEAT_GOLDENEYE && cheat_id <= CHEAT_CLASSIC_NOBLUR;
+}
+
 /**
  * Single choke point for "is GoldenEye Style behaviour active?". Used by
  * every GE gate site so the cheat (`CHEAT_GOLDENEYE`) and the per-match
@@ -244,11 +260,11 @@ u32 cheatIsUnlocked(s32 cheat_id)
 bool cheatIsActive(s32 cheat_id)
 {
 #ifndef PLATFORM_N64
-	// Mirror and Tonal Inversion are cosmetic-only: their live state is the
-	// ENABLED bit, and they are never copied into the active banks (see
-	// cheatsReset / cheatActivate), so having them on doesn't flag the game
-	// as cheated — mission completion, saving and challenges all still count.
-	if (cheat_id == CHEAT_MIRROR || cheat_id == CHEAT_TONALINVERSION) {
+	// The "Experiments" cheats live in the ENABLED banks only and are never
+	// copied into the active banks (see cheatsReset / cheatActivate), so having
+	// them on doesn't flag the game as cheated — mission completion, saving and
+	// challenges all still count. Read their enabled bit directly.
+	if (cheatIsExperiment(cheat_id)) {
 		return g_CheatsEnabledBank1 & (1 << (cheat_id - 32));
 	}
 #endif
@@ -266,9 +282,8 @@ void cheatActivate(s32 cheat_id)
 	s32 playernum;
 
 #ifndef PLATFORM_N64
-	// Mirror and Tonal Inversion never enter the active banks (cosmetic-only;
-	// see cheatIsActive).
-	if (cheat_id == CHEAT_MIRROR || cheat_id == CHEAT_TONALINVERSION) {
+	// The Experiments cheats never enter the active banks (see cheatIsActive).
+	if (cheatIsExperiment(cheat_id)) {
 		return;
 	}
 #endif
@@ -366,10 +381,15 @@ void cheatsReset(void)
 		g_CheatsActiveBank1 = g_CheatsEnabledBank1;
 
 #ifndef PLATFORM_N64
-		// Mirror and Tonal Inversion are cosmetic-only: keep them out of the
-		// active bank so they never count as cheats (cheatIsActive reads
-		// their enabled bits directly).
-		g_CheatsActiveBank1 &= ~((1 << (CHEAT_MIRROR - 32)) | (1 << (CHEAT_TONALINVERSION - 32)));
+		// Keep the Experiments cheats out of the active bank so they never
+		// count as cheats (cheatIsActive reads their enabled bits directly).
+		// They are CHEAT_GOLDENEYE..CHEAT_CLASSIC_NOBLUR, all in bank 1.
+		{
+			s32 expcheat;
+			for (expcheat = CHEAT_GOLDENEYE; expcheat <= CHEAT_CLASSIC_NOBLUR; expcheat++) {
+				g_CheatsActiveBank1 &= ~(1 << (expcheat - 32));
+			}
+		}
 #endif
 
 		if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0 || g_Vars.normmplayerisrunning) {

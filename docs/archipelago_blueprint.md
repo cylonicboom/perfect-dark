@@ -446,71 +446,50 @@ randomizer: **the locks** — the engine points where we withhold content so the
 player stalls until the matching item is received. Without these, AP items have
 nothing to unlock and the seed isn't beatable-in-order.
 
-### 9.1 Two gating strategies
+### 9.1 Gating strategy — systemic engine gates only
 
-There are two complementary ways to lock content, and the right choice depends on
-whether the thing being locked is **systemic** (a whole subsystem) or
-**level-scripted** (one event baked into a stage's bytecode).
+All gating is done with **engine gate points (C)**: a small set of existing
+decision functions already answer "is the player allowed to X?". We add **one**
+AP-aware branch to each — when an AP run is active, consult an **AP unlock set**
+instead of (or on top of) the vanilla condition. Few, well-defined sites; each
+applies uniformly across all 21 stages with no per-level authoring. The AP unlock
+set is a new port-only bitset (e.g. `g_ApUnlocks`), written by the `pd.unlock`
+grants (§9.4) and read by the gate points; defaults to "all locked" in AP mode.
 
-**A) Engine gate points (C).** A small set of existing decision functions already
-answer "is the player allowed to X?". We add **one** AP-aware branch to each:
-when an AP run is active, consult an **AP unlock set** instead of (or on top of)
-the vanilla condition. Few, well-defined sites; covers the systemic gates
-(stage-select, weapon use, device use). The AP unlock set is a new
-port-only bitset (e.g. `g_ApUnlocks`), written by the `pd.unlock_*` grants
-(§6.4) and read by the gate points; defaults to "all locked" in AP mode.
+> **In-level door/lift/scripted gates are deliberately out of scope** — see §9.5
+> for why (softlock risk). The systemic gates below already control progression
+> order, so they're the entire gating surface for v1.
 
-**B) Action-block overrides (Lua, no engine change).** Per-level scripted
-progression — a door that opens after a cutscene, a reinforcement wave, the
-`end_level` trigger — lives in the stage's **background (`0x10xx`) /
-environmental (`0x14xx`) ailist** (see `docs/ailists.md`). `pd.register_ailist`
-already lets us override these on host/solo only (`chraiLuaOverridesAllowed`,
-chrai.c). An override that **declines to run** the gated command — `return 1`
-(yield) every frame, then delegate to the real list via `ctx:exec` only once the
-AP item is in — freezes that scripted event indefinitely. **Zero C changes**, and
-it's already server-authoritative. This is the deep, optional layer (intra-level
-item logic); strategy A is the spine.
+### 9.2 The gate catalog (in scope)
 
-> The override path reuses the **`g_StageFlags`** sentinel system the levels
-> already use for their own progression (`set_stage_flag 0x00A1` /
-> `if_stage_flag_eq 0x00A3`, chraction.c). An AP override can simply refuse to
-> set a stage flag until the item arrives, and every downstream `if_stage_flag_eq`
-> in that level's script stays blocked — i.e. we gate *one* flag and the level's
-> own logic does the rest.
+"Lever" = the exact field/function the AP branch flips. Every gate is **Vector A**
+(one engine branch, automatic across all stages).
 
-### 9.2 The gate catalog
-
-Ordered by value-to-effort. "Vector" = which strategy; "Lever" = the exact
-field/function to flip.
-
-| # | Gate | Vector | Lever (engine site) | Notes |
-|---|---|---|---|---|
-| 1 | **Stage + difficulty access** | A | `isStageDifficultyUnlocked()` (mainmenu.c:1026) | **The spine — full stage shuffle is the default.** Vanilla derives access from the `besttimes` chain ("beat N ⇒ N+1 unlocks"); in the default `mission_order: shuffle` AP mode this function returns true iff the AP unlock set holds this `(stage,difficulty)`, so each stage becomes a placed item and the play order is randomized. One added branch gates the whole campaign. (`mission_order: campaign` leaves the vanilla chain intact and shuffles only intra-level.) |
-| 2 | **Weapon use (per function)** | A | `bgunPrimaryFunctionDisabled()` (bondgun.c:3456) **and** `bgunSecondaryFunctionDisabled()` (bondgun.c:3430) — one AP branch each | **Primary and secondary lock independently** via the existing per-slot `FNFLAG_PRIMARY_DISABLED` / `FNFLAG_SECONDARY_DISABLED`. You can pick up and hold a gun, but each fire function works only once its item arrives (e.g. hold the Falcon 2 but no scope-zoom until the secondary unlock). Optionally also refuse the whole pickup via `objTestForPickup()` (propobj.c:18042) under `weapon_logic: starting-pistol-only`. |
-| 3 | **Starting loadout** | A | intro-weapon loop in `playerLoadDefaults()` (player.c:705) | Skip `INTROCMD_WEAPON` grants for not-yet-unlocked guns ⇒ start missions with pistol only. |
-| 4 | **Gadgets / devices** | A | `currentPlayerSetDeviceActive()` (game_0b0fd0.c:388) — refuse to set the `devicesactive` bit | Single point for all 11 devices (Night Vision, IR/X-Ray, Cloak, Eyespy, R-Tracker, …). Locked device just won't toggle on. |
-| 5 | **Difficulty selection** | A | same `isStageDifficultyUnlocked` path / difficulty menu | Special/Perfect Agent as progressive items (`difficulties` option). |
-| 6 | **Doors (key/lock)** | A or B | `doorIsUnlocked()` / `door->keyflags` (propobj.c:19669); padlock via `doorIsPadlockFree` | Treat PD's own `keyflags` as AP keys: AP can hold a door locked (`keyflags != 0` + no key) until the "keycard" item arrives, then clear it. Or do it from a Lua override (B). |
-| 7 | **Lifts / elevators** | A or B | `OBJFLAG_LIFT_TRIGGERDISABLE` on the `liftobj` (propobj.c) | Set the flag to make a lift refuse calls; clear on item. Good for sectioning a level. |
-| 8 | **Scripted events** (spawns, cutscenes, scripted door opens) | B | override the stage `0x10xx`/`0x14xx` ailist; suppress `open_door`/`try_spawn_chr_at_pad`/`enable_object`/`set_stage_flag` | The deep per-level layer; needs per-stage authoring but no engine change. |
-| 9 | **Level exit / mission end** | B | suppress `end_level` (`0x00DC`) / the all-objectives-complete path in the stage ailist | PD has **no physical exit prop** to lock — completion is state-driven, so the only way to gate the *exit itself* is via the script (B). Usually unnecessary: gating stage *access* (#1) already controls order; gate the exit only for "collect N before you may leave" seeds. |
-| 10 | **Objectives** | B | refuse the `set_stage_flag` / objective-criteria path in the override | Lets AP require an item before an objective can be completed (e.g. "no Data Uplink ⇒ uplink objective can't finish"). Pairs naturally with the gadget gate (#4). |
+| # | Gate | Lever (engine site) | Notes |
+|---|---|---|---|
+| 1 | **Stage + difficulty access** | `isStageDifficultyUnlocked()` (mainmenu.c:1026) | **The spine — full stage shuffle is the default.** Vanilla derives access from the `besttimes` chain ("beat N ⇒ N+1 unlocks"); in the default `mission_order: shuffle` AP mode this function returns true iff the AP unlock set holds this `(stage,difficulty)`, so each stage becomes a placed item and the play order is randomized. One added branch gates the whole campaign. (`mission_order: campaign` leaves the vanilla chain intact.) |
+| 2 | **Weapon use (per function)** | `bgunPrimaryFunctionDisabled()` (bondgun.c:3456) **and** `bgunSecondaryFunctionDisabled()` (bondgun.c:3430) — one AP branch each | **Primary and secondary lock independently** via the existing per-slot `FNFLAG_PRIMARY_DISABLED` / `FNFLAG_SECONDARY_DISABLED`. You can pick up and hold a gun, but each fire function works only once its item arrives (e.g. hold the Falcon 2 but no scope-zoom until the secondary unlock). Optionally also refuse the whole pickup via `objTestForPickup()` (propobj.c:18042) under `weapon_logic: starting-pistol-only`. |
+| 3 | **Starting loadout** | intro-weapon loop in `playerLoadDefaults()` (player.c:705) | Skip `INTROCMD_WEAPON` grants for not-yet-unlocked guns ⇒ start missions with pistol only. |
+| 4 | **Gadgets / devices** | `currentPlayerSetDeviceActive()` (game_0b0fd0.c:388) — refuse to set the `devicesactive` bit | Single point for all 11 devices (Night Vision, IR/X-Ray, Cloak, Eyespy, R-Tracker, …). Locked device just won't toggle on. **Caveat:** a device a mission *requires* (e.g. Data Uplink) must be guaranteed reachable by AP logic, or in starting items, so locking it can't softlock that stage. |
+| 5 | **Difficulty selection** | same `isStageDifficultyUnlocked` path / difficulty menu | Special/Perfect Agent as progressive items (`difficulties` option). |
 
 ### 9.3 What should be *progression* vs. *useful* vs. *filler*
 
 AP logic needs each item classified so the seed stays solvable:
 
 - **Progression** (gates real advancement): stage/difficulty unlocks (#1/#5),
-  campaign-critical weapons & gadgets that an objective requires (#2/#4/#10),
-  keycards (#6). These must be in logic.
-- **Useful** (helps but not required): most weapons, scanners, Combat Boost,
-  extra ammo capacity.
+  and any gadget a mission *requires* to finish (#4 — e.g. Data Uplink). These
+  must be in logic.
+- **Useful** (helps but not required): most weapon functions, scanners, Combat
+  Boost, extra ammo capacity.
 - **Filler / traps**: ammo top-ups, the self-sabotage cheats (§4). Safe to place
   anywhere.
 
 The `apworld`'s logic rules then read like: *"Skedar Ruins/Perfect Agent
-requires `Stage:SkedarRuins` + `Difficulty:Perfect` + (objective-gating items
-for that stage)."*
+requires `Stage:SkedarRuins` + `Difficulty:Perfect`."* Because in-level barriers
+aren't gated, **every enabled stage is always internally completable** once you
+can select it — the logic only has to reason about stage/difficulty access and
+mission-required gadgets, which keeps the world simple and softlock-free.
 
 ### 9.4 New Lua surface for gating
 
@@ -521,19 +500,41 @@ Strategy A needs a tiny set of grants/queries beyond §6.4 (the same
 pd.ap_mode(on)                 -- enable AP gating (flips gates to consult the unlock set)
 pd.unlock(category, id)        -- AP item arrived: add to the unlock set
 pd.lock(category, id)          -- (rarely) revoke
-pd.is_unlocked(category, id)   -- query (also used by Lua override gates, strategy B)
--- categories: "stage" | "difficulty" | "weapon_pri" | "weapon_sec" | "device" | "key" | "feature"
+pd.is_unlocked(category, id)   -- query
+-- categories: "stage" | "difficulty" | "weapon_pri" | "weapon_sec" | "device" | "feature"
 --   ("weapon_pri"/"weapon_sec" keyed by weaponnum gate each fire function separately)
 ```
 
-Strategy B needs nothing new — it's `pd.register_ailist` + `pd.is_unlocked` +
-the already-shipped `ctx`/`ai.*` helpers. Each engine gate point (#1-7) gets a
-one-line `if (apMode && !apIsUnlocked(cat,id)) return locked;` guard reading the
-same set, so Lua and C agree on a single source of truth.
+### 9.5 Out of scope: in-level door / lift / scripted gates (and why)
 
-> **Integrity:** the gates are **server/solo only** (`g_NetMode != NETMODE_CLIENT`)
-> for the same reason overrides are — a net client must not make its own
-> access decisions. In co-op the host's unlock set governs everyone.
+It is *technically* possible to gate intra-level barriers — lock a door via its
+`keyflags`, disable a lift (`OBJFLAG_LIFT_TRIGGERDISABLE`), or suppress a scripted
+event by overriding the stage's background/environmental ailist (`pd.register_ailist`
++ the `g_StageFlags` sentinels). **We are not doing this**, for one decisive
+reason: **softlock risk**.
+
+- Many "locked" doors in PD are on the **mandatory path**, and their key/trigger is
+  obtained *within the same level*. Auto-gating every `keyflags` door behind an AP
+  item the multiworld may have scattered elsewhere can strand the player with **no
+  in-seed way to proceed**.
+- Avoiding that would require a **hand-curated, per-stage "never lock this one"
+  safelist** (and equivalent care for lifts and scripted triggers) — exactly the
+  manual, error-prone, per-level work that defeats the "automatic across all
+  stages" property of the systemic gates.
+
+So the design relies on the **stage-access gate (#1)** for ordering: every enabled
+stage is fully completable on its own once selectable, and the multiworld only
+shuffles *which stage* you can enter next. If a future contributor wants
+intra-level depth for a specific marquee mission, the override mechanism is still
+there — but it stays an opt-in, hand-authored extra, never an automatic default.
+
+Each engine gate point (#1-5) gets a one-line
+`if (apMode && !apIsUnlocked(cat,id)) return locked;` guard reading the same set,
+so all gates share a single source of truth.
+
+> **Integrity:** the gates are **server/solo only** (`g_NetMode != NETMODE_CLIENT`) —
+> a net client must not make its own access decisions. In co-op the host's unlock
+> set governs everyone.
 
 ---
 
@@ -549,7 +550,7 @@ same set, so Lua and C agree on a single source of truth.
 | `src/game/training.c` | emit `firingrange` + `weaponfound` | checks |
 | `src/game/cheats.c` / `gamefile.c` | grant helpers + AP-granted marker bit + `g_ApUnlocks` set | both |
 | `src/game/mainmenu.c` | AP-aware branch in `isStageDifficultyUnlocked` (stage/difficulty gate #1/#5) | gating |
-| `src/game/propobj.c` | AP gate in `objTestForPickup` (weapon #2) + optional door `keyflags`/lift gates (#6/#7) | gating |
+| `src/game/propobj.c` | AP gate in `objTestForPickup` (optional whole-weapon pickup deny, #2 under `starting-pistol-only`) | gating |
 | `src/game/bondgun.c` | AP branch in **both** `bgunPrimaryFunctionDisabled` and `bgunSecondaryFunctionDisabled` (weapon-fire #2 — primary/secondary locked independently) | gating |
 | `src/game/player.c` | AP filter in the `playerLoadDefaults` intro-weapon loop (loadout #3) | gating |
 | `src/game/game_0b0fd0.c` | AP gate in `currentPlayerSetDeviceActive` (gadgets #4) | gating |

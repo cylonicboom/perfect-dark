@@ -143,12 +143,25 @@ a new unlock (`cheatinfo` flags 0x200/0x2000 paths, endscreen.c:1656-1664).
 Option `cheat_time_checks`: off / on. When on, also exposes a per-cheat
 sub-option to require **all three difficulties' timed cheats** for completionists.
 
-### 3.3 Per-objective checks (granular) — variable
+### 3.3 Per-objective checks (granular) — 99 objectives / 225 checks
 
-Each stage has up to 5 objectives, per-difficulty
-(`struct objective.difficulties`, types.h:1774; `objectivesCheckAll`,
-objectives.c:488). Firing a check per objective makes early game far more
-check-dense (good for big multiworlds).
+There are **99 distinct objectives** across the 21 stages (counted from the
+`beginobjective()` definitions in `src/setups/`), each carrying a difficulty
+bitmask (`struct objective.difficulties`, types.h:1774). Harder difficulties add
+objectives, so a check per **(objective, difficulty-it-appears-on)** yields:
+
+| Difficulty | Objective-checks |
+|---|---|
+| Agent | 52 |
+| Special Agent | 76 |
+| Perfect Agent | 97 |
+| **A/SA/PA total** | **225** |
+| (Perfect Dark, if exposed) | +97 → **322** |
+
+So the per-objective group is **225 checks** for the standard three difficulties
+(322 if Perfect Dark is treated as its own tier). This is the single densest
+group — good for big multiworlds. Detected via `objectivesCheckAll`
+(objectives.c:488).
 
 Detection: needs the **`"objective"` event** that the roadmap explicitly leaves
 open (luascripting_roadmap.md §4b) — completion is spread across criteria types
@@ -209,7 +222,7 @@ What the AP server can hand back. Each maps to a `pd.grant_*` accessor (§6.4).
 |---|---|---|
 | **Stage unlock** | Makes a mission selectable | `besttimes[stage][DIFF_A]` sentinel (the menu gates on this, mainmenu.c) |
 | **Difficulty unlock** | Special/Perfect Agent become selectable | gate flag (see §6.4) |
-| **Weapon unlock (solo)** | Weapon available in solo loadout / found set | `weaponsfound[6]` / FNFLAG gates |
+| **Weapon function unlock (solo)** | **Two items per gun** — *primary* and *secondary* function unlock independently | per-slot `FNFLAG_PRIMARY_DISABLED` / `FNFLAG_SECONDARY_DISABLED` (the existing `bgun{Primary,Secondary}FunctionDisabled` gates) |
 | **Cheat as item** | Grant a cheat directly (e.g. Cloaking Device, FarSight, All Guns) | `cheatActivate()` / unlock via `besttimes` sentinel |
 | **Classic firing-range weapon** | PP9i/CC13/… unlocked | `firingrangescores` set to gold for the gating weapons, or a direct unlock flag |
 | **Combat-Sim feature** | character / scenario / 8-bots / stage | `g_MpFeaturesUnlocked[]` |
@@ -243,7 +256,7 @@ are read by `scripts/ap/client.lua` from the server's `slot_data`:
 | `challenge_checks` | off / on (+`challenge_playercount`) | Combat-Sim challenges (§3.4) |
 | `firing_range_checks` | off / bronze / all-medals | firing-range medals (§3.5) |
 | `milestone_checks` | off / on | kill/room/weapon milestones (§3.6) |
-| `weapon_logic` | vanilla / shuffled / starting-pistol-only | how weapon items gate solo play |
+| `weapon_logic` | vanilla / shuffled / starting-pistol-only | how weapon items gate solo play; in shuffle each gun's **primary and secondary functions are separate items** (you may receive a gun's secondary before its primary) |
 | `traps` | off / low / med / high | proportion of trap items |
 | `goal` | all-missions (default) / final-stage / percent | victory condition (§4) |
 | `death_link` | off / on | AP DeathLink: `pd.on("kill")` on player death → broadcast; inbound kills the player |
@@ -473,7 +486,7 @@ field/function to flip.
 | # | Gate | Vector | Lever (engine site) | Notes |
 |---|---|---|---|---|
 | 1 | **Stage + difficulty access** | A | `isStageDifficultyUnlocked()` (mainmenu.c:1026) | **The spine — full stage shuffle is the default.** Vanilla derives access from the `besttimes` chain ("beat N ⇒ N+1 unlocks"); in the default `mission_order: shuffle` AP mode this function returns true iff the AP unlock set holds this `(stage,difficulty)`, so each stage becomes a placed item and the play order is randomized. One added branch gates the whole campaign. (`mission_order: campaign` leaves the vanilla chain intact and shuffles only intra-level.) |
-| 2 | **Weapon use** | A | `objTestForPickup()` (propobj.c:18042) to refuse the pickup; **and/or** `bgunPrimaryFunctionDisabled()` (bondgun.c:3456) to deny fire | Pickup-deny = "can't even hold it"; fire-deny = "holds but can't shoot". Pick one per `weapon_logic` option. Both already exist as choke points. |
+| 2 | **Weapon use (per function)** | A | `bgunPrimaryFunctionDisabled()` (bondgun.c:3456) **and** `bgunSecondaryFunctionDisabled()` (bondgun.c:3430) — one AP branch each | **Primary and secondary lock independently** via the existing per-slot `FNFLAG_PRIMARY_DISABLED` / `FNFLAG_SECONDARY_DISABLED`. You can pick up and hold a gun, but each fire function works only once its item arrives (e.g. hold the Falcon 2 but no scope-zoom until the secondary unlock). Optionally also refuse the whole pickup via `objTestForPickup()` (propobj.c:18042) under `weapon_logic: starting-pistol-only`. |
 | 3 | **Starting loadout** | A | intro-weapon loop in `playerLoadDefaults()` (player.c:705) | Skip `INTROCMD_WEAPON` grants for not-yet-unlocked guns ⇒ start missions with pistol only. |
 | 4 | **Gadgets / devices** | A | `currentPlayerSetDeviceActive()` (game_0b0fd0.c:388) — refuse to set the `devicesactive` bit | Single point for all 11 devices (Night Vision, IR/X-Ray, Cloak, Eyespy, R-Tracker, …). Locked device just won't toggle on. |
 | 5 | **Difficulty selection** | A | same `isStageDifficultyUnlocked` path / difficulty menu | Special/Perfect Agent as progressive items (`difficulties` option). |
@@ -509,7 +522,8 @@ pd.ap_mode(on)                 -- enable AP gating (flips gates to consult the u
 pd.unlock(category, id)        -- AP item arrived: add to the unlock set
 pd.lock(category, id)          -- (rarely) revoke
 pd.is_unlocked(category, id)   -- query (also used by Lua override gates, strategy B)
--- categories: "stage" | "difficulty" | "weapon" | "device" | "key" | "feature"
+-- categories: "stage" | "difficulty" | "weapon_pri" | "weapon_sec" | "device" | "key" | "feature"
+--   ("weapon_pri"/"weapon_sec" keyed by weaponnum gate each fire function separately)
 ```
 
 Strategy B needs nothing new — it's `pd.register_ailist` + `pd.is_unlocked` +
@@ -536,7 +550,7 @@ same set, so Lua and C agree on a single source of truth.
 | `src/game/cheats.c` / `gamefile.c` | grant helpers + AP-granted marker bit + `g_ApUnlocks` set | both |
 | `src/game/mainmenu.c` | AP-aware branch in `isStageDifficultyUnlocked` (stage/difficulty gate #1/#5) | gating |
 | `src/game/propobj.c` | AP gate in `objTestForPickup` (weapon #2) + optional door `keyflags`/lift gates (#6/#7) | gating |
-| `src/game/bondgun.c` | optional AP branch in `bgunPrimaryFunctionDisabled` (weapon-fire #2) | gating |
+| `src/game/bondgun.c` | AP branch in **both** `bgunPrimaryFunctionDisabled` and `bgunSecondaryFunctionDisabled` (weapon-fire #2 — primary/secondary locked independently) | gating |
 | `src/game/player.c` | AP filter in the `playerLoadDefaults` intro-weapon loop (loadout #3) | gating |
 | `src/game/game_0b0fd0.c` | AP gate in `currentPlayerSetDeviceActive` (gadgets #4) | gating |
 | `src/game/luaai_ap.c` | **new** — `ap.*` socket/WS bridge | transport |

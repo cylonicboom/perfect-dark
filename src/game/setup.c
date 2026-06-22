@@ -801,7 +801,7 @@ void setupCreateMine(struct mineobj *mine, s32 cmdindex)
 	setupCreateObject(&mine->base, cmdindex);
 
 	if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) {
-		mine->base.hidden = (mine->base.hidden & 0x0fffffff) | (2 << 28);
+		objSetOwnerPlayerNum(&mine->base, 2);
 	}
 
 	mine->base.prop->forcetick = true;

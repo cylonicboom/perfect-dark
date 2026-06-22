@@ -4738,15 +4738,13 @@ struct defaultobj *bgunCreateThrownProjectile2(struct chrdata *chr, struct gset 
 	if (obj != NULL) {
 		bgun0f09ebcc(obj, pos, rooms, arg4, velocity, &mtx, chr->prop, pos);
 
-		obj->hidden &= 0x0fffffff;
-
 		if (g_Vars.normmplayerisrunning) {
 			playernum = mpPlayerGetIndex(chr);
 		} else {
 			playernum = playermgrGetPlayerNumByProp(chr->prop);
 		}
 
-		obj->hidden |= playernum << 28;
+		objSetOwnerPlayerNum(obj, playernum);
 
 		if (obj->hidden & OBJHFLAG_PROJECTILE) {
 			obj->projectile->flags |= PROJECTILEFLAG_00000002;
@@ -5251,8 +5249,7 @@ void bgunCreateFiredProjectile(s32 handnum)
 						weapon->timer240 = TICKS(weapon->timer240 * 4);
 					}
 
-					weapon->base.hidden &= 0x0fffffff;
-					weapon->base.hidden |= g_Vars.currentplayernum << 28;
+					objSetOwnerPlayerNum(&weapon->base, g_Vars.currentplayernum);
 
 					bgun0f09ed2c(&weapon->base, &spawnpos, &sp210, &sp264, &sp270);
 
@@ -5344,8 +5341,7 @@ void bgunCreateFiredProjectile(s32 handnum)
 					weapon->timer240 = TICKS(weapon->timer240 * 4);
 				}
 
-				weapon->base.hidden &= 0x0fffffff;
-				weapon->base.hidden |= g_Vars.currentplayernum << 28;
+				objSetOwnerPlayerNum(&weapon->base, g_Vars.currentplayernum);
 
 				bgun0f09ed2c(&weapon->base, &spawnpos, &sp210, &sp264, &sp270);
 

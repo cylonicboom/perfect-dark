@@ -104,6 +104,45 @@ walks `MAX_BOTS_PRESET`.
 - `mpHasSimulants`: `chrslots & 0xff00` tested player bits 8-15 →
   `MPCHRSLOTS_BOTS_MASK`.
 
+## Explosion/projectile owner nibble truncation (fixed 2026-06-22)
+
+**Symptom:** with 4 local humans + 32 sims, AFK human players accrued kills
+they never made. Direct gunfire was attributed correctly (it resolves the
+attacker via `mpPlayerGetIndex(aprop->chr)`), but **explosion / projectile /
+thrown-weapon / destructible** kills leaked onto human slots 0-3.
+
+**Root:** the per-object owner is packed into the **top nibble of
+`obj->hidden`** (`playernum << 28`, read back `(hidden & 0xf0000000) >> 28`) — a
+4-bit field that only holds **0..15**. That was safe on N64 (max 4+8=12
+combatants) but the 32-sim feature pushes the *packed* combatant index
+(`mpPlayerGetIndex` / `g_MpAllChrPtrs` order — humans first, then sims) to
+0..35. A sim at packed index ≥16 truncates: `16&0xf=0 … 19&0xf=3`, `32&0xf=0 …
+35&0xf=3`, so eight specific sims credited their blast kills to the four human
+slots. The flags already fill bits 0-27 and the owner the top nibble, so the
+field can't be widened in place; `defaultobj` is also offset-bound by the setup
+preprocessor's `n64_*` structs.
+
+**Fix:** mirror the **full** owner index onto a new port-only
+`struct prop.ownerplayernum` (sentinel `-1` = unset, init in `propAllocate`,
+next to `syncid`) via two helpers in `propobj.c`:
+`objSetOwnerPlayerNum` (writes the legacy nibble **and** the prop mirror) and
+`objGetOwnerPlayerNum` (prefers the untruncated mirror, falls back to the
+nibble). Every nibble write site (bondgun throw/fire, `chrEquipWeapon`, weapon
+create, `objFall`/`objDamage`/`func0f085050`, HTM activate, co-op mine setup)
+and every read site (`propExplode`, mine/nbomb detonation, rocket-embed,
+laptop-sentry target/fire, the bounce-damage tick, HTM read) now route through
+the helpers. The explosion struct's `owner` is `s8`, so the full index survives
+end-to-end into `mpGetChrFromPlayerIndex` → correct attribution. **N64
+byte-identical** (the mirror is `#ifndef PLATFORM_N64`; helpers reduce to the
+original nibble math). **No wire/proto change** — net stays ≤ `NET_MAX_BOTS`
+(≤12 combatants ≤15), so `netmsg.c`/`netprop.c` keep reading the nibble.
+
+Gotcha closed: the remote-mine detonation test `g_PlayersDetonatingMines &
+(1 << ownerplayernum)` was implicitly bounded by the 0..15 nibble; with the full
+index it can now be ≥32, so both branches gained a `(u32)ownerplayernum < 32U`
+guard to avoid the UB shift (a sim-owned mine never matches the player-only
+detonator mask anyway).
+
 ## Limits / notes
 
 - **Memory**: 32 bot bodies/chrs live in MEMPOOL_STAGE; the 16MB default

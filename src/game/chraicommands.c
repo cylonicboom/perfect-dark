@@ -2338,7 +2338,7 @@ bool aiGiveObjectToChr(void)
 			something = propPickupByPlayer(obj->prop, 1);
 			propExecuteTickOperation(obj->prop, something);
 			playernum = playermgrGetPlayerNumByProp(chr->prop);
-			obj2->hidden = (playernum << 28) | (obj2->hidden & 0x0fffffff);
+			objSetOwnerPlayerNum(obj2, playernum);
 			setCurrentPlayerNum(prevplayernum);
 		} else {
 			if (obj->prop->parent) {

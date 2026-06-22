@@ -4282,7 +4282,7 @@ void objLand(struct prop *prop, struct coord *arg1, struct coord *arg2, bool *em
 bool propExplode(struct prop *prop, s32 exptype)
 {
 	struct defaultobj *obj = prop->obj;
-	s32 playernum = (obj->hidden & 0xf0000000) >> 28;
+	s32 playernum = objGetOwnerPlayerNum(obj);
 	bool result;
 #ifndef PLATFORM_N64
 	// CLIENT + synced prop: suppress the LOCAL detonation entirely. The host
@@ -4560,7 +4560,7 @@ void weaponTick(struct prop *prop)
 				// Nbombs detonate when they hit the ground, so this code only
 				// runs if it's airborne for the entire duration of its timer.
 				struct prop *ownerprop = NULL;
-				s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+				s32 ownerplayernum = objGetOwnerPlayerNum(obj);
 
 				if (g_Vars.normmplayerisrunning) {
 					struct chrdata *chr = mpGetChrFromPlayerIndex(ownerplayernum);
@@ -4636,7 +4636,7 @@ void weaponTick(struct prop *prop)
 	} else if (weapon->weaponnum == WEAPON_REMOTEMINE) {
 		// Handle remote mines
 		if (g_PlayersDetonatingMines != 0) {
-			s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+			s32 ownerplayernum = objGetOwnerPlayerNum(obj);
 			struct chrdata *parentchr = prop->parent ? prop->parent->chr : NULL;
 
 			// If a player manages to throw a mine on themselves, it will not detonate.
@@ -4659,10 +4659,10 @@ void weaponTick(struct prop *prop)
 						if (g_PlayersDetonatingMines != 0) {
 							weapon->timer240 = 0;
 						}
-					} else if (g_PlayersDetonatingMines & 1 << ownerplayernum) {
+					} else if ((u32)ownerplayernum < 32U && (g_PlayersDetonatingMines & 1 << ownerplayernum)) {
 						weapon->timer240 = 0;
 					}
-				} else if (g_PlayersDetonatingMines & 1 << ownerplayernum) {
+				} else if ((u32)ownerplayernum < 32U && (g_PlayersDetonatingMines & 1 << ownerplayernum)) {
 					weapon->timer240 = 0;
 				}
 			}
@@ -4718,7 +4718,7 @@ void weaponTick(struct prop *prop)
 			if (weapon->weaponnum == WEAPON_NBOMB) {
 				u32 stack;
 				struct prop *ownerprop = NULL;
-				s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+				s32 ownerplayernum = objGetOwnerPlayerNum(obj);
 
 				if (g_Vars.normmplayerisrunning) {
 					struct chrdata *chr = mpGetChrFromPlayerIndex(ownerplayernum);
@@ -7308,11 +7308,11 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 									}
 								}
 							} else if (weapon->weaponnum == WEAPON_ROCKET || weapon->weaponnum == WEAPON_HOMINGROCKET) {
-								s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+								s32 ownerplayernum = objGetOwnerPlayerNum(obj);
 
 								if (g_EmbedProp->type == PROPTYPE_CHR || (g_EmbedProp->type == PROPTYPE_PLAYER && g_EmbedProp->chr)) {
 #if VERSION < VERSION_NTSC_1_0
-									s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+									s32 ownerplayernum = objGetOwnerPlayerNum(obj);
 #endif
 									struct prop *ownerprop2 = NULL;
 
@@ -8902,7 +8902,7 @@ void autogunTick(struct prop *prop)
 				}
 
 				if (g_Vars.normmplayerisrunning) {
-					ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+					ownerplayernum = objGetOwnerPlayerNum(obj);
 
 					if (autogun->nextchrtest == ownerplayernum) {
 						continue;
@@ -9337,7 +9337,7 @@ void autogunTickShoot(struct prop *autogunprop)
 				struct gset gset = { WEAPON_RCP45, 0, 0, FUNC_PRIMARY };
 				struct prop *ownerprop = NULL;
 				struct chrdata *ownerchr = NULL;
-				s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
+				s32 ownerplayernum = objGetOwnerPlayerNum(obj);
 
 				if (g_Vars.normmplayerisrunning) {
 					// Multiplayer - it must be a laptop gun
@@ -11698,7 +11698,7 @@ s32 objTickPlayer(struct prop *prop)
 
 	if (obj->hidden & OBJHFLAG_DAMAGEFORBOUNCE) {
 		obj->hidden &= ~OBJHFLAG_DAMAGEFORBOUNCE;
-		objDamage(obj, RANDOMFRAC() * 4.0f + 2.0f, &prop->pos, WEAPON_NONE, (obj->hidden & 0xf0000000) >> 28);
+		objDamage(obj, RANDOMFRAC() * 4.0f + 2.0f, &prop->pos, WEAPON_NONE, objGetOwnerPlayerNum(obj));
 	}
 
 	if (fulltick) {
@@ -15075,18 +15075,53 @@ bool objDrop(struct prop *prop, bool lazy)
  * Make an object fall. Eg. due to it sitting on a table which is now destroyed,
  * or because it was a chopper that is now destroyed.
  */
+/**
+ * Record the combatant index that owns this object for kill attribution.
+ *
+ * The N64 owner field is the top nibble of obj->hidden, so it only holds 0..15.
+ * The port's offline 32-simulants feature packs combatants at indices 0..35
+ * (4 players, then 32 bots), so a bot at index >= 16 used to truncate to the low
+ * nibble and credit its explosion/projectile/destructible kills to a human slot
+ * 0..3. We keep writing the nibble (the wire and any direct reader still use it)
+ * but also mirror the full index onto the prop so objGetOwnerPlayerNum can return
+ * it untruncated. N64 behaviour is unchanged (the prop field is port-only).
+ */
+void objSetOwnerPlayerNum(struct defaultobj *obj, s32 playernum)
+{
+	obj->hidden = (obj->hidden & 0x0fffffff) | (((u32)playernum & 0xf) << 28);
+
+#ifndef PLATFORM_N64
+	if (obj->prop) {
+		obj->prop->ownerplayernum = (s16)playernum;
+	}
+#endif
+}
+
+/**
+ * Resolve the owning combatant index, preferring the untruncated prop value when
+ * it has been set (see objSetOwnerPlayerNum). Falls back to the legacy nibble.
+ */
+s32 objGetOwnerPlayerNum(struct defaultobj *obj)
+{
+#ifndef PLATFORM_N64
+	if (obj->prop && obj->prop->ownerplayernum >= 0) {
+		return obj->prop->ownerplayernum;
+	}
+#endif
+
+	return (obj->hidden & 0xf0000000) >> 28;
+}
+
 void objFall(struct defaultobj *obj, s32 playernum)
 {
 #if VERSION >= VERSION_NTSC_1_0
 	if (obj->type == OBJTYPE_AUTOGUN && g_Vars.normmplayerisrunning) {
 		// Don't set owner playernum
 	} else {
-		obj->hidden &= 0x0fffffff;
-		obj->hidden |= (playernum << 28) & 0xf0000000;
+		objSetOwnerPlayerNum(obj, playernum);
 	}
 #else
-	obj->hidden &= 0x0fffffff;
-	obj->hidden |= (playernum << 28) & 0xf0000000;
+	objSetOwnerPlayerNum(obj, playernum);
 #endif
 
 	if ((obj->flags2 & OBJFLAG2_NOFALL) == 0
@@ -15676,12 +15711,10 @@ void func0f085050(struct prop *prop, f32 damage, struct coord *pos, s32 arg3, s3
 	if (obj->type == OBJTYPE_AUTOGUN && g_Vars.normmplayerisrunning) {
 		// do nothing
 	} else {
-		obj->hidden &= 0x0fffffff;
-		obj->hidden |= (playernum << 28) & 0xf0000000;
+		objSetOwnerPlayerNum(obj, playernum);
 	}
 #else
-	obj->hidden &= 0x0fffffff;
-	obj->hidden |= (playernum << 28) & 0xf0000000;
+	objSetOwnerPlayerNum(obj, playernum);
 #endif
 
 	if ((obj->hidden & OBJHFLAG_HASOWNER) == 0) {
@@ -15810,12 +15843,10 @@ void objDamage(struct defaultobj *obj, f32 damage, struct coord *pos, s32 weapon
 	// ...but not for deployed laptop guns in multiplayer, because those bits
 	// designate the owner of the gun
 	if (obj->type != OBJTYPE_AUTOGUN || !g_Vars.normmplayerisrunning) {
-		obj->hidden &= 0x0fffffff;
-		obj->hidden |= (playernum << 28) & 0xf0000000;
+		objSetOwnerPlayerNum(obj, playernum);
 	}
 #else
-	obj->hidden &= 0x0fffffff;
-	obj->hidden |= (playernum << 28) & 0xf0000000;
+	objSetOwnerPlayerNum(obj, playernum);
 #endif
 
 	if (obj->type == OBJTYPE_GASBOTTLE && objGetDestroyedLevel(obj) == 1) {
@@ -19110,8 +19141,7 @@ bool chrEquipWeapon(struct weaponobj *weapon, struct chrdata *chr)
 		if (g_Vars.mplayerisrunning) {
 			s32 playernum = mpPlayerGetIndex(chr);
 
-			weapon->base.hidden &= 0x0fffffff;
-			weapon->base.hidden |= (playernum << 28) & 0xf0000000;
+			objSetOwnerPlayerNum(&weapon->base, playernum);
 		}
 
 		if ((weapon->base.flags & OBJFLAG_WEAPON_AICANNOTUSE) == 0) {
@@ -19444,8 +19474,7 @@ struct weaponobj *weaponCreateProjectileFromGset(s32 modelnum, struct gset *gset
 			if (g_Vars.mplayerisrunning) {
 				s32 index = mpPlayerGetIndex(chr);
 
-				weapon->base.hidden &= 0x0fffffff;
-				weapon->base.hidden |= ((index << 28) & 0xf0000000);
+				objSetOwnerPlayerNum(&weapon->base, index);
 			}
 
 			prop->forcetick = true;

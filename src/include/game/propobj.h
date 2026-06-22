@@ -218,6 +218,8 @@ void piracyRestore(void);
 void func0f082e84(struct defaultobj *obj, struct coord *pos, struct coord *dir, struct coord *tween, bool addrotation);
 void objDetach(struct prop *prop);
 bool objDrop(struct prop *prop, bool lazy);
+void objSetOwnerPlayerNum(struct defaultobj *obj, s32 playernum);
+s32 objGetOwnerPlayerNum(struct defaultobj *obj);
 void objFall(struct defaultobj *obj, s32 playernum);
 void objDestroySupportedObjects(struct prop *prop, s32 playernum);
 void objCheckDestroyed(struct defaultobj *obj, struct coord *pos, s32 playernum);

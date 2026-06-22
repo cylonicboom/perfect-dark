@@ -2107,8 +2107,7 @@ void scenarioHandleActivatedProp(struct chrdata *chr, struct prop *prop)
 			u32 mpindex = mpPlayerGetIndex(chr);
 
 			if ((obj->hidden & OBJHFLAG_ACTIVATED_BY_BOND) == 0) {
-				obj->hidden &= 0x0fffffff;
-				obj->hidden |= (mpindex << 28) & 0xf0000000;
+				objSetOwnerPlayerNum(obj, mpindex);
 				obj->hidden |= OBJHFLAG_ACTIVATED_BY_BOND;
 			}
 		}

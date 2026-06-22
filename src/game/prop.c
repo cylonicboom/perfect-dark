@@ -226,6 +226,7 @@ struct prop *propAllocate(void)
 		// on a busy server. Setup props are still overwritten with their
 		// deterministic index ids at stage start (netSyncIdsAllocate).
 		prop->syncid = 0;
+		prop->ownerplayernum = -1;
 #endif
 		g_Vars.propstates[prop->propstateindex].propcount++;
 

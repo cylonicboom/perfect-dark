@@ -326,6 +326,12 @@ struct prop {
 	/*0x44*/ struct wallhit *xluwallhits; // translucent
 #ifndef PLATFORM_N64
 	/*0x48*/ u32 syncid;
+	// Full combatant owner index for explosions/projectiles/destructibles. The
+	// owner nibble in obj->hidden only holds 0..15, which truncates bot indices
+	// once the offline 32-simulants feature pushes combatant indices past 15
+	// (4 players + 32 bots = 0..35) and mis-credits kills to human slots 0..3.
+	// Sentinel -1 = unset (fall back to the nibble). Set via objSetOwnerPlayerNum.
+	s16 ownerplayernum;
 #endif
 };
 

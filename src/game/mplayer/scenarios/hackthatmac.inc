@@ -536,13 +536,18 @@ void htmTickChr(struct chrdata *chr)
 				}
 			} else {
 				if (obj->hidden & OBJHFLAG_ACTIVATED_BY_BOND) {
-					activatedbyplayernum = (obj->hidden & 0xf0000000) >> 28;
+					activatedbyplayernum = objGetOwnerPlayerNum(obj);
 				}
 			}
 
 			if (playernum == activatedbyplayernum) {
 				obj->hidden &= ~OBJHFLAG_ACTIVATED_BY_BOND;
 				obj->hidden &= ~0xf0000000;
+#ifndef PLATFORM_N64
+				// Keep the full-owner mirror in sync with the nibble clear above
+				// so objGetOwnerPlayerNum doesn't return the stale activator.
+				obj->prop->ownerplayernum = -1;
+#endif
 
 				if (hasuplink) {
 					if (data->dlterminalnum == -1) {

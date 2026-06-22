@@ -654,7 +654,22 @@ char *mpMenuTextPlacementWithSuffix(struct menuitem *item)
 		L_MPMENU_275, // "12th"
 	};
 
+#ifndef PLATFORM_N64
+	// Offline 32 simulants can rank more than 12 combatants, but suffixes[]
+	// only covers 1st-12th. A worse placement would read out of bounds and
+	// pass garbage to langGet (crash). Clamp the index to the array.
+	s32 placement = g_PlayerConfigsArray[g_MpPlayerNum].base.placement;
+
+	if (placement < 0) {
+		placement = 0;
+	} else if (placement >= ARRAYCOUNT(suffixes)) {
+		placement = ARRAYCOUNT(suffixes) - 1;
+	}
+
+	return langGet(suffixes[placement]);
+#else
 	return langGet(suffixes[g_PlayerConfigsArray[g_MpPlayerNum].base.placement]);
+#endif
 }
 
 MenuItemHandlerResult mpPlacementMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data)

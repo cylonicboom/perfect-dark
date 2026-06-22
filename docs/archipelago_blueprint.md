@@ -442,15 +442,20 @@ implementation time (a ~150-line WS client in C is the self-contained option).
 
 ## 7. Implementation phases (value-to-effort)
 
-> **Status (landed so far):** the per-frame `"tick"` event; the
-> `missioncomplete` / `firingrange` / `weaponfound` check-detection emitters at
-> their hook sites; the §4.1 bonus/buff `pd.*` API (`player_heal`,
-> `player_set_shield`, `refill_ammo`, `give_ammo`, `give_weapon`, `device_on`,
-> `invincible`) and the **Perfect Buddy** (`pd.spawn_ally`); and a no-server **Lua
-> testing harness** (`scripts/ap/test.lua`) that registers a check board, listens
-> to those events, and exposes console + Director-menu tools to complete checks
-> and apply every bonus. Still to do: the `ap.*` socket/WS bridge, the gating
-> branches (§9), and the `cheatunlock` / `challengecomplete` / `objective` events.
+> **Status (landed so far):** the per-frame `"tick"` event; the **full
+> check-detection emitter set** — `missioncomplete` / `firingrange` /
+> `weaponfound`, plus `objective` (edge-triggered in `objectivesCheckAll`,
+> keyed by stage+difficulty+index, server/solo-gated), `cheatunlock` (both
+> endscreen newly-unlocked sites), and `challengecomplete`
+> (`challengeConsiderMarkingComplete`); the §4.1 bonus/buff `pd.*` API
+> (`player_heal`, `player_set_shield`, `refill_ammo`, `give_ammo`, `give_weapon`,
+> `device_on`, `invincible`) and the **Perfect Buddy** (`pd.spawn_ally`); a
+> session-persistent KV (`pd.persist_get`/`pd.persist_set`) that survives the
+> per-stage Lua-state teardown; and a no-server **Lua testing harness**
+> (`scripts/ap/test.lua`) that registers a check board (with a live HUD counter +
+> completion toast), listens to every event, and exposes console + Director-menu
+> tools to complete checks and apply every bonus. Still to do: the `ap.*`
+> socket/WS bridge and the gating branches (§9).
 
 1. **Proof of life (pure Lua, no engine change).** `scripts/ap/` with the
    milestone checks (kills/rooms/weaponfire) using the **already-shipped** events,

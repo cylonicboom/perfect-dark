@@ -485,6 +485,79 @@ static int l_pd_unpossess(lua_State *L)
 }
 
 /* ------------------------------------------------------------------------- *
+ * Archipelago bonus / buff API (received-side boosts to the local player).
+ * Thin wrappers over the chraction.c bridges; all server/solo, no-op without a
+ * live player. See docs/archipelago_blueprint.md section 4.1.
+ * ------------------------------------------------------------------------- */
+
+/* pd.player_heal() -> bool. Restore the player to full health. */
+static int l_pd_player_heal(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerHeal() != 0);
+	return 1;
+}
+
+/* pd.player_set_shield(frac) -> bool. frac 0..1 (>=1 = full). */
+static int l_pd_player_set_shield(lua_State *L)
+{
+	f32 frac = (f32)luaL_optnumber(L, 1, 1.0);
+	lua_pushboolean(L, chraiLuaPlayerSetShield(frac) != 0);
+	return 1;
+}
+
+/* pd.refill_ammo() -> bool. Top all ammo to capacity (covers current weapon). */
+static int l_pd_refill_ammo(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaRefillAmmo() != 0);
+	return 1;
+}
+
+/* pd.give_ammo(ammotype, [qty]) -> bool. Grants ammo (+ the matching weapon). */
+static int l_pd_give_ammo(lua_State *L)
+{
+	s32 ammotype = (s32)luaL_checkinteger(L, 1);
+	s32 qty = (s32)luaL_optinteger(L, 2, 1);
+	lua_pushboolean(L, chraiLuaGiveAmmo(ammotype, qty) != 0);
+	return 1;
+}
+
+/* pd.give_weapon(weaponnum) -> bool. Add a weapon to the player's inventory. */
+static int l_pd_give_weapon(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaGiveWeaponToPlayer(weaponnum) != 0);
+	return 1;
+}
+
+/* pd.device_on(weaponnum) -> bool. Activate a device (e.g. WEAPON_CLOAKINGDEVICE). */
+static int l_pd_device_on(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaDeviceOn(weaponnum) != 0);
+	return 1;
+}
+
+/* pd.invincible(on) -> bool. Toggle invincibility (Lua manages any timer). */
+static int l_pd_invincible(lua_State *L)
+{
+	s32 on = lua_toboolean(L, 1);
+	lua_pushboolean(L, chraiLuaSetInvincible(on) != 0);
+	return 1;
+}
+
+/* pd.spawn_ally() -> chrnum | nil. Spawn a friendly "Perfect Buddy". */
+static int l_pd_spawn_ally(lua_State *L)
+{
+	s32 chrnum = chraiLuaSpawnAlly();
+	if (chrnum < 0) {
+		lua_pushnil(L);
+	} else {
+		lua_pushinteger(L, chrnum);
+	}
+	return 1;
+}
+
+/* ------------------------------------------------------------------------- *
  * Director menu registry (pd.menu_add / pd.menu_clear + C accessors)
  * ------------------------------------------------------------------------- */
 
@@ -680,6 +753,15 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_set_body); lua_setfield(L, -2, "chr_set_body");
 	lua_pushcfunction(L, l_pd_possess_spawn); lua_setfield(L, -2, "possess_spawn");
 	lua_pushcfunction(L, l_pd_unpossess);   lua_setfield(L, -2, "unpossess");
+	/* archipelago bonus / buff API (server-side) */
+	lua_pushcfunction(L, l_pd_player_heal);      lua_setfield(L, -2, "player_heal");
+	lua_pushcfunction(L, l_pd_player_set_shield);lua_setfield(L, -2, "player_set_shield");
+	lua_pushcfunction(L, l_pd_refill_ammo);      lua_setfield(L, -2, "refill_ammo");
+	lua_pushcfunction(L, l_pd_give_ammo);        lua_setfield(L, -2, "give_ammo");
+	lua_pushcfunction(L, l_pd_give_weapon);      lua_setfield(L, -2, "give_weapon");
+	lua_pushcfunction(L, l_pd_device_on);        lua_setfield(L, -2, "device_on");
+	lua_pushcfunction(L, l_pd_invincible);       lua_setfield(L, -2, "invincible");
+	lua_pushcfunction(L, l_pd_spawn_ally);       lua_setfield(L, -2, "spawn_ally");
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");
@@ -777,6 +859,31 @@ void luaEmitRoomEnter(s32 room, s32 fromroom)
 	luaEventDispatchInts("roomenter", 2, a);
 }
 
+void luaEmitMissionComplete(s32 stageindex, s32 difficulty, s32 secs, s32 cheated)
+{
+	lua_Integer a[4];
+	a[0] = stageindex;
+	a[1] = difficulty;
+	a[2] = secs;
+	a[3] = cheated;
+	luaEventDispatchInts("missioncomplete", 4, a);
+}
+
+void luaEmitFiringRange(s32 weaponindex, s32 medal)
+{
+	lua_Integer a[2];
+	a[0] = weaponindex;
+	a[1] = medal;
+	luaEventDispatchInts("firingrange", 2, a);
+}
+
+void luaEmitWeaponFound(s32 weaponnum)
+{
+	lua_Integer a[1];
+	a[0] = weaponnum;
+	luaEventDispatchInts("weaponfound", 1, a);
+}
+
 /* ------------------------------------------------------------------------- *
  * Per-frame tick + render (called from the port frame loop)
  * ------------------------------------------------------------------------- */
@@ -788,6 +895,10 @@ void luaTick(void)
 	/* Make sure scripts are loaded even when no AI is running (title/CI), so
 	 * the console and event handlers work everywhere. */
 	luaaiEnsureState();
+
+	/* Per-frame "tick" event -- fires everywhere (menus/loading too), unlike
+	 * "draw" which only fires while the HUD renders. AP polling lives here. */
+	luaEventDispatchInts("tick", 0, NULL);
 
 	/* Synthesise the "roomenter" event by watching player 0's room each frame
 	 * (there is no single engine call site that means "player changed room").

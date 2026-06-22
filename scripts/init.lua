@@ -23,6 +23,11 @@ load("scripts/examples/lua_authored_enemy.lua")
 -- live actions + scenarios. Hack on scripts/director.lua to add your own.
 load("scripts/director.lua")
 
+-- Archipelago testing harness: check registry + bonus/item tools (no server
+-- needed). Console: /lua ap.list()  |  pause menu -> Lua Director. See
+-- docs/archipelago_blueprint.md.
+load("scripts/ap/test.lua")
+
 -- Live octree-culling stats overlay (testing the outdoor-room octree). Shows
 -- top-right only while an octree room is rendering. Comment out to hide.
 load("scripts/octree_overlay.lua")

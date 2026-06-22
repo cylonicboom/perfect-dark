@@ -17,6 +17,7 @@
 #include "game/filemgr.h"
 #include "game/endscreen.h"
 #include "game/stagetable.h"
+#include "game/luaai.h"
 #include "game/lv.h"
 #include "game/mplayer/ingame.h"
 #include "game/challenge.h"
@@ -1627,6 +1628,13 @@ void endscreenPrepare(void)
 				if (secs < prevbest || prevbest == 0) {
 					g_GameFile.besttimes[g_MissionConfig.stageindex][g_MissionConfig.difficulty] = secs;
 				}
+
+#ifndef PLATFORM_N64
+				// Archipelago: a legit mission completion (this branch is gated on
+				// objectives-complete + no active cheats above), for check detection.
+				luaEmitMissionComplete(g_MissionConfig.stageindex,
+						g_MissionConfig.difficulty, secs, 0);
+#endif
 #else
 				prevbest = g_GameFile.besttimes[g_MissionConfig.stageindex][g_MissionConfig.difficulty];
 

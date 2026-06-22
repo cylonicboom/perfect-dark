@@ -1266,20 +1266,32 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
 static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     float matrix[4][4];
 
+    if (addr == NULL) {
+        // A null matrix pointer reaches here when the game emits gSPMatrix with
+        // an unresolved/NULL address (seg_addr returns NULL only for w1 == 0).
+        // Observed under 32-simulant memory pressure, where a model whose
+        // matrix allocation failed still queues its matrix command. Dereferencing
+        // addr would fault (read at 0x0); fall back to identity so the rest of
+        // the function still runs the PUSH/LOAD/POP bookkeeping and the matrix
+        // stack stays balanced for any paired G_POPMTX.
+        memset(matrix, 0, sizeof(matrix));
+        matrix[0][0] = matrix[1][1] = matrix[2][2] = matrix[3][3] = 1.0f;
+    } else {
 #ifndef GBI_FLOATS
-    // Original GBI where fixed point matrices are used
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j += 2) {
-            int32_t int_part = addr[i * 2 + j / 2];
-            uint32_t frac_part = addr[8 + i * 2 + j / 2];
-            matrix[i][j] = (int32_t)((int_part & 0xffff0000) | (frac_part >> 16)) / 65536.0f;
-            matrix[i][j + 1] = (int32_t)((int_part << 16) | (frac_part & 0xffff)) / 65536.0f;
+        // Original GBI where fixed point matrices are used
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j += 2) {
+                int32_t int_part = addr[i * 2 + j / 2];
+                uint32_t frac_part = addr[8 + i * 2 + j / 2];
+                matrix[i][j] = (int32_t)((int_part & 0xffff0000) | (frac_part >> 16)) / 65536.0f;
+                matrix[i][j + 1] = (int32_t)((int_part << 16) | (frac_part & 0xffff)) / 65536.0f;
+            }
         }
-    }
 #else
-    // For a modified GBI where fixed point values are replaced with floats
-    memcpy(matrix, addr, sizeof(matrix));
+        // For a modified GBI where fixed point values are replaced with floats
+        memcpy(matrix, addr, sizeof(matrix));
 #endif
+    }
 
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {

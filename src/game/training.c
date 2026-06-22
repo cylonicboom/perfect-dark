@@ -188,8 +188,12 @@ void frSetWeaponFound(s32 weaponnum)
 		g_GameFile.weaponsfound[byteindex] = value;
 
 #ifndef PLATFORM_N64
-		// Archipelago: emit once, the first time a weapon is discovered.
-		if (!wasfound) {
+		// Archipelago: emit once, the first time a weapon is discovered — but
+		// only in the solo campaign. Combat Simulator pickups also flag
+		// weaponsfound (vanilla), which would spam weapon checks every match;
+		// AP is campaign-oriented, so skip the emit there. The vanilla bit-set
+		// above is left untouched.
+		if (!wasfound && !g_Vars.normmplayerisrunning) {
 			luaEmitWeaponFound(weaponnum);
 		}
 #endif

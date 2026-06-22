@@ -14,6 +14,7 @@
 #include "game/training.h"
 #include "game/lang.h"
 #include "game/propobj.h"
+#include "game/luaai.h"
 #include "net/net.h"
 #include "bss.h"
 #include "lib/dma.h"
@@ -517,6 +518,14 @@ void objectivesCheckAll(void)
 						&& i < MAX_OBJECTIVES
 						&& g_NetCoopObjStatuses[i] != OBJECTIVE_COMPLETE) {
 					netClientSendObjectiveDone(i);
+				}
+
+				// Archipelago: per-objective check detection. Edge-triggered on the
+				// transition to COMPLETE; server/solo authoritative (a co-op client
+				// reports via netClientSendObjectiveDone above and the host fires this
+				// when it latches the completion). stage + difficulty key it uniquely.
+				if (g_NetMode != NETMODE_CLIENT && status == OBJECTIVE_COMPLETE) {
+					luaEmitObjective(g_MissionConfig.stageindex, lvGetDifficulty(), i, status);
 				}
 #endif
 

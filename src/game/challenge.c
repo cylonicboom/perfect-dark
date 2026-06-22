@@ -5,6 +5,7 @@
 #include "game/challenge.h"
 #include "game/chrai.h"
 #include "game/chraicommands.h"
+#include "game/luaai.h"
 #include "game/debug.h"
 #include "game/lang.h"
 #include "game/mplayer/mplayer.h"
@@ -873,6 +874,11 @@ void challengeConsiderMarkingComplete(void)
 		s32 i;
 
 		challengeSetCompletedByAnyPlayerWithNumPlayers(g_MpChallengeIndex, PLAYERCOUNT(), 1);
+#ifndef PLATFORM_N64
+		// Archipelago: a Combat-Sim challenge was just completed (cheats-off
+		// guarded above), for check detection.
+		luaEmitChallengeComplete(g_MpChallengeIndex, PLAYERCOUNT());
+#endif
 		prevplayernum = g_Vars.currentplayernum;
 
 		for (i = 0; i < PLAYERCOUNT(); i++) {

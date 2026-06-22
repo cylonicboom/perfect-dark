@@ -240,6 +240,80 @@ static int l_pd_draw_text(lua_State *L)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------- *
+ * Session-persistent key->string store (pd.persist_get / pd.persist_set).
+ *
+ * The whole lua_State is destroyed (lua_close in luaaiReset) on every stage
+ * change -- mission load, return to the main menu -- so script globals do NOT
+ * survive a reload (luaai.c luaaiExecute). This tiny C-owned table lives
+ * outside the lua_State, so a script (e.g. the AP test harness check board) can
+ * persist state across that teardown. Session-only; not written to disk.
+ * ------------------------------------------------------------------------- */
+#define LUA_PERSIST_MAX 32
+static struct luapersist { char *key; char *val; } g_LuaPersist[LUA_PERSIST_MAX];
+
+static char *luaApiStrDup(const char *s)
+{
+	size_t n = strlen(s) + 1;
+	char *p = (char *)malloc(n);
+	if (p) {
+		memcpy(p, s, n);
+	}
+	return p;
+}
+
+/* pd.persist_set(key, value): a nil/absent value clears the key. */
+static int l_pd_persist_set(lua_State *L)
+{
+	const char *key = luaL_checkstring(L, 1);
+	const char *val = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+	s32 i;
+	s32 slot = -1;
+
+	for (i = 0; i < LUA_PERSIST_MAX; i++) {
+		if (g_LuaPersist[i].key && strcmp(g_LuaPersist[i].key, key) == 0) {
+			free(g_LuaPersist[i].val);
+			g_LuaPersist[i].val = NULL;
+			if (val) {
+				g_LuaPersist[i].val = luaApiStrDup(val);
+			} else {
+				free(g_LuaPersist[i].key);
+				g_LuaPersist[i].key = NULL;
+			}
+			return 0;
+		}
+		if (slot < 0 && !g_LuaPersist[i].key) {
+			slot = i;
+		}
+	}
+
+	if (val && slot >= 0) {
+		g_LuaPersist[slot].key = luaApiStrDup(key);
+		g_LuaPersist[slot].val = luaApiStrDup(val);
+	}
+	return 0;
+}
+
+/* pd.persist_get(key) -> string | nil */
+static int l_pd_persist_get(lua_State *L)
+{
+	const char *key = luaL_checkstring(L, 1);
+	s32 i;
+
+	for (i = 0; i < LUA_PERSIST_MAX; i++) {
+		if (g_LuaPersist[i].key && strcmp(g_LuaPersist[i].key, key) == 0) {
+			if (g_LuaPersist[i].val) {
+				lua_pushstring(L, g_LuaPersist[i].val);
+			} else {
+				lua_pushnil(L);
+			}
+			return 1;
+		}
+	}
+	lua_pushnil(L);
+	return 1;
+}
+
 /* pd.each_chr(fn) -> fn(chrnum, ailistid, aioffset, alertness, islua) */
 static int l_pd_each_chr(lua_State *L)
 {
@@ -765,6 +839,9 @@ void luaApiRegister(lua_State *L)
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");
+	/* session-persistent KV (survives the per-stage lua_State teardown) */
+	lua_pushcfunction(L, l_pd_persist_get); lua_setfield(L, -2, "persist_get");
+	lua_pushcfunction(L, l_pd_persist_set); lua_setfield(L, -2, "persist_set");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events
@@ -882,6 +959,31 @@ void luaEmitWeaponFound(s32 weaponnum)
 	lua_Integer a[1];
 	a[0] = weaponnum;
 	luaEventDispatchInts("weaponfound", 1, a);
+}
+
+void luaEmitObjective(s32 stageindex, s32 difficulty, s32 objindex, s32 status)
+{
+	lua_Integer a[4];
+	a[0] = stageindex;
+	a[1] = difficulty;
+	a[2] = objindex;
+	a[3] = status;
+	luaEventDispatchInts("objective", 4, a);
+}
+
+void luaEmitCheatUnlock(s32 cheatid)
+{
+	lua_Integer a[1];
+	a[0] = cheatid;
+	luaEventDispatchInts("cheatunlock", 1, a);
+}
+
+void luaEmitChallengeComplete(s32 challengeindex, s32 numplayers)
+{
+	lua_Integer a[2];
+	a[0] = challengeindex;
+	a[1] = numplayers;
+	luaEventDispatchInts("challengecomplete", 2, a);
 }
 
 /* ------------------------------------------------------------------------- *

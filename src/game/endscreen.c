@@ -1666,6 +1666,10 @@ void endscreenPrepare(void)
 
 					if (!timedalreadyunlocked && nowunlocked) {
 						g_Menus[g_MpPlayerNum].endscreen.cheatinfo |= 0x0200;
+#ifndef PLATFORM_N64
+						// Archipelago: a timed cheat's unlock condition was newly met.
+						luaEmitCheatUnlock(g_Menus[g_MpPlayerNum].endscreen.cheatinfo & 0xff);
+#endif
 					}
 				}
 
@@ -1674,6 +1678,10 @@ void endscreenPrepare(void)
 
 					if (!complalreadyunlocked && nowunlocked) {
 						g_Menus[g_MpPlayerNum].endscreen.cheatinfo |= 0x0800;
+#ifndef PLATFORM_N64
+						// Archipelago: a completion cheat's unlock condition was newly met.
+						luaEmitCheatUnlock((g_Menus[g_MpPlayerNum].endscreen.cheatinfo >> 16) & 0xff);
+#endif
 					}
 				}
 #else

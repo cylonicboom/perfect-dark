@@ -1191,7 +1191,9 @@ void mainTick(void)
 
 				gdl = conRender(gdl);
 				gdl = luaHudRender(gdl); /* declared in game/luaai.h */
-				gdl = netKillFeedRender(gdl);
+				// Kill feed now renders per-viewport from playerRenderHud
+				// (hudmsgRenderKillFeed) so each split-screen player gets its
+				// own, gated by that player's MPDISPLAYOPTION_KILLFEED toggle.
 				gdl = netDebugRender(gdl);
 
 				gDPFullSync(gdl++);

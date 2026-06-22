@@ -5786,6 +5786,8 @@ Gfx *playerRenderHud(Gfx *gdl)
 		// (no-op unless toggled via /hitmarker). Lets us evaluate immediate hit
 		// feedback at high ping without touching the crosshair render.
 		gdl = netHitmarkerRender(gdl);
+		// Per-viewport kill feed (per-player MPDISPLAYOPTION_KILLFEED toggle).
+		gdl = hudmsgRenderKillFeed(gdl);
 #endif
 
 		gdl = playerDrawStoredFade(gdl);

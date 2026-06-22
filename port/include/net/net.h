@@ -249,6 +249,17 @@ struct netkillfeedentry {
 	u8 victim_team;
 };
 
+// One renderable kill-feed line, freshest first. Colours are pre-resolved
+// (team colour, or local-red / remote-green fallback) so the HUD render path
+// in hudmsg.c stays free of the net-side colour/name-match logic. shooter is
+// NULL for a suicide / environment kill ("victim [died]").
+struct netkillfeedrenderentry {
+	const char *shooter;
+	const char *victim;
+	u32 shooter_col;
+	u32 victim_col;
+};
+
 // Lobby state: cached locally by the client when in CLSTATE_LOBBY.
 // Populated from SVC_LOBBY_STATE broadcasts sent by the server every ~1s.
 // Cleared on disconnect. Display strings are pre-resolved server-side so
@@ -910,9 +921,11 @@ void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8
 // offline, where expiry keys off lvframe60 which resets each stage.
 void netKillFeedClear(void);
 
-// Kill feed: render the rolling list of recent eliminations in the top-right.
-// Returns the updated display list pointer.
-Gfx *netKillFeedRender(Gfx *gdl);
+// Kill feed: collect up to `max` live (non-expired) entries into `out`, freshest
+// first, with colours resolved. Expires dead entries as a side effect. Returns
+// the number written. The actual per-viewport drawing lives in hudmsg.c
+// (hudmsgRenderKillFeed) so it can use the HUD coordinate/scaling machinery.
+s32 netKillFeedGetRenderEntries(struct netkillfeedrenderentry *out, s32 max);
 
 // Vanity easter egg: render the boxed lower-left "Graslu" banner (pickup-message
 // style) when the hidden /graslu command has toggled it on and a level is

@@ -24,6 +24,9 @@
 #include "data.h"
 #include "types.h"
 #include "string.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#endif
 
 u32 g_NextHudMessageId;
 
@@ -1718,7 +1721,17 @@ Gfx *hudmsgsRender(Gfx *gdl)
 			gdl = hudmsgRenderZoomRange(gdl, timerthing);
 		}
 
-		gdl = countdownTimerRender(gdl);
+#ifndef PLATFORM_N64
+		// In Combat Sim the countdown timer is the match remaining-time clock
+		// (driven from lv.c). Make it a per-player "Time Remaining" toggle
+		// (default off). Campaign AI countdowns (defuse, escort) always show.
+		if (!g_Vars.normmplayerisrunning
+				|| (g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.displayoptions
+						& MPDISPLAYOPTION_TIMEREMAINING))
+#endif
+		{
+			gdl = countdownTimerRender(gdl);
+		}
 	}
 
 	gdl = text0f153780(gdl);
@@ -1727,6 +1740,96 @@ Gfx *hudmsgsRender(Gfx *gdl)
 
 	return gdl;
 }
+
+#ifndef PLATFORM_N64
+// Per-viewport kill feed. Called from playerRenderHud so each split-screen
+// player gets its own, anchored to the top-left of that player's viewport and
+// gated by the player's MPDISPLAYOPTION_KILLFEED toggle (default off):
+//   - 1 player  : up to NET_KILLFEED_MAX text lines ("Shooter > Victim").
+//   - 2 players : the last 2 kills as text.
+//   - 3-4 players: the last 2 kills as a pair of colour squares (killer then
+//     victim in their radar/team colours) because names don't fit the small
+//     viewport.
+Gfx *hudmsgRenderKillFeed(Gfx *gdl)
+{
+	// Net game or offline Combat Sim only (no feed in solo campaign / front-end).
+	if (!g_NetMode && !g_Vars.normmplayerisrunning) {
+		return gdl;
+	}
+	if (!g_CharsHandelGothicXs || !g_FontHandelGothicXs) {
+		return gdl;
+	}
+	// Per-player toggle. currentplayerstats is this viewport's owner.
+	if ((g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.displayoptions
+			& MPDISPLAYOPTION_KILLFEED) == 0) {
+		return gdl;
+	}
+
+	const s32 playercount = LOCALPLAYERCOUNT();
+	const s32 squares = playercount >= 3;
+	const s32 maxlines = (playercount >= 2) ? 2 : NET_KILLFEED_MAX;
+
+	struct netkillfeedrenderentry entries[NET_KILLFEED_MAX];
+	const s32 count = netKillFeedGetRenderEntries(entries, maxlines);
+	if (count <= 0) {
+		return gdl;
+	}
+
+	const u32 outline = 0x000000a0; // black outline, matches the FPS/timer overlays
+	const u32 plain = 0xffffffff;   // white separator / "[died]"
+	const s32 lineheight = 9;
+	const s32 viewleft = viGetViewLeft() / g_ScaleX;
+	const s32 viewtop = viGetViewTop();
+	const s32 x0 = viewleft + g_HudPaddingX + 3;
+	const s32 y0 = viewtop + g_HudPaddingY + 3;
+
+	gdl = text0f153628(gdl);
+
+	for (s32 i = 0; i < count; ++i) {
+		struct netkillfeedrenderentry *e = &entries[i];
+		const s32 liney = y0 + i * lineheight;
+
+		if (squares) {
+			const s32 sq = 6;
+			const s32 gap = 4;
+			s32 sx = x0;
+
+			gdl = func0f0d479c(gdl);
+			if (e->shooter) {
+				gdl = menugfxDrawFilledRect(gdl, sx, liney, sx + sq, liney + sq, e->shooter_col, e->shooter_col);
+				sx += sq + gap;
+			}
+			gdl = menugfxDrawFilledRect(gdl, sx, liney, sx + sq, liney + sq, e->victim_col, e->victim_col);
+			gdl = func0f0d49c8(gdl);
+		} else {
+			s32 x = x0;
+			s32 y = liney;
+
+			if (e->shooter) {
+				gdl = textRender(gdl, &x, &y, (char *)e->shooter,
+						g_CharsHandelGothicXs, g_FontHandelGothicXs,
+						e->shooter_col, outline, viGetWidth(), viGetHeight_hack(), 0, 0);
+				gdl = textRender(gdl, &x, &y, " > ",
+						g_CharsHandelGothicXs, g_FontHandelGothicXs,
+						plain, outline, viGetWidth(), viGetHeight_hack(), 0, 0);
+				gdl = textRender(gdl, &x, &y, (char *)e->victim,
+						g_CharsHandelGothicXs, g_FontHandelGothicXs,
+						e->victim_col, outline, viGetWidth(), viGetHeight_hack(), 0, 0);
+			} else {
+				gdl = textRender(gdl, &x, &y, (char *)e->victim,
+						g_CharsHandelGothicXs, g_FontHandelGothicXs,
+						e->victim_col, outline, viGetWidth(), viGetHeight_hack(), 0, 0);
+				gdl = textRender(gdl, &x, &y, " [died]",
+						g_CharsHandelGothicXs, g_FontHandelGothicXs,
+						plain, outline, viGetWidth(), viGetHeight_hack(), 0, 0);
+			}
+		}
+	}
+
+	gdl = text0f153780(gdl);
+	return gdl;
+}
+#endif
 
 void hudmsgsStop(void)
 {

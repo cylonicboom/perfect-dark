@@ -32,6 +32,9 @@ void hudmsgsSetOn(u32 reason);
 void hudmsgsSetOff(u32 reason);
 void hudmsgsRemoveForDeadPlayer(s32 playernum);
 Gfx *hudmsgsRender(Gfx *gdl);
+#ifndef PLATFORM_N64
+Gfx *hudmsgRenderKillFeed(Gfx *gdl);
+#endif
 void hudmsgsStop(void);
 
 #endif

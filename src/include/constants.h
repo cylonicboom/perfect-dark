@@ -2826,6 +2826,10 @@
 #define MPDISPLAYOPTION_HIGHLIGHTPICKUPS 0x02
 #define MPDISPLAYOPTION_RADAR            0x04
 #define MPDISPLAYOPTION_HIGHLIGHTTEAMS   0x08
+// Port-only per-player HUD toggles (default OFF). The display-option handler
+// masks param3 as a u8, so these must stay within the low byte.
+#define MPDISPLAYOPTION_KILLFEED         0x10 // per-viewport kill feed
+#define MPDISPLAYOPTION_TIMEREMAINING    0x20 // Combat Sim match countdown clock
 
 // Features are things that can be unlocked
 #define MPFEATURE_WEAPON_FARSIGHT        0x01

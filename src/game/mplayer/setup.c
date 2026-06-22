@@ -2644,6 +2644,24 @@ struct menuitem g_MpPlayerOptionsMenuItems[] = {
 		MPDISPLAYOPTION_RADAR,
 		menuhandlerMpDisplayOptionCheckbox,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Kill Feed\n",
+		MPDISPLAYOPTION_KILLFEED,
+		menuhandlerMpDisplayOptionCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Time Remaining\n",
+		MPDISPLAYOPTION_TIMEREMAINING,
+		menuhandlerMpDisplayOptionCheckbox,
+	},
+#endif
 	{
 		MENUITEMTYPE_SEPARATOR,
 		0,

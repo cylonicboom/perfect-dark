@@ -6861,34 +6861,11 @@ void netKillFeedAdd(const char *shooter, const char *victim, u8 shooter_team, u8
 	g_NetKillFeed[0].victim_team = victim_team;
 }
 
-Gfx *netKillFeedRender(Gfx *gdl)
+s32 netKillFeedGetRenderEntries(struct netkillfeedrenderentry *out, s32 max)
 {
-	// Net games OR an offline Combat Sim match (vs simulants). Solo campaign and
-	// the front-end have no kill feed.
-	if (!g_NetMode && !g_Vars.normmplayerisrunning) {
-		return gdl;
-	}
+	s32 n = 0;
 
-	// Match the console (~) font so the two HUD overlays read as part of the
-	// same surface. Falls back silently if the font assets haven't loaded.
-	if (!g_CharsHandelGothicXs || !g_FontHandelGothicXs) {
-		return gdl;
-	}
-
-	gdl = text0f153628(gdl);
-	// Anchor to the left edge — matters in widescreen so the feed hugs the
-	// HUD edge instead of floating in from the letterbox. Same flag the
-	// console uses for its top-left message strip.
-	gSPSetExtraGeometryModeEXT(gdl++, G_ASPECT_LEFT_EXT);
-
-	const s32 screenw = viGetWidth();
-	const s32 screenh = viGetHeight();
-	const s32 lineHeight = 9;
-	const s32 leftMargin = 4;
-	const s32 topMargin = 4;
-
-	s32 visible = 0;
-	for (s32 i = 0; i < NET_KILLFEED_MAX; ++i) {
+	for (s32 i = 0; i < NET_KILLFEED_MAX && n < max; ++i) {
 		struct netkillfeedentry *e = &g_NetKillFeed[i];
 		if (!e->victim[0]) {
 			continue;
@@ -6900,9 +6877,6 @@ Gfx *netKillFeedRender(Gfx *gdl)
 			continue;
 		}
 
-		s32 x = leftMargin;
-		s32 y = topMargin + visible * lineHeight;
-
 		// Local player appears red; everyone else appears green. Team games
 		// override with team colours regardless of local/remote.
 		const char *myname = g_NetLocalClient ? g_NetLocalClient->settings.name : NULL;
@@ -6910,48 +6884,15 @@ Gfx *netKillFeedRender(Gfx *gdl)
 				? NET_KILLFEED_COL_VICTIM : NET_KILLFEED_COL_SHOOTER;
 		const u32 victim_fallback = (myname && strcmp(e->victim, myname) == 0)
 				? NET_KILLFEED_COL_VICTIM : NET_KILLFEED_COL_SHOOTER;
-		const u32 shooter_col = netKillFeedTeamColor(e->shooter_team, shooter_fallback);
-		const u32 victim_col = netKillFeedTeamColor(e->victim_team, victim_fallback);
 
-		if (e->shooter[0]) {
-			// "Shooter > Victim" — three segments, each with its own colour.
-			// textRender (vs. textRenderProjected) takes a second colour for the
-			// dual-cycle combiner so we get a black outline around each glyph,
-			// matching the FPS counter. It mutates x to the end of the rendered
-			// text so consecutive calls line up without manual width math.
-			gdl = textRender(gdl, &x, &y, e->shooter,
-					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					shooter_col, NET_KILLFEED_COL_OUTLINE,
-					screenw, screenh, 0, 0);
-
-			gdl = textRender(gdl, &x, &y, " > ",
-					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_PLAIN, NET_KILLFEED_COL_OUTLINE,
-					screenw, screenh, 0, 0);
-
-			gdl = textRender(gdl, &x, &y, e->victim,
-					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					victim_col, NET_KILLFEED_COL_OUTLINE,
-					screenw, screenh, 0, 0);
-		} else {
-			// "Victim [died]" — suicide / environment kill.
-			gdl = textRender(gdl, &x, &y, e->victim,
-					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					victim_col, NET_KILLFEED_COL_OUTLINE,
-					screenw, screenh, 0, 0);
-
-			gdl = textRender(gdl, &x, &y, " [died]",
-					g_CharsHandelGothicXs, g_FontHandelGothicXs,
-					NET_KILLFEED_COL_PLAIN, NET_KILLFEED_COL_OUTLINE,
-					screenw, screenh, 0, 0);
-		}
-
-		++visible;
+		out[n].shooter = e->shooter[0] ? e->shooter : NULL;
+		out[n].victim = e->victim;
+		out[n].shooter_col = netKillFeedTeamColor(e->shooter_team, shooter_fallback);
+		out[n].victim_col = netKillFeedTeamColor(e->victim_team, victim_fallback);
+		++n;
 	}
 
-	gSPClearExtraGeometryModeEXT(gdl++, G_ASPECT_CENTER_EXT);
-	gdl = text0f153780(gdl);
-	return gdl;
+	return n;
 }
 
 // Hidden test feature (toggle /hitmarker): a brief centred marker shown the

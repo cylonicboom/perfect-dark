@@ -240,6 +240,17 @@ static int l_pd_draw_text(lua_State *L)
 	return 0;
 }
 
+/* pd.hud_message(text, [type]): big centred HUD banner, same path the engine
+ * uses for "Objective Complete" (default type = HUDMSGTYPE_OBJECTIVECOMPLETE).
+ * No-op when there's no live local player (title / menus). */
+static int l_pd_hud_message(lua_State *L)
+{
+	const char *text = luaL_checkstring(L, 1);
+	s32 type = (s32)luaL_optinteger(L, 2, HUDMSGTYPE_OBJECTIVECOMPLETE);
+	hudmsgCreateLua((char *)text, type);
+	return 0;
+}
+
 /* ------------------------------------------------------------------------- *
  * Session-persistent key->string store (pd.persist_get / pd.persist_set).
  *
@@ -803,6 +814,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_on);          lua_setfield(L, -2, "on");
 	lua_pushcfunction(L, l_pd_draw_box);    lua_setfield(L, -2, "draw_box");
 	lua_pushcfunction(L, l_pd_draw_text);   lua_setfield(L, -2, "draw_text");
+	lua_pushcfunction(L, l_pd_hud_message); lua_setfield(L, -2, "hud_message");
 	lua_pushcfunction(L, l_pd_each_chr);    lua_setfield(L, -2, "each_chr");
 #ifndef PLATFORM_N64
 	lua_pushcfunction(L, l_pd_octree_stats);lua_setfield(L, -2, "octree_stats");

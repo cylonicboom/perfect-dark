@@ -34,6 +34,7 @@ void hudmsgsRemoveForDeadPlayer(s32 playernum);
 Gfx *hudmsgsRender(Gfx *gdl);
 #ifndef PLATFORM_N64
 Gfx *hudmsgRenderKillFeed(Gfx *gdl);
+void hudmsgCreateLua(char *text, s32 type);
 #endif
 void hudmsgsStop(void);
 

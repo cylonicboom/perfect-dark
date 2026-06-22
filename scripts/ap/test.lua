@@ -84,9 +84,11 @@ local function mark(name, source)
   if not ap.checks[name] then
     ap.checks[name] = true
     pd.log(string.format("AP CHECK: %s  (%s)", name, source or "manual"))
-    -- Pop an on-screen toast for the new check (see the HUD overlay below).
-    ap._toast_text = name
-    ap._toast_frames = (ap.toast_secs or 4) * 60
+    -- Big centred banner, the same path the engine uses for "Objective
+    -- Complete" (no-op off-mission; silently skipped on a build without it).
+    if type(pd.hud_message) == "function" then
+      pd.hud_message("AP Check: " .. name)
+    end
     save_state()
   else
     pd.log("AP CHECK (already done): " .. name)
@@ -236,22 +238,20 @@ end
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
--- HUD overlay: live "done / total" counter + a toast when a new check fires.
--- Drawn via the "draw" event (fires once per frame while the HUD renders, so
--- it shows in-mission). Solo-campaign only in practice, so top-left is clear of
--- the Combat-Sim kill feed. Colours are 0xRRGGBBAA. Toggle with /lua ap.hud().
+-- HUD overlay: live "done / total" counter. Drawn via the "draw" event (fires
+-- once per frame while the HUD renders, so it shows in-mission). Solo-campaign
+-- only in practice, so top-left is clear of the Combat-Sim kill feed. Colours
+-- are 0xRRGGBBAA. Toggle with /lua ap.hud(). The per-completion notification is
+-- the big centred banner popped from mark() via pd.hud_message (like the
+-- engine's "Objective Complete").
 -- ---------------------------------------------------------------------------
 
 ap.hud_enabled = true   -- master toggle
-ap.toast_secs  = 4      -- how long a new-check toast lingers
 ap.hud_x       = 8      -- counter top-left anchor (move to taste)
 ap.hud_y       = 8
-ap._toast_text = nil
-ap._toast_frames = 0
 
 local C_COUNT  = 0x40ff40ff  -- green "AP d/t"
 local C_DONE   = 0xffd040ff  -- gold once everything is complete
-local C_TOAST  = 0xffffffff  -- white toast body
 local C_SHADOW = 0x000000c0  -- 1px drop shadow for readability over bright scenes
 
 -- ap.hud([on]): toggle (no arg) or set the overlay on/off.
@@ -273,15 +273,6 @@ pd.on("draw", function()
   local txt = string.format("AP %d/%d", done, total)
   pd.draw_text(ap.hud_x + 1, ap.hud_y + 1, txt, C_SHADOW)
   pd.draw_text(ap.hud_x,     ap.hud_y,     txt, col)
-
-  -- Toast for the most recent completion, frame-counted (~60/s).
-  if ap._toast_frames > 0 then
-    ap._toast_frames = ap._toast_frames - 1
-    local t = "+ " .. (ap._toast_text or "")
-    local ty = ap.hud_y + 10
-    pd.draw_text(ap.hud_x + 1, ty + 1, t, C_SHADOW)
-    pd.draw_text(ap.hud_x,     ty,     t, C_TOAST)
-  end
 end)
 
 if type(pd.menu_add) == "function" then

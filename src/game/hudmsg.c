@@ -541,6 +541,19 @@ void hudmsgCreate(char *text, s32 type)
 			-1, 0);
 }
 
+#ifndef PLATFORM_N64
+// Port: Lua-facing wrapper so a script can pop a HUD banner the same way the
+// engine shows "Objective Complete" (e.g. the Archipelago check-complete toast).
+// hudmsgCreate dereferences g_Vars.currentplayer, so no-op when there's no live
+// local player (title / menus / between missions) to avoid a null deref.
+void hudmsgCreateLua(char *text, s32 type)
+{
+	if (text && g_Vars.currentplayer && g_Vars.currentplayer->prop) {
+		hudmsgCreate(text, type);
+	}
+}
+#endif
+
 void hudmsgCreateWithFlags(char *text, s32 type, u32 flags)
 {
 	hudmsgCreateFromArgs(text, type,

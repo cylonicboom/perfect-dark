@@ -205,29 +205,38 @@ local function need(fnname)
   return true
 end
 
-function ap.heal()       if need("player_heal")       then pd.player_heal();        pd.log("AP bonus: full HP") end end
-function ap.shield()     if need("player_set_shield") then pd.player_set_shield(1);  pd.log("AP bonus: full shield") end end
-function ap.ammo()       if need("refill_ammo")       then pd.refill_ammo();         pd.log("AP bonus: ammo refilled") end end
-function ap.invincible() if need("invincible")        then pd.invincible(true);      pd.log("AP bonus: invincible (call ap.mortal() to clear)") end end
-function ap.mortal()     if need("invincible")        then pd.invincible(false);     pd.log("AP: invincibility off") end end
+-- Announce a received item/bonus: console log + the same big centred banner the
+-- checks use (no-op off-mission). This is where we want incoming-item toasts.
+local function notify(label)
+  pd.log("AP item: " .. label)
+  if type(pd.hud_message) == "function" then
+    pd.hud_message("AP Item: " .. label)
+  end
+end
+
+function ap.heal()       if need("player_heal")       then pd.player_heal();       notify("Full HP") end end
+function ap.shield()     if need("player_set_shield") then pd.player_set_shield(1); notify("Full Shield") end end
+function ap.ammo()       if need("refill_ammo")       then pd.refill_ammo();        notify("Refill Ammo") end end
+function ap.invincible() if need("invincible")        then pd.invincible(true);     notify("Invincibility") end end
+function ap.mortal()     if need("invincible")        then pd.invincible(false);    pd.log("AP: invincibility off") end end
 
 -- WEAPON_GRENADE 0x1e, AMMOTYPE_GRENADE 0x07, WEAPON_CLOAKINGDEVICE 0x31.
-function ap.grenade()    if need("give_ammo")  then pd.give_ammo(0x07, 1); pd.log("AP bonus: grenade") end end
+function ap.grenade()    if need("give_ammo")  then pd.give_ammo(0x07, 1); notify("Grenade") end end
 function ap.cloak()
   if need("give_ammo") and need("device_on") then
     pd.give_ammo(0x14, 60 * 30)           -- AMMOTYPE_CLOAK, ~30s
     pd.device_on(0x31)                    -- WEAPON_CLOAKINGDEVICE
-    pd.log("AP bonus: cloak engaged")
+    notify("Cloak")
   end
 end
-function ap.weapon(n)    if need("give_weapon") then pd.give_weapon(n); pd.log("AP bonus: weapon " .. tostring(n)) end end
+function ap.weapon(n)    if need("give_weapon") then pd.give_weapon(n); notify("Weapon " .. tostring(n)) end end
 
 -- ap.buddy(): spawn a friendly Perfect Buddy that fights for you.
 function ap.buddy()
   if not need("spawn_ally") then return end
   local chrnum = pd.spawn_ally()
   if chrnum then
-    pd.log("AP bonus: Perfect Buddy spawned (chr " .. chrnum .. ")")
+    notify("Perfect Buddy")
   else
     pd.log("AP: buddy spawn failed (no live player? net client?)")
   end

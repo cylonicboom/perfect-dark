@@ -41,6 +41,21 @@ local function add_check(name)
   end
 end
 
+-- Session persistence. The engine destroys the whole Lua state on every stage
+-- load (mission start / return to menu), so completed checks would reset. We
+-- mirror the completed set into the engine's C-side persist store
+-- (pd.persist_set/get, which outlives the state teardown) and restore on reload.
+local PERSIST_KEY = "ap.checks"
+
+local function save_state()
+  if type(pd.persist_set) ~= "function" then return end
+  local done = {}
+  for _, n in ipairs(order) do
+    if ap.checks[n] then done[#done + 1] = n end
+  end
+  pd.persist_set(PERSIST_KEY, table.concat(done, "\n"))
+end
+
 -- Seed the mission-completion checks (stage x difficulty) so ap.list() shows the
 -- full board even before anything is completed.
 for s = 0, 20 do
@@ -49,11 +64,30 @@ for s = 0, 20 do
   end
 end
 
+-- Restore previously-completed checks across the stage-load Lua-state reset.
+-- (Also re-creates runtime checks like firingrange/weaponfound that were earned.)
+if type(pd.persist_get) == "function" then
+  local saved = pd.persist_get(PERSIST_KEY)
+  if saved and saved ~= "" then
+    local n = 0
+    for name in saved:gmatch("[^\n]+") do
+      add_check(name)
+      ap.checks[name] = true
+      n = n + 1
+    end
+    pd.log(string.format("AP: restored %d completed check(s)", n))
+  end
+end
+
 local function mark(name, source)
   add_check(name)
   if not ap.checks[name] then
     ap.checks[name] = true
     pd.log(string.format("AP CHECK: %s  (%s)", name, source or "manual"))
+    -- Pop an on-screen toast for the new check (see the HUD overlay below).
+    ap._toast_text = name
+    ap._toast_frames = (ap.toast_secs or 4) * 60
+    save_state()
   else
     pd.log("AP CHECK (already done): " .. name)
   end
@@ -77,6 +111,26 @@ end)
 
 pd.on("weaponfound", function(weaponnum)
   mark(string.format("weaponfound:w%d", weaponnum), "first found")
+end)
+
+-- Per-objective completion. Keyed by stage + difficulty + objective index so it
+-- is unique across stages (each stage indexes its objectives from 0). These are
+-- added to the board on the fly as they fire (the full per-stage objective
+-- catalog isn't seeded -- the real AP data tables will carry that).
+pd.on("objective", function(stageindex, difficulty, objindex, status)
+  local s = STAGES[stageindex] or ("stage" .. stageindex)
+  local d = DIFFS[difficulty] or ("diff" .. difficulty)
+  mark(string.format("objective:%s/%s/%d", s, d, objindex), "objective complete")
+end)
+
+-- Cheat unlock (a timed/completion cheat's condition was newly met, cheats-off).
+pd.on("cheatunlock", function(cheatid)
+  mark(string.format("cheat:%d", cheatid), "cheat unlocked")
+end)
+
+-- Combat-Sim challenge completed (at the player count it was beaten with).
+pd.on("challengecomplete", function(index, numplayers)
+  mark(string.format("challenge:%d/%dp", index, numplayers), "challenge complete")
 end)
 
 -- ---------------------------------------------------------------------------
@@ -125,6 +179,7 @@ end
 
 function ap.reset()
   for n in pairs(ap.checks) do ap.checks[n] = false end
+  save_state()
   pd.log("AP: all checks reset to pending")
 end
 
@@ -180,9 +235,59 @@ end
 -- Pause-menu buttons (Lua Director)
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- HUD overlay: live "done / total" counter + a toast when a new check fires.
+-- Drawn via the "draw" event (fires once per frame while the HUD renders, so
+-- it shows in-mission). Solo-campaign only in practice, so top-left is clear of
+-- the Combat-Sim kill feed. Colours are 0xRRGGBBAA. Toggle with /lua ap.hud().
+-- ---------------------------------------------------------------------------
+
+ap.hud_enabled = true   -- master toggle
+ap.toast_secs  = 4      -- how long a new-check toast lingers
+ap.hud_x       = 8      -- counter top-left anchor (move to taste)
+ap.hud_y       = 8
+ap._toast_text = nil
+ap._toast_frames = 0
+
+local C_COUNT  = 0x40ff40ff  -- green "AP d/t"
+local C_DONE   = 0xffd040ff  -- gold once everything is complete
+local C_TOAST  = 0xffffffff  -- white toast body
+local C_SHADOW = 0x000000c0  -- 1px drop shadow for readability over bright scenes
+
+-- ap.hud([on]): toggle (no arg) or set the overlay on/off.
+function ap.hud(on)
+  if on == nil then on = not ap.hud_enabled end
+  ap.hud_enabled = on and true or false
+  pd.log("AP HUD: " .. (ap.hud_enabled and "on" or "off"))
+  return ap.hud_enabled
+end
+
+pd.on("draw", function()
+  if not ap.hud_enabled then return end
+
+  -- Live counter (recomputed each frame so it tracks resets/forces too).
+  local done = 0
+  for _, n in ipairs(order) do if ap.checks[n] then done = done + 1 end end
+  local total = #order
+  local col = (total > 0 and done >= total) and C_DONE or C_COUNT
+  local txt = string.format("AP %d/%d", done, total)
+  pd.draw_text(ap.hud_x + 1, ap.hud_y + 1, txt, C_SHADOW)
+  pd.draw_text(ap.hud_x,     ap.hud_y,     txt, col)
+
+  -- Toast for the most recent completion, frame-counted (~60/s).
+  if ap._toast_frames > 0 then
+    ap._toast_frames = ap._toast_frames - 1
+    local t = "+ " .. (ap._toast_text or "")
+    local ty = ap.hud_y + 10
+    pd.draw_text(ap.hud_x + 1, ty + 1, t, C_SHADOW)
+    pd.draw_text(ap.hud_x,     ty,     t, C_TOAST)
+  end
+end)
+
 if type(pd.menu_add) == "function" then
   pd.menu_add("AP: Complete Next Check", ap.next)
   pd.menu_add("AP: List Checks (console)", ap.list)
+  pd.menu_add("AP: Toggle HUD Counter", ap.hud)
   pd.menu_add("AP Bonus: Full HP", ap.heal)
   pd.menu_add("AP Bonus: Full Shield", ap.shield)
   pd.menu_add("AP Bonus: Refill Ammo", ap.ammo)
@@ -191,4 +296,4 @@ if type(pd.menu_add) == "function" then
   pd.menu_add("AP Bonus: Spawn Perfect Buddy", ap.buddy)
 end
 
-pd.log("AP test harness loaded: /lua ap.list()  |  pause menu -> Lua Director")
+pd.log("AP test harness loaded: /lua ap.list()  |  HUD counter on (/lua ap.hud())  |  pause menu -> Lua Director")

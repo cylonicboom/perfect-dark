@@ -5,6 +5,7 @@
 #include "game/bondgun.h"
 #include "game/game_0b0fd0.h"
 #include "game/player.h"
+#include "game/luaai.h"
 #include "game/hudmsg.h"
 #include "game/playermgr.h"
 #include "game/mplayer/setup.h"
@@ -381,6 +382,17 @@ void currentPlayerSetDeviceActive(s32 weaponnum, bool active)
 
 			if ((devicefunc->base.type & 0xff) == INVENTORYFUNCTYPE_DEVICE) {
 				if (active) {
+#ifndef PLATFORM_N64
+					// Archipelago: a gated gadget won't toggle on until its item
+					// arrives (Night Vision, X-Ray, Cloak, Eyespy, R-Tracker, …).
+					// Solo-only; inert unless pd.ap_mode(true). NOTE: a mission
+					// that *requires* a device must have it in AP logic / starting
+					// items, or locking it can soft-lock that stage.
+					if (apGateActive() && !g_Vars.normmplayerisrunning
+							&& !apGateIsUnlocked(AP_CAT_DEVICE, weaponnum)) {
+						return;
+					}
+#endif
 					if (devicefunc->device & (DEVICE_NIGHTVISION | DEVICE_XRAYSCANNER | DEVICE_EYESPY | DEVICE_IRSCANNER)) {
 						g_Vars.currentplayer->devicesactive &= ~(DEVICE_NIGHTVISION | DEVICE_XRAYSCANNER | DEVICE_EYESPY | DEVICE_IRSCANNER);
 					}

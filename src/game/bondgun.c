@@ -3435,6 +3435,20 @@ bool bgunSecondaryFunctionDisabled(s32 weaponnum)
 	if (mpSlotFlagsForWeapon(weaponnum) & FNFLAG_SECONDARY_DISABLED) {
 		return true;
 	}
+#ifndef PLATFORM_N64
+	{
+		/* declared in game/luaai.h; local extern keeps this TU self-sufficient.
+		 * Archipelago: in a solo AP run a gun's secondary function works only
+		 * once its item arrives (primary/secondary unlock independently).
+		 * Solo-only so Combat Sim presets are unaffected; inert unless ap_mode. */
+		extern bool apGateActive(void);
+		extern bool apGateIsUnlocked(s32 cat, s32 id);
+		if (apGateActive() && !g_Vars.normmplayerisrunning
+				&& !apGateIsUnlocked(3 /*AP_CAT_WEAPON_SEC*/, weaponnum)) {
+			return true;
+		}
+	}
+#endif
 	return false;
 }
 
@@ -3458,6 +3472,19 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
 	if (mpSlotFlagsForWeapon(weaponnum) & FNFLAG_PRIMARY_DISABLED) {
 		return true;
 	}
+#ifndef PLATFORM_N64
+	{
+		/* declared in game/luaai.h; local extern keeps this TU self-sufficient.
+		 * Archipelago: in a solo AP run a gun's primary fire works only once its
+		 * item arrives. Solo-only; inert unless ap_mode. */
+		extern bool apGateActive(void);
+		extern bool apGateIsUnlocked(s32 cat, s32 id);
+		if (apGateActive() && !g_Vars.normmplayerisrunning
+				&& !apGateIsUnlocked(2 /*AP_CAT_WEAPON_PRI*/, weaponnum)) {
+			return true;
+		}
+	}
+#endif
 	return false;
 }
 

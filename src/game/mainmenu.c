@@ -1028,6 +1028,17 @@ bool isStageDifficultyUnlocked(s32 stageindex, s32 difficulty)
 	s32 s;
 	s32 d;
 
+#ifndef PLATFORM_N64
+	// Archipelago: when an AP run gates progression, stage access is the spine
+	// (full mission shuffle) — this (stage, difficulty) is reachable iff both
+	// the stage item and the difficulty item have arrived. Fully overrides the
+	// vanilla besttimes chain. Inert unless pd.ap_mode(true).
+	if (apGateActive()) {
+		return apGateIsUnlocked(AP_CAT_STAGE, stageindex)
+				&& apGateIsUnlocked(AP_CAT_DIFFICULTY, difficulty);
+	}
+#endif
+
 	// Handle special missions
 	if (stageindex > SOLOSTAGEINDEX_SKEDARRUINS) {
 #if VERSION >= VERSION_NTSC_1_0

@@ -243,6 +243,64 @@ function ap.buddy()
 end
 
 -- ---------------------------------------------------------------------------
+-- Gating tools (simulate "content locked until the item is received").
+-- The engine gate points (stage/difficulty access, weapon primary/secondary
+-- functions, gadgets/devices) consult the unlock set when pd.ap_mode is on.
+-- Categories: "stage" (0-20) | "difficulty" (0=Agent,1=SA,2=PA) |
+-- "weapon_pri"/"weapon_sec"/"device" (keyed by weaponnum). All persist across
+-- stage loads; cleared by ap.gate(true) or a game restart.
+-- ---------------------------------------------------------------------------
+
+-- ap.gate([on]): enable/disable AP gating. On enable, lock everything, then
+-- grant Agent difficulty + Defection as the "starting items" so the run is
+-- playable. Receive more with ap.give(); revoke with ap.take().
+function ap.gate(on)
+  if type(pd.ap_mode) ~= "function" then
+    pd.log("AP: gating not in this build (rebuild needed)")
+    return
+  end
+  if on == nil then on = not pd.ap_mode() end
+  pd.ap_mode(on)
+  if on then
+    pd.ap_reset()
+    pd.unlock("difficulty", 0) -- Agent, the always-available starting difficulty
+    pd.unlock("stage", 0)      -- Defection, the canonical first mission
+    pd.log("AP gating ON -- all stages/difficulties/weapon-functions/devices locked.")
+    pd.log("  starting items granted: Agent + Defection.")
+    pd.log("  receive: /lua ap.give('stage',N) | ('difficulty',1|2) | ('weapon_pri'|'weapon_sec'|'device',weaponnum)")
+  else
+    pd.log("AP gating OFF -- vanilla unlock rules.")
+  end
+  return on
+end
+
+function ap.give(cat, id)
+  if type(pd.unlock) == "function" then
+    pd.unlock(cat, id)
+    notify(string.format("Unlock %s %d", tostring(cat), id))
+  end
+end
+
+function ap.take(cat, id)
+  if type(pd.lock) == "function" then
+    pd.lock(cat, id)
+    pd.log(string.format("AP: locked %s %d", tostring(cat), id))
+  end
+end
+
+-- ap.gstatus(): print the current gate mode + which stages/difficulties are open.
+function ap.gstatus()
+  if type(pd.is_unlocked) ~= "function" then pd.log("AP: gating not in this build"); return end
+  pd.log("AP gating: " .. (pd.ap_mode() and "ON" or "off"))
+  local diffs = {}
+  for d = 0, 2 do if pd.is_unlocked("difficulty", d) then diffs[#diffs + 1] = DIFFS[d] end end
+  pd.log("  difficulties: " .. (#diffs > 0 and table.concat(diffs, ", ") or "(none)"))
+  local st = {}
+  for s = 0, 20 do if pd.is_unlocked("stage", s) then st[#st + 1] = STAGES[s] end end
+  pd.log("  stages: " .. (#st > 0 and table.concat(st, ", ") or "(none)"))
+end
+
+-- ---------------------------------------------------------------------------
 -- Pause-menu buttons (Lua Director)
 -- ---------------------------------------------------------------------------
 
@@ -288,6 +346,8 @@ if type(pd.menu_add) == "function" then
   pd.menu_add("AP: Complete Next Check", ap.next)
   pd.menu_add("AP: List Checks (console)", ap.list)
   pd.menu_add("AP: Toggle HUD Counter", ap.hud)
+  pd.menu_add("AP Gate: Toggle Locking", ap.gate)
+  pd.menu_add("AP Gate: Status (console)", ap.gstatus)
   pd.menu_add("AP Bonus: Full HP", ap.heal)
   pd.menu_add("AP Bonus: Full Shield", ap.shield)
   pd.menu_add("AP Bonus: Refill Ammo", ap.ammo)

@@ -166,6 +166,20 @@ void luaEmitObjective(s32 stageindex, s32 difficulty, s32 objindex, s32 status);
 void luaEmitCheatUnlock(s32 cheatid);
 void luaEmitChallengeComplete(s32 challengeindex, s32 numplayers);
 
+/* Archipelago gating (port-only). An AP run locks content until the matching
+ * item arrives; the engine gate points consult these. Categories index the
+ * unlock set written by pd.unlock / pd.lock. All inert unless pd.ap_mode(true).
+ * weapon_pri/sec are keyed by weaponnum, device by the device weaponnum. */
+#define AP_CAT_STAGE       0
+#define AP_CAT_DIFFICULTY  1
+#define AP_CAT_WEAPON_PRI  2
+#define AP_CAT_WEAPON_SEC  3
+#define AP_CAT_DEVICE      4
+#define AP_CAT_FEATURE     5
+#define AP_NUM_CATEGORIES  6
+bool apGateActive(void);
+bool apGateIsUnlocked(s32 cat, s32 id);
+
 /** chr-state bridges for the X-ray (defined in chrai.c). */
 s32 chraiLuaGetChrNum(void);
 s32 chraiLuaGetAlertness(void);

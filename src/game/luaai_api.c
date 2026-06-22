@@ -34,6 +34,7 @@
 #include "game/bg.h"          /* g_BgOctreeStats (port-only octree cull counters) */
 #include "data.h"             /* g_FontHandelGothicXs / g_CharsHandelGothicXs */
 #include "lib/vi.h"           /* viGetWidth / viGetHeight */
+#include "net/net.h"          /* g_NetMode / NETMODE_* for the AP gate server/solo guard */
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -323,6 +324,104 @@ static int l_pd_persist_get(lua_State *L)
 	}
 	lua_pushnil(L);
 	return 1;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Archipelago gating (pd.ap_mode / pd.unlock / pd.lock / pd.is_unlocked).
+ *
+ * One unlock set per category, 256 ids each (covers stages 0..20, weapons,
+ * devices, and MP features 0..79). Lives outside the lua_State (C statics) so
+ * the AP run's locks survive the per-stage lua_State teardown, exactly like the
+ * persist KV. The engine gate points (mainmenu / bondgun / device) read
+ * apGateActive() + apGateIsUnlocked(); everything is INERT unless an AP run has
+ * called pd.ap_mode(true), so non-AP play is byte-identical.
+ * ------------------------------------------------------------------------- */
+#define AP_GATE_IDS 256
+static bool g_ApGateMode;
+static u8 g_ApUnlocks[AP_NUM_CATEGORIES][AP_GATE_IDS / 8];
+
+bool apGateActive(void)
+{
+	// Server/solo only: a net client must not make its own access decisions
+	// (AP is authoritative on the machine that owns the save). ap_mode is a
+	// per-machine flag set only on that machine, so this is belt-and-suspenders.
+	return g_ApGateMode && g_NetMode != NETMODE_CLIENT;
+}
+
+bool apGateIsUnlocked(s32 cat, s32 id)
+{
+	if (cat < 0 || cat >= AP_NUM_CATEGORIES || id < 0 || id >= AP_GATE_IDS) {
+		return false;
+	}
+	return (g_ApUnlocks[cat][id >> 3] & (1 << (id & 7))) != 0;
+}
+
+/* Map a Lua category (string name or raw int) to an AP_CAT_* index, or -1. */
+static s32 apGateCatArg(lua_State *L, s32 argn)
+{
+	if (lua_type(L, argn) == LUA_TNUMBER) {
+		s32 c = (s32)lua_tointeger(L, argn);
+		return (c >= 0 && c < AP_NUM_CATEGORIES) ? c : -1;
+	}
+	const char *s = luaL_optstring(L, argn, "");
+	if (strcmp(s, "stage") == 0)      return AP_CAT_STAGE;
+	if (strcmp(s, "difficulty") == 0) return AP_CAT_DIFFICULTY;
+	if (strcmp(s, "weapon_pri") == 0) return AP_CAT_WEAPON_PRI;
+	if (strcmp(s, "weapon_sec") == 0) return AP_CAT_WEAPON_SEC;
+	if (strcmp(s, "device") == 0)     return AP_CAT_DEVICE;
+	if (strcmp(s, "feature") == 0)    return AP_CAT_FEATURE;
+	return -1;
+}
+
+static void apGateSet(s32 cat, s32 id, s32 on)
+{
+	if (cat < 0 || cat >= AP_NUM_CATEGORIES || id < 0 || id >= AP_GATE_IDS) {
+		return;
+	}
+	if (on) {
+		g_ApUnlocks[cat][id >> 3] |= (1 << (id & 7));
+	} else {
+		g_ApUnlocks[cat][id >> 3] &= ~(1 << (id & 7));
+	}
+}
+
+/* pd.ap_mode([on]) -> bool : enable/disable AP gating (no arg = query). */
+static int l_pd_ap_mode(lua_State *L)
+{
+	if (!lua_isnoneornil(L, 1)) {
+		g_ApGateMode = lua_toboolean(L, 1) ? true : false;
+	}
+	lua_pushboolean(L, g_ApGateMode);
+	return 1;
+}
+
+/* pd.unlock(category, id) : add (category,id) to the unlock set. */
+static int l_pd_unlock(lua_State *L)
+{
+	apGateSet(apGateCatArg(L, 1), (s32)luaL_checkinteger(L, 2), 1);
+	return 0;
+}
+
+/* pd.lock(category, id) : remove (category,id). */
+static int l_pd_lock(lua_State *L)
+{
+	apGateSet(apGateCatArg(L, 1), (s32)luaL_checkinteger(L, 2), 0);
+	return 0;
+}
+
+/* pd.is_unlocked(category, id) -> bool */
+static int l_pd_is_unlocked(lua_State *L)
+{
+	lua_pushboolean(L, apGateIsUnlocked(apGateCatArg(L, 1), (s32)luaL_checkinteger(L, 2)));
+	return 1;
+}
+
+/* pd.ap_reset() : clear all unlocks (does not change ap_mode). */
+static int l_pd_ap_reset(lua_State *L)
+{
+	memset(g_ApUnlocks, 0, sizeof(g_ApUnlocks));
+	(void)L;
+	return 0;
 }
 
 /* pd.each_chr(fn) -> fn(chrnum, ailistid, aioffset, alertness, islua) */
@@ -854,6 +953,12 @@ void luaApiRegister(lua_State *L)
 	/* session-persistent KV (survives the per-stage lua_State teardown) */
 	lua_pushcfunction(L, l_pd_persist_get); lua_setfield(L, -2, "persist_get");
 	lua_pushcfunction(L, l_pd_persist_set); lua_setfield(L, -2, "persist_set");
+	/* archipelago gating */
+	lua_pushcfunction(L, l_pd_ap_mode);     lua_setfield(L, -2, "ap_mode");
+	lua_pushcfunction(L, l_pd_unlock);      lua_setfield(L, -2, "unlock");
+	lua_pushcfunction(L, l_pd_lock);        lua_setfield(L, -2, "lock");
+	lua_pushcfunction(L, l_pd_is_unlocked); lua_setfield(L, -2, "is_unlocked");
+	lua_pushcfunction(L, l_pd_ap_reset);    lua_setfield(L, -2, "ap_reset");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events

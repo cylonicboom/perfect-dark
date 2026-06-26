@@ -35,6 +35,7 @@ local DIFFS = { [0]="Agent",[1]="SpecialAgent",[2]="PerfectAgent" }
 local AP_ITEM_TO_GATE = {
   [1000] = {"stage", 0},      [1001] = {"stage", 1},
   [1003] = {"stage", 3},      [1007] = {"stage", 7},
+  [2000] = {"difficulty", 0}, -- Agent
   [2001] = {"difficulty", 1}, [2002] = {"difficulty", 2},
   [3045] = {"device", 45},    -- Night Vision
 }

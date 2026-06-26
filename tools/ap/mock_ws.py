@@ -161,12 +161,16 @@ def handle(conn):
                     "hint_points": 0,
                 }])
                 log("sent Connected")
-                # Scripted grant: item 1003 -> Villa (stage 3) in client.lua.
+                # Scripted starting grant (ids map to gates in client.lua):
+                #   1000 Defection, 1003 Villa, 2000 Agent, 2001 Special Agent,
+                #   3045 Night Vision. Enough to show two stages and enter one.
+                grant = [1000, 1003, 2000, 2001, 3045]
                 send_cmds(conn, [{
                     "cmd": "ReceivedItems", "index": 0,
-                    "items": [{"item": 1003, "location": 0, "player": 0, "flags": 0}],
+                    "items": [{"item": i, "location": 0, "player": 0, "flags": 0}
+                              for i in grant],
                 }])
-                log("sent ReceivedItems (item 1003 -> Villa)")
+                log("sent ReceivedItems " + str(grant))
             elif cmd == "LocationChecks":
                 log("CHECK reported:", m.get("locations"))
                 # Echo a PrintJSON so the client logs something visible.

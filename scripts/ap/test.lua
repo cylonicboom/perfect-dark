@@ -56,6 +56,25 @@ local function save_state()
   pd.persist_set(PERSIST_KEY, table.concat(done, "\n"))
 end
 
+-- Mission-list group header. The engine's solo mission list collapses the AP
+-- stages under one group whose label the script owns (pd.ap_list_header); we
+-- surface live run progress there ("Archipelago  3/63") in place of the stock
+-- "Mission 1". Call after anything that changes the completed set, the unlocks,
+-- or the gate mode. Clears back to the default header when not gating.
+function ap.refresh_header()
+  if type(pd.ap_list_header) ~= "function" then return end
+  if type(pd.ap_mode) ~= "function" or not pd.ap_mode() then
+    pd.ap_list_header(nil)
+    return
+  end
+  local done, total = 0, 0
+  for _, n in ipairs(order) do
+    total = total + 1
+    if ap.checks[n] then done = done + 1 end
+  end
+  pd.ap_list_header(string.format("Archipelago  %d/%d", done, total))
+end
+
 -- Seed the mission-completion checks (stage x difficulty) so ap.list() shows the
 -- full board even before anything is completed.
 for s = 0, 20 do
@@ -79,6 +98,11 @@ if type(pd.persist_get) == "function" then
   end
 end
 
+-- Seed the header with current progress on load (also restores it across the
+-- per-stage lua_State teardown, since the C-side header survives but a fresh
+-- script run should reassert it).
+ap.refresh_header()
+
 local function mark(name, source)
   add_check(name)
   if not ap.checks[name] then
@@ -90,6 +114,7 @@ local function mark(name, source)
       pd.hud_message("AP Check: " .. name)
     end
     save_state()
+    ap.refresh_header()
   else
     pd.log("AP CHECK (already done): " .. name)
   end
@@ -182,6 +207,7 @@ end
 function ap.reset()
   for n in pairs(ap.checks) do ap.checks[n] = false end
   save_state()
+  ap.refresh_header()
   pd.log("AP: all checks reset to pending")
 end
 
@@ -271,6 +297,7 @@ function ap.gate(on)
   else
     pd.log("AP gating OFF -- vanilla unlock rules.")
   end
+  ap.refresh_header()
   return on
 end
 
@@ -278,6 +305,7 @@ function ap.give(cat, id)
   if type(pd.unlock) == "function" then
     pd.unlock(cat, id)
     notify(string.format("Unlock %s %d", tostring(cat), id))
+    ap.refresh_header()
   end
 end
 
@@ -285,6 +313,7 @@ function ap.take(cat, id)
   if type(pd.lock) == "function" then
     pd.lock(cat, id)
     pd.log(string.format("AP: locked %s %d", tostring(cat), id))
+    ap.refresh_header()
   end
 end
 

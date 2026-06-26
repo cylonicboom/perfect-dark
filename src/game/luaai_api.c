@@ -340,6 +340,20 @@ static int l_pd_persist_get(lua_State *L)
 static bool g_ApGateMode;
 static u8 g_ApUnlocks[AP_NUM_CATEGORIES][AP_GATE_IDS / 8];
 
+/* Custom label the AP solo mission list shows in place of the "Mission 1"
+ * group header — the script sets it (e.g. "Archipelago  3/20") via
+ * pd.ap_list_header(). Lives outside the lua_State like the unlock set. Empty
+ * string = fall back to the default header. */
+#define AP_LIST_HEADER_MAX 48
+static char g_ApListHeader[AP_LIST_HEADER_MAX];
+
+/* Returns the script-set mission-list header, or NULL if unset/empty (caller
+ * then uses the default). */
+const char *apGetListHeader(void)
+{
+	return g_ApListHeader[0] ? g_ApListHeader : NULL;
+}
+
 bool apGateActive(void)
 {
 	// Server/solo only: a net client must not make its own access decisions
@@ -422,6 +436,21 @@ static int l_pd_ap_reset(lua_State *L)
 	memset(g_ApUnlocks, 0, sizeof(g_ApUnlocks));
 	(void)L;
 	return 0;
+}
+
+/* pd.ap_list_header([str]) -> str : set/clear the AP mission-list group header
+ * (nil or "" restores the default), returns the current value. The script
+ * typically sets this to a progress string like "Archipelago  3/20". */
+static int l_pd_ap_list_header(lua_State *L)
+{
+	if (!lua_isnoneornil(L, 1)) {
+		const char *s = luaL_checkstring(L, 1);
+		snprintf(g_ApListHeader, sizeof(g_ApListHeader), "%s", s);
+	} else if (lua_type(L, 1) == LUA_TNIL) {
+		g_ApListHeader[0] = '\0';
+	}
+	lua_pushstring(L, g_ApListHeader);
+	return 1;
 }
 
 /* pd.each_chr(fn) -> fn(chrnum, ailistid, aioffset, alertness, islua) */
@@ -959,6 +988,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_lock);        lua_setfield(L, -2, "lock");
 	lua_pushcfunction(L, l_pd_is_unlocked); lua_setfield(L, -2, "is_unlocked");
 	lua_pushcfunction(L, l_pd_ap_reset);    lua_setfield(L, -2, "ap_reset");
+	lua_pushcfunction(L, l_pd_ap_list_header); lua_setfield(L, -2, "ap_list_header");
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events

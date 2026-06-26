@@ -179,6 +179,7 @@ void luaEmitChallengeComplete(s32 challengeindex, s32 numplayers);
 #define AP_NUM_CATEGORIES  6
 bool apGateActive(void);
 bool apGateIsUnlocked(s32 cat, s32 id);
+const char *apGetListHeader(void);
 
 /** chr-state bridges for the X-ray (defined in chrai.c). */
 s32 chraiLuaGetChrNum(void);

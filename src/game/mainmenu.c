@@ -1983,6 +1983,46 @@ s32 func0f104720(s32 value)
 	return 20;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Archipelago mission-list helpers: under an AP run the solo mission list shows
+ * ONLY the stages whose item has arrived (locked stages hidden, not greyed), so
+ * each visible row no longer equals its stage index. apNumUnlockedStages() is
+ * the regular-stage row count; apNthUnlockedStage() maps a 0-based row to its
+ * real stageindex. Regular stages only (0..SKEDARRUINS); special assignments
+ * keep their own path.
+ */
+s32 apNumUnlockedStages(void)
+{
+	s32 count = 0;
+	s32 i;
+
+	for (i = 0; i <= SOLOSTAGEINDEX_SKEDARRUINS; i++) {
+		if (apGateIsUnlocked(AP_CAT_STAGE, i)) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
+s32 apNthUnlockedStage(s32 n)
+{
+	s32 i;
+
+	for (i = 0; i <= SOLOSTAGEINDEX_SKEDARRUINS; i++) {
+		if (apGateIsUnlocked(AP_CAT_STAGE, i)) {
+			if (n == 0) {
+				return i;
+			}
+			n--;
+		}
+	}
+
+	return 0;
+}
+#endif
+
 MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	struct optiongroup groups[] = {
@@ -2024,6 +2064,20 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 	case MENUOP_GETOPTIONCOUNT:
 		data->list.value = 0;
 
+#ifndef PLATFORM_N64
+		// Archipelago: the mission list normally truncates at the first stage
+		// with no best time (linear progression). Under an AP run progression
+		// is an item-driven shuffle, so list ONLY the stages whose item has
+		// arrived (locked stages hidden, not greyed). Rows no longer equal
+		// stage indices — apNthUnlockedStage() remaps row->stageindex at every
+		// per-row site below. Inert unless ap_mode.
+		if (apGateActive()) {
+			data->list.value = apNumUnlockedStages();
+			data->list.value += getNumUnlockedSpecialStages();
+			break;
+		}
+#endif
+
 		for (i = 0; i <= SOLOSTAGEINDEX_SKEDARRUINS; i++) {
 			stageiscomplete = false;
 
@@ -2056,7 +2110,13 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 		if (data->list.value < data->list.unk04u32) {
 			// Regular stage such as "dataDyne Central - Defection"
 			// Return the name before the dash, such as "dataDyne Central"
-			return (uintptr_t) langGet(g_SoloStages[data->list.value].name1);
+			s32 textstageindex = data->list.value;
+#ifndef PLATFORM_N64
+			if (apGateActive()) {
+				textstageindex = apNthUnlockedStage(data->list.value);
+			}
+#endif
+			return (uintptr_t) langGet(g_SoloStages[textstageindex].name1);
 		}
 
 		// Special stages have no dash and suffix, so just return the name
@@ -2069,6 +2129,12 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 		if (data->list.value >= sp178.list.value) {
 			sp188 = func0f104720(data->list.value - sp178.list.value);
 		}
+#ifndef PLATFORM_N64
+		else if (apGateActive()) {
+			// Regular stage under AP: map the visible row to its real stageindex.
+			sp188 = apNthUnlockedStage(data->list.value);
+		}
+#endif
 
 		g_Vars.mplayerisrunning = false;
 		g_Vars.normmplayerisrunning = false;
@@ -2088,6 +2154,26 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 		data->list.value = 0xfffff;
 		break;
 	case MENUOP_25:
+#ifndef PLATFORM_N64
+		if (apGateActive() && data->list.unk04 == 0 && !g_MissionConfig.iscoop && !g_MissionConfig.isanti) {
+			// Default cursor to the visible row of the last-played stage, or the
+			// first unlocked stage. autostageindex is a stageindex, but rows are
+			// sparse under AP, so find its row instead of using it directly.
+			s32 cnt = apNumUnlockedStages();
+			s32 p;
+
+			data->list.value = 0;
+
+			for (p = 0; p < cnt; p++) {
+				if (apNthUnlockedStage(p) == g_GameFile.autostageindex) {
+					data->list.value = p;
+					break;
+				}
+			}
+
+			break;
+		}
+#endif
 		if (data->list.unk04 == 0 && !g_MissionConfig.iscoop && !g_MissionConfig.isanti) {
 			data->list.value = g_GameFile.autostageindex;
 
@@ -2113,6 +2199,18 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 
 		data->list.unk0c = 0;
 
+#ifndef PLATFORM_N64
+		// Archipelago: the sparse list doesn't line up with the fixed
+		// "Mission 1..9" group offsets (those are in stage-index space), so
+		// collapse all unlocked stages into a single regular group. The Special
+		// Assignments group (the +1 below) is unchanged.
+		if (apGateActive()) {
+			data->list.unk0c = (sp150.list.value > 0) ? 1 : 0;
+			data->list.value = data->list.unk0c + 1;
+			break;
+		}
+#endif
+
 		for (i = 0; i < ARRAYCOUNT(groups); i++) {
 			if (groups[i].offset < sp150.list.value) {
 				data->list.unk0c++;
@@ -2125,6 +2223,17 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 		if (data->list.unk0c == data->list.value) {
 			return (uintptr_t) langGet(groups[9].name); // "Special Assignments"
 		}
+#ifndef PLATFORM_N64
+		// Archipelago: the regular stages collapse into a single group whose
+		// header the script owns (e.g. "Archipelago  3/20"). Falls back to the
+		// default "Mission 1" label when the script hasn't set one.
+		if (apGateActive()) {
+			const char *aphdr = apGetListHeader();
+			if (aphdr) {
+				return (uintptr_t) aphdr;
+			}
+		}
+#endif
 		return (uintptr_t) langGet(groups[data->list.value].name);
 	case MENUOP_GETGROUPSTARTINDEX:
 		if (data->list.unk0c == data->list.value) {
@@ -2148,6 +2257,13 @@ MenuItemHandlerResult menuhandlerMissionList(s32 operation, struct menuitem *ite
 		if (data->type19.unk04u32 >= data->type19.unk0c) {
 			stageindex = func0f104720(data->type19.unk04u32 - data->type19.unk0c);
 		}
+#ifndef PLATFORM_N64
+		else if (apGateActive()) {
+			// Regular stage under AP: map the visible row to its real stageindex
+			// so the thumbnail, stars and name match the listed stage.
+			stageindex = apNthUnlockedStage(data->type19.unk04u32);
+		}
+#endif
 
 		// Draw the thumbnail
 		gDPPipeSync(gdl++);

@@ -15,14 +15,20 @@ Pass criteria when driven from the game:
   - Villa appears in the solo mission list (the granted item unlocked it),
   - completing the Defection/Agent objective shows up here as a LocationChecks.
 
-Usage:  python3 tools/ap/mock_ws.py [--host 127.0.0.1] [--port 38281]
-Stdlib only. ws:// only (P1a). TLS/wss is added alongside P1b.
+Usage:
+  ws://   python3 tools/ap/mock_ws.py [--host 127.0.0.1] [--port 38281]
+  wss://  python3 tools/ap/mock_ws.py --tls --cert cert.pem --key key.pem
+          (generate a throwaway self-signed pair with:
+             openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem \\
+               -out cert.pem -days 1 -subj /CN=localhost)
+Stdlib only.
 """
 import argparse
 import base64
 import hashlib
 import json
 import socket
+import ssl
 import struct
 import sys
 
@@ -185,20 +191,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=38281)
+    ap.add_argument("--tls", action="store_true", help="serve wss:// (needs --cert/--key)")
+    ap.add_argument("--cert", default="cert.pem")
+    ap.add_argument("--key", default="key.pem")
     args = ap.parse_args()
+
+    tlsctx = None
+    if args.tls:
+        tlsctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tlsctx.load_cert_chain(certfile=args.cert, keyfile=args.key)
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((args.host, args.port))
     srv.listen(1)
-    log(f"listening on ws://{args.host}:{args.port}")
+    log(f"listening on {'wss' if tlsctx else 'ws'}://{args.host}:{args.port}")
     try:
         while True:
-            conn, addr = srv.accept()
+            raw, addr = srv.accept()
             log("connection from", addr)
+            conn = raw
             try:
+                if tlsctx:
+                    conn = tlsctx.wrap_socket(raw, server_side=True)
                 handle(conn)
-            except (ConnectionResetError, BrokenPipeError) as e:
+            except (ConnectionResetError, BrokenPipeError, ssl.SSLError) as e:
                 log("connection error:", e)
             finally:
                 conn.close()

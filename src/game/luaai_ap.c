@@ -35,6 +35,13 @@
 #include "lua.h"
 #include "lauxlib.h"
 
+#ifdef PD_HAVE_AP_TLS
+#include "mbedtls/ssl.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/net_sockets.h"
+#endif
+
 #ifndef PLATFORM_N64
 
 /* ------------------------------------------------------------------------- *
@@ -92,9 +99,10 @@ static void apbufFree(struct apbuf *b)
  * ------------------------------------------------------------------------- */
 enum {
 	AP_DISCONNECTED = 0,
-	AP_CONNECTING,   /* TCP connect in flight */
-	AP_HANDSHAKING,  /* HTTP upgrade sent, awaiting 101 */
-	AP_CONNECTED,    /* WebSocket open */
+	AP_CONNECTING,    /* TCP connect in flight */
+	AP_TLS_HANDSHAKE, /* TLS handshake in flight (wss:// only) */
+	AP_HANDSHAKING,   /* HTTP upgrade sent, awaiting 101 */
+	AP_CONNECTED,     /* WebSocket open */
 	AP_ERROR
 };
 
@@ -117,6 +125,16 @@ static s32 s_msgqtail;
 
 static char s_aphost[256];
 static char s_path[256];
+static s32 s_usetls;             /* this connection is wss:// */
+
+#ifdef PD_HAVE_AP_TLS
+static mbedtls_ssl_context s_ssl;
+static mbedtls_ssl_config s_sslconf;
+static mbedtls_ctr_drbg_context s_drbg;
+static mbedtls_entropy_context s_entropy;
+static s32 s_drbginit;           /* drbg+entropy seeded once for the process */
+static s32 s_sslactive;          /* an ssl/conf pair is live and needs freeing */
+#endif
 
 static u32 s_rng = 0x9e3779b9u;
 
@@ -202,6 +220,13 @@ static void apMsgClear(void)
  * ------------------------------------------------------------------------- */
 static void apReset(s32 newstate)
 {
+#ifdef PD_HAVE_AP_TLS
+	if (s_sslactive) {
+		mbedtls_ssl_free(&s_ssl);
+		mbedtls_ssl_config_free(&s_sslconf);
+		s_sslactive = 0;
+	}
+#endif
 	if (s_sock != ENET_SOCKET_NULL) {
 		enet_socket_destroy(s_sock);
 		s_sock = ENET_SOCKET_NULL;
@@ -210,6 +235,7 @@ static void apReset(s32 newstate)
 	s_asm.len = 0;
 	s_tx.len = 0;
 	s_fragopcode = -1;
+	s_usetls = 0;
 	apMsgClear();
 	s_state = newstate;
 }
@@ -352,52 +378,176 @@ static s32 apWsParseOne(void)
 }
 
 /* ------------------------------------------------------------------------- *
- * Socket helpers
+ * Byte I/O layer -- raw TCP for ws://, TLS records for wss://.
+ *
+ * Both apIoSend/apIoRecv return: >0 bytes moved, 0 would-block, -1 error/EOF.
  * ------------------------------------------------------------------------- */
-/* Non-blocking: pull whatever is readable into s_rx. Returns -1 if the peer
- * closed or errored, 0 otherwise. */
-static s32 apSockDrainInto(void)
+#ifdef PD_HAVE_AP_TLS
+/* mbedTLS BIO callbacks over the non-blocking ENet socket. */
+static int apBioSend(void *ctx, const unsigned char *buf, size_t len)
 {
-	u8 chunk[AP_RX_CHUNK];
+	ENetBuffer eb;
+	int r;
+	(void)ctx;
+	eb.data = (void *)buf;
+	eb.dataLength = len;
+	r = enet_socket_send(s_sock, NULL, &eb, 1);
+	if (r > 0) {
+		return r;
+	}
+	if (r == 0) {
+		return MBEDTLS_ERR_SSL_WANT_WRITE;
+	}
+	return MBEDTLS_ERR_NET_SEND_FAILED;
+}
 
-	for (;;) {
+static int apBioRecv(void *ctx, unsigned char *buf, size_t len)
+{
+	ENetBuffer eb;
+	u32 cond = ENET_SOCKET_WAIT_RECEIVE;
+	int r;
+	(void)ctx;
+	if (enet_socket_wait(s_sock, &cond, 0) != 0) {
+		return MBEDTLS_ERR_NET_RECV_FAILED;
+	}
+	if (!(cond & ENET_SOCKET_WAIT_RECEIVE)) {
+		return MBEDTLS_ERR_SSL_WANT_READ;
+	}
+	eb.data = buf;
+	eb.dataLength = len;
+	r = enet_socket_receive(s_sock, NULL, &eb, 1);
+	if (r > 0) {
+		return r;
+	}
+	return MBEDTLS_ERR_NET_RECV_FAILED; /* RECEIVE ready + 0 bytes == EOF */
+}
+
+/* Set up a fresh client TLS session over the current socket. Returns -1 on
+ * failure. The handshake itself is pumped (non-blocking) from apTransportTick. */
+static s32 apTlsBegin(void)
+{
+	if (!s_drbginit) {
+		mbedtls_ctr_drbg_init(&s_drbg);
+		mbedtls_entropy_init(&s_entropy);
+		if (mbedtls_ctr_drbg_seed(&s_drbg, mbedtls_entropy_func, &s_entropy,
+				NULL, 0) != 0) {
+			return -1;
+		}
+		s_drbginit = 1;
+	}
+
+	if (s_sslactive) {
+		mbedtls_ssl_free(&s_ssl);
+		mbedtls_ssl_config_free(&s_sslconf);
+		s_sslactive = 0;
+	}
+	mbedtls_ssl_init(&s_ssl);
+	mbedtls_ssl_config_init(&s_sslconf);
+
+	if (mbedtls_ssl_config_defaults(&s_sslconf, MBEDTLS_SSL_IS_CLIENT,
+			MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
+		return -1;
+	}
+	/* MVP: no certificate verification (P2 hardening loads a CA bundle). */
+	mbedtls_ssl_conf_authmode(&s_sslconf, MBEDTLS_SSL_VERIFY_NONE);
+	mbedtls_ssl_conf_rng(&s_sslconf, mbedtls_ctr_drbg_random, &s_drbg);
+	if (mbedtls_ssl_setup(&s_ssl, &s_sslconf) != 0) {
+		return -1;
+	}
+	mbedtls_ssl_set_hostname(&s_ssl, s_aphost); /* SNI */
+	mbedtls_ssl_set_bio(&s_ssl, NULL, apBioSend, apBioRecv, NULL);
+	s_sslactive = 1;
+	return 0;
+}
+#endif /* PD_HAVE_AP_TLS */
+
+static int apIoSend(const u8 *p, u32 n)
+{
+#ifdef PD_HAVE_AP_TLS
+	if (s_usetls) {
+		int r = mbedtls_ssl_write(&s_ssl, p, n);
+		if (r > 0) {
+			return r;
+		}
+		if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
+			return 0;
+		}
+		return -1;
+	}
+#endif
+	{
+		ENetBuffer eb;
+		int r;
+		eb.data = (void *)p;
+		eb.dataLength = n;
+		r = enet_socket_send(s_sock, NULL, &eb, 1);
+		if (r > 0) {
+			return r;
+		}
+		if (r == 0) {
+			return 0;
+		}
+		return -1;
+	}
+}
+
+static int apIoRecv(u8 *p, u32 n)
+{
+#ifdef PD_HAVE_AP_TLS
+	if (s_usetls) {
+		int r = mbedtls_ssl_read(&s_ssl, p, n);
+		if (r > 0) {
+			return r;
+		}
+		if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
+			return 0;
+		}
+		return -1; /* close_notify / error */
+	}
+#endif
+	{
+		ENetBuffer eb;
 		u32 cond = ENET_SOCKET_WAIT_RECEIVE;
+		int r;
 		if (enet_socket_wait(s_sock, &cond, 0) != 0) {
 			return -1;
 		}
 		if (!(cond & ENET_SOCKET_WAIT_RECEIVE)) {
-			return 0; /* nothing more to read this frame */
+			return 0; /* would-block */
 		}
-
-		ENetBuffer eb;
-		eb.data = chunk;
-		eb.dataLength = sizeof(chunk);
-		int r = enet_socket_receive(s_sock, NULL, &eb, 1);
+		eb.data = p;
+		eb.dataLength = n;
+		r = enet_socket_receive(s_sock, NULL, &eb, 1);
 		if (r > 0) {
-			apbufAppend(&s_rx, chunk, (u32)r);
-			continue;
+			return r;
 		}
-		/* r == 0 with RECEIVE ready means orderly close (EOF); r < 0 is an
-		 * error. enet_socket_receive returns 0 for BOTH EWOULDBLOCK and EOF,
-		 * but we only get here with RECEIVE set, so 0 == EOF. */
-		return -1;
+		return -1; /* RECEIVE ready + 0 bytes == EOF */
 	}
+}
+
+/* Pull whatever is readable into s_rx. Returns -1 on close/error, 0 otherwise. */
+static s32 apSockDrainInto(void)
+{
+	u8 chunk[AP_RX_CHUNK];
+	int r;
+
+	while ((r = apIoRecv(chunk, sizeof(chunk))) > 0) {
+		apbufAppend(&s_rx, chunk, (u32)r);
+	}
+	return (r < 0) ? -1 : 0;
 }
 
 /* Flush pending tx; returns -1 on error. */
 static s32 apSockFlushTx(void)
 {
 	while (s_tx.len > 0) {
-		ENetBuffer eb;
-		eb.data = s_tx.data;
-		eb.dataLength = s_tx.len;
-		int r = enet_socket_send(s_sock, NULL, &eb, 1);
+		int r = apIoSend(s_tx.data, s_tx.len);
 		if (r > 0) {
 			apbufConsume(&s_tx, (u32)r);
 			continue;
 		}
 		if (r == 0) {
-			return 0; /* EWOULDBLOCK -- try again next frame */
+			return 0; /* would-block -- try again next frame */
 		}
 		return -1;
 	}
@@ -452,9 +602,39 @@ void apTransportTick(void)
 			apReset(AP_ERROR);
 			return;
 		}
-		apSendHttpUpgrade();
-		s_state = AP_HANDSHAKING;
+		if (s_usetls) {
+#ifdef PD_HAVE_AP_TLS
+			if (apTlsBegin() != 0) {
+				apReset(AP_ERROR);
+				return;
+			}
+			s_state = AP_TLS_HANDSHAKE;
+#else
+			apReset(AP_ERROR);
+			return;
+#endif
+		} else {
+			apSendHttpUpgrade();
+			s_state = AP_HANDSHAKING;
+		}
 	}
+
+#ifdef PD_HAVE_AP_TLS
+	if (s_state == AP_TLS_HANDSHAKE) {
+		int ret = mbedtls_ssl_handshake(&s_ssl);
+		if (ret == 0) {
+			/* Tunnel is up -- now do the WebSocket upgrade over TLS. */
+			apSendHttpUpgrade();
+			s_state = AP_HANDSHAKING;
+		} else if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+				ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+			return; /* keep pumping the handshake next frame */
+		} else {
+			apReset(AP_ERROR);
+			return;
+		}
+	}
+#endif
 
 	if (apSockFlushTx() < 0) {
 		apReset(AP_ERROR);
@@ -518,11 +698,16 @@ static int l_pd_ap_connect(lua_State *L)
 	/* scheme */
 	if (strncmp(p, "ws://", 5) == 0) {
 		p += 5;
+		s_usetls = 0;
 	} else if (strncmp(p, "wss://", 6) == 0) {
-		/* P1b: TLS not wired yet. */
-		fprintf(stderr, "[ap] ap_connect: wss:// not supported yet (P1b); use ws://\n");
+#ifdef PD_HAVE_AP_TLS
+		p += 6;
+		s_usetls = 1;
+#else
+		fprintf(stderr, "[ap] ap_connect: wss:// not built (rebuild with mbedTLS / -DUSE_AP_TLS); use ws://\n");
 		lua_pushboolean(L, 0);
 		return 1;
+#endif
 	} else {
 		fprintf(stderr, "[ap] ap_connect: url must start with ws:// or wss://\n");
 		lua_pushboolean(L, 0);
@@ -556,7 +741,7 @@ static int l_pd_ap_connect(lua_State *L)
 		portbuf[i] = '\0';
 		port = atoi(portbuf);
 	} else {
-		port = 80;
+		port = s_usetls ? 443 : 80;
 	}
 
 	pathstart = p;
@@ -598,11 +783,12 @@ static int l_pd_ap_status(lua_State *L)
 {
 	const char *s;
 	switch (s_state) {
-	case AP_CONNECTING:  s = "connecting";  break;
-	case AP_HANDSHAKING: s = "handshaking"; break;
-	case AP_CONNECTED:   s = "connected";   break;
-	case AP_ERROR:       s = "error";       break;
-	default:             s = "disconnected"; break;
+	case AP_CONNECTING:    s = "connecting";  break;
+	case AP_TLS_HANDSHAKE: s = "tls";         break;
+	case AP_HANDSHAKING:   s = "handshaking"; break;
+	case AP_CONNECTED:     s = "connected";   break;
+	case AP_ERROR:         s = "error";       break;
+	default:               s = "disconnected"; break;
 	}
 	lua_pushstring(L, s);
 	return 1;

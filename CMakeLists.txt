@@ -262,6 +262,30 @@ if(ZLIB_INCLUDE_DIR)
 endif()
 list(APPEND LIBS "${ZLIB_LIBRARY}")
 
+# mbedTLS for the Archipelago WebSocket TLS path (wss://, e.g. archipelago.gg).
+# OPTIONAL: plain ws:// (self-hosted/local AP servers) works without it. MSYS2:
+# pacman -S mingw-w64-x86_64-mbedtls; Linux/mac: the system libmbedtls dev pkg.
+# Prefer the static targets so no extra runtime DLLs ship. Defining
+# PD_HAVE_AP_TLS compiles the wss:// path in src/game/luaai_ap.c.
+option(USE_AP_TLS "Enable Archipelago wss:// (WebSocket TLS) via mbedTLS" ON)
+if(USE_AP_TLS AND NOT DEDICATED_SERVER)
+  find_package(MbedTLS CONFIG QUIET)
+  if(TARGET MbedTLS::mbedtls_static)
+    list(APPEND LIBS MbedTLS::mbedtls_static MbedTLS::mbedx509_static MbedTLS::mbedcrypto_static)
+    add_compile_definitions(PD_HAVE_AP_TLS)
+    if(WIN32)
+      list(APPEND LIBS bcrypt) # static mbedcrypto entropy uses BCryptGenRandom
+    endif()
+    message(STATUS "Archipelago: wss:// enabled (mbedTLS static)")
+  elseif(TARGET MbedTLS::mbedtls)
+    list(APPEND LIBS MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    add_compile_definitions(PD_HAVE_AP_TLS)
+    message(STATUS "Archipelago: wss:// enabled (mbedTLS shared)")
+  else()
+    message(STATUS "Archipelago: mbedTLS not found -> ws:// only (install mingw-w64-x86_64-mbedtls for wss://)")
+  endif()
+endif()
+
 # GL — not needed by the dedicated server (OpenGL backend is excluded).
 if(NOT DEDICATED_SERVER)
   if(NOT GL_LIBRARY)

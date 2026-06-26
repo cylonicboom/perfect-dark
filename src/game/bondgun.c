@@ -3574,6 +3574,23 @@ bool bgunSetState(s32 handnum, s32 state)
 			&& bgunCurrentPlayerInIframe()) {
 		valid = false;
 	}
+
+	// Refuse the actual fire when the CURRENTLY-EQUIPPED function is gated.
+	// The CHANGEFUNC gates above only block switching ONTO a disabled
+	// function; they don't stop firing one you're already holding. That is
+	// fine for the Classic/preset cases (the menu invariant + the equip-time
+	// auto-flip guarantee you're never left on a disabled function), but the
+	// Archipelago gate can lock BOTH functions at once, and the auto-flip
+	// then drops the player onto the locked secondary, which would otherwise
+	// fire freely. Gating the attack here makes a fully-locked weapon truly
+	// unusable regardless of which function is equipped.
+	if ((state == HANDSTATE_ATTACK || state == HANDSTATE_ATTACKEMPTY)
+			&& ((hand->gset.weaponfunc == FUNC_PRIMARY
+					&& bgunPrimaryFunctionDisabled(hand->gset.weaponnum))
+				|| (hand->gset.weaponfunc == FUNC_SECONDARY
+					&& bgunSecondaryFunctionDisabled(hand->gset.weaponnum)))) {
+		valid = false;
+	}
 #endif
 
 	if (valid) {
@@ -5977,7 +5994,13 @@ void bgunTickSwitch2(void)
 				// Required because the CHANGEFUNC gate just below this site
 				// would otherwise reject every player-driven switch attempt,
 				// leaving them stuck holding a disabled function.
+				// Skip the flip when the secondary is ALSO gated (Archipelago
+				// can lock both functions at once): flipping onto a locked
+				// secondary would just surface its feature (e.g. the CMP120
+				// lock-on) on an otherwise-unusable weapon. Stay on primary;
+				// the fire-gate in bgunSetState keeps both functions silent.
 				if (bgunPrimaryFunctionDisabled(ctrl->weaponnum)
+						&& !bgunSecondaryFunctionDisabled(ctrl->weaponnum)
 						&& weaponGetFunction(&player->hands[i].gset, FUNC_SECONDARY) != NULL) {
 					player->hands[i].gset.weaponfunc = FUNC_SECONDARY;
 				}

@@ -181,6 +181,13 @@ bool apGateActive(void);
 bool apGateIsUnlocked(s32 cat, s32 id);
 const char *apGetListHeader(void);
 
+/* Archipelago transport bridge (luaai_ap.c). The socket lives in C statics so
+ * it survives the per-stage lua_State teardown. apTransportTick() is the
+ * per-frame pump (call from luaTick); luaApiRegisterAp registers the pd.ap_*
+ * transport functions (pd table on stack top). */
+void apTransportTick(void);
+void luaApiRegisterAp(struct lua_State *L);
+
 /** chr-state bridges for the X-ray (defined in chrai.c). */
 s32 chraiLuaGetChrNum(void);
 s32 chraiLuaGetAlertness(void);

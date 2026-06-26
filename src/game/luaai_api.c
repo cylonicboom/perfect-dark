@@ -989,6 +989,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_is_unlocked); lua_setfield(L, -2, "is_unlocked");
 	lua_pushcfunction(L, l_pd_ap_reset);    lua_setfield(L, -2, "ap_reset");
 	lua_pushcfunction(L, l_pd_ap_list_header); lua_setfield(L, -2, "ap_list_header");
+
+	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
+	luaApiRegisterAp(L);
 }
 
 /* Clear C-side per-state data. Called from luaaiReset (the Lua registry events
@@ -1144,6 +1147,11 @@ void luaTick(void)
 	/* Make sure scripts are loaded even when no AI is running (title/CI), so
 	 * the console and event handlers work everywhere. */
 	luaaiEnsureState();
+
+	/* Service the AP transport socket BEFORE the tick event, so any inbound
+	 * messages are queued and a Lua "tick" handler drains them the same frame.
+	 * Lives in C statics, so it keeps running across the per-stage state reset. */
+	apTransportTick();
 
 	/* Per-frame "tick" event -- fires everywhere (menus/loading too), unlike
 	 * "draw" which only fires while the HUD renders. AP polling lives here. */

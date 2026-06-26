@@ -28,6 +28,11 @@ load("scripts/director.lua")
 -- docs/archipelago_blueprint.md.
 load("scripts/ap/test.lua")
 
+-- Archipelago ONLINE client: the WebSocket transport bridge (pd.ap_*) + AP
+-- protocol. Console: /lua ap.connect("ws://127.0.0.1:38281"). Validate against
+-- tools/ap/mock_ws.py. Inert until you call ap.connect.
+load("scripts/ap/client.lua")
+
 -- Live octree-culling stats overlay (testing the outdoor-room octree). Shows
 -- top-right only while an octree room is rendering. Comment out to hide.
 load("scripts/octree_overlay.lua")

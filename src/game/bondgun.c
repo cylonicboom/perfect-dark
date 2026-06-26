@@ -3488,6 +3488,26 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
 	return false;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Archipelago HUD helper: true only when this weapon is FULLY locked — i.e.
+ * neither function's AP item has arrived, so there is nothing usable to show.
+ * Used to suppress the primary/secondary HUD chrome (the red/yellow indicator
+ * square and the function-name overlay), so a fully-locked weapon has a clean
+ * HUD. As soon as EITHER function is unlocked the chrome returns (the overlay
+ * names whichever function is currently equipped, which enforcement keeps on
+ * an unlocked one). Hence AND, not OR: one unlocked function is enough to show
+ * the UI. The weapon name itself is always left visible. Solo-only (AP is
+ * solo); inert outside an active AP gate because the disabled-function helpers
+ * return false there.
+ */
+static bool bgunApFunctionHudSuppressed(s32 weaponnum)
+{
+	return !g_Vars.normmplayerisrunning
+			&& bgunPrimaryFunctionDisabled(weaponnum) && bgunSecondaryFunctionDisabled(weaponnum);
+}
+#endif
+
 /**
  * Reusable gate for "dual wielding is disabled."
  *
@@ -12557,6 +12577,24 @@ s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromac
 			&& !bgunIsUsingSecondaryFunction()) {
 		return USETIMER_STOP;
 	}
+
+	// Archipelago (solo): refuse to toggle INTO a function whose item hasn't
+	// arrived. Bidirectional (unlike the Classic guard above) because AP can
+	// lock either function. These toggle paths flip weaponfunc directly via
+	// SETFUNCPRI/SEC rather than the bgunSetState CHANGEFUNC gate, so they need
+	// their own guard. Solo-only so MP Classic/preset behaviour is unchanged.
+	if (!g_Vars.normmplayerisrunning) {
+		s32 togglewn = bgunGetWeaponNum(HAND_RIGHT);
+		if (!bgunIsUsingSecondaryFunction()) {
+			if (bgunSecondaryFunctionDisabled(togglewn)) {
+				return USETIMER_STOP;
+			}
+		} else {
+			if (bgunPrimaryFunctionDisabled(togglewn)) {
+				return USETIMER_STOP;
+			}
+		}
+	}
 #endif
 	switch (bgunGetWeaponNum(HAND_RIGHT)) {
 	case WEAPON_SNIPERRIFLE:
@@ -13778,7 +13816,9 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	// Classic "No Secondary Functions" also hides the small red/yellow
 	// primary/secondary indicator square next to the ammo counter — paired
 	// with the function-name overlay gate below for a clean minimal HUD.
-	if (!classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY))
+	// Archipelago hides it too when a function is locked (single-function HUD).
+	if (!classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)
+			&& !bgunApFunctionHudSuppressed(hand->gset.weaponnum))
 #endif
 	{
 		gdl = textSetPrimColour(gdl, fncolour);
@@ -13863,8 +13903,12 @@ Gfx *bgunDrawHud(Gfx *gdl)
 				// Classic "No Secondary Functions" hides the
 				// primary/secondary function name overlay ("Single Shot",
 				// "Burst Fire", etc.) to match GE's minimal HUD. The
-				// weapon name above it is left visible.
+				// weapon name above it is left visible. Archipelago hides
+				// the same overlay (on switch AND on equip) when the weapon
+				// has a locked function, so it never names a function the
+				// player can't select.
 				&& !classicOptionActive(CHEAT_CLASSIC_NOSECONDARY, MPOPTION_CLASSIC_NOSECONDARY)
+				&& !bgunApFunctionHudSuppressed(hand->gset.weaponnum)
 #endif
 		) {
 			langGet(func->name);

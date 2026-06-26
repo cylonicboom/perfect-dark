@@ -520,12 +520,26 @@ void amGetSlotDetails(s32 slot, u32 *flags, char *label)
 			prifunc = weaponGetFunction(&g_Vars.currentplayer->hands[HAND_RIGHT].gset, FUNC_PRIMARY);
 			secfunc = weaponGetFunction(&g_Vars.currentplayer->hands[HAND_RIGHT].gset, FUNC_SECONDARY);
 
+#ifndef PLATFORM_N64
+			// Archipelago (solo): a function whose item hasn't arrived is hidden
+			// from the active-menu function screen entirely. Leaving the label
+			// empty makes amRenderSlot draw no square/text (its empty-string
+			// early-out), so a locked function never appears as a pickable slot.
+			// Solo-only so MP Classic/preset behaviour is unchanged.
+			s32 funcweaponnum = g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponnum;
+			bool prilocked = !g_Vars.normmplayerisrunning && bgunPrimaryFunctionDisabled(funcweaponnum);
+			bool seclocked = !g_Vars.normmplayerisrunning && bgunSecondaryFunctionDisabled(funcweaponnum);
+#else
+			bool prilocked = false;
+			bool seclocked = false;
+#endif
+
 			if (slot == 1) {
 				if (!secfunc || !FUNCISSEC()) {
 					*flags |= AMSLOTFLAG_CURRENT;
 				}
 
-				if (prifunc) {
+				if (prifunc && !prilocked) {
 					strcpy(label, langGet(prifunc->name));
 				}
 			} else {
@@ -533,7 +547,7 @@ void amGetSlotDetails(s32 slot, u32 *flags, char *label)
 					*flags |= AMSLOTFLAG_CURRENT;
 				}
 
-				if (secfunc) {
+				if (secfunc && !seclocked) {
 					strcpy(label, langGet(secfunc->name));
 				}
 			}

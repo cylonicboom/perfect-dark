@@ -419,24 +419,128 @@ Notes:
   wrappers are thin and enable live trap items.
 - All grants gated `g_NetMode != NETMODE_CLIENT`.
 
-### 6.5 The `ap.*` transport bridge (`luaai_ap.c`, new file)
+### 6.5 The transport bridge (`luaai_ap.c`, new file) — DETAILED SCOPE
 
-Minimal non-blocking socket surface; JSON stays in Lua (the AP text protocol is
-line/JSON framed — parse with a tiny pure-Lua JSON lib in `scripts/ap/`).
+> **Scoped 2026-06-27** against the verified engine facts below. Decisions locked
+> this session: **(1) bundle TLS now** (mbedTLS → `wss://` / archipelago.gg works
+> from day one, not just self-hosted `ws://`); **(2) mock-ws-server first** (a
+> throwaway local mock validates the C framing before any real server / apworld);
+> **(3)** this section is the living scope. Naming: the transport uses the
+> **`pd.ap_*`** convention (matching the shipped `pd.ap_mode/unlock/lock/…` gate
+> API), **not** a separate `ap.*` C table — `ap.*` stays the pure-Lua harness.
 
-```lua
-ap.connect(host, port)   -> bool      -- non-blocking connect
-ap.status()              -> "disconnected"|"connecting"|"connected"
-ap.poll()                -> string|nil -- next inbound frame (call from "tick")
-ap.send(text)            -> bool       -- queue an outbound frame
-ap.disconnect()
+#### The two load-bearing facts (verified)
+
+- **`luaTick()` runs every frame, in menus too** — it is called from
+  `schedEndFrame()` (`pdsched.c:311`) with no stage/game-logic guard, and it is
+  where the `"tick"` event fires (`luaai_api.c`). So the socket can be **pumped
+  from `luaTick()`** and stays serviced on the mission-select screen where you
+  connect. (The stage-only `luaaiExecute` path is *not* usable — it doesn't run
+  in menus.)
+- **The `lua_State` is destroyed on every stage load** (`luaaiReset` →
+  `lua_close`, `luaai.c:289`). Therefore the socket, the TLS session, the WS
+  framing state, and the rx/tx queues **must live in C statics** (like
+  `g_ApUnlocks` and the persist KV already do), *never* tied to the `lua_State`.
+
+#### The seam (C moves bytes ↔ JSON text; Lua does protocol + JSON)
+
+```
+┌─ C: src/game/luaai_ap.c  (C statics — survive lua_State teardown) ──────┐
+│  socket:   enet_socket_create(ENET_SOCKET_TYPE_STREAM) + _connect       │
+│            non-blocking; SEPARATE socket, never the netplay ENetHost.    │
+│            (Reuse the enet_socket_* WRAPPER for win/POSIX portability —  │
+│             the port has NO other socket abstraction; there is no manual │
+│             winsock/POSIX split to mirror. Isolation = own socket, not   │
+│             own syscall layer.)                                          │
+│  tls:      mbedTLS over the socket via mbedtls_ssl_set_bio() callbacks   │
+│            that wrap enet_socket_send/receive and return WANT_READ/WRITE │
+│            on EWOULDBLOCK; non-blocking handshake pumped each frame.     │
+│            ws:// skips this layer; wss:// runs through it.               │
+│  websocket: HTTP Upgrade handshake (base64 Sec-WebSocket-Key), then      │
+│            text/ping/pong/close frames, CLIENT-MASKED, reassembling      │
+│            fragmented + 64-bit-length frames (DataPackage can be >64 KB).│
+│  queues:   rx = complete inbound text messages; tx = outbound frames.    │
+│  pump:     apTransportTick() called from luaTick() BEFORE the "tick"     │
+│            event, so Lua drains new messages the same frame.             │
+│  Lua API (pd.*):                                                         │
+│    pd.ap_connect(url)  -- "ws://host:port" or "wss://host:port[/path]"   │
+│    pd.ap_status()      -> "disconnected"|"connecting"|"tls"|             │
+│                           "handshaking"|"connected"|"error"             │
+│    pd.ap_send(text)    -> bool      (queue one JSON text frame)          │
+│    pd.ap_poll()        -> string|nil (next inbound JSON text message)    │
+│    pd.ap_disconnect()                                                    │
+└────────────────────────────────────────────────────────────────────────┘
+            raw JSON text strings only — no struct/JSON knowledge in C
+┌─ Lua: scripts/ap/client.lua  (+ scripts/ap/json.lua) ───────────────────┐
+│  re-attaches its "tick" handler each stage load; drains pd.ap_poll().    │
+│  json.lua (bundled, pure-Lua MIT) decodes/encodes.                       │
+│  handshake:  RoomInfo → Connect{game,name,password,items_handling=7,     │
+│              version,tags}; Connected → checked_locations + slot_data.   │
+│  items in:   ReceivedItems → map AP item id → (cat,id) → pd.unlock;      │
+│              IDEMPOTENT via a "received index" stored in persist KV, so   │
+│              a stage-load mid-session never re-applies. Unlocks land in   │
+│              g_ApUnlocks (C-persistent) so they outlive the teardown.    │
+│  checks out: existing mark() detections → LocationChecks{locations=[…]}. │
+│  goal:       StatusUpdate{status=CLIENT_GOAL(30)} when the goal predicate│
+│              is met (§4 / §5 `goal`).                                    │
+│  id map:     AP id ↔ our gate id. MVP = static Lua table; Phase 2 reads  │
+│              the DataPackage. Must agree with the PD apworld (below).    │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Platform sockets behind `#ifdef _WIN32` (winsock) / POSIX, same split the port
-already uses elsewhere. ENet is **not** reused (keeps AP isolated from netplay).
-WebSocket vs. raw TCP: the AP server speaks WebSocket; either implement a tiny
-WS handshake+framing in C here, or connect through a local text proxy — decide at
-implementation time (a ~150-line WS client in C is the self-contained option).
+Why this survives the teardown cleanly: the socket/TLS/WS state is C-static; item
+*effects* persist in `g_ApUnlocks`; the *received-index* persists in the KV store.
+A stage load just re-runs `init.lua`, which re-registers the `"tick"` handler and
+resumes draining — nothing reconnects, re-handshakes, or double-applies.
+
+#### New dependencies to bundle (the repo has NONE of these today)
+
+| Dep | Why | Size / source |
+|---|---|---|
+| **mbedTLS** | `wss://` (archipelago.gg is TLS-only) | vendored in `port/external/mbedtls/` (submodule or copied tree, Apache-2.0); CMake links `mbedtls mbedx509 mbedcrypto`. MVP uses `VERIFY_NONE`; CA-bundle verification is a Phase-2 hardening. |
+| **base64 encode** | `Sec-WebSocket-Key` | ~20 lines, static in `luaai_ap.c` |
+| **SHA-1** | verify `Sec-WebSocket-Accept` | ~100 lines; OPTIONAL (many clients skip the check) — defer if it slips |
+| **`json.lua`** | parse/build AP messages in Lua | ~250-line pure-Lua MIT lib in `scripts/ap/` |
+
+#### Mock-first test path (decision 2)
+
+A throwaway local mock validates the C transport in isolation before a real
+server or apworld exists:
+
+- A small Python script (`tools/ap/mock_ws.py`, ~80 lines) that does the WS
+  handshake and emits canned AP frames: `RoomInfo` on connect, then `Connected`
+  + a scripted `ReceivedItems` (e.g. grant `stage 3`) on receiving `Connect`,
+  and ACKs `LocationChecks`. Run it in **both** `ws://` and **`wss://` with a
+  self-signed cert** to exercise the TLS path (client uses `VERIFY_NONE`).
+- Pass criteria: `pd.ap_connect` → `pd.ap_status()=="connected"`; the scripted
+  item flips an `is_unlocked`/visible stage in-game; a completed objective shows
+  up in the mock's log as a `LocationChecks`.
+
+#### Transport phases
+
+- **P1 (MVP):** C transport (socket + WS framing + mbedTLS) + `client.lua` +
+  `json.lua`, validated against `tools/ap/mock_ws.py` (ws **and** wss). Static
+  id map. Deliverable = the mock's item grant unlocks a stage; an objective
+  reports a check.
+- **P2:** point at a **real** local Archipelago server with a minimal hand-made
+  PD apworld; DataPackage-driven id map; goal/StatusUpdate; reconnect-on-drop;
+  CA-bundle TLS verification; the starting-loadout grant (also fixes the device
+  soft-lock noted under the gate layer).
+- **P3:** DeathLink, traps (live `cheatActivate`), `PrintJSON` chat/hints on the
+  HUD.
+
+#### Risks / dependencies
+
+- **mbedTLS vendoring + non-blocking BIO glue** is the largest single piece;
+  isolate it behind a `pd.ap_*` byte layer so `ws://` works even if TLS wiring
+  slips.
+- **WS framing correctness** (masking, fragmentation, >64 KB DataPackage) — the
+  main protocol risk; the mock exercises it first.
+- **The PD `.apworld` (Python world def) is a SEPARATE workstream.** The bridge
+  makes the *engine* speak AP; a *playable seed* also needs item/location ids +
+  logic defined in an Archipelago world. "Transport done" ≠ "playable seed" — the
+  bridge is developed against the mock / a tiny test apworld until the real one
+  exists.
 
 ---
 

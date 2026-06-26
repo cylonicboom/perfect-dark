@@ -18,33 +18,43 @@ ap.slot_name = ap.slot_name or "Player1"
 ap.game_name = ap.game_name or "Perfect Dark"
 ap.password  = ap.password  or ""
 
-local net = { status = "disconnected", connected = false }
+-- net.item_id_to_name / loc_name_to_id come from the DataPackage (resolved by
+-- NAME, so engine-side ids are never hard-coded). pending_items buffers item ids
+-- that arrive before the DataPackage does.
+local net = {
+  status = "disconnected", connected = false,
+  have_dp = false, item_id_to_name = {}, loc_name_to_id = {}, pending = {},
+}
 ap.net = net
 
--- Stage index -> name (mirror of the harness map; kept local so client.lua is
--- self-contained).
-local STAGES = {
-  [0]="Defection",[1]="Investigation",[2]="Extraction",[3]="Villa",[4]="Chicago",
-  [5]="G5Building",[6]="Infiltration",[7]="Rescue",[8]="Escape",[9]="AirBase",
+-- ---- name -> engine gate (the stable contract with the apworld) ------------
+-- Display names here MUST match tools/ap/apworld/perfect_dark/data.py.
+local STAGE_NAME_TO_INDEX = {
+  ["Defection"]=0, ["Investigation"]=1, ["Extraction"]=2, ["Villa"]=3,
+  ["Chicago"]=4, ["G5 Building"]=5, ["Infiltration"]=6, ["Rescue"]=7,
+  ["Escape"]=8, ["Air Base"]=9,
 }
-local DIFFS = { [0]="Agent",[1]="SpecialAgent",[2]="PerfectAgent" }
-
--- ---- STATIC id maps (mock / MVP) -------------------------------------------
--- AP item id -> {gate category, gate id}.  pd.unlock accepts the category as a
--- string ("stage"/"difficulty"/"weapon_pri"/"weapon_sec"/"device"/"feature").
-local AP_ITEM_TO_GATE = {
-  [1000] = {"stage", 0},      [1001] = {"stage", 1},
-  [1003] = {"stage", 3},      [1007] = {"stage", 7},
-  [2000] = {"difficulty", 0}, -- Agent
-  [2001] = {"difficulty", 1}, [2002] = {"difficulty", 2},
-  [3045] = {"device", 45},    -- Night Vision
+local DIFF_NAME_TO_INDEX = { ["Special Agent"]=1, ["Perfect Agent"]=2 }
+local DEVICE_NAME_TO_WEAPON = {
+  ["Night Vision"]=45, ["IR Scanner"]=48, ["X-Ray Scanner"]=47,
+  ["Cloaking Device"]=49,
 }
 
--- Our check name -> AP location id.
-local AP_LOCATION = {
-  ["mission:Defection/Agent"]  = 5000,
-  ["mission:Villa/Agent"]      = 5001,
-}
+-- Engine stage index / difficulty -> apworld display name (for location lookup).
+local STAGE_DISP = {}
+for k, v in pairs(STAGE_NAME_TO_INDEX) do STAGE_DISP[v] = k end
+local DIFF_DISP = { [0]="Agent", [1]="Special Agent", [2]="Perfect Agent" }
+
+-- Map an AP item NAME to an engine gate {category, id}, or nil for filler.
+local function name_to_gate(name)
+  local s = name:match("^Stage: (.+)$")
+  if s and STAGE_NAME_TO_INDEX[s] then return { "stage", STAGE_NAME_TO_INDEX[s] } end
+  local d = name:match("^Difficulty: (.+)$")
+  if d and DIFF_NAME_TO_INDEX[d] then return { "difficulty", DIFF_NAME_TO_INDEX[d] } end
+  local dev = name:match("^Device: (.+)$")
+  if dev and DEVICE_NAME_TO_WEAPON[dev] then return { "device", DEVICE_NAME_TO_WEAPON[dev] } end
+  return nil
+end
 
 -- ---- low-level send --------------------------------------------------------
 -- An AP message is a JSON ARRAY of command objects.
@@ -56,7 +66,37 @@ end
 -- ---- inbound handlers ------------------------------------------------------
 local handlers = {}
 
+-- Apply one received item id (resolve id -> name -> gate). Returns true if it
+-- unlocked a gate. Items that arrive before the DataPackage are buffered.
+local function apply_item(item_id)
+  local name = net.item_id_to_name[item_id]
+  if not name then
+    net.pending[#net.pending + 1] = item_id
+    return false
+  end
+  local g = name_to_gate(name)
+  if g and pd.unlock then
+    pd.unlock(g[1], g[2])
+    pd.log(string.format("ap: item '%s' -> unlock %s %d", name, g[1], g[2]))
+    return true
+  end
+  pd.log("ap: item '" .. name .. "' (filler / no gate)")
+  return false
+end
+
+local function drain_pending()
+  local ids = net.pending
+  net.pending = {}
+  local n = 0
+  for _, id in ipairs(ids) do
+    if apply_item(id) then n = n + 1 end
+  end
+  if n > 0 and ap.refresh_header then ap.refresh_header() end
+end
+
 handlers.RoomInfo = function(_msg)
+  -- Fetch the id<->name tables first so items resolve, then connect.
+  send_cmd({ cmd = "GetDataPackage", games = { ap.game_name } })
   send_cmd({
     cmd = "Connect",
     game = ap.game_name,
@@ -68,7 +108,21 @@ handlers.RoomInfo = function(_msg)
     tags = {},
     slot_data = false,
   })
-  pd.log("ap: RoomInfo -> sent Connect as '" .. ap.slot_name .. "'")
+  pd.log("ap: RoomInfo -> GetDataPackage + Connect as '" .. ap.slot_name .. "'")
+end
+
+handlers.DataPackage = function(msg)
+  local games = msg.data and msg.data.games
+  local g = games and games[ap.game_name]
+  if not g then return end
+  net.item_id_to_name = {}
+  for name, id in pairs(g.item_name_to_id or {}) do
+    net.item_id_to_name[id] = name
+  end
+  net.loc_name_to_id = g.location_name_to_id or {}
+  net.have_dp = true
+  pd.log("ap: DataPackage loaded")
+  drain_pending()
 end
 
 handlers.Connected = function(msg)
@@ -87,14 +141,7 @@ end
 handlers.ReceivedItems = function(msg)
   local n = 0
   for _, it in ipairs(msg.items or {}) do
-    local g = AP_ITEM_TO_GATE[it.item]
-    if g and pd.unlock then
-      pd.unlock(g[1], g[2])
-      n = n + 1
-      pd.log(string.format("ap: item %d -> unlock %s %d", it.item, g[1], g[2]))
-    else
-      pd.log("ap: item " .. tostring(it.item) .. " (no gate mapping)")
-    end
+    if apply_item(it.item) then n = n + 1 end
   end
   if n > 0 and ap.refresh_header then ap.refresh_header() end
 end
@@ -109,7 +156,6 @@ handlers.PrintJSON = function(msg)
 end
 
 handlers.RoomUpdate    = function(_m) end
-handlers.DataPackage   = function(_m) end
 handlers.Retrieved     = function(_m) end
 handlers.SetReply      = function(_m) end
 handlers.Bounced       = function(_m) end
@@ -136,18 +182,20 @@ local function on_message(text)
 end
 
 -- ---- check reporting -------------------------------------------------------
-local function report_location(name)
-  local id = AP_LOCATION[name]
+-- Report an apworld location by its display name (resolved to an id via the
+-- DataPackage). No-op until connected + DataPackage loaded.
+local function report_location_name(locname)
+  local id = net.loc_name_to_id[locname]
   if id and net.connected then
     send_cmd({ cmd = "LocationChecks", locations = { id } })
-    pd.log("ap: check '" .. name .. "' -> LocationChecks " .. id)
+    pd.log("ap: check '" .. locname .. "' -> LocationChecks " .. id)
   end
 end
 
 pd.on("missioncomplete", function(stageindex, difficulty)
-  local s = STAGES[stageindex] or ("stage" .. stageindex)
-  local d = DIFFS[difficulty] or ("diff" .. difficulty)
-  report_location("mission:" .. s .. "/" .. d)
+  local s = STAGE_DISP[stageindex]
+  local d = DIFF_DISP[difficulty]
+  if s and d then report_location_name(s .. " (" .. d .. ")") end
 end)
 
 -- ---- per-frame drain + status edge log ------------------------------------

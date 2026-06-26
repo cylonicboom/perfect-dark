@@ -37,3 +37,5 @@ CLAUDE.local.md
 # committed/pushed — it deploys to the VPS separately.
 /pdmaster/
 build-*/
+tools/ap/datapackage.json
+*.pem

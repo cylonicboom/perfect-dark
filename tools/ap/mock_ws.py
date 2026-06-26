@@ -27,6 +27,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import socket
 import ssl
 import struct
@@ -34,9 +35,26 @@ import sys
 
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+# DataPackage loaded from datapackage.json (run gen_datapackage.py first). When
+# present the mock serves it on GetDataPackage and grants items by name; when
+# absent it still works but grants nothing.
+DP = None
+# Scripted starting grant, by item NAME (resolved to ids via the DataPackage).
+GRANT_NAMES = [
+    "Stage: Defection", "Stage: Villa",
+    "Difficulty: Special Agent", "Device: Night Vision",
+]
+
 
 def log(*a):
     print("[mock]", *a, flush=True)
+
+
+def grant_item_ids():
+    if not DP:
+        return []
+    name_to_id = DP["games"]["Perfect Dark"]["item_name_to_id"]
+    return [name_to_id[n] for n in GRANT_NAMES if n in name_to_id]
 
 
 def http_handshake(conn):
@@ -128,7 +146,8 @@ def handle(conn):
         "generator_version": {"major": 0, "minor": 5, "build": 0, "class": "Version"},
         "tags": [], "password": False, "permissions": {},
         "hint_cost": 0, "location_check_points": 0,
-        "games": ["Perfect Dark"], "datapackage_checksums": {},
+        "games": ["Perfect Dark"],
+        "datapackage_checksums": {"Perfect Dark": "mock"} if DP else {},
         "seed_name": "mock", "time": 0.0,
     }])
     log("sent RoomInfo")
@@ -155,28 +174,29 @@ def handle(conn):
         for m in msgs:
             cmd = m.get("cmd")
             log("recv", cmd, m)
-            if cmd == "Connect":
+            if cmd == "GetDataPackage":
+                games = m.get("games") or (list(DP["games"]) if DP else [])
+                pkg = {g: DP["games"][g] for g in games
+                       if DP and g in DP["games"]}
+                send_cmds(conn, [{"cmd": "DataPackage", "data": {"games": pkg}}])
+                log("sent DataPackage for", list(pkg))
+            elif cmd == "Connect":
                 send_cmds(conn, [{
                     "cmd": "Connected", "team": 0, "slot": 1,
                     "players": [{"team": 0, "slot": 1,
                                  "alias": m.get("name", "Player1"),
                                  "name": m.get("name", "Player1")}],
-                    "missing_locations": [5000, 5001],
-                    "checked_locations": [],
-                    "slot_data": {}, "slot_info": {},
-                    "hint_points": 0,
+                    "missing_locations": [], "checked_locations": [],
+                    "slot_data": {}, "slot_info": {}, "hint_points": 0,
                 }])
                 log("sent Connected")
-                # Scripted starting grant (ids map to gates in client.lua):
-                #   1000 Defection, 1003 Villa, 2000 Agent, 2001 Special Agent,
-                #   3045 Night Vision. Enough to show two stages and enter one.
-                grant = [1000, 1003, 2000, 2001, 3045]
+                grant = grant_item_ids()
                 send_cmds(conn, [{
                     "cmd": "ReceivedItems", "index": 0,
                     "items": [{"item": i, "location": 0, "player": 0, "flags": 0}
                               for i in grant],
                 }])
-                log("sent ReceivedItems " + str(grant))
+                log("sent ReceivedItems " + str(grant) + " " + str(GRANT_NAMES))
             elif cmd == "LocationChecks":
                 log("CHECK reported:", m.get("locations"))
                 # Echo a PrintJSON so the client logs something visible.
@@ -195,6 +215,18 @@ def main():
     ap.add_argument("--cert", default="cert.pem")
     ap.add_argument("--key", default="key.pem")
     args = ap.parse_args()
+
+    global DP
+    dp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "datapackage.json")
+    if os.path.exists(dp_path):
+        with open(dp_path) as f:
+            DP = json.load(f)
+        g = DP["games"]["Perfect Dark"]
+        log(f"loaded DataPackage: {len(g['item_name_to_id'])} items, "
+            f"{len(g['location_name_to_id'])} locations")
+    else:
+        log("no datapackage.json (run gen_datapackage.py) -> no items granted")
 
     tlsctx = None
     if args.tls:

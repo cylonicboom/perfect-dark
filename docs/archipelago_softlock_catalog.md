@@ -32,23 +32,24 @@ objectives that are active and the items their completion needs.
 | IR Scanner | (48) | device gate | DEVICE | ✓ |
 | X-Ray Scanner | XRAYSCANNER (47) | device gate | DEVICE | ✓ |
 | Cloaking Device | (49) | device gate | DEVICE | ✓ |
-| Eye Spy / CamSpy | EYESPY | **deploy = fire?** | WEAPON_? or DEVICE? | **NEEDS VERIFY** |
-| Door Decoder | DOORDECODER | **use = equip+proximity, may NOT fire** | WEAPON_? or none | **NEEDS VERIFY** |
-| Data Uplink | DATAUPLINK | **use at terminal = fire?** | WEAPON_? | **NEEDS VERIFY** |
+| Eye Spy / CamSpy | EYESPY | fire (deploy = ATTACK) | WEAPON_PRI | ✓ [user] |
+| Door Decoder | DOORDECODER | fire (crack = ATTACK) | WEAPON_PRI | ✓ [user] |
+| Data Uplink | DATAUPLINK | fire (terminal = ATTACK) | WEAPON_PRI | ✓ [user] |
 | ECM Mine | ECMMINE | throw = fire (ATTACK) | WEAPON_PRI | likely |
 | Remote Mine | REMOTEMINE | throw = fire | WEAPON_PRI | likely |
 | Tracer Bug | TRACERBUG | throw = fire | WEAPON_PRI | likely |
 | Comms Rider | COMMSRIDER | throw = fire | WEAPON_PRI | likely |
-| AutoSurgeon | AUTOSURGEON | use on hoverbed = fire? | WEAPON_? | **NEEDS VERIFY** |
+| AutoSurgeon | AUTOSURGEON | fire (revive = ATTACK) | WEAPON_PRI | ✓ [user] |
+| Suitcase | (check-in item) | fire (equip+deposit = ATTACK) | WEAPON_PRI | ✓ [user] |
 | Sniper Rifle | SNIPERRIFLE | fire | WEAPON_PRI | ✓ [user] |
 | Any combat gun | (many) | fire | WEAPON_PRI | ✓ |
 
-> **The #1 open question** (blocks correct logic): do the *gadget-use* actions (Eye Spy deploy, Door
-> Decoder crack, Data Uplink terminal, AutoSurgeon revive) actually route through `bgunSetState`
-> ATTACK (and so the AP weapon-fire gate), or through a different code path that AP doesn't gate yet?
-> If they are **not** currently gated, those missions are *not* soft-lock risks today — but they also
-> won't behave as progression gates. Each must be checked against `bgunSetState` / the device gate.
-> Until then, treat them as **required** in logic (conservative — never under-gates).
+> **#1 open question — RESOLVED (2026-06-27, user-confirmed in-game).** All the gadget-use actions
+> (Eye Spy deploy, Door Decoder crack, Data Uplink terminal, AutoSurgeon revive, Suitcase check-in)
+> **do** route through `bgunSetState` ATTACK and so are blocked by the AP weapon-fire gate
+> (`WEAPON_PRI`) — the conservative assumption held for all five. They are therefore **genuine
+> soft-lock risks** and must each be an AP item with a matching logic rule. The bracketed `[...]`
+> cells below are now confirmed-gating (de-bracket when writing `set_rules`).
 
 ---
 
@@ -214,9 +215,9 @@ Each cell is the item set a location `"<Stage> (<Diff>)"` must require. `WPN` = 
 
 ## Implementation plan (apworld + client)
 
-1. **Verify the gadget gates** (the `[...]` rows). For Eye Spy / Door Decoder / Data Uplink /
-   AutoSurgeon / Suitcase, confirm whether their use routes through the AP weapon-fire gate
-   (`bgunSetState` ATTACK) or the device gate, or is currently **ungated**. Update categories above.
+1. ~~**Verify the gadget gates**~~ **DONE (2026-06-27, user-confirmed):** all five gadgets (Eye Spy /
+   Door Decoder / Data Uplink / AutoSurgeon / Suitcase) route through the AP weapon-fire gate
+   (`bgunSetState` ATTACK) → all `WEAPON_PRI`. The `[...]` cells in the matrix are confirmed-gating.
 2. **Add all weapons as AP items** in `data.py` (`Weapon: <name>` → `weaponnum`), plus the gadget
    names that turn out to be weapon-gated. Mirror the name→`weaponnum` table into
    `scripts/ap/client.lua` (`WEAPON_NAME_TO_NUM`, both PRI and SEC categories as needed).

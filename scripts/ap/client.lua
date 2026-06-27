@@ -234,4 +234,18 @@ function ap.netstatus()
          " connected=" .. tostring(net.connected))
 end
 
+-- ---- resume across a Lua-state teardown ------------------------------------
+-- The engine lua_close()s and re-dofile()s this script on every stage load
+-- (luaai.c), so the `net` table above is fresh each time -- but the C transport
+-- (pd.ap_*) survives. If we come back up already connected, the AP server won't
+-- re-send RoomInfo, so re-fetch the DataPackage ourselves and restore the
+-- connected flag; otherwise loc/item id maps stay empty and checks never report.
+-- (Unlocks already survive teardown -- they live C-side in g_ApUnlocks.)
+if pd.ap_status and pd.ap_status() == "connected" and pd.ap_send then
+  net.connected = true
+  net.status = "connected"
+  send_cmd({ cmd = "GetDataPackage", games = { ap.game_name } })
+  pd.log("ap: resumed live connection -> re-fetching DataPackage")
+end
+
 pd.log("ap: client.lua loaded (ap.connect / ap.disconnect / ap.netstatus)")

@@ -1034,8 +1034,11 @@ bool isStageDifficultyUnlocked(s32 stageindex, s32 difficulty)
 	// the stage item and the difficulty item have arrived. Fully overrides the
 	// vanilla besttimes chain. Inert unless pd.ap_mode(true).
 	if (apGateActive()) {
+		// Agent (DIFF_A) is the always-available starting difficulty and is not
+		// an AP item (the apworld only hands out Special/Perfect Agent), so it
+		// must never gate behind a difficulty unlock — only harder difficulties do.
 		return apGateIsUnlocked(AP_CAT_STAGE, stageindex)
-				&& apGateIsUnlocked(AP_CAT_DIFFICULTY, difficulty);
+				&& (difficulty == DIFF_A || apGateIsUnlocked(AP_CAT_DIFFICULTY, difficulty));
 	}
 #endif
 

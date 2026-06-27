@@ -76,10 +76,18 @@ class PerfectDarkWorld(World):
         self.multiworld.regions.append(menu)
 
     def create_items(self) -> None:
+        # Defection on Agent is always unlocked in-game (the engine grants it at
+        # gate start), so precollect it. This gives the fill a non-empty sphere 0
+        # ("Defection (Agent)" becomes reachable with nothing) to bootstrap from;
+        # without it every location is gated behind a Stage item and generation
+        # deadlocks with an empty starting sphere.
+        starting_stage = "Stage: Defection"
+        self.multiworld.push_precollected(self.create_item(starting_stage))
+
         pool = [
             self.create_item(name)
             for name in self.item_name_to_id
-            if name not in FILLER_NAMES
+            if name not in FILLER_NAMES and name != starting_stage
         ]
         # Pad to one item per location with filler.
         while len(pool) < len(self.location_name_to_id):

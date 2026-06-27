@@ -38,4 +38,5 @@ CLAUDE.local.md
 /pdmaster/
 build-*/
 tools/ap/datapackage.json
+tools/ap/apworld/*.apworld
 *.pem

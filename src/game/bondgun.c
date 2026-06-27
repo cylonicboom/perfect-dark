@@ -3413,6 +3413,32 @@ static u8 mpSlotFlagsForWeapon(s32 weaponnum)
 	return 0;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Archipelago: map a weaponnum to the id the weapon-fire gate should test, with
+ * two baseline guarantees so an AP run can never strand the player unable to
+ * fight (without these, ap_mode locks EVERYTHING, including your fists):
+ *   - Melee (WEAPON_UNARMED) is ALWAYS allowed. There is no "Unarmed" AP item,
+ *     and punching must work regardless of what has arrived.
+ *   - The three Falcon 2 variants (normal / silenced / scoped) are DISTINCT
+ *     weaponnums that different missions start you with, but AP grants a single
+ *     "Weapon: Falcon 2" item, so the silenced/scoped variants share the base
+ *     Falcon 2 unlock (you can't unlock a variant you don't know you'll be given).
+ * Returns the weaponnum to test against the unlock set, or WEAPON_NONE to mean
+ * "always allowed — skip the gate".
+ */
+static s32 apWeaponGateNum(s32 weaponnum)
+{
+	if (weaponnum == WEAPON_UNARMED) {
+		return WEAPON_NONE; // melee always allowed
+	}
+	if (weaponnum == WEAPON_FALCON2_SILENCER || weaponnum == WEAPON_FALCON2_SCOPE) {
+		return WEAPON_FALCON2; // variants share the base Falcon 2 unlock
+	}
+	return weaponnum;
+}
+#endif
+
 /**
  * Reusable gate for "this weapon's secondary function is disabled."
  *
@@ -3443,8 +3469,9 @@ bool bgunSecondaryFunctionDisabled(s32 weaponnum)
 		 * Solo-only so Combat Sim presets are unaffected; inert unless ap_mode. */
 		extern bool apGateActive(void);
 		extern bool apGateIsUnlocked(s32 cat, s32 id);
-		if (apGateActive() && !g_Vars.normmplayerisrunning
-				&& !apGateIsUnlocked(3 /*AP_CAT_WEAPON_SEC*/, weaponnum)) {
+		s32 apwn = apWeaponGateNum(weaponnum);
+		if (apwn != WEAPON_NONE && apGateActive() && !g_Vars.normmplayerisrunning
+				&& !apGateIsUnlocked(3 /*AP_CAT_WEAPON_SEC*/, apwn)) {
 			return true;
 		}
 	}
@@ -3479,8 +3506,9 @@ bool bgunPrimaryFunctionDisabled(s32 weaponnum)
 		 * item arrives. Solo-only; inert unless ap_mode. */
 		extern bool apGateActive(void);
 		extern bool apGateIsUnlocked(s32 cat, s32 id);
-		if (apGateActive() && !g_Vars.normmplayerisrunning
-				&& !apGateIsUnlocked(2 /*AP_CAT_WEAPON_PRI*/, weaponnum)) {
+		s32 apwn = apWeaponGateNum(weaponnum);
+		if (apwn != WEAPON_NONE && apGateActive() && !g_Vars.normmplayerisrunning
+				&& !apGateIsUnlocked(2 /*AP_CAT_WEAPON_PRI*/, apwn)) {
 			return true;
 		}
 	}

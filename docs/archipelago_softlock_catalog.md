@@ -218,16 +218,26 @@ Each cell is the item set a location `"<Stage> (<Diff>)"` must require. `WPN` = 
 1. ~~**Verify the gadget gates**~~ **DONE (2026-06-27, user-confirmed):** all five gadgets (Eye Spy /
    Door Decoder / Data Uplink / AutoSurgeon / Suitcase) route through the AP weapon-fire gate
    (`bgunSetState` ATTACK) → all `WEAPON_PRI`. The `[...]` cells in the matrix are confirmed-gating.
-2. **Add all weapons as AP items** in `data.py` (`Weapon: <name>` → `weaponnum`), plus the gadget
-   names that turn out to be weapon-gated. Mirror the name→`weaponnum` table into
-   `scripts/ap/client.lua` (`WEAPON_NAME_TO_NUM`, both PRI and SEC categories as needed).
-3. **Starting loadout grant** — fixes the "everything locked, can't fight at all" state. Precollect a
-   baseline (Falcon 2) so `WPN` is satisfiable from the start, OR add it to the item pool with a
-   guaranteed-early rule. Without this, no combat mission is reachable in sphere 0.
-4. **Item groups** — define `WPN` (all combat guns) and `EXPL` (Rocket/Grenade/Dragon/mines) as AP
-   item groups so the OR/any-of rules above are expressible (`state.has_group` / `has_any`).
-5. **Write `set_rules`** from the matrix: per `"<Stage> (<Diff>)"` location, `add_rule(... state.has(...))`.
-6. **Re-verify generation** (`ArchipelagoGenerate.exe`) and play a real seed.
+2. ~~**Add weapons as AP items**~~ **DONE — MVP subset (2026-06-27):** `data.WEAPON_ITEMS` =
+   `Weapon: <name>` → `weaponnum` for the 10 objective-gating items + small `@WPN`/`@EXPL`
+   representative pools (16 total). Mirrored into `scripts/ap/client.lua` `WEAPON_NAME_TO_NUM`; one
+   weapon item unlocks BOTH `weapon_pri` + `weapon_sec`. **2b (deferred):** the *full* ~50-weapon
+   pool (all combat guns) — needs a bigger reachable location set.
+3. ~~**Starting loadout grant**~~ **DONE:** `data.PRECOLLECTED` pushes `Stage: Defection` +
+   `Weapon: Falcon 2` so sphere 0 has an armed, playable mission.
+4. ~~**Item groups**~~ **DONE:** `item_name_groups` `Combat Weapons` (`@WPN`) + `Explosives`
+   (`@EXPL`); the `LOGIC` evaluator in `__init__.set_rules` resolves `@WPN`/`@EXPL`/OR-lists.
+5. ~~**Write `set_rules`**~~ **DONE:** `data.LOGIC` (the matrix above) drives per-location
+   `add_rule`; plus firing-range checks gated behind their weapon and free Combat-Sim challenge checks.
+6. ~~**Re-verify generation**~~ **DONE:** `ArchipelagoGenerate.exe` succeeds with `accessibility:
+   full` across 6 seeds; spoiler playthrough cascades correctly (challenges seed weapons → ranges +
+   missions open; Villa gated behind Sniper). **Still TODO: play a real seed in-game** (runtime).
+
+### Locations (as built)
+48 total: 30 mission-complete (`<Stage> (<Diff>)`) + 8 firing-range (`Firing Range: <gun>`, reachable
+once you hold the gun) + 10 Combat-Sim (`Challenge N`, requirement-free). The challenges are the
+lightly-gated early homes the fill needs — an almost-entirely weapon-gated pool can't satisfy full
+accessibility without them (confirmed: 30/30 mission-only deadlocked; 48-location set generates).
 
 ## Provenance
 

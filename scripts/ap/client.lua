@@ -39,11 +39,26 @@ local DEVICE_NAME_TO_WEAPON = {
   ["Night Vision"]=45, ["IR Scanner"]=48, ["X-Ray Scanner"]=47,
   ["Cloaking Device"]=49,
 }
+-- "Weapon: X" -> engine weaponnum (fire gate). MUST match WEAPON_NAME_TO_NUM in
+-- tools/ap/apworld/perfect_dark/data.py. Gadgets (Eye Spy / Door Decoder / Data
+-- Uplink / AutoSurgeon / Suitcase) deploy through this same fire gate.
+local WEAPON_NAME_TO_NUM = {
+  ["Falcon 2"]=2, ["MagSec 4"]=5, ["AR34"]=17, ["Shotgun"]=19,
+  ["Rocket Launcher"]=24, ["Grenade"]=30, ["Sniper Rifle"]=21,
+  ["ECM Mine"]=53, ["Data Uplink"]=54, ["Eye Spy"]=46, ["Door Decoder"]=57,
+  ["Remote Mine"]=34, ["Tracer Bug"]=62, ["Comms Rider"]=61,
+  ["AutoSurgeon"]=58, ["Suitcase"]=77,
+}
 
 -- Engine stage index / difficulty -> apworld display name (for location lookup).
 local STAGE_DISP = {}
 for k, v in pairs(STAGE_NAME_TO_INDEX) do STAGE_DISP[v] = k end
 local DIFF_DISP = { [0]="Agent", [1]="Special Agent", [2]="Perfect Agent" }
+
+-- weaponnum -> display name, for reporting "Firing Range: <name>" checks. Only
+-- weapons with a range location resolve to a check (others no-op in lookup).
+local NUM_TO_WEAPON_NAME = {}
+for name, num in pairs(WEAPON_NAME_TO_NUM) do NUM_TO_WEAPON_NAME[num] = name end
 
 -- Map an AP item NAME to an engine gate {category, id}, or nil for filler.
 local function name_to_gate(name)
@@ -53,6 +68,8 @@ local function name_to_gate(name)
   if d and DIFF_NAME_TO_INDEX[d] then return { "difficulty", DIFF_NAME_TO_INDEX[d] } end
   local dev = name:match("^Device: (.+)$")
   if dev and DEVICE_NAME_TO_WEAPON[dev] then return { "device", DEVICE_NAME_TO_WEAPON[dev] } end
+  local w = name:match("^Weapon: (.+)$")
+  if w and WEAPON_NAME_TO_NUM[w] then return { "weapon", WEAPON_NAME_TO_NUM[w] } end
   return nil
 end
 
@@ -76,8 +93,15 @@ local function apply_item(item_id)
   end
   local g = name_to_gate(name)
   if g and pd.unlock then
-    pd.unlock(g[1], g[2])
-    pd.log(string.format("ap: item '%s' -> unlock %s %d", name, g[1], g[2]))
+    if g[1] == "weapon" then
+      -- One weapon item unlocks BOTH fire functions (primary + secondary).
+      pd.unlock("weapon_pri", g[2])
+      pd.unlock("weapon_sec", g[2])
+      pd.log(string.format("ap: item '%s' -> unlock weapon %d (pri+sec)", name, g[2]))
+    else
+      pd.unlock(g[1], g[2])
+      pd.log(string.format("ap: item '%s' -> unlock %s %d", name, g[1], g[2]))
+    end
     return true
   end
   pd.log("ap: item '" .. name .. "' (filler / no gate)")
@@ -196,6 +220,19 @@ pd.on("missioncomplete", function(stageindex, difficulty)
   local s = STAGE_DISP[stageindex]
   local d = DIFF_DISP[difficulty]
   if s and d then report_location_name(s .. " (" .. d .. ")") end
+end)
+
+-- Firing-range weapon found/fired -> "Firing Range: <name>" check (no-op unless
+-- that weapon has a range location in the DataPackage).
+pd.on("weaponfound", function(weaponnum)
+  local name = NUM_TO_WEAPON_NAME[weaponnum]
+  if name then report_location_name("Firing Range: " .. name) end
+end)
+
+-- Combat Simulator challenge complete -> "Challenge N" check. Engine index is
+-- 0-based; the apworld names them 1-based. No-op past the modelled count.
+pd.on("challengecomplete", function(index)
+  report_location_name("Challenge " .. (index + 1))
 end)
 
 -- ---- per-frame drain + status edge log ------------------------------------

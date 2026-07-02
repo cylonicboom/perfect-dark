@@ -881,6 +881,14 @@ void netClientSettingsChanged(void);
 void netPlayersAllocate(void);
 void netSyncIdsAllocate(void);
 
+// Co-op scripted player-target remap ("option 3", see PORT_NET_KNOWN_ISSUES).
+// A script-resolved player slot is in the HOST's numbering (its local slots
+// are the wire slots); on a client netPlayersAllocate transposed local slots
+// 0 <-> svplayernum, so transpose the resolved slot back to hit the same
+// physical player the host targets. Identity on the server / N64-less builds
+// without a swap. Self-inverse.
+s32 netCoopRemapWirePlayernum(s32 playernum);
+
 // Entity interpolation: update a client's interp_lag estimate from a freshly
 // received snapshot's tick. Peak-holds the worst recent (g_NetTick - snaptick)
 // staleness and decays it slowly, giving a self-sizing jitter buffer. Called

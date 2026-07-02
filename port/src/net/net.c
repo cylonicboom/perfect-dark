@@ -3738,6 +3738,34 @@ void netPlayersAllocate(void)
 	}
 }
 
+// Co-op scripted player-target remap (known-issues "option 3"). Script player
+// ids (CHR_BOND / CHR_COOP / player chrnums) resolve through g_Vars.players[]
+// by LOCAL slot, but the slot a script semantically targets is the HOST's
+// numbering — the host runs the authoritative scripts and its local slots ARE
+// the wire slots (no swap on the server). On a client, netPlayersAllocate
+// transposed local slots 0 <-> svplayernum to put the local player at 0, so a
+// script-resolved player slot must be transposed back to reach the same
+// PHYSICAL player the host targets. Identity everywhere else: server, no-swap
+// clients (the first joiner already at wire slot 0) and drop-in claimants
+// (seated at their wire slot, no swap). Self-inverse, so it maps either
+// direction of the transposition.
+s32 netCoopRemapWirePlayernum(s32 playernum)
+{
+	if (g_NetMode == NETMODE_CLIENT && s_netSlot0SwapOccupant) {
+		const s32 svplayernum = s_netSlot0SwapOccupant->playernum;
+
+		if (playernum == 0) {
+			return svplayernum;
+		}
+
+		if (playernum == svplayernum) {
+			return 0;
+		}
+	}
+
+	return playernum;
+}
+
 void netSyncIdsAllocate(void)
 {
 	// Fresh lifecycle ring + audit counters per stage.

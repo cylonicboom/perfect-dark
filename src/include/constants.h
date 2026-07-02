@@ -47,6 +47,17 @@
 // players, bits MAX_PLAYERS..MAX_PLAYERS+MAX_BOTS-1 = bots; use these masks
 // instead of width literals.
 #define MAX_PLAYERS            16
+// HARD CEILING: kill attribution / object ownership pack the playernum into
+// 4 bits of obj->hidden (bits 28-31, e.g. propobj.c "hidden |= playernum << 28")
+// which holds 0-15 exactly. Widening MAX_PLAYERS past 16 would silently
+// truncate attacker/owner playernums (wrong kill credit, mis-attributed
+// mines/autoguns/dropped weapons) with no other compile error — widen that
+// field first (see PORT_NET_KNOWN_ISSUES.md).
+#ifdef __cplusplus
+static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - see comment above");
+#else
+_Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - see comment above");
+#endif
 #define MPCHRSLOTS_PLAYERS_MASK ((1ULL << MAX_PLAYERS) - 1)
 #define MPCHRSLOTS_BOTS_MASK    (((1ULL << MAX_BOTS) - 1) << MAX_PLAYERS)        // bits 16..47
 #define NET_MPCHRSLOTS_BOTS_MASK (((1ULL << NET_MAX_BOTS) - 1) << MAX_PLAYERS)   // bits 16..23 (fits the u32 wire field)

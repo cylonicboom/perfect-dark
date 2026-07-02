@@ -6082,7 +6082,13 @@ void bgunTickSwitch2(void)
 			if (ctrl->weaponnum == WEAPON_DISGUISE40 || ctrl->weaponnum == WEAPON_DISGUISE41) {
 				struct chrdata *chr = player->prop->chr;
 
+#ifndef PLATFORM_N64
+				// Positional when a remote player dons the disguise (net co-op);
+				// unchanged first-person sndStart for the local player.
+				bgunPlayGunSound(SFX_DISGUISE_ON, NULL, PSTYPE_NONE);
+#else
 				sndStart(var80095200, SFX_DISGUISE_ON, 0, -1, -1, -1, -1, -1);
+#endif
 
 				g_Vars.currentplayer->disguised = true;
 

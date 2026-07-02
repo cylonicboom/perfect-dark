@@ -41,6 +41,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include <math.h>
+#include "game/propsnd.h"
 #include "input.h"
 #include "video.h"
 #include "system.h"
@@ -2836,7 +2837,22 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 				sound = footstepChooseSound(chr, distance > 10);
 
 				if (sound != -1) {
-					snd00010718(0, 0, AL_VOL_FULL, AL_PAN_CENTER, sound, 1, 1, -1, true);
+#ifndef PLATFORM_N64
+					// This block runs for REMOTE players too (bmoveTick under
+					// setCurrentPlayerNum; the MP gate above only skips Combat
+					// Sim), so in net co-op a partner's footsteps played at full
+					// volume, centre pan, "in your head". Route remote players
+					// through the positional channel at their pawn — the same
+					// psCreate the NPC path uses (footstepCheckDefault). The
+					// local player keeps the non-positional N64 path.
+					if (g_Vars.currentplayer->isremote && g_Vars.currentplayer->prop) {
+						psCreate(NULL, g_Vars.currentplayer->prop, sound, -1, -1,
+								PSFLAG_0400, 0, PSTYPE_FOOTSTEP, NULL, -1, NULL, -1, -1, -1, -1);
+					} else
+#endif
+					{
+						snd00010718(0, 0, AL_VOL_FULL, AL_PAN_CENTER, sound, 1, 1, -1, true);
+					}
 				}
 			}
 		}

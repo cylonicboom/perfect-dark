@@ -5,7 +5,18 @@
 #include "data.h"
 #include "types.h"
 
+#ifndef PLATFORM_N64
+// Sample-DMA buffer pool. Every actively-sounding sampled voice needs its
+// sample windows resident here each frame (buffers are shared by ROM address,
+// so repeats of the same sound share). 80 was the budget for 30 physical
+// voices; the port runs 96 (snd.c), and running dry hits the documented
+// "bogus pointer / incorrect audio" fallback in admaExec. Scaled to match.
+// Buffer memory comes from the (also grown) sound heap; the item/msg arrays
+// below are static.
+#define ADMA_MAX_ITEMS 256
+#else
 #define ADMA_MAX_ITEMS 80
+#endif
 #define ADMA_ITEM_SIZE 0x400
 
 struct admaitem {

@@ -9,9 +9,9 @@ void psReset(void)
 {
 	s32 i;
 
-	g_PsChannels = mempAlloc(ALIGN16((IS4MB() ? 30 : 40) * sizeof(struct pschannel)), MEMPOOL_STAGE);
+	g_PsChannels = mempAlloc(ALIGN16(PROPSND_CHANNELCOUNT() * sizeof(struct pschannel)), MEMPOOL_STAGE);
 
-	for (i = 0; i < (IS4MB() ? 30 : 40); i++) {
+	for (i = 0; i < PROPSND_CHANNELCOUNT(); i++) {
 		g_PsChannels[i].flags = PSFLAG_FREE;
 		g_PsChannels[i].audiohandle = NULL;
 		g_PsChannels[i].distance = -1;

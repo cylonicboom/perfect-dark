@@ -96,12 +96,21 @@ void amgrCreate(ALSynConfig *config)
 	osCreateMesgQueue(&g_AudioManager.audioReplyMsgQ, g_AudioManager.audioReplyMsgBuf, ARRAYCOUNT(g_AudioManager.audioFrameMsgBuf));
 	osCreateMesgQueue(&g_AudioManager.audioFrameMsgQ, g_AudioManager.audioFrameMsgBuf, ARRAYCOUNT(g_AudioManager.audioFrameMsgBuf));
 
+#ifndef PLATFORM_N64
+	// Audio command list length (Acmds per frame buffer). Scales with active
+	// physical voices — each sampled voice emits load/resample/envmix commands
+	// every subframe and there is NO overflow check on the buffer. 2000 was
+	// budgeted for the N64's 30 pvoices; the port runs 96 (snd.c), so scale
+	// past proportional. Comes out of the (also grown) sound heap.
+	var800918ec = 8000;
+#else
 	var800918ec = 2000;
 
 #if !PAL
 	if (IS4MB()) {
 		var800918ec >>= 1;
 	}
+#endif
 #endif
 
 	for (i = 0; i < ARRAYCOUNT(g_AudioManager.ACMDList); i++) {

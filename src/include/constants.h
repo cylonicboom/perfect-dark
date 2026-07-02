@@ -3722,6 +3722,18 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define PROPTYPE_EXPLOSION 7
 #define PROPTYPE_SMOKE     8
 
+// Prop-sound channel pool size — the single source of truth for propsnd.c's
+// CHANNELCOUNT() and propsndreset.c's allocation (they must agree). Port:
+// grown from the N64's 40 alongside the maxSounds/maxPVoices polyphony bumps
+// in snd.c, since positional routing of remote players' weapon / footstep /
+// pickup sounds in netplay raises the number of live positional channels.
+// Channels 0-7 stay reserved for AI speech (CHANNEL_IS_AI).
+#ifndef PLATFORM_N64
+#define PROPSND_CHANNELCOUNT() 96
+#else
+#define PROPSND_CHANNELCOUNT() (IS4MB() ? 30 : 40)
+#endif
+
 #define PSFLAG_FREE         0x0001
 #define PSFLAG_REPEATING    0x0002
 #define PSFLAG_FORPROP      0x0008

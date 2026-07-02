@@ -11,7 +11,7 @@ void psStop(void)
 	if (g_SndDisabled) return;
 	s32 i;
 
-	for (i = 0; i < (IS4MB() ? 30 : 40); i++) {
+	for (i = 0; i < PROPSND_CHANNELCOUNT(); i++) {
 		if (g_PsChannels[i].flags & PSFLAG_ISMP3) {
 			sndStopMp3(g_PsChannels[i].soundnum26);
 			g_PsChannels[i].flags &= ~PSFLAG_ISMP3;

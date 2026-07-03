@@ -2612,6 +2612,23 @@ void netStartFrame(void)
 	}
 }
 
+// Corpse chr-state throttle: a fully-settled corpse (ACT_DEAD — ACT_DIE, the
+// falling anim, still streams at full cadence) has a static pos and finished
+// anim, so refreshing its ~30-60 byte chr-state block every send tick is pure
+// waste — and corpses accumulate (co-op guards; kept bot bodies under the
+// Lives system). Include a dead chr only on ~every 8th send opportunity,
+// staggered by syncid so the refreshes spread across ticks. Keyed on
+// (g_NetTick >> 1) so the phase advances across send ticks at ANY svcrate
+// parity — at rate 2 all send ticks share parity, so keying on raw g_NetTick
+// would starve odd-offset corpses forever. Worst-case refresh ~250ms, well
+// inside the 500ms stale-snapshot hard-snap window; a just-died chr keeps
+// full cadence until the death anim settles into ACT_DEAD.
+static inline bool netChrCorpseThrottled(const struct chrdata *chr)
+{
+	return chr->actiontype == ACT_DEAD
+			&& ((((g_NetTick >> 1) + chr->prop->syncid) & 7) != 0);
+}
+
 void netEndFrame(void)
 {
 	if (!g_NetMode) {
@@ -2793,6 +2810,21 @@ void netEndFrame(void)
 					}
 				}
 			}
+
+			// State-send cadence gate (svcrate / the P3 adaptive rate). Player
+			// moves already respect it via netClientNeedMove's g_NetNextUpdate
+			// check, but the sim / co-op-NPC chr-state loops and the dynamic-
+			// prop position streams below did NOT — so --svcrate 2 (the
+			// documented "~half bandwidth" knob, and the pdmaster dedicated
+			// default) only ever halved the player moves while the DOMINANT
+			// chr-state stream stayed at 60Hz. Evaluate once here:
+			// g_NetNextUpdate is only advanced at the end of this block, so the
+			// answer is consistent for every stream this tick. At the default
+			// rate 1 (small matches) this is always true — no behaviour change.
+			// Interpolation is already sized for the stretched cadence (players
+			// have ridden it since P3; snapshots 2 ticks apart sit well inside
+			// the interp window and the 30-tick stale hard-snap threshold).
+			const bool svsendtick = g_NetNextUpdate <= g_NetTick;
 #ifndef PLATFORM_N64
 			// broadcast sim (bot) chr positions so clients can position-drive them.
 			// BYTE-BUDGETED ROUND-ROBIN (same scheme as the co-op NPC loop below):
@@ -2805,7 +2837,7 @@ void netEndFrame(void)
 			// rotating cursor and stop before the buffer fills, so the loss (when it
 			// happens at all) is shared and interpolation hides it. Player moves were
 			// written above, so the threshold accounts for them.
-			if (g_Vars.lvmpbotlevel && g_BotCount > 0) {
+			if (svsendtick && g_Vars.lvmpbotlevel && g_BotCount > 0) {
 				if (g_NetRelevancy) {
 					// P2: per-client relevancy cull. Build each remote client its own
 					// chr-state packet of only the sims relevant to it
@@ -2828,7 +2860,8 @@ void netEndFrame(void)
 						s32 i = simcursor[c];
 						while (scanned < g_BotCount && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
 							struct chrdata *chr = g_MpBotChrPtrs[i];
-							if (chr && chr->prop && chr->prop->syncid && netChrRelevantTo(chr, cl)) {
+							if (chr && chr->prop && chr->prop->syncid
+									&& !netChrCorpseThrottled(chr) && netChrRelevantTo(chr, cl)) {
 								const u32 b0 = g_NetRelevBuf.wp;
 								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
 								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
@@ -2850,7 +2883,7 @@ void netEndFrame(void)
 					s32 i = simcursor;
 					while (scanned < g_BotCount && g_NetMsg.wp < NET_BUFSIZE - 340) {
 						struct chrdata *chr = g_MpBotChrPtrs[i];
-						if (chr && chr->prop && chr->prop->syncid) {
+						if (chr && chr->prop && chr->prop->syncid && !netChrCorpseThrottled(chr)) {
 							const u32 b0 = g_NetMsg.wp;
 							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
 							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
@@ -2873,7 +2906,7 @@ void netEndFrame(void)
 			// the buffer nears full, so every NPC updates over a few ticks (interpolation
 			// hides the gap) and the packet never overflows. Player moves were already
 			// written above, so the threshold accounts for them.
-			if (g_Vars.coopplayernum >= 0 && g_ChrSlots) {
+			if (svsendtick && g_Vars.coopplayernum >= 0 && g_ChrSlots) {
 				const s32 numslots = chrsGetNumSlots();
 				if (g_NetRelevancy) {
 					// P2: per-client relevancy cull (see the sim loop above). Each remote
@@ -2894,7 +2927,8 @@ void netEndFrame(void)
 						while (scanned < numslots && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
 							struct chrdata *chr = &g_ChrSlots[i];
 							if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
-									&& chr->prop->type == PROPTYPE_CHR && netChrRelevantTo(chr, cl)) {
+									&& chr->prop->type == PROPTYPE_CHR
+									&& !netChrCorpseThrottled(chr) && netChrRelevantTo(chr, cl)) {
 								const u32 b0 = g_NetRelevBuf.wp;
 								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
 								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
@@ -2917,7 +2951,8 @@ void netEndFrame(void)
 					while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
 						struct chrdata *chr = &g_ChrSlots[i];
 						if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
-								&& chr->prop->type == PROPTYPE_CHR) {
+								&& chr->prop->type == PROPTYPE_CHR
+								&& !netChrCorpseThrottled(chr)) {
 							const u32 b0 = g_NetMsg.wp;
 							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
 							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
@@ -2947,7 +2982,8 @@ void netEndFrame(void)
 			//    impulse packet, or a JIP client, without a once-a-second burst.
 			// Unreliable (g_NetMsg) like the sim/NPC moves above: latest-wins, and a
 			// dropped frame self-heals on the next tick / cursor sweep.
-			if (g_Vars.coopplayernum >= 0) {
+			// svsendtick: rides the same state-send cadence as the chr streams.
+			if (svsendtick && g_Vars.coopplayernum >= 0) {
 				const s32 maxprops = g_Vars.maxprops;
 				// Pass 1: moving objs, every tick.
 				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 64; i++) {
@@ -3012,7 +3048,8 @@ void netEndFrame(void)
 			// re-registering wire rooms on them would fight the child linkage);
 			// doors (synced via SVC_PROP_DOOR; wire pos breaks the open anim).
 			// Unreliable (g_NetMsg): latest-wins, self-heals next tick/sweep.
-			if (g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
+			// svsendtick: rides the same state-send cadence as the chr streams.
+			if (svsendtick && g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
 				const s32 maxprops = g_Vars.maxprops;
 				// Pass 1: props in projectile motion, every tick.
 				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 160; i++) {

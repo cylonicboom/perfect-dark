@@ -15,6 +15,7 @@
 #ifndef PLATFORM_N64
 #include "game/player.h"
 #include "input.h"
+#include "net/net.h" // netPlayerOwnsMouse
 #endif
 
 void amTick(void)
@@ -106,7 +107,10 @@ void amTick(void)
 #ifndef PLATFORM_N64
 				s32 newstickx = (s32)cstickx;
 				s32 newsticky = (s32)csticky;
-				if (j == 0 && g_Vars.currentplayernum == 0 && inputMouseIsLocked()) {
+				// netPlayerOwnsMouse: under netplay the local pawn can sit at any
+				// slot (co-op drop-in claimants; dedicated-server clients pre-swap)
+				// — the raw slot-0 gate left the active menu mouse-dead for them.
+				if (j == 0 && netPlayerOwnsMouse() && inputMouseIsLocked()) {
 					f32 mdx, mdy;
 					struct activemenu *am = &g_AmMenus[g_AmIndex];
 					inputMouseGetAbsScaledDelta(&mdx, &mdy);

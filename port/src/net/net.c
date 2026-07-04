@@ -149,6 +149,21 @@ s32 netPlayerOwnsMouse(void)
 	return g_Vars.currentplayernum == 0;
 }
 
+// "Is the current player the primary local viewport?" — the netplay-safe form
+// of the raw `g_Vars.currentplayernum == 0` idiom (the slot-0 assumption
+// family, PORT_HOSTED_SERVER_FINDINGS). Offline / splitscreen: viewport 0,
+// verbatim. Netplay: the LOCAL pawn, whatever slot it sits at (dedicated-
+// server clients historically; co-op drop-in claimants at wire slot N today)
+// — there is exactly one local combatant, so "once per frame" semantics hold.
+// NOTE: only for sites that mean "the one local player"; the many
+// splitscreen-layout `== 0` gates (viewport quadrant math in bondview /
+// hudmsg / player.c / zbuf) key on the VIEWPORT index and must stay raw —
+// audited 2026-07-04, see the netplay perf/gotcha commits.
+s32 netPlayerIsPrimaryLocal(void)
+{
+	return netPlayerOwnsMouse();
+}
+
 void netMpConfigFixLocalPads(s32 slot)
 {
 	if (g_NetMode && g_NetLocalClient && !g_NetLocalClient->is_spectator

@@ -14610,6 +14610,28 @@ void objSetDropped(struct prop *prop, u32 droptype)
 				&& obj->modelnum != MODEL_CHRDATATHIEF) {
 			obj->flags3 |= OBJFLAG3_CANHARDFREE;
 		}
+
+#ifndef PLATFORM_N64
+		// "Wire owns the lifetime" (PORT_NET_PROP_LIFECYCLE / prop-sync
+		// catalog): a synced chr-held item entering the world (corpse drop,
+		// scripted disarm/surrender, owner reap) was never spawn-broadcast —
+		// while held it's parented so nothing wire-references it, and the
+		// actual world entry happens later in the chr's SCREEN-GATED child
+		// processing (chr0f022214 / func0f0706f8), which is unreliable as a
+		// broadcast site. Broadcast the spawn HERE, at the one chokepoint
+		// every drop path goes through, so clients get the authoritative
+		// world copy immediately (netSyncPropSpawn self-gates on server +
+		// syncid + in-game, dedupes re-broadcasts, and ships the initial
+		// move). Previously clients only learned of these props when the
+		// §5.2 move sweep's spawn-heal happened to reach them — the source
+		// of the "prop with syncid N does not exist" warning spam — and the
+		// client's own local corpse-drop twin (now suppressed in
+		// chrBeginDeath) stood in as the visible gun.
+		if (g_NetMode == NETMODE_SERVER && prop->syncid
+				&& parent->type == PROPTYPE_CHR) {
+			netSyncPropSpawn(prop);
+		}
+#endif
 	}
 }
 

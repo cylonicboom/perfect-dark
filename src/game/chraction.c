@@ -3400,6 +3400,34 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 
 	// Drop items
 	if (race == RACE_HUMAN || race == RACE_SKEDAR) {
+#ifndef PLATFORM_N64
+		// "Wire owns the lifetime" (PORT_NET_PROP_LIFECYCLE): on a net client,
+		// a synced chr's corpse drop must NOT put the LOCAL copies on the
+		// floor — the server's authoritative drop arrives via the
+		// objSetDropped spawn broadcast and IS the floor item. Both machines
+		// dropping their own copy was the ghost-twin family: per-tick
+		// ghost-move bandwidth for every floor gun, "prop with syncid N does
+		// not exist" warning spam, visual-vs-authoritative divergence, and
+		// the weapon-slot pressure feeding the force-recycle crash family.
+		// A syncid-0 held twin (Combat Sim bot hands, mirrored locally by the
+		// chr-state weapons-held sync) is marked DELETING so it just vanishes;
+		// a SYNCED held prop (campaign setup guns) is left parented — the
+		// server's spawn broadcast (read-side latest-spawn-wins) replaces it
+		// with the world copy. Concealed items are synced setup props covered
+		// by the same broadcast, so the local drop is skipped entirely.
+		if (g_NetMode == NETMODE_CLIENT && chr->prop && chr->prop->syncid) {
+			s32 h;
+
+			for (h = 0; h < 2; h++) {
+				struct prop *wp = chr->weapons_held[h];
+
+				if (wp && wp->obj && (wp->obj->flags & OBJFLAG_AIUNDROPPABLE) == 0
+						&& wp->syncid == 0) {
+					wp->obj->hidden |= OBJHFLAG_DELETING;
+				}
+			}
+		} else {
+#endif
 		if (chr->weapons_held[0] && (chr->weapons_held[0]->obj->flags & OBJFLAG_AIUNDROPPABLE) == 0) {
 			objSetDropped(chr->weapons_held[0], DROPTYPE_DEFAULT);
 			chr->hidden |= CHRHFLAG_DROPPINGITEM;
@@ -3411,6 +3439,9 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 		}
 
 		chrDropConcealedItems(chr);
+#ifndef PLATFORM_N64
+		}
+#endif
 	}
 }
 

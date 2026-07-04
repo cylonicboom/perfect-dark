@@ -1468,10 +1468,17 @@ Gfx *hudmsgsRender(Gfx *gdl)
 
 	gdl = text0f153628(gdl);
 
+	// netPlayerIsPrimaryLocal (port): the raw slot-0 gate meant "the first
+	// local viewport" — under netplay the one local pawn can sit at any slot
+	// (co-op drop-in claimants), so key on the local player instead.
 	if ((g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0)
 			&& g_InCutscene
 			&& g_MainIsEndscreen == 0
+#ifndef PLATFORM_N64
+			&& netPlayerIsPrimaryLocal()) {
+#else
 			&& g_Vars.currentplayernum == 0) {
+#endif
 		spdc = false;
 	}
 

@@ -1832,7 +1832,17 @@ Gfx *lvRender(Gfx *gdl)
 									((PAL ? 26.0f : 30.0f) - g_Vars.speedpillchange) * (PAL ? 0.0076923076994717f : 0.0066666668280959f));
 						}
 
+						// netPlayerIsPrimaryLocal: "advance once per frame, on the
+						// primary viewport's render pass". The raw slot-0 gate froze
+						// the combat-boost meter transition for any local pawn not
+						// at slot 0 (co-op drop-in claimants). Netplay has exactly
+						// one local combatant, so once-per-frame still holds;
+						// offline/splitscreen is viewport 0 verbatim.
+#ifndef PLATFORM_N64
+						if (netPlayerIsPrimaryLocal()) {
+#else
 						if (g_Vars.currentplayernum == 0) {
+#endif
 							if (g_Vars.speedpillwant) {
 								g_Vars.speedpillchange++;
 							} else {

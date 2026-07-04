@@ -67,6 +67,10 @@ s32 g_NetMode = NETMODE_NONE;
 // g_NetCoopObjStatuses, which has an extern in net.h covering its forward use.
 static u32 g_NetLastStageFlags;
 
+// Last alarm state broadcast to co-op clients (SVC_ALARM, the g_StageFlags
+// pattern). Reset at co-op stage entry.
+static u8 g_NetLastAlarmActive;
+
 // Last co-op cutscene state broadcast (active + anim), so netEndFrame only sends
 // SVC_CUTSCENE on a transition. Reset at co-op stage entry.
 static s32 g_NetLastCutsceneActive;
@@ -1259,6 +1263,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	memset(g_NetCoopClientObjDone, 0, sizeof(u8) * MAX_OBJECTIVES); // host: clear client-reported completions
 	memset(g_NetCoopObjToastShown, 0, sizeof(u8) * MAX_OBJECTIVES); // clear per-objective completion-toast latches
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
+	g_NetLastAlarmActive = 0; // re-broadcast alarm state from scratch for the new stage
 	g_NetCoopLocalStageFlags = 0; // client: clear locally-set stage flags for the new stage
 	g_NetLastCutsceneActive = 0;
 	g_NetLastCutsceneAnim = 0;
@@ -2251,6 +2256,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
+			case SVC_ALARM: rc = netmsgSvcAlarmRead(&cl->in, cl); break;
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
 			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
@@ -3112,6 +3118,22 @@ void netEndFrame(void)
 						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
 				g_NetLastStageFlags = g_StageFlags;
 				netmsgSvcStageFlagsWrite(&g_NetMsgRel);
+			}
+
+			// Co-op alarm mirror (SVC_ALARM, proto 85): the alarm is raised by
+			// host-side NPC AI (gated off on clients) or scripts, so without the
+			// mirror a client never heard the klaxon and its monitor scripts'
+			// alarmIsActive() conditionals silently diverged from the host. On
+			// change + a heartbeat heal at phase 25 (the g_StageFlags pattern;
+			// free phase — KoH 0, reconcile 10, score 15, flags 20, lobby 30,
+			// stats 45, timescale 50).
+			if (g_Vars.coopplayernum >= 0) {
+				const u8 alarmnow = alarmIsActive() ? 1 : 0;
+				if (alarmnow != g_NetLastAlarmActive
+						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 25u) {
+					g_NetLastAlarmActive = alarmnow;
+					netmsgSvcAlarmWrite(&g_NetMsgRel, alarmnow);
+				}
 			}
 
 			// Co-op cutscene state: in-engine cutscenes (intro, mid-mission, outro)

@@ -2317,32 +2317,12 @@ bool aiGiveObjectToChr(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	struct defaultobj *obj = objFindByTagId(cmd[2]);
+	// Net co-op client: CHR_BOND/CHR_COOP resolve to the correct PHYSICAL
+	// player inside chrResolveId (chrResolveCoopSlotPlayer — the generalised
+	// "option 3" slot remap, which covers every player-targeted AI command,
+	// e.g. the Cassandra's-necklace give). No per-site remap here: the
+	// transposition is self-inverse, so re-applying it would undo the fix.
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[3]);
-
-#ifndef PLATFORM_N64
-	// Net co-op client: a scripted player give (CHR_BOND / CHR_COOP / player
-	// chrnum) resolved by LOCAL g_Vars.players[] slot, but the slot the script
-	// means is the host's (wire) slot — netPlayersAllocate transposed local
-	// slots 0 <-> N to keep the local player at 0. Without the remap a
-	// single-target give (e.g. Cassandra's necklace -> CHR_COOP, setupame.c)
-	// lands on the remote pawn and the local player never gets the item or
-	// pickup toast. The resolved local slot IS the wire slot the host targets,
-	// so transpose it back to the matching physical player. Multi-target gives
-	// (spawn loadouts) still run exactly once per pawn, just correctly paired,
-	// and the host's SVC_PROP_PICKUP echo for our own pawn is already skipped
-	// in netmsgSvcPropPickupRead, so nothing double-gives.
-	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
-			&& chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
-		const s32 wireslot = playermgrGetPlayerNumByProp(chr->prop);
-		const s32 localslot = netCoopRemapWirePlayernum(wireslot);
-
-		if (localslot != wireslot && localslot >= 0 && localslot < MAX_PLAYERS
-				&& g_Vars.players[localslot] && g_Vars.players[localslot]->prop
-				&& g_Vars.players[localslot]->prop->chr) {
-			chr = g_Vars.players[localslot]->prop->chr;
-		}
-	}
-#endif
 
 	if (obj && obj->prop && chr && chr->prop) {
 		if (chr->prop->type == PROPTYPE_PLAYER) {

@@ -1665,6 +1665,42 @@ u32 netmsgSvcStageFlagsRead(struct netbuf *src, struct netclient *srccl)
 	return src->error;
 }
 
+u32 netmsgSvcAlarmWrite(struct netbuf *dst, u8 active)
+{
+	netbufWriteU8(dst, SVC_ALARM);
+	netbufWriteU8(dst, active);
+	return dst->error;
+}
+
+u32 netmsgSvcAlarmRead(struct netbuf *src, struct netclient *srccl)
+{
+	const u8 active = netbufReadU8(src);
+
+	if (src->error || srccl->state < CLSTATE_GAME) {
+		return src->error;
+	}
+
+	// Host-authoritative alarm mirror (proto 85). The alarm was fully
+	// unsynced: it's raised by host-side NPC AI (gated off on clients) or
+	// scripts, so a client never heard the klaxon and every alarmIsActive()
+	// conditional in its locally-running monitor scripts read false (silent
+	// script divergence). Plain overwrite — a client's own monitor script may
+	// flip it a beat early, but the host runs the same script and the states
+	// converge within one mirror tick. alarmDeactivate also stops the local
+	// klaxon audio loop.
+	if (active) {
+		if (!alarmIsActive()) {
+			alarmActivate();
+		}
+	} else {
+		if (alarmIsActive()) {
+			alarmDeactivate();
+		}
+	}
+
+	return src->error;
+}
+
 u32 netmsgSvcCutsceneWrite(struct netbuf *dst, s32 active, s16 animnum)
 {
 	netbufWriteU8(dst, SVC_CUTSCENE);

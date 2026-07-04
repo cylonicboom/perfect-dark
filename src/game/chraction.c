@@ -15132,6 +15132,36 @@ void chrsClearRefsToPlayer(s32 playernum)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Net co-op client: CHR_BOND / CHR_COOP are SLOT-SEMANTIC — scripts (and the
+// host, whose local slots ARE the wire slots) mean "the player at wire slot
+// bondplayernum/coopplayernum", but g_Vars.bond/coop point at LOCAL slots,
+// which netPlayersAllocate transposed (local player -> slot 0). Resolve the
+// pawn at the transposed local slot instead, so EVERY chrFindById consumer —
+// scripted gives, control grants/revokes, hudmsgs/subtitles, disarms,
+// draw-weapon, fades, autowalk, and all the aiIf* conditionals — targets the
+// same PHYSICAL player as the host (known-issues "option 3", generalised from
+// the original aiGiveObjectToChr-only fix; see PORT_NET_KNOWN_ISSUES.md).
+// Deliberately NOT applied to CHR_TARGET / CHR_P1P2 / chr->target paths:
+// those hold locally-perceived (already-physical) player references, and
+// re-transposing them would corrupt them. Identity outside client co-op and
+// on no-swap clients.
+static struct player *chrResolveCoopSlotPlayer(struct player *vanillapl, s32 playernum)
+{
+	if (g_NetMode == NETMODE_CLIENT && g_Vars.coopplayernum >= 0
+			&& playernum >= 0 && playernum < MAX_PLAYERS) {
+		const s32 localslot = netCoopRemapWirePlayernum(playernum);
+
+		if (localslot != playernum && localslot >= 0 && localslot < MAX_PLAYERS
+				&& g_Vars.players[localslot]) {
+			return g_Vars.players[localslot];
+		}
+	}
+
+	return vanillapl;
+}
+#endif
+
 s32 chrResolveId(struct chrdata *ref, s32 id)
 {
 	if (ref) {
@@ -15152,14 +15182,34 @@ s32 chrResolveId(struct chrdata *ref, s32 id)
 			id = ref->chrdup;
 			break;
 		case CHR_BOND:
+#ifndef PLATFORM_N64
+			{
+				struct player *pl = chrResolveCoopSlotPlayer(g_Vars.bond, g_Vars.bondplayernum);
+
+				if (pl && pl->prop && pl->prop->chr) {
+					id = pl->prop->chr->chrnum;
+				}
+			}
+#else
 			if (g_Vars.bond && g_Vars.bond->prop && g_Vars.bond->prop->chr) {
 				id = g_Vars.bond->prop->chr->chrnum;
 			}
+#endif
 			break;
 		case CHR_COOP:
+#ifndef PLATFORM_N64
+			{
+				struct player *pl = chrResolveCoopSlotPlayer(g_Vars.coop, g_Vars.coopplayernum);
+
+				if (pl && pl->prop && pl->prop->chr) {
+					id = pl->prop->chr->chrnum;
+				}
+			}
+#else
 			if (g_Vars.coop && g_Vars.coop->prop && g_Vars.coop->prop->chr) {
 				id = g_Vars.coop->prop->chr->chrnum;
 			}
+#endif
 			break;
 		case CHR_ANTI:
 			if (g_Vars.anti && g_Vars.anti->prop && g_Vars.anti->prop->chr) {
@@ -15195,14 +15245,34 @@ s32 chrResolveId(struct chrdata *ref, s32 id)
 	} else { // ref is NULL
 		switch (id) {
 		case CHR_BOND:
+#ifndef PLATFORM_N64
+			{
+				struct player *pl = chrResolveCoopSlotPlayer(g_Vars.bond, g_Vars.bondplayernum);
+
+				if (pl && pl->prop && pl->prop->chr) {
+					id = pl->prop->chr->chrnum;
+				}
+			}
+#else
 			if (g_Vars.bond && g_Vars.bond->prop && g_Vars.bond->prop->chr) {
 				id = g_Vars.bond->prop->chr->chrnum;
 			}
+#endif
 			break;
 		case CHR_COOP:
+#ifndef PLATFORM_N64
+			{
+				struct player *pl = chrResolveCoopSlotPlayer(g_Vars.coop, g_Vars.coopplayernum);
+
+				if (pl && pl->prop && pl->prop->chr) {
+					id = pl->prop->chr->chrnum;
+				}
+			}
+#else
 			if (g_Vars.coop && g_Vars.coop->prop && g_Vars.coop->prop->chr) {
 				id = g_Vars.coop->prop->chr->chrnum;
 			}
+#endif
 			break;
 		case CHR_ANTI:
 			if (g_Vars.anti && g_Vars.anti->prop && g_Vars.anti->prop->chr) {

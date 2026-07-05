@@ -291,6 +291,8 @@ s32 chraiLuaTeleportToChr(s32 chrnum);        /* snap player to a chr (server-si
 s32 chraiLuaFlatTex(s32 mode);                /* 0 normal, 1 white/vertex-only, 2 avg-colour textures */
 s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale path */
 s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
+s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */
+s32 chraiLuaAmmoSwap(s32 weaponnum);          /* held guns fire this weapon's primary; -1 off */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

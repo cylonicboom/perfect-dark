@@ -8460,6 +8460,51 @@ s32 chraiLuaTeleportToChr(s32 chrnum)
 	return chrSetPos(pl, &chr->prop->pos, chr->prop->rooms, chrGetRotY(pl), true) ? 1 : 0;
 }
 
+// pd.explosions_around(on): the Air Force One crash sequence — surround the
+// local player with staggered random explosions (playerSurroundWithExplosions
+// starts the bondexploding loop that playerTickExplode drives; off just
+// clears the flag). Damage respects pd.invincible — the chr damage handler
+// early-outs on player->invincible, but the explosions still spawn, so the
+// self-destruct effect looks lethal without being lethal.
+s32 chraiLuaPlayerExplosions(s32 on)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (on) {
+		playerSurroundWithExplosions(0);
+	} else {
+		g_Vars.currentplayer->bondexploding = false;
+	}
+	return 1;
+}
+
+// Chaos ammo swap master switch (game_0b0fd0.c, the gset function getters).
+extern s32 g_ChaosAmmoSwapWeapon;
+
+// pd.ammo_swap(weaponnum): every gun the player holds fires this weapon's
+// primary rounds (rockets, Devastator grenades, DY357 bullets...). The target
+// must have a SHOOT-type primary — melee/throw/device functions need hand
+// anim states a gun can't provide. pd.ammo_swap() with no arg turns it off.
+s32 chraiLuaAmmoSwap(s32 weaponnum)
+{
+	struct weaponfunc *func;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (weaponnum < 0) {
+		g_ChaosAmmoSwapWeapon = -1;
+		return 1;
+	}
+	func = weaponGetFunctionById(weaponnum, FUNC_PRIMARY);
+	if (func == NULL || (func->type & 0xff) != INVENTORYFUNCTYPE_SHOOT) {
+		return 0;
+	}
+	g_ChaosAmmoSwapWeapon = weaponnum;
+	return 1;
+}
+
 // Renderer chaos globals (port/fast3d/gfx_pc.cpp). Both are C++ `int` — the
 // same width as game-side s32, so the 1-byte `bool` bridging gotcha the
 // wireframe/mirror flags have (see bg.c) does not apply here.

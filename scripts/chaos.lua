@@ -54,7 +54,7 @@ end
 -- ------------------------------------------------------------- effects -----
 -- duration in seconds (0 = instant). start/stop run under pcall.
 -- Weapon/cheat ids from src/include/constants.h.
-local W = { FALCON2=0x02, MAGSEC=0x05, MAULER=0x06, PHOENIX=0x07, MAGNUM=0x08,
+local W = { FALCON2=0x02, MAGSEC=0x05, MAULER=0x06, PHOENIX=0x07, MAGNUM=0x08, LX=0x09,
   CMP150=0x0a, CYCLONE=0x0b, LAPTOP=0x0e, DRAGON=0x0f, K7=0x10, AR34=0x11,
   SUPERDRAGON=0x12, SHOTGUN=0x13, REAPER=0x14, SNIPER=0x15, FARSIGHT=0x16,
   DEVASTATOR=0x17, ROCKET=0x18, SLAYER=0x19, KNIFE=0x1a, CROSSBOW=0x1b,
@@ -127,6 +127,36 @@ chaos.effects = {
   nightvision  = { label="Night vision",      w=4, dur=20, start=function() pd.device_on(W.NIGHTVISION) end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
   blink        = { label="Blink",             w=5, dur=0, start=function() pd.fade(255,255,255,255, 45) end },
+  -- ammo roulette (pd.ammo_swap: every held gun fires another weapon's
+  -- primary rounds; refills keep the borrowed ammo topped up while active)
+  rocket_rounds  = { label="Rockets for everyone", w=4, dur=20,
+                     start=function() pd.ammo_swap(W.ROCKET); pd.refill_ammo() end,
+                     tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
+                     stop=function() pd.ammo_swap() end },
+  grenade_rounds = { label="Grenade machine gun",  w=4, dur=20,
+                     start=function() pd.ammo_swap(W.DEVASTATOR); pd.refill_ammo() end,
+                     tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
+                     stop=function() pd.ammo_swap() end },
+  golden_gun     = { label="The golden gun",       w=3, dur=15,
+                     start=function() pd.ammo_swap(W.LX); pd.refill_ammo() end,
+                     stop=function() pd.ammo_swap() end },
+  farsight_rounds= { label="FarSight rounds",      w=3, dur=15,
+                     start=function() pd.ammo_swap(W.FARSIGHT); pd.refill_ammo() end,
+                     tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
+                     stop=function() pd.ammo_swap() end },
+  sedative_rounds= { label="Sedative rounds",      w=3, dur=20,
+                     start=function() pd.ammo_swap(W.TRANQ); pd.refill_ammo() end,
+                     stop=function() pd.ammo_swap() end },
+  -- the Air Force One crash block: explosions everywhere, but you're covered
+  self_destruct  = { label="SELF-DESTRUCT SEQUENCE", w=3, dur=8,
+                     start=function()
+                       pd.invincible(true)
+                       pd.explosions_around(true)
+                     end,
+                     stop=function()
+                       pd.explosions_around(false)
+                       pd.invincible(false)
+                     end },
   -- visual chaos (renderer + room lighting hooks; timed, all self-revert)
   untextured   = { label="1996 mode",          w=5, dur=30,
                    start=function() pd.flattex(1) end,
@@ -352,11 +382,12 @@ pd.on("stage", function()
   st.active = {}
   st.votes = {}
   st.timer = st.interval * TICKS
-  -- the visual modes live in renderer / lighting globals that SURVIVE the
-  -- stage reload (unlike the cheat bank) — reset them explicitly
+  -- the visual modes + ammo swap live in globals that SURVIVE the stage
+  -- reload (unlike the cheat bank) — reset them explicitly
   if pd.flattex then pd.flattex(0) end
   if pd.grayscale then pd.grayscale(false) end
   if pd.room_tint then pd.room_tint() end
+  if pd.ammo_swap then pd.ammo_swap() end
 end)
 
 if pd.menu_add then

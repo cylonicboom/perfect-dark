@@ -86,7 +86,7 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~42 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~48 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate). Timed effects may also carry a `tick`
 function, called every frame while active (disco's hue cycle).
@@ -107,6 +107,16 @@ function, called every frame while active (disco's hue cycle).
   to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
   cloak for 20s), `buddy` (spawn ally), `reinforce` (spawn armed enemy at a
   random chr).
+- **Ammo roulette** (`pd.ammo_swap` — every held gun fires another weapon's
+  primary rounds, with periodic refills of the borrowed ammo):
+  `rocket_rounds` ("Rockets for everyone"), `grenade_rounds` ("Grenade
+  machine gun", the Devastator's grenades from anything), `golden_gun`
+  (DY357-LX one-hit-kill rounds), `farsight_rounds` (wall-piercing),
+  `sedative_rounds` (tranq darts).
+- **`self_destruct`** — "SELF-DESTRUCT SEQUENCE" (8s): invincibility on, then
+  the Air Force One crash block (`playerSurroundWithExplosions` — staggered
+  explosions around the player), then both off. Looks lethal, isn't — to
+  you; nearby NPCs genuinely catch the blasts.
 - **Visual** (renderer + room lighting; all timed, all local-cosmetic):
   `untextured` ("1996 mode" — every texture white, pure vertex shading),
   `watercolour` (every texture flooded with its own average colour),
@@ -145,6 +155,8 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.flattex(mode)` | `gfx_flattex_mode` (gfx_pc.cpp) | 0 off / 1 white / 2 average-colour textures; applied by a texture-cache reimport at the next frame boundary; per-pixel **alpha preserved** so fonts/HUD stay readable; HD ext-tex falls back to the (flattened) N64 decode while active |
 | `pd.grayscale(on)` | `gfx_force_grayscale` → `rdp.grayscale` | forces `SHADER_OPT_GRAYSCALE` with a neutral colour (both GL and SDL_GPU honour it); the game never emits `G_SETGRAYSCALE_EXT`, so no contention |
 | `pd.room_tint(r,g,b)` / `()` | `g_ChaosRoomTintFrac` (dlights.c) | stage-wide room-lighting multiplier — `kohHighlightRoom`'s math applied to every room at both `scenarioHighlightRoom` sites; dirties all rooms (`ROOMFLAG_BRIGHTNESS_DIRTY_TEMP`, the paintroom pattern) |
+| `pd.explosions_around(on)` | `playerSurroundWithExplosions` / `bondexploding` | the Air Force One crash loop (`playerTickExplode` spawns `EXPLOSIONTYPE_BONDEXPLODE` around the player every 15–30 ticks); damage respects `pd.invincible` (the chr damage handler early-outs, but explosions still spawn) |
+| `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |
 
 Renderer notes: the flat-texture filter lives at the single
 `gfx_upload_tex_filtered` chokepoint in `gfx_pc.cpp` (all nine N64-format
@@ -247,3 +259,13 @@ Until then, the UDP bridge is the supported route.
    `--renderer sdlgpu`) and once with an HD texture pack loaded (pack should
    flatten too, then come back). Change stage mid-`noir` — new stage must
    load un-grayscaled.
+10. Self-destruct: `/chaos trigger self_destruct` — explosions ring the
+   player for 8s, zero damage taken (watch health bar), nearby NPCs do get
+   hurt, then it stops cleanly and damage resumes (get shot to confirm
+   invincibility actually lifted).
+11. Ammo swap: `/chaos trigger rocket_rounds` — Falcon/CMP/etc fire real
+   rockets; check reload still cycles, ammo refills keep coming, and the
+   effect expiring restores normal rounds. Repeat `golden_gun` (one-hit
+   kills, hitscan) and `grenade_rounds`. While active, open the pause-menu
+   weapon inventory — descriptions may show the swap weapon (cosmetic,
+   expected). Confirm NPC fire is unaffected.

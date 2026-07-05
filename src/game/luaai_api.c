@@ -1112,6 +1112,23 @@ static int l_pd_room_tint(lua_State *L)
 	return 1;
 }
 
+/* pd.explosions_around(on) -> bool. The Air Force One crash sequence:
+ * staggered explosions surround the player until turned off. */
+static int l_pd_explosions_around(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerExplosions(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.ammo_swap(weaponnum) -> bool. Held guns fire this weapon's primary
+ * rounds (must be a SHOOT-type function). pd.ammo_swap() turns it off. */
+static int l_pd_ammo_swap(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_optinteger(L, 1, -1);
+	lua_pushboolean(L, chraiLuaAmmoSwap(weaponnum) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1242,6 +1259,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
+	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");
+	lua_pushcfunction(L, l_pd_ammo_swap);     lua_setfield(L, -2, "ammo_swap");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

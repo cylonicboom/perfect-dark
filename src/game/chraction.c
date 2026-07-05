@@ -8342,6 +8342,124 @@ s32 chraiLuaPlaySound(s32 sfxnum)
 	return 1;
 }
 
+// pd.alarm(on): raise/clear the stage alarm (klaxon + every alarm-conditional
+// AI script). Server-side only — on a netplay server the SVC_ALARM mirror
+// (proto 85) carries the transition to clients.
+s32 chraiLuaSetAlarm(s32 on)
+{
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	if (on) {
+		alarmActivate();
+	} else {
+		alarmDeactivate();
+	}
+	return 1;
+}
+
+// pd.boost(secs): grant `secs` seconds of the Combat Boost / Speed Pill
+// (bgunAddBoost owns the want-flag, activation sting, and the lv.c zoom-blur
+// ramp; bgunTickBoost decays the time and shuts it off — no cleanup needed).
+// secs <= 0 cancels an active boost immediately.
+s32 chraiLuaBoost(f32 secs)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (secs > 0.0f) {
+		bgunAddBoost((s32)(secs * TICKS(60)));
+	} else {
+		g_Vars.speedpilltime = 0;
+		g_Vars.speedpillwant = false;
+	}
+	return 1;
+}
+
+// pd.player_set_health(frac): set the player's health directly (0..1 of the
+// bar). Floored just above zero — chaos scares, it doesn't execute; kills go
+// through real damage paths so death bookkeeping stays consistent.
+s32 chraiLuaPlayerSetHealth(f32 frac)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (frac < 0.01f) frac = 0.01f;
+	if (frac > 1.0f) frac = 1.0f;
+	g_Vars.currentplayer->bondhealth = frac;
+	return 1;
+}
+
+// pd.dizzy(amount): apply the tranquiliser screen-sway to the local player
+// (chr->blurdrugamount — the same accumulator tranq/psychosis rounds feed;
+// decays naturally). Capped below the TICKS(5000) knockout band the drugged
+// paths key on. amount is in blur units, ~2000-4000 is a solid wobble.
+s32 chraiLuaDizzy(s32 amount)
+{
+	struct chrdata *chr = apLuaPlayerChr();
+
+	if (chr == NULL) {
+		return 0;
+	}
+	if (amount < 0) amount = 0;
+	if (amount > 4000) amount = 4000;
+	if (chr->blurdrugamount < TICKS(amount)) {
+		chr->blurdrugamount = TICKS(amount);
+	}
+	return 1;
+}
+
+// pd.chr_cloak(chrnum, on): toggle a chr's cloak (CHRHFLAG_CLOAKED — the same
+// bit the cloaking device sets; render + AI treat the chr as cloaked, IR
+// scanner still reveals them).
+s32 chraiLuaChrCloak(s32 chrnum, s32 on)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL) {
+		return 0;
+	}
+	if (on) {
+		chr->hidden |= CHRHFLAG_CLOAKED;
+	} else {
+		chr->hidden &= ~CHRHFLAG_CLOAKED;
+	}
+	return 1;
+}
+
+// pd.strip_ammo(): zero every ammo pool (the inverse of pd.refill_ammo).
+// Weapons stay in the inventory — the chaos is the click, not the loss.
+s32 chraiLuaStripAmmo(void)
+{
+	s32 type;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	for (type = 1; type <= AMMOTYPE_ECM_MINE; type++) {
+		bgunSetAmmoQuantity(type, 0);
+	}
+	return 1;
+}
+
+// pd.teleport_to_chr(chrnum): snap the local player to a chr's position via
+// chrSetPos — the same primitive the netcode uses to force-correct player
+// pawns, so bondwalk state / camera / rooms all follow. Server-side only
+// (a client's move would just be force-corrected straight back).
+s32 chraiLuaTeleportToChr(s32 chrnum)
+{
+	struct chrdata *pl = apLuaPlayerChr();
+	struct chrdata *chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+
+	if (pl == NULL || pl->prop == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	if (chr == NULL || chr->prop == NULL || chr->prop == pl->prop) {
+		return 0;
+	}
+	return chrSetPos(pl, &chr->prop->pos, chr->prop->rooms, chrGetRotY(pl), true) ? 1 : 0;
+}
+
 // pd.spawn_ally(): spawn a friendly "Perfect Buddy" that fights alongside the
 // player. Mirrors the campaign buddy spawn (player.c) -- TEAM_ALLY + a buddy
 // ailist; solo allegiance is the bitwise chrCompareTeams test, so it targets

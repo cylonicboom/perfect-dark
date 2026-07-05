@@ -281,6 +281,13 @@ s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60); /* viewport fade
 s32 chraiLuaYeetChr(s32 chrnum, f32 force);   /* knockback-fling a chr away from the player */
 s32 chraiLuaExplodeAtChr(s32 chrnum, s32 type); /* explosion at a chr's feet */
 s32 chraiLuaPlaySound(s32 sfxnum);            /* one-shot local sound */
+s32 chraiLuaSetAlarm(s32 on);                 /* stage alarm on/off (server-side) */
+s32 chraiLuaBoost(f32 secs);                  /* Speed Pill boost for N secs (<=0 cancels) */
+s32 chraiLuaPlayerSetHealth(f32 frac);        /* health 0.01..1 (never kills) */
+s32 chraiLuaDizzy(s32 amount);                /* tranq screen-sway, 0..4000 blur units */
+s32 chraiLuaChrCloak(s32 chrnum, s32 on);     /* toggle CHRHFLAG_CLOAKED on a chr */
+s32 chraiLuaStripAmmo(void);                  /* zero every ammo pool */
+s32 chraiLuaTeleportToChr(s32 chrnum);        /* snap player to a chr (server-side) */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

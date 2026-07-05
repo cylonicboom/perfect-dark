@@ -1026,6 +1026,61 @@ static int l_pd_explosion(lua_State *L)
 	return 1;
 }
 
+/* pd.alarm(on) -> bool. Stage alarm on/off (server-side; SVC_ALARM mirrors). */
+static int l_pd_alarm(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSetAlarm(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.boost([secs]) -> bool. Speed Pill boost for N seconds (self-decaying);
+ * secs <= 0 cancels an active boost. */
+static int l_pd_boost(lua_State *L)
+{
+	f32 secs = (f32)luaL_optnumber(L, 1, 10.0);
+	lua_pushboolean(L, chraiLuaBoost(secs) != 0);
+	return 1;
+}
+
+/* pd.player_set_health(frac) -> bool. Set health 0.01..1 (never kills). */
+static int l_pd_player_set_health(lua_State *L)
+{
+	f32 frac = (f32)luaL_checknumber(L, 1);
+	lua_pushboolean(L, chraiLuaPlayerSetHealth(frac) != 0);
+	return 1;
+}
+
+/* pd.dizzy([amount]) -> bool. Tranquiliser screen-sway (decays naturally). */
+static int l_pd_dizzy(lua_State *L)
+{
+	s32 amount = (s32)luaL_optinteger(L, 1, 3000);
+	lua_pushboolean(L, chraiLuaDizzy(amount) != 0);
+	return 1;
+}
+
+/* pd.chr_cloak(chrnum, on) -> bool. Toggle a chr's cloaking device flag. */
+static int l_pd_chr_cloak(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrCloak(chrnum, lua_toboolean(L, 2)) != 0);
+	return 1;
+}
+
+/* pd.strip_ammo() -> bool. Zero every ammo pool (weapons stay). */
+static int l_pd_strip_ammo(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaStripAmmo() != 0);
+	return 1;
+}
+
+/* pd.teleport_to_chr(chrnum) -> bool. Snap the player to a chr (server-side). */
+static int l_pd_teleport_to_chr(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaTeleportToChr(chrnum) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1146,6 +1201,13 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_yeet);      lua_setfield(L, -2, "chr_yeet");
 	lua_pushcfunction(L, l_pd_explosion);     lua_setfield(L, -2, "explosion");
 	lua_pushcfunction(L, l_pd_ext_poll);      lua_setfield(L, -2, "ext_poll");
+	lua_pushcfunction(L, l_pd_alarm);         lua_setfield(L, -2, "alarm");
+	lua_pushcfunction(L, l_pd_boost);         lua_setfield(L, -2, "boost");
+	lua_pushcfunction(L, l_pd_player_set_health); lua_setfield(L, -2, "player_set_health");
+	lua_pushcfunction(L, l_pd_dizzy);         lua_setfield(L, -2, "dizzy");
+	lua_pushcfunction(L, l_pd_chr_cloak);     lua_setfield(L, -2, "chr_cloak");
+	lua_pushcfunction(L, l_pd_strip_ammo);    lua_setfield(L, -2, "strip_ammo");
+	lua_pushcfunction(L, l_pd_teleport_to_chr); lua_setfield(L, -2, "teleport_to_chr");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

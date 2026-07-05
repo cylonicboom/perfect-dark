@@ -116,7 +116,34 @@ chaos.effects = {
   nightvision  = { label="Night vision",      w=4, dur=20, start=function() pd.device_on(W.NIGHTVISION) end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
   blink        = { label="Blink",             w=5, dur=0, start=function() pd.fade(255,255,255,255, 45) end },
+  -- player state, SA-chaos style
+  turbo        = { label="GOTTA GO FAST",     w=6, dur=0, start=function() pd.boost(15) end },
+  drunk        = { label="One too many",      w=6, dur=0, start=function() pd.dizzy(3500) end },
+  one_hp       = { label="Health roulette",   w=4, dur=0, start=function()
+                     pd.player_set_health(math.random(5, 60) / 100) end },
+  dry_spell    = { label="Dry spell",         w=5, dur=0, start=function() pd.strip_ammo() end },
+  quantum_leap = { label="Quantum leap",      w=5, dur=0, start=function()
+                     local c = random_chr(); if c then pd.teleport_to_chr(c) end end },
+  lock_n_load  = { label="Lock and load",     w=3, dur=0, start=function()
+                     for _, g in ipairs(GUNS) do pd.give_weapon(g) end
+                     pd.refill_ammo() end },
+  amnesia      = { label="Amnesia",           w=2, dur=0, start=function()
+                     for _, g in ipairs(GUNS) do pd.take_weapon(g) end
+                     pd.take_weapon(W.KNIFE) end },
   -- world chaos
+  intruder     = { label="INTRUDER ALERT",    w=5, dur=20,
+                   start=function() pd.alarm(true) end,
+                   stop=function() pd.alarm(false) end },
+  predators    = { label="Predators",         w=4, dur=20,
+                   start=function()
+                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_cloak(c, true) end end,
+                   stop=function()
+                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_cloak(c, false) end end },
+  airstrike    = { label="Airstrike",         w=4, dur=0, start=function()
+                     local list = pd.all_chrs() or {}
+                     for i = 1, math.min(4, #list) do
+                       pd.explosion(list[math.random(#list)])
+                     end end },
   panic        = { label="PANIC!",            w=6, dur=0, start=function()
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
   yeet         = { label="YEET",              w=6, dur=0, start=function()

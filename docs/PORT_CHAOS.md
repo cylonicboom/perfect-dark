@@ -86,20 +86,26 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~25 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~35 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate).
 
 - **Arsenal**: `arsenal` (random gun + switch + ammo), `disarm` (take held
-  weapon), `knife_fight`, `ammo_rain`.
+  weapon), `knife_fight`, `ammo_rain`, `lock_n_load` (every gun + full ammo),
+  `amnesia` (take every gun), `dry_spell` (zero all ammo, weapons kept).
 - **Cheat bank** (timed): `mirror`, `wireframe`, `tonal` (tonal inversion),
   `fists`, `slomo`, `dkmode`, `smalljo`, `smallchars`, `elvis`, `marquis`,
   `enemyrockets`, `enemyshields`.
 - **Player state**: `godmode` (10s invincible), `cloak`/`xray`/`nightvision`
-  (device on, timed), `heal` (+full shield), `blink` (white screen flash).
+  (device on, timed), `heal` (+full shield), `blink` (white screen flash),
+  `turbo` (15s Speed Pill boost, self-decays), `drunk` (tranq screen sway,
+  wears off), `one_hp` (health roulette: 5–60%), `quantum_leap` (teleport to
+  a random chr).
 - **World**: `panic` (alert every chr), `yeet` (fling every chr away from the
-  player), `boom` (explosion at a random chr), `buddy` (spawn ally),
-  `reinforce` (spawn armed enemy at a random chr).
+  player), `boom` (explosion at a random chr), `airstrike` (explosions at up
+  to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
+  cloak for 20s), `buddy` (spawn ally), `reinforce` (spawn armed enemy at a
+  random chr).
 
 Adding an effect = one table entry in `chaos.effects` + `/lua reload`.
 
@@ -121,6 +127,13 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.chr_yeet(chrnum, force)` | `chraiLuaYeetChr` | `chrYeetFromPos` away from the player (default force 100) |
 | `pd.explosion(chrnum, type)` | `chraiLuaExplodeAtChr` | `explosionCreateSimple` at the chr (default type 9) |
 | `pd.ext_poll()` | ring queue pop | returns `source, text` or `nil`; also drains the UDP socket |
+| `pd.alarm(on)` | `alarmActivate`/`alarmDeactivate` | server-side; SVC_ALARM (proto 85) mirrors to clients |
+| `pd.boost(secs)` | `bgunAddBoost` | Speed Pill boost; self-decays via `bgunTickBoost`; ≤0 cancels |
+| `pd.player_set_health(frac)` | `bondhealth` write | clamped 0.01..1 — never kills |
+| `pd.dizzy(amount)` | `blurdrugamount` write | tranq screen-sway, 0..4000 (below the TICKS(5000) KO band), decays naturally |
+| `pd.chr_cloak(chrnum, on)` | `CHRHFLAG_CLOAKED` bit | same flag as the cloaking device; IR scanner still reveals |
+| `pd.strip_ammo()` | `bgunSetAmmoQuantity(type, 0)` loop | all ammo types 1..`AMMOTYPE_ECM_MINE` |
+| `pd.teleport_to_chr(chrnum)` | `chrSetPos` | the netcode's player force-position primitive; server-side |
 
 Pre-existing bindings chaos reuses: `give_weapon`, `refill_ammo`,
 `invincible`, `device_on`, `player_heal`, `player_set_shield`, `all_chrs`,

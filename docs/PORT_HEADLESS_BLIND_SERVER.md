@@ -94,7 +94,7 @@ calls. The headless mirror lives in `port/src/pdmain.c` `mainTick`
 | `lvFindThreats` / tracked props | lv.c | ❌ | threat-detector HUD; OK. |
 | `bgTick` / `lightsTick` / `artifactsClear` / `skyRender` / `bgCalculateGlaresForVisibleRooms` | lv.c:1449-1451 | ❌ | render-tier (portal *visibility*, flash lighting, glares). Room traversal/doors are collision+door-state, not portals — nothing gameplay-blocking here. `bgTickPortals` also syncs cheat→renderer globals; meaningless headless. OK. |
 | `bgunTickGameplay2` | player.c:5125 (playerRenderHud) | ❌ | vision mode (X-ray/FarSight), Mauler charge tick, RCP120 cloak ammo drain, `bgunTickLoad`, eyespy deselect — all per-player cosmetic/local; cloak *state* arrives via `UCMD_CLOAKED` (bondmove.c:661). Minor; see §6.6. |
-| co-op buddy health-steal on revive (player.c:5345-5422) | playerRenderHud | ❌ | only matters if co-op ever runs on a dedicated host; the mirror's respawn path skips the health transfer. §6.7. |
+| co-op buddy health-steal on revive (player.c ~5610) | playerRenderHud | ✅ mirrored (compile-verified) | pdmain.c respawn mirror runs the buddy transfer + vetoes; runtime-unproven until dedicated co-op exists. §6.7. |
 | `bgunLoadAll` (gun model load) | lv.c:1424-1429 | ❌ | server never needs gun *models*; no observed harm across soaks. |
 
 What does **not** need mirroring because it already lives in the tick path
@@ -371,11 +371,14 @@ deselect. Each client runs this for itself, cloak *state* syncs via
 nothing the architecture didn't already concede. Revisit only if server-side
 ammo accounting ever becomes a goal (it would belong in the §6.1 mirror).
 
-### 6.7 Co-op revive health-steal lives in `playerRenderHud` (player.c:5345-5422)
-The headless respawn mirror calls `playerStartNewLife` but not the
-buddy-health-transfer block. Irrelevant for Combat Sim playlists; becomes a
-required mirror item the day co-op runs on a dedicated host
-(`PORT_COOP_*.md` track).
+### 6.7 Co-op revive health-steal lives in `playerRenderHud` — CLOSED (compile-verified)
+The headless respawn mirror (pdmain.c) now runs the buddy-health-transfer
+before granting a co-op respawn: first living non-dormant buddy pays half its
+health+shield (the NTSC-final split), total health <= 0.125 or the Deep Sea
+post-cutscene lockout vetoes the respawn, and `stealhealth` is set so
+`playerStartNewLife` spawns at the stolen amount. `playerDisplayHealth` (the
+buddy's HUD flash) stays render-tier and is skipped. Runtime-unproven until
+co-op actually runs on a dedicated host.
 
 ### 6.8 The headless-*client* local-pawn render-prep seam (unproven)
 `--headless-client` puts a local **combatant** pawn on a headless build — a

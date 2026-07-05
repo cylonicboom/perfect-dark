@@ -3424,6 +3424,7 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 				if (wp && wp->obj && (wp->obj->flags & OBJFLAG_AIUNDROPPABLE) == 0
 						&& wp->syncid == 0) {
 					wp->obj->hidden |= OBJHFLAG_DELETING;
+					netPropLogEvent(wp, NETPROP_EV_TWIN_SUPPRESS, (u16)h);
 				}
 			}
 		} else {

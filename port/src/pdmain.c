@@ -6,6 +6,7 @@
 #include "lib/vars.h"
 #include "constants.h"
 #include "game/camdraw.h"
+#include "game/chraction.h" // chrGetShield/chrSetShield/chrHasStageFlag (co-op revive health-steal mirror)
 #include "game/cheats.h"
 #include "game/luaai.h"
 #include "game/debug.h"

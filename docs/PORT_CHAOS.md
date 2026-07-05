@@ -86,9 +86,10 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~35 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~42 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
-factory (activate → timed deactivate).
+factory (activate → timed deactivate). Timed effects may also carry a `tick`
+function, called every frame while active (disco's hue cycle).
 
 - **Arsenal**: `arsenal` (random gun + switch + ammo), `disarm` (take held
   weapon), `knife_fight`, `ammo_rain`, `lock_n_load` (every gun + full ammo),
@@ -106,6 +107,13 @@ factory (activate → timed deactivate).
   to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
   cloak for 20s), `buddy` (spawn ally), `reinforce` (spawn armed enemy at a
   random chr).
+- **Visual** (renderer + room lighting; all timed, all local-cosmetic):
+  `untextured` ("1996 mode" — every texture white, pure vertex shading),
+  `watercolour` (every texture flooded with its own average colour),
+  `noir` (forced grayscale), `paint_red` ("Paint the town red" — the KotH
+  hill highlight applied to every room), `toxic` (green tint), `blackout`
+  (near-dark blue tint), `disco` (hue-cycling room lighting via the
+  per-effect `tick` driver).
 
 Adding an effect = one table entry in `chaos.effects` + `/lua reload`.
 
@@ -134,6 +142,21 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.chr_cloak(chrnum, on)` | `CHRHFLAG_CLOAKED` bit | same flag as the cloaking device; IR scanner still reveals |
 | `pd.strip_ammo()` | `bgunSetAmmoQuantity(type, 0)` loop | all ammo types 1..`AMMOTYPE_ECM_MINE` |
 | `pd.teleport_to_chr(chrnum)` | `chrSetPos` | the netcode's player force-position primitive; server-side |
+| `pd.flattex(mode)` | `gfx_flattex_mode` (gfx_pc.cpp) | 0 off / 1 white / 2 average-colour textures; applied by a texture-cache reimport at the next frame boundary; per-pixel **alpha preserved** so fonts/HUD stay readable; HD ext-tex falls back to the (flattened) N64 decode while active |
+| `pd.grayscale(on)` | `gfx_force_grayscale` → `rdp.grayscale` | forces `SHADER_OPT_GRAYSCALE` with a neutral colour (both GL and SDL_GPU honour it); the game never emits `G_SETGRAYSCALE_EXT`, so no contention |
+| `pd.room_tint(r,g,b)` / `()` | `g_ChaosRoomTintFrac` (dlights.c) | stage-wide room-lighting multiplier — `kohHighlightRoom`'s math applied to every room at both `scenarioHighlightRoom` sites; dirties all rooms (`ROOMFLAG_BRIGHTNESS_DIRTY_TEMP`, the paintroom pattern) |
+
+Renderer notes: the flat-texture filter lives at the single
+`gfx_upload_tex_filtered` chokepoint in `gfx_pc.cpp` (all nine N64-format
+import paths decode to RGBA32 in `tex_upload_buffer` and upload through it),
+so both backends get it for free. Mode/grayscale toggles are applied in
+`gfx_start_frame`: a flattex change calls `gfx_texture_cache_clear()` (which
+already `dlcacheInvalidateAll()`s — cached segments hold the old texture
+ids), a grayscale change drops just the dlcache (cached leaves baked the old
+shader choice). These globals **survive stage reloads** (unlike the cheat
+bank), so chaos.lua's `stage` handler resets `flattex`/`grayscale`/`room_tint`
+explicitly. All three hooks are pure-cosmetic: no game state, net-safe,
+save-safe.
 
 Pre-existing bindings chaos reuses: `give_weapon`, `refill_ammo`,
 `invincible`, `device_on`, `player_heal`, `player_set_shield`, `all_chrs`,
@@ -217,3 +240,10 @@ Until then, the UDP bridge is the supported route.
    same 5 effects.
 8. AP smoke: `ap.connect` to the mock server, call
    `chaos.trigger("boom", "ap")` from the console — HUD announce shows.
+9. Visuals: `/chaos trigger untextured` (world goes flat-shaded, HUD text
+   still readable), `watercolour` (flat but coloured), `noir`, `paint_red`
+   (all rooms red like a stage-wide hill), `disco` (colour cycles), each
+   reverting after its timer; trigger `untextured` on BOTH renderers (GL and
+   `--renderer sdlgpu`) and once with an HD texture pack loaded (pack should
+   flatten too, then come back). Change stage mid-`noir` — new stage must
+   load un-grayscaled.

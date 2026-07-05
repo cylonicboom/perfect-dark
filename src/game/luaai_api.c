@@ -1081,6 +1081,37 @@ static int l_pd_teleport_to_chr(lua_State *L)
 	return 1;
 }
 
+/* pd.flattex(mode) -> bool. 0 normal / 1 white textures (vertex shading only)
+ * / 2 average-colour textures. Cosmetic only. */
+static int l_pd_flattex(lua_State *L)
+{
+	s32 mode = (s32)luaL_optinteger(L, 1, 0);
+	lua_pushboolean(L, chraiLuaFlatTex(mode) != 0);
+	return 1;
+}
+
+/* pd.grayscale(on) -> bool. Force the renderer grayscale path (film noir). */
+static int l_pd_grayscale(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGrayscale(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
+ * channel). pd.room_tint() with no args turns the tint off. */
+static int l_pd_room_tint(lua_State *L)
+{
+	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
+		lua_pushboolean(L, chraiLuaRoomTint(255, 255, 255, 0) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaRoomTint(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_checkinteger(L, 2),
+			(s32)luaL_checkinteger(L, 3), 1) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1208,6 +1239,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_cloak);     lua_setfield(L, -2, "chr_cloak");
 	lua_pushcfunction(L, l_pd_strip_ammo);    lua_setfield(L, -2, "strip_ammo");
 	lua_pushcfunction(L, l_pd_teleport_to_chr); lua_setfield(L, -2, "teleport_to_chr");
+	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
+	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
+	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

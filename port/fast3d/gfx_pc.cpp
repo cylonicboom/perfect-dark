@@ -253,6 +253,17 @@ bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 bool gfx_wireframe_mode = false;
 bool gfx_mirror_mode = false;
+// Chaos flat-texture mode (docs/PORT_CHAOS.md): 0 = off; 1 = white out texel
+// RGB (the combiner multiplies TEXEL*SHADE, so this leaves pure vertex
+// shading); 2 = flood texel RGB with the texture's average colour. Per-pixel
+// alpha is preserved either way, so font glyphs / HUD icons / cutout textures
+// keep their shapes. Toggling is applied in gfx_start_frame via a texture
+// cache clear, which re-imports everything through gfx_upload_tex_filtered.
+int gfx_flattex_mode = 0;
+// Chaos forced grayscale: drives rdp.grayscale with a neutral colour from
+// gfx_start_frame (the game itself never emits G_SETGRAYSCALE_EXT, so there
+// is no mid-frame contention).
+int gfx_force_grayscale = 0;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
@@ -859,6 +870,41 @@ void gfx_texture_cache_delete_range(const uint8_t* start, const uint8_t* end) {
     }
 }
 
+// Chokepoint for every N64-format texture import: all import_texture_* decode
+// into tex_upload_buffer as RGBA32 and upload from there. When a chaos flat-
+// texture mode is active, munge the buffer in place first (see the
+// gfx_flattex_mode comment for the mode semantics).
+static void gfx_upload_tex_filtered(uint32_t width, uint32_t height, bool gen_mipmaps) {
+    if (gfx_flattex_mode == 1 || gfx_flattex_mode == 2) {
+        const uint32_t count = width * height;
+        uint8_t* px = tex_upload_buffer;
+        uint8_t fr = 255, fg = 255, fb = 255;
+        if (gfx_flattex_mode == 2) {
+            uint64_t r = 0, g = 0, b = 0, n = 0;
+            for (uint32_t i = 0; i < count; i++, px += 4) {
+                if (px[3]) { // average visible texels only, or glyph RGB drowns in cutout black
+                    r += px[0];
+                    g += px[1];
+                    b += px[2];
+                    n++;
+                }
+            }
+            if (n) {
+                fr = (uint8_t)(r / n);
+                fg = (uint8_t)(g / n);
+                fb = (uint8_t)(b / n);
+            }
+            px = tex_upload_buffer;
+        }
+        for (uint32_t i = 0; i < count; i++, px += 4) {
+            px[0] = fr;
+            px[1] = fg;
+            px[2] = fb;
+        }
+    }
+    gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+}
+
 static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture, bool gen_mipmaps) {
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -885,7 +931,7 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
 }
 
@@ -906,7 +952,7 @@ static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture,
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
     const uint32_t height = (size_bytes / 2) / rdp.texture_tile[tile].line_size_bytes;
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, addr, width, height);
 }
 
@@ -935,7 +981,7 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
 }
 
@@ -961,7 +1007,7 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
 }
 
@@ -987,7 +1033,7 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
 }
 
@@ -1014,7 +1060,7 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
 }
 
@@ -1039,7 +1085,7 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
     // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
 }
 
@@ -1089,7 +1135,7 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = result_line_size * 2;
     const uint32_t height = size_bytes / result_line_size;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
 }
 
 static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bool gen_mipmaps) {
@@ -1115,7 +1161,7 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = result_line_size;
     const uint32_t height = size_bytes / result_line_size;
 
-	gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
+	gfx_upload_tex_filtered(width, height, gen_mipmaps);
 }
 
 static void import_texture(int i, int tile, bool importReplacement) {
@@ -1146,8 +1192,11 @@ static void import_texture(int i, int tile, bool importReplacement) {
 
     // ext_tex: a texture tagged external (gfx_dp_load_block found a PNG for
     // its G_SETTEXINFO_EXT id) is cached by ext_key instead of address and
-    // uploaded straight from the decoded PNG, skipping the N64 format decode
-    const uint8_t external = loaded_texture.ext_key >> (7 * 8);
+    // uploaded straight from the decoded PNG, skipping the N64 format decode.
+    // Chaos flat-texture modes force the N64 decode path instead (the PNG
+    // buffer is persistent and can't be munged in place); the cache clear on
+    // toggle re-imports as external once the mode ends.
+    const uint8_t external = gfx_flattex_mode ? 0 : (uint8_t)(loaded_texture.ext_key >> (7 * 8));
 
     TextureCacheKey key;
     if (external) {
@@ -3539,6 +3588,28 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 }
 
 extern "C" void gfx_start_frame(void) {
+    // Chaos visual modes (docs/PORT_CHAOS.md), applied at the frame boundary:
+    // a flat-texture toggle clears the texture cache so everything re-imports
+    // through gfx_upload_tex_filtered (the clear also invalidates the dlcache,
+    // whose segments hold the old texture ids); the grayscale toggle drives
+    // the ordinary rdp.grayscale path with a neutral colour and drops the
+    // dlcache (cached leaves baked the old shader choice).
+    static int flattex_applied = 0;
+    static int grayscale_applied = 0;
+    if (gfx_flattex_mode != flattex_applied) {
+        flattex_applied = gfx_flattex_mode;
+        gfx_texture_cache_clear();
+    }
+    if (gfx_force_grayscale != grayscale_applied) {
+        grayscale_applied = gfx_force_grayscale;
+        rdp.grayscale = gfx_force_grayscale != 0;
+        rdp.grayscale_color.r = 255;
+        rdp.grayscale_color.g = 255;
+        rdp.grayscale_color.b = 255;
+        rdp.grayscale_color.a = 255; // full lerp to luminance
+        dlcacheInvalidateAll();
+    }
+
     gfx_wapi->handle_events();
     gfx_wapi->get_dimensions(&gfx_current_window_dimensions.width, &gfx_current_window_dimensions.height,
                              &gfx_current_window_position_x, &gfx_current_window_position_y);

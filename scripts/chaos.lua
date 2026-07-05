@@ -83,6 +83,17 @@ local function random_chr()
   return list[math.random(#list)]
 end
 
+-- hue (0..359) -> r, g, b in 0..255, full saturation/value (disco lights)
+local function hsv(h)
+  local x = math.floor((1 - math.abs((h / 60) % 2 - 1)) * 255)
+  if h < 60 then return 255, x, 0
+  elseif h < 120 then return x, 255, 0
+  elseif h < 180 then return 0, 255, x
+  elseif h < 240 then return 0, x, 255
+  elseif h < 300 then return x, 0, 255
+  else return 255, 0, x end
+end
+
 chaos.effects = {
   -- arsenal roulette
   arsenal      = { label="Free gun!",         w=10, dur=0, start=function()
@@ -116,6 +127,31 @@ chaos.effects = {
   nightvision  = { label="Night vision",      w=4, dur=20, start=function() pd.device_on(W.NIGHTVISION) end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
   blink        = { label="Blink",             w=5, dur=0, start=function() pd.fade(255,255,255,255, 45) end },
+  -- visual chaos (renderer + room lighting hooks; timed, all self-revert)
+  untextured   = { label="1996 mode",          w=5, dur=30,
+                   start=function() pd.flattex(1) end,
+                   stop=function() pd.flattex(0) end },
+  watercolour  = { label="Watercolour world",  w=5, dur=30,
+                   start=function() pd.flattex(2) end,
+                   stop=function() pd.flattex(0) end },
+  noir         = { label="Film noir",          w=5, dur=30,
+                   start=function() pd.grayscale(true) end,
+                   stop=function() pd.grayscale(false) end },
+  paint_red    = { label="Paint the town red", w=6, dur=30,
+                   start=function() pd.room_tint(255, 48, 48) end,
+                   stop=function() pd.room_tint() end },
+  toxic        = { label="Toxic spill",        w=4, dur=25,
+                   start=function() pd.room_tint(80, 255, 80) end,
+                   stop=function() pd.room_tint() end },
+  blackout     = { label="Lights out",         w=4, dur=15,
+                   start=function() pd.room_tint(30, 30, 60) end,
+                   stop=function() pd.room_tint() end },
+  disco        = { label="Disco inferno",      w=5, dur=20,
+                   start=function() pd.room_tint(255, 64, 64) end,
+                   tick=function(left)
+                     if left % 12 == 0 then pd.room_tint(hsv((left * 5) % 360)) end
+                   end,
+                   stop=function() pd.room_tint() end },
   -- player state, SA-chaos style
   turbo        = { label="GOTTA GO FAST",     w=6, dur=0, start=function() pd.boost(15) end },
   drunk        = { label="One too many",      w=6, dur=0, start=function() pd.dizzy(3500) end },
@@ -274,12 +310,13 @@ pd.on("tick", function()
 
   if not st.enabled then return end
 
-  -- timed effect expiry
+  -- timed effect expiry (+ optional per-tick driver, e.g. disco's hue cycle)
   for name, left in pairs(st.active) do
+    local e = chaos.effects[name]
+    if e and e.tick then pcall(e.tick, left) end
     left = left - 1
     if left <= 0 then
       stop_effect(name)
-      local e = chaos.effects[name]
       announce((e and e.label or name) .. " wore off")
     else
       st.active[name] = left
@@ -315,6 +352,11 @@ pd.on("stage", function()
   st.active = {}
   st.votes = {}
   st.timer = st.interval * TICKS
+  -- the visual modes live in renderer / lighting globals that SURVIVE the
+  -- stage reload (unlike the cheat bank) — reset them explicitly
+  if pd.flattex then pd.flattex(0) end
+  if pd.grayscale then pd.grayscale(false) end
+  if pd.room_tint then pd.room_tint() end
 end)
 
 if pd.menu_add then

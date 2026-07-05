@@ -30,6 +30,16 @@
 #include "types.h"
 #include "platform.h"
 
+#ifndef PLATFORM_N64
+// Chaos room tint (docs/PORT_CHAOS.md): a global colour multiplier applied to
+// every room's lighting — the KotH hill-highlight math (kohHighlightRoom)
+// generalised to all rooms, independent of lightop. Written by
+// chraiLuaRoomTint (pd.room_tint), which also dirties every room so the
+// reshade actually re-runs.
+f32 g_ChaosRoomTintFrac[3] = {1.0f, 1.0f, 1.0f};
+s32 g_ChaosRoomTintOn = 0;
+#endif
+
 const char var7f1a78e0[] = "LIGHTS : Hit occured on light %d in room %d\n";
 const char var7f1a7910[] = "L2(%d) -> ";
 const char var7f1a791c[] = "L2 -> BUILD LIGHTS TRANSFER TABLE - Starting\n";
@@ -1449,6 +1459,16 @@ void roomsTickLighting(void)
 						g_Rooms[i].highlightfrac_b = g_Rooms[i].highlightfrac_r;
 					}
 
+#ifndef PLATFORM_N64
+					// Chaos room tint: multiply on top of whatever the
+					// scenario highlight decided (same math as the hill).
+					if (g_ChaosRoomTintOn) {
+						g_Rooms[i].highlightfrac_r *= g_ChaosRoomTintFrac[0];
+						g_Rooms[i].highlightfrac_g *= g_ChaosRoomTintFrac[1];
+						g_Rooms[i].highlightfrac_b *= g_ChaosRoomTintFrac[2];
+					}
+#endif
+
 					numprocessed++;
 				}
 			}
@@ -1662,6 +1682,15 @@ void roomHighlight(s32 roomnum)
 				if (g_Rooms[roomnum].lightop == LIGHTOP_HIGHLIGHT) {
 					scenarioHighlightRoom(roomnum, &red, &green, &blue);
 				}
+
+#ifndef PLATFORM_N64
+				// Chaos room tint (see the g_ChaosRoomTintFrac definition).
+				if (g_ChaosRoomTintOn) {
+					red = (s32)(red * g_ChaosRoomTintFrac[0]);
+					green = (s32)(green * g_ChaosRoomTintFrac[1]);
+					blue = (s32)(blue * g_ChaosRoomTintFrac[2]);
+				}
+#endif
 
 				if (red > 255) {
 					red = 255;

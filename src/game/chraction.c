@@ -8460,6 +8460,56 @@ s32 chraiLuaTeleportToChr(s32 chrnum)
 	return chrSetPos(pl, &chr->prop->pos, chr->prop->rooms, chrGetRotY(pl), true) ? 1 : 0;
 }
 
+// Renderer chaos globals (port/fast3d/gfx_pc.cpp). Both are C++ `int` — the
+// same width as game-side s32, so the 1-byte `bool` bridging gotcha the
+// wireframe/mirror flags have (see bg.c) does not apply here.
+extern s32 gfx_flattex_mode;
+extern s32 gfx_force_grayscale;
+// Chaos room tint (dlights.c): global room-lighting colour multiplier.
+extern f32 g_ChaosRoomTintFrac[3];
+extern s32 g_ChaosRoomTintOn;
+
+// pd.flattex(mode): 0 = normal textures, 1 = all-white (pure vertex shading),
+// 2 = every texture flooded with its own average colour. Alpha is preserved
+// so HUD text stays readable. Applied renderer-side at the next frame
+// boundary via a texture-cache reimport; purely cosmetic, net/save-safe.
+s32 chraiLuaFlatTex(s32 mode)
+{
+	if (mode < 0) mode = 0;
+	if (mode > 2) mode = 2;
+	gfx_flattex_mode = mode;
+	return 1;
+}
+
+// pd.grayscale(on): force the renderer's grayscale shader path (film noir).
+s32 chraiLuaGrayscale(s32 on)
+{
+	gfx_force_grayscale = on ? 1 : 0;
+	return 1;
+}
+
+// pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB
+// multiplier (0..255 per channel = 0..1x) — the KotH hill-highlight effect
+// applied stage-wide. Dirties all rooms so the reshade re-runs; rooms
+// recompute as they come on screen.
+s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on)
+{
+	s32 i;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	g_ChaosRoomTintFrac[0] = (r < 0 ? 0 : r > 255 ? 255 : r) * (1.0f / 255.0f);
+	g_ChaosRoomTintFrac[1] = (g < 0 ? 0 : g > 255 ? 255 : g) * (1.0f / 255.0f);
+	g_ChaosRoomTintFrac[2] = (b < 0 ? 0 : b > 255 ? 255 : b) * (1.0f / 255.0f);
+	g_ChaosRoomTintOn = on ? 1 : 0;
+
+	for (i = 1; i < g_Vars.roomcount; i++) {
+		g_Rooms[i].flags |= ROOMFLAG_BRIGHTNESS_DIRTY_TEMP;
+	}
+	return 1;
+}
+
 // pd.spawn_ally(): spawn a friendly "Perfect Buddy" that fights alongside the
 // player. Mirrors the campaign buddy spawn (player.c) -- TEAM_ALLY + a buddy
 // ailist; solo allegiance is the bitwise chrCompareTeams test, so it targets

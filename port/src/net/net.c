@@ -164,6 +164,74 @@ s32 netPlayerIsPrimaryLocal(void)
 	return netPlayerOwnsMouse();
 }
 
+// --------------------------------------------------------------------------
+// Chaos external-event UDP ingress (docs/PORT_CHAOS.md — the Twitch/YouTube
+// integration window). When Chaos.EventPort is nonzero, a LOCALHOST-ONLY
+// datagram socket accepts newline-free text events ("trigger mirror",
+// "vote yeet", ...) from any companion process — a Twitch IRC bot, a YouTube
+// chat poller, Streamer.bot / SAMMI, or plain `echo trigger ap | nc -u
+// 127.0.0.1 <port>`. Each datagram becomes one {source="udp", text} entry in
+// the Lua external event queue (luaExtEventPush), which scripts/chaos.lua
+// drains via pd.ext_poll(). Drained lazily from the poll itself, so there is
+// no per-frame cost when chaos mode is off and no dependency on a net
+// session (enet_initialize runs unconditionally in netInit). Default 0 = off;
+// the bind is pinned to 127.0.0.1 so it can never become a remote ingress.
+s32 g_ChaosEventPort = 0;
+static ENetSocket s_chaosEvSock = ENET_SOCKET_NULL;
+static s32 s_chaosEvPortOpen = 0; // port the socket is currently bound to
+
+void netChaosEventDrain(void)
+{
+	// Lazy open/close tracking the config value.
+	if (g_ChaosEventPort != s_chaosEvPortOpen) {
+		if (s_chaosEvSock != ENET_SOCKET_NULL) {
+			enet_socket_destroy(s_chaosEvSock);
+			s_chaosEvSock = ENET_SOCKET_NULL;
+		}
+		s_chaosEvPortOpen = g_ChaosEventPort;
+		if (g_ChaosEventPort > 0 && g_ChaosEventPort <= 65535) {
+			ENetAddress addr;
+			s_chaosEvSock = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+			if (s_chaosEvSock != ENET_SOCKET_NULL) {
+				enet_socket_set_option(s_chaosEvSock, ENET_SOCKOPT_NONBLOCK, 1);
+				enet_address_set_ip(&addr, "127.0.0.1"); // literal IP — no DNS; keeps the bind loopback-only
+				addr.port = (u16)g_ChaosEventPort;
+				if (enet_socket_bind(s_chaosEvSock, &addr) < 0) {
+					sysLogPrintf(LOG_WARNING, "chaos: could not bind event port %d", g_ChaosEventPort);
+					enet_socket_destroy(s_chaosEvSock);
+					s_chaosEvSock = ENET_SOCKET_NULL;
+				} else {
+					sysLogPrintf(LOG_NOTE, "chaos: event ingress listening on 127.0.0.1:%d", g_ChaosEventPort);
+				}
+			}
+		}
+	}
+
+	if (s_chaosEvSock == ENET_SOCKET_NULL) {
+		return;
+	}
+
+	// Drain everything queued (bounded so a datagram flood can't stall the
+	// game thread; the Lua-side queue drops oldest on overflow anyway).
+	for (s32 i = 0; i < 16; i++) {
+		char buf[256];
+		ENetAddress from;
+		ENetBuffer rb;
+		rb.data = buf;
+		rb.dataLength = sizeof(buf) - 1;
+		const int len = enet_socket_receive(s_chaosEvSock, &from, &rb, 1);
+		if (len <= 0) {
+			break;
+		}
+		buf[len] = '\0';
+		// strip a trailing newline so `echo`-piped events are clean
+		while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+			buf[len - 1] = '\0';
+		}
+		luaExtEventPush("udp", buf);
+	}
+}
+
 void netMpConfigFixLocalPads(s32 slot)
 {
 	if (g_NetMode && g_NetLocalClient && !g_NetLocalClient->is_spectator
@@ -5749,6 +5817,16 @@ s32 netConsoleCommand(const char *line)
 		return 1;
 	}
 
+	// Chaos mode (docs/PORT_CHAOS.md): forward the raw argument line to the
+	// Lua external event queue — the protocol (on/off/trigger/vote/say/...)
+	// lives entirely in scripts/chaos.lua, so new verbs need no rebuild. The
+	// same queue is fed by the Chaos.EventPort UDP listener below (the
+	// Twitch/YouTube bridge ingress).
+	if (strcmp(cmd, "chaos") == 0) {
+		luaExtEventPush("console", *arg ? arg : "status");
+		return 1;
+	}
+
 	// Demo recorder (/demorec start|stop|status), port/src/demo.c.
 	if (netDemoConsoleCommand(cmd, arg)) {
 		return 1;
@@ -7468,6 +7546,9 @@ Gfx *netDebugRender(Gfx *gdl)
 PD_CONSTRUCTOR static void netConfigInit(void)
 {
 	configRegisterUInt("Net.LerpTicks", &g_NetInterpTicks, 0, 600);
+	// Chaos external-event ingress (docs/PORT_CHAOS.md): localhost-only UDP
+	// port for stream-bot events (Twitch/YouTube bridges). 0 = off (default).
+	configRegisterInt("Chaos.EventPort", &g_ChaosEventPort, 0, 65535);
 
 	configRegisterString("Net.Client.LastJoinAddr", g_NetLastJoinAddr, NET_MAX_ADDR);
 	configRegisterUInt("Net.Client.InRate", &g_NetClientInRate, 0, 10 * 1024 * 1024);

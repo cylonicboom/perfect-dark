@@ -639,6 +639,14 @@ s32 netPlayerOwnsMouse(void);
 // index and must stay raw.
 s32 netPlayerIsPrimaryLocal(void);
 
+// Chaos external-event UDP ingress (docs/PORT_CHAOS.md): when Chaos.EventPort
+// is nonzero, a localhost-only datagram socket turns each received text
+// datagram into a Lua external event (luaExtEventPush -> pd.ext_poll). The
+// Twitch/YouTube integration window: any companion chat bot posts events here.
+// Drained lazily from pd.ext_poll, no per-frame cost when unused.
+extern s32 g_ChaosEventPort;
+void netChaosEventDrain(void);
+
 // Host Online: reload a fresh CITRAINING world and re-enter the Combat Sim
 // hosting UI through the post-match latch (menutick.c). Defined in netmenu.c.
 void netHostOnlineEnterSetup(void);

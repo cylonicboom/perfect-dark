@@ -31,6 +31,7 @@
 #include "game/luaai.h"
 #include "game/game_1531a0.h" /* text0f153628 / text0f153780 / textRenderProjected */
 #include "game/hudmsg.h"      /* hudmsgRenderBox */
+#include "game/cheats.h"      /* cheatActivate/Deactivate/IsActive (pd.cheat, chaos mode) */
 #include "game/bg.h"          /* g_BgOctreeStats (port-only octree cull counters) */
 #include "data.h"             /* g_FontHandelGothicXs / g_CharsHandelGothicXs */
 #include "lib/vi.h"           /* viGetWidth / viGetHeight */
@@ -932,6 +933,150 @@ static int l_pd_perf(lua_State *L)
 }
 #endif
 
+/* ------------------------------------------------------------------------- *
+ * Chaos-mode bindings (docs/PORT_CHAOS.md). Thin wrappers over the chraiLua*
+ * game-side helpers, plus the cheat-bank toggles and the external event queue.
+ * ------------------------------------------------------------------------- */
+
+/* pd.cheat(cheat_id, on) -> bool. Flip a CHEAT_* active bit live (the same
+ * banks the /wireframe & /mirror console commands drive). One binding unlocks
+ * every port + vanilla cheat as a chaos effect: mirror, wireframe, tonal
+ * inversion, hurricane fists, slo-mo, DK mode, classic options, ... */
+static int l_pd_cheat(lua_State *L)
+{
+	s32 cheat_id = (s32)luaL_checkinteger(L, 1);
+	s32 on = lua_toboolean(L, 2);
+	/* two 32-bit active banks -> ids 0..63; highest defined id is 60 */
+	if (cheat_id < 0 || cheat_id >= 64) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	if (on) {
+		cheatActivate(cheat_id);
+	} else {
+		cheatDeactivate(cheat_id);
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* pd.cheat_active(cheat_id) -> bool */
+static int l_pd_cheat_active(lua_State *L)
+{
+	s32 cheat_id = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, cheat_id >= 0 && cheat_id < 64 && cheatIsActive(cheat_id));
+	return 1;
+}
+
+/* pd.sound(sfxnum) -> bool. One-shot local sound (announcer stingers). */
+static int l_pd_sound(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlaySound((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.take_weapon(weaponnum) -> bool */
+static int l_pd_take_weapon(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTakeWeapon((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.weapon_held() -> weaponnum | -1 */
+static int l_pd_weapon_held(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaWeaponHeld());
+	return 1;
+}
+
+/* pd.switch_weapon(weaponnum) -> bool */
+static int l_pd_switch_weapon(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSwitchWeapon((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.fade(r,g,b,a,time60) -> bool. Viewport fade (flashbang/blink effects). */
+static int l_pd_fade(lua_State *L)
+{
+	s32 r = (s32)luaL_checkinteger(L, 1);
+	s32 g = (s32)luaL_checkinteger(L, 2);
+	s32 b = (s32)luaL_checkinteger(L, 3);
+	s32 a = (s32)luaL_checkinteger(L, 4);
+	f32 time60 = (f32)luaL_checknumber(L, 5);
+	lua_pushboolean(L, chraiLuaScreenFade(r, g, b, a, time60) != 0);
+	return 1;
+}
+
+/* pd.chr_yeet(chrnum, force) -> bool. Fling a chr away from the player. */
+static int l_pd_chr_yeet(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	f32 force = (f32)luaL_optnumber(L, 2, 100.0);
+	lua_pushboolean(L, chraiLuaYeetChr(chrnum, force) != 0);
+	return 1;
+}
+
+/* pd.explosion(chrnum [, type]) -> bool. Detonate at a chr's feet. */
+static int l_pd_explosion(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 type = (s32)luaL_optinteger(L, 2, 9); /* a mid-size default type */
+	lua_pushboolean(L, chraiLuaExplodeAtChr(chrnum, type) != 0);
+	return 1;
+}
+
+/* --- External event queue (the Twitch/YouTube window) ----------------------
+ * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
+ * UDP listener in net.c, or any future embedded chat bridge) and drained by
+ * Lua via pd.ext_poll(). Text is opaque to C — the protocol lives entirely in
+ * scripts/chaos.lua, so a stream bot can grow new verbs without a rebuild. */
+#define LUA_EXTEV_MAX  32
+#define LUA_EXTEV_TEXT 128
+struct luaextevent {
+	char source[16];
+	char text[LUA_EXTEV_TEXT];
+};
+static struct luaextevent g_LuaExtEvents[LUA_EXTEV_MAX];
+static u32 g_LuaExtEvHead; /* next write */
+static u32 g_LuaExtEvTail; /* next read */
+
+void luaExtEventPush(const char *source, const char *text)
+{
+	struct luaextevent *ev;
+	if (!text || !text[0]) {
+		return;
+	}
+	if (g_LuaExtEvHead - g_LuaExtEvTail >= LUA_EXTEV_MAX) {
+		g_LuaExtEvTail++; /* overflow: drop the oldest (chat spam friendly) */
+	}
+	ev = &g_LuaExtEvents[g_LuaExtEvHead % LUA_EXTEV_MAX];
+	snprintf(ev->source, sizeof(ev->source), "%s", source ? source : "?");
+	snprintf(ev->text, sizeof(ev->text), "%s", text);
+	g_LuaExtEvHead++;
+}
+
+/* Optional localhost UDP ingress, implemented in net.c (socket infra lives
+ * there); drained lazily whenever Lua polls so no per-frame hook is needed.
+ * Weak default: absent in builds without net (never true on this branch). */
+extern void netChaosEventDrain(void);
+
+/* pd.ext_poll() -> source, text | nil. Pop one external event. */
+static int l_pd_ext_poll(lua_State *L)
+{
+	struct luaextevent *ev;
+	netChaosEventDrain();
+	if (g_LuaExtEvTail == g_LuaExtEvHead) {
+		lua_pushnil(L);
+		return 1;
+	}
+	ev = &g_LuaExtEvents[g_LuaExtEvTail % LUA_EXTEV_MAX];
+	g_LuaExtEvTail++;
+	lua_pushstring(L, ev->source);
+	lua_pushstring(L, ev->text);
+	return 2;
+}
+
 void luaApiRegister(lua_State *L)
 {
 	/* create the events registry table (replaces any previous one) */
@@ -989,6 +1134,18 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_is_unlocked); lua_setfield(L, -2, "is_unlocked");
 	lua_pushcfunction(L, l_pd_ap_reset);    lua_setfield(L, -2, "ap_reset");
 	lua_pushcfunction(L, l_pd_ap_list_header); lua_setfield(L, -2, "ap_list_header");
+
+	/* chaos-mode primitives + external event ingress (docs/PORT_CHAOS.md) */
+	lua_pushcfunction(L, l_pd_cheat);         lua_setfield(L, -2, "cheat");
+	lua_pushcfunction(L, l_pd_cheat_active);  lua_setfield(L, -2, "cheat_active");
+	lua_pushcfunction(L, l_pd_sound);         lua_setfield(L, -2, "sound");
+	lua_pushcfunction(L, l_pd_take_weapon);   lua_setfield(L, -2, "take_weapon");
+	lua_pushcfunction(L, l_pd_weapon_held);   lua_setfield(L, -2, "weapon_held");
+	lua_pushcfunction(L, l_pd_switch_weapon); lua_setfield(L, -2, "switch_weapon");
+	lua_pushcfunction(L, l_pd_fade);          lua_setfield(L, -2, "fade");
+	lua_pushcfunction(L, l_pd_chr_yeet);      lua_setfield(L, -2, "chr_yeet");
+	lua_pushcfunction(L, l_pd_explosion);     lua_setfield(L, -2, "explosion");
+	lua_pushcfunction(L, l_pd_ext_poll);      lua_setfield(L, -2, "ext_poll");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

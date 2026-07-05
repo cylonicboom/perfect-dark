@@ -8253,6 +8253,95 @@ s32 chraiLuaSetInvincible(s32 on)
 	return 1;
 }
 
+// --------------------------------------------------------------------------
+// Chaos-mode primitives (docs/PORT_CHAOS.md). Same contract as the AP helpers
+// above: operate on the current local player via the apLuaPlayerChr() guard,
+// return 0/false when no pawn exists (menus, dedicated lobby). All are
+// invoked from Lua only (scripts/chaos.lua and anything a chat bridge feeds
+// through the external event queue).
+// --------------------------------------------------------------------------
+
+// pd.take_weapon(weaponnum): remove a weapon from the player's inventory and
+// cycle off it if held (the aiChrDropWeapon player branch, minus the world
+// drop — chaos takes the gun, it doesn't gift it to the floor).
+s32 chraiLuaTakeWeapon(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	invRemoveItemByNum(weaponnum);
+	if (bgunGetWeaponNum(HAND_RIGHT) == weaponnum) {
+		bgunCycleBack();
+	}
+	return 1;
+}
+
+// pd.weapon_held() -> weaponnum of the right hand (-1 with no pawn).
+s32 chraiLuaWeaponHeld(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return -1;
+	}
+	return bgunGetWeaponNum(HAND_RIGHT);
+}
+
+// pd.switch_weapon(weaponnum): force-equip a weapon the player owns.
+s32 chraiLuaSwitchWeapon(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+	return 1;
+}
+
+// pd.fade(r,g,b,a,time60): start a screen fade on the local player's viewport
+// (the cutscene fade machinery — playerSetFadeColour + a full-fraction fade
+// over time60 ticks). Chaos uses it for blink/flashbang-style effects.
+s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	playerSetFadeColour(r, g, b, a);
+	playerSetFadeFrac(time60, 1);
+	return 1;
+}
+
+// pd.chr_yeet(chrnum, force): fling a chr away from the local player with the
+// explosion-knockback machinery (chrYeetFromPos). Purely kinetic — no damage.
+s32 chraiLuaYeetChr(s32 chrnum, f32 force)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || chr->model == NULL) {
+		return 0;
+	}
+	chrYeetFromPos(chr, &g_Vars.currentplayer->prop->pos, force);
+	return 1;
+}
+
+// pd.explosion(chrnum, type): detonate an explosion of the given type at a
+// chr's feet, attributed to the local player. Position + rooms come from the
+// live prop so the visual/damage register in the right room.
+s32 chraiLuaExplodeAtChr(s32 chrnum, s32 type)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL) {
+		return 0;
+	}
+	return explosionCreateSimple(NULL, &chr->prop->pos, chr->prop->rooms,
+			(s16)type, g_Vars.bondplayernum) ? 1 : 0;
+}
+
+// pd.sound(sfxnum): play a one-shot sound locally (announcer stingers etc).
+s32 chraiLuaPlaySound(s32 sfxnum)
+{
+	sndStart(var80095200, (s16)sfxnum, NULL, -1, -1, -1, -1, -1);
+	return 1;
+}
+
 // pd.spawn_ally(): spawn a friendly "Perfect Buddy" that fights alongside the
 // player. Mirrors the campaign buddy spawn (player.c) -- TEAM_ALLY + a buddy
 // ailist; solo allegiance is the bitwise chrCompareTeams test, so it targets

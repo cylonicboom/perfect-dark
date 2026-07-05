@@ -272,6 +272,22 @@ s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) 
 s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
 s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
 
+/* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
+ * apLuaPlayerChr() contract as the AP helpers above. */
+s32 chraiLuaTakeWeapon(s32 weaponnum);        /* remove weapon (+ cycle off it) */
+s32 chraiLuaWeaponHeld(void);                 /* right-hand weaponnum, -1 = no pawn */
+s32 chraiLuaSwitchWeapon(s32 weaponnum);      /* force-equip an owned weapon */
+s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60); /* viewport fade */
+s32 chraiLuaYeetChr(s32 chrnum, f32 force);   /* knockback-fling a chr away from the player */
+s32 chraiLuaExplodeAtChr(s32 chrnum, s32 type); /* explosion at a chr's feet */
+s32 chraiLuaPlaySound(s32 sfxnum);            /* one-shot local sound */
+
+/* External event ingress (luaai_api.c): generic {source, text} queue backing
+ * pd.ext_poll(). Fed by the /chaos console command, the optional localhost
+ * UDP listener (Chaos.EventPort, net.c), and any future chat bridge
+ * (Twitch/YouTube) — see docs/PORT_CHAOS.md. Safe to call from game code. */
+void luaExtEventPush(const char *source, const char *text);
+
 /* ------------------------------------------------------------------------- *
  * Controllable entity / possession (port/src/possess.c + chraction.c bridges).
  * Solo/missions only; lets the player fly a spawned "cube" (free-fly) and return

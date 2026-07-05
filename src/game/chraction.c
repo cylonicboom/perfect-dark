@@ -8479,6 +8479,21 @@ s32 chraiLuaPlayerExplosions(s32 on)
 	return 1;
 }
 
+// Chaos backfire master switch (bondgun.c, bgunCalculatePlayerShotSpread).
+extern s32 g_ChaosBackfire;
+
+// pd.backfire(on): the local player's shots (hitscan traces, fired
+// projectiles, tracers) leave 180 degrees behind them; the crosshair and gun
+// render stay where they are. Vertical aim is preserved.
+s32 chraiLuaBackfire(s32 on)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	g_ChaosBackfire = on ? 1 : 0;
+	return 1;
+}
+
 // Chaos ammo swap master switch (game_0b0fd0.c, the gset function getters).
 extern s32 g_ChaosAmmoSwapWeapon;
 

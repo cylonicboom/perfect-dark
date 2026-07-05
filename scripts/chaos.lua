@@ -147,6 +147,9 @@ chaos.effects = {
   sedative_rounds= { label="Sedative rounds",      w=3, dur=20,
                      start=function() pd.ammo_swap(W.TRANQ); pd.refill_ammo() end,
                      stop=function() pd.ammo_swap() end },
+  backfire       = { label="Backwards bullets",   w=4, dur=15,
+                     start=function() pd.backfire(true) end,
+                     stop=function() pd.backfire(false) end },
   -- the Air Force One crash block: explosions everywhere, but you're covered
   self_destruct  = { label="SELF-DESTRUCT SEQUENCE", w=3, dur=8,
                      start=function()
@@ -388,6 +391,7 @@ pd.on("stage", function()
   if pd.grayscale then pd.grayscale(false) end
   if pd.room_tint then pd.room_tint() end
   if pd.ammo_swap then pd.ammo_swap() end
+  if pd.backfire then pd.backfire(false) end
 end)
 
 if pd.menu_add then

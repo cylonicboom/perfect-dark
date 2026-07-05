@@ -1129,6 +1129,13 @@ static int l_pd_ammo_swap(lua_State *L)
 	return 1;
 }
 
+/* pd.backfire(on) -> bool. Shots leave 180 degrees behind the player. */
+static int l_pd_backfire(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaBackfire(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1261,6 +1268,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");
 	lua_pushcfunction(L, l_pd_ammo_swap);     lua_setfield(L, -2, "ammo_swap");
+	lua_pushcfunction(L, l_pd_backfire);      lua_setfield(L, -2, "backfire");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

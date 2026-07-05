@@ -86,7 +86,7 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~48 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~49 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate). Timed effects may also carry a `tick`
 function, called every frame while active (disco's hue cycle).
@@ -113,6 +113,9 @@ function, called every frame while active (disco's hue cycle).
   machine gun", the Devastator's grenades from anything), `golden_gun`
   (DY357-LX one-hit-kill rounds), `farsight_rounds` (wall-piercing),
   `sedative_rounds` (tranq darts).
+- **`backfire`** — "Backwards bullets" (15s): every shot (bullets, rockets,
+  tracers) leaves 180° behind the player; the crosshair stays put. Turn
+  around to hit what's in front of you.
 - **`self_destruct`** — "SELF-DESTRUCT SEQUENCE" (8s): invincibility on, then
   the Air Force One crash block (`playerSurroundWithExplosions` — staggered
   explosions around the player), then both off. Looks lethal, isn't — to
@@ -156,6 +159,7 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.grayscale(on)` | `gfx_force_grayscale` → `rdp.grayscale` | forces `SHADER_OPT_GRAYSCALE` with a neutral colour (both GL and SDL_GPU honour it); the game never emits `G_SETGRAYSCALE_EXT`, so no contention |
 | `pd.room_tint(r,g,b)` / `()` | `g_ChaosRoomTintFrac` (dlights.c) | stage-wide room-lighting multiplier — `kohHighlightRoom`'s math applied to every room at both `scenarioHighlightRoom` sites; dirties all rooms (`ROOMFLAG_BRIGHTNESS_DIRTY_TEMP`, the paintroom pattern) |
 | `pd.explosions_around(on)` | `playerSurroundWithExplosions` / `bondexploding` | the Air Force One crash loop (`playerTickExplode` spawns `EXPLOSIONTYPE_BONDEXPLODE` around the player every 15–30 ticks); damage respects `pd.invincible` (the chr damage handler early-outs, but explosions still spawn) |
+| `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
 | `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |
 
 Renderer notes: the flat-texture filter lives at the single

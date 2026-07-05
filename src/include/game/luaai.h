@@ -293,6 +293,7 @@ s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale pa
 s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
 s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */
 s32 chraiLuaAmmoSwap(s32 weaponnum);          /* held guns fire this weapon's primary; -1 off */
+s32 chraiLuaBackfire(s32 on);                 /* shots leave 180 degrees behind the player */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

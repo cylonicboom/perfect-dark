@@ -220,6 +220,10 @@ char var800700bc[][10] = {
 #ifndef PLATFORM_N64
 s32 g_BgunGeMuzzleFlashes = false;
 
+// Chaos "backfire": local player's shots leave 180 degrees behind them (set
+// via pd.backfire; applied at the end of bgunCalculatePlayerShotSpread).
+s32 g_ChaosBackfire = 0;
+
 // Route a first-person gun sound through the 3D positional channel when the
 // firing player is remote. In netplay, every player's bgunTick runs on every
 // machine — remote players' tick is driven by their incoming move messages
@@ -5779,6 +5783,21 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	gunpos2d->z = 0;
 
 	cam0f0b4c3c(crosspos, gundir2d, 1);
+
+#ifndef PLATFORM_N64
+	// Chaos "backfire" (docs/PORT_CHAOS.md, pd.backfire): rotate the shot ray
+	// 180 degrees about the camera's vertical axis, in camera space, so every
+	// consumer — hitscan traces (shotCreate / propFindAimingAt), fired
+	// projectile velocities (bgunCreateFiredProjectile), and the tracer
+	// visual — fires BEHIND the player. Vertical aim is preserved (aim up =
+	// shoot up-behind); the crosshair and gun render stay untouched, which is
+	// the joke. Local player only: remote pawns' bgun ticks run through here
+	// too (setCurrentPlayerNum) and must keep their true shot direction.
+	if (g_ChaosBackfire && !player->isremote) {
+		gundir2d->x = -gundir2d->x;
+		gundir2d->z = -gundir2d->z;
+	}
+#endif
 }
 
 void bgunCalculateBotShotSpread(struct coord *arg0, s32 weaponnum, s32 funcnum, bool arg3, s32 crouchpos, bool dual)

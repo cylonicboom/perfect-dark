@@ -86,7 +86,7 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~67 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~68 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate). Timed effects may also carry a `tick`
 function, called every frame while active (disco's hue cycle).
@@ -134,6 +134,12 @@ function, called every frame while active (disco's hue cycle).
   body carrying your held weapon spawns nearby; `pd.spawn_body(-1, …)`).
 - **Doors**: `open_sesame` (every door on the stage opens at once),
   `lockdown` (every door closes — transient, they re-trigger).
+- **`one_punch`** — "ONE PUNCH" (25s): Hurricane Fists + fists-only (the
+  per-effect `tick` snaps the held weapon back to unarmed if the player
+  switches) + `pd.one_punch` — every unarmed strike is lethal through any
+  armour and launches the guard flying (`chrDamage` boost + `chrYeetFromPos`
+  at force 250, applied before the SVC_CHR_DAMAGE broadcast so net clients
+  replay the same hit; NPC victims only, co-op partners take normal fists).
 - **`backfire`** — "Backwards bullets" (15s): every shot (bullets, rockets,
   tracers) leaves 180° behind the player; the crosshair stays put. Turn
   around to hit what's in front of you.
@@ -192,6 +198,7 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.chr_calm(chrnum)` | `alertness = 0`, `target = -1`, trigger-shot flag cleared | doesn't rewind the AI script — stops the hunt until re-provoked |
 | `pd.doors_all(open)` | `doorsRequestMode` on every `PROPTYPE_DOOR` | returns the door count; closing is transient |
 | `pd.chr_summon(chrnum, dx, dz)` | `chrMoveToPos` with the player's rooms | ground-validated; fails cleanly (returns false) if the spot doesn't validate |
+| `pd.one_punch(on)` | `g_ChaosOnePunch` → `chrDamage` boost (chraction.c) | player + `WEAPON_UNARMED` + NPC victim → damage = maxdamage+shield+100 and `chrYeetFromPos(victim, attacker, 250)`; boosted before the `SVC_CHR_DAMAGE` broadcast |
 | `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
 | `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |
 

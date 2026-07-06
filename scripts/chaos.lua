@@ -237,6 +237,21 @@ chaos.effects = {
                        end
                        error("no snatchable chr")
                      end },
+  one_punch      = { label="ONE PUNCH",           w=3, dur=25,
+                     start=function()
+                       pd.cheat(CHEAT.FISTS, true) -- Hurricane Fists punch speed
+                       pd.one_punch(true)
+                       pd.switch_weapon(W.UNARMED)
+                     end,
+                     tick=function()
+                       -- fists ONLY: snap back if the player switches away
+                       local h = pd.weapon_held()
+                       if h and h ~= W.UNARMED then pd.switch_weapon(W.UNARMED) end
+                     end,
+                     stop=function()
+                       pd.one_punch(false)
+                       pd.cheat(CHEAT.FISTS, false)
+                     end },
   -- the Air Force One crash block: explosions everywhere, but you're covered
   self_destruct  = { label="SELF-DESTRUCT SEQUENCE", w=3, dur=8,
                      start=function()
@@ -482,6 +497,7 @@ pd.on("stage", function()
   if pd.aspect_scale then pd.aspect_scale(1) end
   if pd.fov_scale then pd.fov_scale(1) end
   if pd.song then pd.song() end
+  if pd.one_punch then pd.one_punch(false) end
 end)
 
 if pd.menu_add then

@@ -66,6 +66,13 @@
 #include "net/netprop.h"
 #endif
 
+#ifndef PLATFORM_N64
+// Chaos "one punch" (docs/PORT_CHAOS.md, pd.one_punch): while set, a player's
+// unarmed strike in chrDamage is lethal + launches the victim. Defined here
+// (not in the pd helper block below) because chrDamage reads it first.
+s32 g_ChaosOnePunch = 0;
+#endif
+
 s32 g_RecentQuipsPlayed[5];
 u32 var8009cd84;
 u32 var8009cd88;
@@ -4444,6 +4451,22 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	s32 choketype = CHOKETYPE_NONE;
 
 #ifndef PLATFORM_N64
+	// Chaos "one punch" (docs/PORT_CHAOS.md, pd.one_punch): a player's
+	// unarmed strike is lethal through any armour and launches the victim
+	// (the explosion-knockback fling). Boosted BEFORE the SVC_CHR_DAMAGE
+	// broadcast below so net clients replay the same lethal hit. NPC victims
+	// only — other players / co-op partners take normal fist damage.
+	if (g_ChaosOnePunch && g_NetMode != NETMODE_CLIENT
+			&& gset && gset->weaponnum == WEAPON_UNARMED
+			&& aprop && aprop->type == PROPTYPE_PLAYER
+			&& vprop && vprop->type == PROPTYPE_CHR
+			&& !chrIsDead(chr)) {
+		damage = chrGetMaxDamage(chr) + chrGetShield(chr) + 100.0f;
+		if (chr->model) {
+			chrYeetFromPos(chr, &aprop->pos, 250.0f);
+		}
+	}
+
 	if (g_NetMode == NETMODE_SERVER) {
 		netmsgSvcChrDamageWrite(&g_NetMsgRel, chr, damage, vector, gset, aprop, hitpart,
 				damageshield, prop2, side, arg11, explosion, explosionpos);
@@ -8749,6 +8772,18 @@ s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz)
 	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
 	return chrMoveToPos(chr, &pos, g_Vars.currentplayer->prop->rooms,
 			atan2f(-dx, -dz), false) ? 1 : 0;
+}
+
+// pd.one_punch(on): a player's unarmed strikes become lethal-through-armour
+// and launch the victim flying (the chrDamage boost near the top of this
+// file). Pair with CHEAT_FISTS + forced-unarmed for the full Saitama.
+s32 chraiLuaOnePunch(s32 on)
+{
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	g_ChaosOnePunch = on ? 1 : 0;
+	return 1;
 }
 
 // Chaos FOV multiplier (playermgr.c, playermgrSetFovY).

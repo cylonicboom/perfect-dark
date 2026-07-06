@@ -301,6 +301,11 @@ s32 chraiLuaAspectScale(f32 mult);            /* projection aspect multiplier (1
 s32 chraiLuaPlaySong(s32 slot);               /* play an unlocked MP track over the stage music; -1 stops */
 s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz); /* hostile chr at player + offset */
 s32 chraiLuaBodySnatch(s32 chrnum);           /* Counter-Op takeover of a chr (solo, one-way) */
+s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum); /* point a chr's combat AI at another chr */
+s32 chraiLuaChrCalm(s32 chrnum);              /* zero alertness, clear target (neuralyzer) */
+s32 chraiLuaDoorsAll(s32 open);               /* open (1) / close (0) every door; returns count */
+s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the player */
+s32 chraiLuaFovScale(f32 mult);               /* vertical-FOV multiplier (1.0 = normal) */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

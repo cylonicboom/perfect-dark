@@ -8604,6 +8604,11 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 		return -1;
 	}
 
+	// bodynum -1 = "a copy of the player" (the evil-twin effect)
+	if (bodynum < 0) {
+		bodynum = g_Vars.currentplayer->prop->chr->bodynum;
+	}
+
 	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
 	pos.y = g_Vars.currentplayer->prop->pos.y;
 	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
@@ -8667,6 +8672,99 @@ s32 chraiLuaBodySnatch(s32 chrnum)
 		return 0;
 	}
 	g_Vars.currentplayer->disguised = true;
+	return 1;
+}
+
+// pd.chr_target(chrnum, victimchrnum): point a chr's combat AI at another chr
+// (the aiSetTargetChr recipe: target index + the trigger-shot flag + full
+// alertness). Backs the "Civil war" infighting effect.
+s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+	struct chrdata *victim = chrFindByLiteralId(victimchrnum);
+
+	if (g_NetMode == NETMODE_CLIENT || chr == NULL || victim == NULL
+			|| victim->prop == NULL || chr == victim || chrIsDead(chr) || chrIsDead(victim)) {
+		return 0;
+	}
+	chr->target = propGetIndexByChrId(chr, victim->chrnum);
+	chr->alertness = 100;
+	chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
+	return 1;
+}
+
+// pd.chr_calm(chrnum): the neuralyzer — drop a chr's alertness to zero, clear
+// its target and the trigger-shot flag. The chr doesn't rewind to its patrol
+// script, but it stops hunting until re-provoked.
+s32 chraiLuaChrCalm(s32 chrnum)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (g_NetMode == NETMODE_CLIENT || chr == NULL || chrIsDead(chr)) {
+		return 0;
+	}
+	chr->alertness = 0;
+	chr->target = -1;
+	chr->chrflags &= ~CHRCFLAG_TRIGGERSHOTLIST;
+	return 1;
+}
+
+// pd.doors_all(open): request every door on the stage to open (1) or close
+// (0) — doorsRequestMode, the same call the AI door commands use. Closing is
+// transient (walking up re-triggers them); opening everything at once is the
+// tactical chaos.
+s32 chraiLuaDoorsAll(s32 open)
+{
+	struct prop *prop;
+	s32 n = 0;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	for (prop = g_Vars.activeprops; prop; prop = prop->next) {
+		if (prop->type == PROPTYPE_DOOR && prop->door) {
+			doorsRequestMode(prop->door, open ? DOORMODE_OPENING : DOORMODE_CLOSING);
+			n++;
+		}
+	}
+	return n;
+}
+
+// pd.chr_summon(chrnum, dx, dz): teleport a chr to the player's position plus
+// a horizontal offset — chrMoveToPos, the ground-validated primitive the
+// Counter-Op spawn uses (rooms come from the player, so cross-map summons
+// register correctly). Fails cleanly if the spot doesn't validate.
+s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+	struct coord pos;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT
+			|| chr == NULL || chr->prop == NULL || chrIsDead(chr)
+			|| chr->prop == g_Vars.currentplayer->prop) {
+		return 0;
+	}
+	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
+	pos.y = g_Vars.currentplayer->prop->pos.y;
+	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
+	return chrMoveToPos(chr, &pos, g_Vars.currentplayer->prop->rooms,
+			atan2f(-dx, -dz), false) ? 1 : 0;
+}
+
+// Chaos FOV multiplier (playermgr.c, playermgrSetFovY).
+extern f32 g_ChaosFovMult;
+
+// pd.fov_scale(mult): stretch the vertical FOV — >1 fisheye, <1 tunnel
+// vision. Same self-restoring setter-hook pattern as pd.aspect_scale.
+s32 chraiLuaFovScale(f32 mult)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (mult <= 0.0f) mult = 1.0f;
+	if (mult < 0.4f) mult = 0.4f;
+	if (mult > 2.2f) mult = 2.2f;
+	g_ChaosFovMult = mult;
 	return 1;
 }
 

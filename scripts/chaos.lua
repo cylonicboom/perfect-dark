@@ -180,6 +180,53 @@ chaos.effects = {
                          pd.spawn_body(BODY.MINISKEDAR, -1, math.sin(a) * 150, math.cos(a) * 150)
                        end
                      end },
+  -- FOV warps (self-restoring setter hook, like aspect_scale)
+  fisheye        = { label="Quake Pro",           w=4, dur=20,
+                     start=function() pd.fov_scale(1.6) end,
+                     stop=function() pd.fov_scale(1) end },
+  tunnel_vision  = { label="Tunnel vision",       w=4, dur=20,
+                     start=function() pd.fov_scale(0.55) end,
+                     stop=function() pd.fov_scale(1) end },
+  vertigo        = { label="Vertigo",             w=3, dur=15,
+                     start=function() pd.fov_scale(1.2) end,
+                     tick=function(left)
+                       pd.fov_scale(1 + 0.35 * math.sin(left / 12))
+                     end,
+                     stop=function() pd.fov_scale(1) end },
+  -- crowd control
+  infighting     = { label="Civil war",           w=4, dur=0,
+                     start=function()
+                       local list = pd.all_chrs() or {}
+                       if #list < 2 then error("not enough chrs") end
+                       for i = 1, #list do
+                         pd.chr_target(list[i], list[(i % #list) + 1])
+                       end
+                     end },
+  neuralyzer     = { label="Neuralyzed",          w=4, dur=0,
+                     start=function()
+                       for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_calm(c) end
+                     end },
+  house_party    = { label="House party",         w=3, dur=0,
+                     start=function()
+                       local list = pd.all_chrs() or {}
+                       if #list == 0 then error("no chrs") end
+                       for i, c in ipairs(list) do
+                         local a = (i / #list) * 2 * math.pi
+                         pd.chr_summon(c, math.sin(a) * 220, math.cos(a) * 220)
+                       end
+                     end },
+  evil_twin      = { label="Evil twin",           w=2, dur=0,
+                     start=function()
+                       local held = pd.weapon_held()
+                       local a = math.random() * 2 * math.pi
+                       pd.spawn_body(-1, (held and held > 1) and held or W.FALCON2,
+                                     math.sin(a) * 180, math.cos(a) * 180)
+                     end },
+  -- doors
+  open_sesame    = { label="Open sesame",         w=4, dur=0,
+                     start=function() pd.doors_all(true) end },
+  lockdown       = { label="Lockdown",            w=3, dur=0,
+                     start=function() pd.doors_all(false) end },
   body_snatch    = { label="BODY SNATCHED",       w=1, dur=0,
                      start=function()
                        local list = pd.all_chrs() or {}
@@ -433,6 +480,7 @@ pd.on("stage", function()
   if pd.ammo_swap then pd.ammo_swap() end
   if pd.backfire then pd.backfire(false) end
   if pd.aspect_scale then pd.aspect_scale(1) end
+  if pd.fov_scale then pd.fov_scale(1) end
   if pd.song then pd.song() end
 end)
 

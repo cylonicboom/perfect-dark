@@ -774,8 +774,20 @@ void playermgrSetViewPosition(s32 viewleft, s32 viewtop)
 	g_Vars.currentplayer->viewtop = viewtop;
 }
 
+#ifndef PLATFORM_N64
+// Chaos FOV multiplier (docs/PORT_CHAOS.md, pd.fov_scale): same self-
+// restoring setter-hook pattern as g_ChaosAspectMult below — playerTick
+// re-sets the FOV every tick, so this is the only stable interception point.
+f32 g_ChaosFovMult = 1.0f;
+#endif
+
 void playermgrSetFovY(f32 fovy)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosFovMult > 0.0f && g_ChaosFovMult != 1.0f) {
+		fovy *= g_ChaosFovMult;
+	}
+#endif
 	g_Vars.currentplayer->fovy = fovy;
 }
 

@@ -1200,6 +1200,49 @@ static int l_pd_body_snatch(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_target(chrnum, victimchrnum) -> bool. Point a chr's AI at a chr. */
+static int l_pd_chr_target(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 victim = (s32)luaL_checkinteger(L, 2);
+	lua_pushboolean(L, chraiLuaChrTarget(chrnum, victim) != 0);
+	return 1;
+}
+
+/* pd.chr_calm(chrnum) -> bool. Zero a chr's alertness and target. */
+static int l_pd_chr_calm(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrCalm(chrnum) != 0);
+	return 1;
+}
+
+/* pd.doors_all(open) -> count. Open (true) / close (false) every door. */
+static int l_pd_doors_all(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaDoorsAll(lua_toboolean(L, 1)));
+	return 1;
+}
+
+/* pd.chr_summon(chrnum [, dx, dz]) -> bool. Teleport a chr to the player. */
+static int l_pd_chr_summon(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	f32 dx = (f32)luaL_optnumber(L, 2, 0.0);
+	f32 dz = (f32)luaL_optnumber(L, 3, 0.0);
+	lua_pushboolean(L, chraiLuaChrSummon(chrnum, dx, dz) != 0);
+	return 1;
+}
+
+/* pd.fov_scale([mult]) -> bool. Vertical-FOV multiplier: >1 fisheye,
+ * <1 tunnel vision, 1 / no arg = normal. */
+static int l_pd_fov_scale(lua_State *L)
+{
+	f32 mult = (f32)luaL_optnumber(L, 1, 1.0);
+	lua_pushboolean(L, chraiLuaFovScale(mult) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1340,6 +1383,11 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");
 	lua_pushcfunction(L, l_pd_spawn_body);    lua_setfield(L, -2, "spawn_body");
 	lua_pushcfunction(L, l_pd_body_snatch);   lua_setfield(L, -2, "body_snatch");
+	lua_pushcfunction(L, l_pd_chr_target);    lua_setfield(L, -2, "chr_target");
+	lua_pushcfunction(L, l_pd_chr_calm);      lua_setfield(L, -2, "chr_calm");
+	lua_pushcfunction(L, l_pd_doors_all);     lua_setfield(L, -2, "doors_all");
+	lua_pushcfunction(L, l_pd_chr_summon);    lua_setfield(L, -2, "chr_summon");
+	lua_pushcfunction(L, l_pd_fov_scale);     lua_setfield(L, -2, "fov_scale");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

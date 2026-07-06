@@ -86,7 +86,7 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~58 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~67 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate). Timed effects may also carry a `tick`
 function, called every frame while active (disco's hue cycle).
@@ -123,6 +123,17 @@ function, called every frame while active (disco's hue cycle).
   the player, alerted, facing in), `body_snatch` ("BODY SNATCHED", weight 1 —
   the Counter-Op takeover: you become a random guard, disguised; permanent
   for the rest of the level, solo only).
+- **FOV warps** (`pd.fov_scale`, the aspect-scale sibling): `fisheye`
+  ("Quake Pro", ×1.6), `tunnel_vision` (×0.55), `vertigo` (15s sine pulse
+  via the `tick` driver).
+- **Crowd control**: `infighting` ("Civil war" — every chr's combat AI
+  targeted at the next chr in the list), `neuralyzer` ("Neuralyzed" — zero
+  alertness + cleared targets, everyone forgets you), `house_party` (every
+  living chr teleported into a ring around the player, ground-validated via
+  `chrMoveToPos`), `evil_twin` (weight 2 — a hostile copy of the PLAYER's
+  body carrying your held weapon spawns nearby; `pd.spawn_body(-1, …)`).
+- **Doors**: `open_sesame` (every door on the stage opens at once),
+  `lockdown` (every door closes — transient, they re-trigger).
 - **`backfire`** — "Backwards bullets" (15s): every shot (bullets, rockets,
   tracers) leaves 180° behind the player; the crosshair stays put. Turn
   around to hit what's in front of you.
@@ -176,6 +187,11 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.song(slot)` / `()` | `musicStartTrackAsMenu(mpGetTrackMusicNum(slot % unlocked))` / `musicEndMenu` | the credits-roll mechanism: stage music pauses underneath, resumes on stop; only unlocked Combat Sim tracks |
 | `pd.spawn_body(bodynum[, weaponnum, dx, dz])` | `chrSpawnAtCoord` | the `chraiLuaSpawnAlly` recipe with allegiance inverted: TEAM_ENEMY, GAILIST_ALERTED, `CHRCFLAG_TRIGGERSHOTLIST`, facing the player; weaponnum −1 = unarmed (melee bodies) |
 | `pd.body_snatch(chrnum)` | `playerSpawnAnti` + `player->disguised` | the real Counter-Op takeover: player teleports into the chr's body (weapons/health/shield/third-person model copied, host chr freed) + the disguise flag so guard AI ignores you until blown (gailists.c patroller logic). **Solo only, one-way for the rest of the level** — the engine has no return-to-Jo path |
+| `pd.fov_scale(mult)` | `g_ChaosFovMult` (playermgr.c) | multiplier inside `playermgrSetFovY` (the aspect-scale pattern); clamped 0.4..2.2; zoom/Gun-FOV interplay untested |
+| `pd.chr_target(chrnum, victim)` | `chr->target` via `propGetIndexByChrId` | the `aiSetTargetChr` recipe + alertness 100 + `CHRCFLAG_TRIGGERSHOTLIST` |
+| `pd.chr_calm(chrnum)` | `alertness = 0`, `target = -1`, trigger-shot flag cleared | doesn't rewind the AI script — stops the hunt until re-provoked |
+| `pd.doors_all(open)` | `doorsRequestMode` on every `PROPTYPE_DOOR` | returns the door count; closing is transient |
+| `pd.chr_summon(chrnum, dx, dz)` | `chrMoveToPos` with the player's rooms | ground-validated; fails cleanly (returns false) if the spot doesn't validate |
 | `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
 | `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |
 

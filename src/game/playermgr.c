@@ -779,8 +779,22 @@ void playermgrSetFovY(f32 fovy)
 	g_Vars.currentplayer->fovy = fovy;
 }
 
+#ifndef PLATFORM_N64
+// Chaos aspect scale (docs/PORT_CHAOS.md, pd.aspect_scale): multiplier on the
+// projection aspect ratio, applied here because playerTick recomputes and
+// re-sets the natural aspect every tick (a one-shot write elsewhere would be
+// immediately overwritten — and conversely, clearing the multiplier
+// self-restores on the next tick). >1 stretches the world wide, <1 tall.
+f32 g_ChaosAspectMult = 1.0f;
+#endif
+
 void playermgrSetAspectRatio(f32 aspect)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosAspectMult > 0.0f && g_ChaosAspectMult != 1.0f) {
+		aspect *= g_ChaosAspectMult;
+	}
+#endif
 	g_Vars.currentplayer->aspect = aspect;
 }
 

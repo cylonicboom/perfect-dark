@@ -65,7 +65,8 @@ local GUNS = { W.FALCON2, W.MAGSEC, W.MAULER, W.PHOENIX, W.MAGNUM, W.CMP150,
   W.CYCLONE, W.LAPTOP, W.DRAGON, W.K7, W.AR34, W.SUPERDRAGON, W.SHOTGUN,
   W.REAPER, W.SNIPER, W.FARSIGHT, W.DEVASTATOR, W.ROCKET, W.SLAYER,
   W.CROSSBOW, W.TRANQ, W.GRENADE }
-local CHEAT = { FISTS=0, AMMO=4, SLOMO=6, DK=7, SMALLJO=10, SMALLCHARS=11,
+local BODY = { MINISKEDAR=0x7b }
+local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHARS=11,
   ENEMYSHIELDS=12, JOSHIELD=13, SUPERSHIELD=14, TEAMHEADS=16, ELVIS=17,
   ENEMYROCKETS=18, MARQUIS=20, WIREFRAME=46, MIRROR=47, TONAL=48 }
 
@@ -150,6 +151,45 @@ chaos.effects = {
   backfire       = { label="Backwards bullets",   w=4, dur=15,
                      start=function() pd.backfire(true) end,
                      stop=function() pd.backfire(false) end },
+  nbomb_me       = { label="N-Bomb delivery",     w=4, dur=0,
+                     start=function() pd.nbomb() end },
+  hurricane      = { label="Hurricane",           w=4, dur=0,
+                     start=function() pd.gust(150) end },
+  cyclone_frenzy = { label="CYCLONE FRENZY",      w=3, dur=30,
+                     start=function()
+                       pd.dual_wield(W.CYCLONE, 1)    -- both hands, Magazine Discharge
+                       pd.cheat(CHEAT.NORELOAD, true) -- unlimited ammo, no reloads
+                       pd.refill_ammo()
+                     end,
+                     stop=function() pd.cheat(CHEAT.NORELOAD, false) end },
+  widescreen     = { label="CinemaScope",         w=3, dur=20,
+                     start=function() pd.aspect_scale(2) end,
+                     stop=function() pd.aspect_scale(1) end },
+  tallscreen     = { label="Tall boy",            w=3, dur=20,
+                     start=function() pd.aspect_scale(0.5) end,
+                     stop=function() pd.aspect_scale(1) end },
+  cavalry        = { label="Send in the cavalry", w=3, dur=0,
+                     start=function() for i = 1, 4 do pd.spawn_ally() end end },
+  jukebox        = { label="Jukebox",             w=5, dur=60,
+                     start=function() pd.song(math.random(0, 255)) end,
+                     stop=function() pd.song() end },
+  skedar_ring    = { label="Skedar ambush",       w=3, dur=0,
+                     start=function()
+                       for i = 0, 3 do
+                         local a = i * math.pi / 2
+                         pd.spawn_body(BODY.MINISKEDAR, -1, math.sin(a) * 150, math.cos(a) * 150)
+                       end
+                     end },
+  body_snatch    = { label="BODY SNATCHED",       w=1, dur=0,
+                     start=function()
+                       local list = pd.all_chrs() or {}
+                       if #list == 0 then error("no chrs") end
+                       for _ = 1, 8 do
+                         local c = list[math.random(#list)]
+                         if c and pd.body_snatch(c) then return end
+                       end
+                       error("no snatchable chr")
+                     end },
   -- the Air Force One crash block: explosions everywhere, but you're covered
   self_destruct  = { label="SELF-DESTRUCT SEQUENCE", w=3, dur=8,
                      start=function()
@@ -220,7 +260,7 @@ chaos.effects = {
   boom         = { label="Incoming!",         w=5, dur=0, start=function()
                      local c = random_chr(); if c then pd.explosion(c) end end },
   buddy        = { label="Backup arrives",    w=5, dur=0, start=function() pd.spawn_ally() end },
-  reinforce    = { label="Reinforcements",    w=4, dur=0, start=function()
+  reinforce    = { label="Supply drop",       w=4, dur=0, start=function()
                      local c = random_chr(); if c then pd.spawn_at_chr(c, GUNS[math.random(#GUNS)]) end end },
 }
 
@@ -392,6 +432,8 @@ pd.on("stage", function()
   if pd.room_tint then pd.room_tint() end
   if pd.ammo_swap then pd.ammo_swap() end
   if pd.backfire then pd.backfire(false) end
+  if pd.aspect_scale then pd.aspect_scale(1) end
+  if pd.song then pd.song() end
 end)
 
 if pd.menu_add then

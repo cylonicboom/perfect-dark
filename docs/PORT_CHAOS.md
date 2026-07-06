@@ -86,7 +86,7 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~49 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~58 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate). Timed effects may also carry a `tick`
 function, called every frame while active (disco's hue cycle).
@@ -105,14 +105,24 @@ function, called every frame while active (disco's hue cycle).
 - **World**: `panic` (alert every chr), `yeet` (fling every chr away from the
   player), `boom` (explosion at a random chr), `airstrike` (explosions at up
   to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
-  cloak for 20s), `buddy` (spawn ally), `reinforce` (spawn armed enemy at a
-  random chr).
+  cloak for 20s), `buddy` (spawn ally), `reinforce` ("Supply drop" — a random
+  gun dropped at a random chr).
 - **Ammo roulette** (`pd.ammo_swap` — every held gun fires another weapon's
   primary rounds, with periodic refills of the borrowed ammo):
   `rocket_rounds` ("Rockets for everyone"), `grenade_rounds` ("Grenade
   machine gun", the Devastator's grenades from anything), `golden_gun`
   (DY357-LX one-hit-kill rounds), `farsight_rounds` (wall-piercing),
   `sedative_rounds` (tranq darts).
+- **Requests batch 3**: `nbomb_me` ("N-Bomb delivery" — storm on the player),
+  `hurricane` (whole map shoved one random direction: chrs, pushable
+  objects, and you), `cyclone_frenzy` ("CYCLONE FRENZY", 30s — dual Cyclones
+  forced to Magazine Discharge + Unlimited Ammo No Reloads), `widescreen` /
+  `tallscreen` (20s projection stretch, 2:1 / 1:2), `cavalry` (4 co-op
+  buddies), `jukebox` (60s random unlocked Combat Sim track over the stage
+  music), `skedar_ring` ("Skedar ambush" — 4 mini Skedar in a circle around
+  the player, alerted, facing in), `body_snatch` ("BODY SNATCHED", weight 1 —
+  the Counter-Op takeover: you become a random guard, disguised; permanent
+  for the rest of the level, solo only).
 - **`backfire`** — "Backwards bullets" (15s): every shot (bullets, rockets,
   tracers) leaves 180° behind the player; the crosshair stays put. Turn
   around to hit what's in front of you.
@@ -159,6 +169,13 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.grayscale(on)` | `gfx_force_grayscale` → `rdp.grayscale` | forces `SHADER_OPT_GRAYSCALE` with a neutral colour (both GL and SDL_GPU honour it); the game never emits `G_SETGRAYSCALE_EXT`, so no contention |
 | `pd.room_tint(r,g,b)` / `()` | `g_ChaosRoomTintFrac` (dlights.c) | stage-wide room-lighting multiplier — `kohHighlightRoom`'s math applied to every room at both `scenarioHighlightRoom` sites; dirties all rooms (`ROOMFLAG_BRIGHTNESS_DIRTY_TEMP`, the paintroom pattern) |
 | `pd.explosions_around(on)` | `playerSurroundWithExplosions` / `bondexploding` | the Air Force One crash loop (`playerTickExplode` spawns `EXPLOSIONTYPE_BONDEXPLODE` around the player every 15–30 ticks); damage respects `pd.invincible` (the chr damage handler early-outs, but explosions still spawn) |
+| `pd.nbomb()` | `nbombCreateStorm` | the thrown N-Bomb's impact call, at the player's feet, player-owned |
+| `pd.gust(force)` | `chrYeetFromPos` + `objApplyMomentum` + `bondshotspeed` | one random compass direction for the whole map: chrs flung from a virtual point behind them, objects via the explosion-knockback gate (`!MOUNTED && !GRABBED && OBJFLAG3_PUSHABLE`), local player via the shot-knockback velocity |
+| `pd.dual_wield(weaponnum[, funcnum])` | `invGiveSingle/DoubleWeapon` + `bgunEquipWeapon2` both hands | the `playerSpawnAnti` dual-wield recipe + full ammo; funcnum 0/1 forces that fire function on both hand gsets (1 = Cyclone Magazine Discharge) |
+| `pd.aspect_scale(mult)` | `g_ChaosAspectMult` (playermgr.c) | multiplier inside `playermgrSetAspectRatio` — playerTick re-derives natural aspect every tick, so the hook must live in the setter and restore is automatic; 2 = wide, 0.5 = tall, clamped 0.25..4 |
+| `pd.song(slot)` / `()` | `musicStartTrackAsMenu(mpGetTrackMusicNum(slot % unlocked))` / `musicEndMenu` | the credits-roll mechanism: stage music pauses underneath, resumes on stop; only unlocked Combat Sim tracks |
+| `pd.spawn_body(bodynum[, weaponnum, dx, dz])` | `chrSpawnAtCoord` | the `chraiLuaSpawnAlly` recipe with allegiance inverted: TEAM_ENEMY, GAILIST_ALERTED, `CHRCFLAG_TRIGGERSHOTLIST`, facing the player; weaponnum −1 = unarmed (melee bodies) |
+| `pd.body_snatch(chrnum)` | `playerSpawnAnti` + `player->disguised` | the real Counter-Op takeover: player teleports into the chr's body (weapons/health/shield/third-person model copied, host chr freed) + the disguise flag so guard AI ignores you until blown (gailists.c patroller logic). **Solo only, one-way for the rest of the level** — the engine has no return-to-Jo path |
 | `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
 | `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |
 
@@ -273,3 +290,15 @@ Until then, the UDP bridge is the supported route.
    kills, hitscan) and `grenade_rounds`. While active, open the pause-menu
    weapon inventory — descriptions may show the swap weapon (cosmetic,
    expected). Confirm NPC fire is unaffected.
+12. Batch 3: `nbomb_me` (storm envelops you, disorientation, wears off);
+   `hurricane` (NPCs + crates + you all lurch the same way — repeat a few
+   times for different directions); `cyclone_frenzy` (both hands Cyclones,
+   trigger dumps the whole clip, never reloads for 30s, reverts);
+   `widescreen`/`tallscreen` (world stretches, HUD should stay usable, snaps
+   back after 20s AND on stage change); `cavalry` (4 buddies, all fight
+   enemies); `jukebox` (song plays, stage music resumes after 60s);
+   `skedar_ring` (4 mini Skedar spawn around you already aggro — watch for
+   wall clipping at spawn); `body_snatch` (you become a guard: his gun,
+   his body in cutscenes/third-person, guards ignore you until you fire
+   near them; confirm mission objectives still completable or accept the
+   level is a wash — it's weight 1 for a reason).

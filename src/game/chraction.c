@@ -28,6 +28,8 @@
 #include "game/lv.h"
 #include "game/modelmgr.h"
 #include "game/mplayer/mplayer.h"
+#include "game/music.h"
+#include "game/nbomb.h"
 #include "game/mpstats.h"
 #include "game/objectives.h"
 #include "game/options.h"
@@ -8476,6 +8478,213 @@ s32 chraiLuaPlayerExplosions(s32 on)
 	} else {
 		g_Vars.currentplayer->bondexploding = false;
 	}
+	return 1;
+}
+
+// pd.nbomb(): detonate an N-Bomb storm on the local player (nbombCreateStorm,
+// the same call the thrown N-Bomb's impact makes). Owner is the player, so
+// kills it causes are credited to them; the player is inside the storm and
+// takes the full disorientation ride.
+s32 chraiLuaNbomb(void)
+{
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	nbombCreateStorm(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop);
+	return 1;
+}
+
+// pd.gust(force): shove the whole map in one random compass direction — every
+// living chr (chrYeetFromPos from a virtual point behind them, so they all
+// fly the same way), every pushable object (the explosion-knockback gate:
+// !MOUNTED && !GRABBED && OBJFLAG3_PUSHABLE -> objApplyMomentum), and the
+// local player (bondshotspeed, the shot-knockback velocity bondwalk decays).
+s32 chraiLuaGust(f32 force)
+{
+	struct prop *prop;
+	struct coord dir;
+	f32 angle;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+
+	angle = RANDOMFRAC() * M_BADTAU;
+	dir.x = sinf(angle);
+	dir.y = 0;
+	dir.z = cosf(angle);
+
+	for (prop = g_Vars.activeprops; prop; prop = prop->next) {
+		if (prop->type == PROPTYPE_CHR && prop->chr && prop->chr->model && !chrIsDead(prop->chr)) {
+			struct coord from;
+			from.x = prop->pos.x - dir.x * 100.0f;
+			from.y = prop->pos.y;
+			from.z = prop->pos.z - dir.z * 100.0f;
+			chrYeetFromPos(prop->chr, &from, force);
+		} else if ((prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON) && prop->obj) {
+			struct defaultobj *obj = prop->obj;
+
+			if ((obj->hidden & OBJHFLAG_MOUNTED) == 0
+					&& (obj->hidden & OBJHFLAG_GRABBED) == 0
+					&& (obj->flags3 & OBJFLAG3_PUSHABLE)) {
+				struct coord speed;
+				speed.x = dir.x * force * 0.05f;
+				speed.y = 0;
+				speed.z = dir.z * force * 0.05f;
+				objApplyMomentum(obj, &speed, 0.0f, true, true);
+			}
+		}
+	}
+
+	g_Vars.currentplayer->bondshotspeed.x += dir.x * force * 0.2f;
+	g_Vars.currentplayer->bondshotspeed.z += dir.z * force * 0.2f;
+	return 1;
+}
+
+// pd.dual_wield(weaponnum [, funcnum]): give and equip the weapon in BOTH
+// hands (the playerSpawnAnti dual-wield recipe: single + double inventory
+// entries, then equip each hand) with full ammo. funcnum 0/1 also forces that
+// fire function on both hands (1 = secondary, e.g. the Cyclone's Magazine
+// Discharge); the player can still cycle functions manually afterwards.
+s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum)
+{
+	struct player *pl = g_Vars.currentplayer;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (weaponFindById(weaponnum) == NULL) {
+		return 0;
+	}
+
+	invGiveSingleWeapon(weaponnum);
+	invGiveDoubleWeapon(weaponnum, weaponnum);
+	bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+	bgunEquipWeapon2(HAND_LEFT, weaponnum);
+	bgunGiveMaxAmmo(true);
+
+	if (funcnum == FUNC_PRIMARY || funcnum == FUNC_SECONDARY) {
+		pl->hands[HAND_RIGHT].gset.weaponfunc = funcnum;
+		pl->hands[HAND_LEFT].gset.weaponfunc = funcnum;
+	}
+	return 1;
+}
+
+// pd.song(slot) / pd.song(): play an unlocked Combat Sim music track over the
+// stage music (musicStartTrackAsMenu — the credits-roll mechanism; the stage
+// music pauses underneath and resumes when the menu track ends). slot is
+// wrapped into the unlocked-track range; no arg / negative stops the song.
+s32 chraiLuaPlaySong(s32 slot)
+{
+	s32 numtracks;
+
+	if (slot < 0) {
+		musicEndMenu();
+		return 1;
+	}
+	numtracks = mpGetNumUnlockedTracks();
+	if (numtracks <= 0) {
+		return 0;
+	}
+	musicStartTrackAsMenu(mpGetTrackMusicNum(slot % numtracks));
+	return 1;
+}
+
+// pd.spawn_body(bodynum, weaponnum, dx, dz): spawn a HOSTILE chr of the given
+// body at the player's position plus a horizontal offset, facing the player,
+// already alerted. The chraiLuaSpawnAlly recipe with the allegiance inverted;
+// weaponnum -1 spawns unarmed (melee bodies like the mini Skedar claw).
+s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
+{
+	struct prop *prop;
+	struct chrdata *chr;
+	struct coord pos;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return -1;
+	}
+
+	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
+	pos.y = g_Vars.currentplayer->prop->pos.y;
+	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
+
+	prop = chrSpawnAtCoord(bodynum, bodyChooseHead(bodynum), &pos,
+			g_Vars.currentplayer->prop->rooms,
+			atan2f(-dx, -dz), // face inward toward the player
+			ailistFindById(GAILIST_ALERTED),
+			SPAWNFLAG_ALLOWONSCREEN);
+
+	if (prop == NULL || prop->chr == NULL) {
+		return -1;
+	}
+
+	chr = prop->chr;
+	chr->flags |= CHRFLAG0_SKIPSAFETYCHECKS;
+	chr->team = TEAM_ENEMY;
+	chr->squadron = SQUADRON_01;
+	chr->hidden |= CHRHFLAG_DETECTED;
+	chr->teamscandist = 50;
+	chr->accuracyrating = 100;
+	chr->speedrating = 100;
+	chrAddHealth(chr, 20);
+	chrSetMaxDamage(chr, 4);
+	chr->chrflags |= CHRCFLAG_NEVERSLEEP;
+
+	if (weaponnum >= 0) {
+		s32 modelnum = playermgrGetModelOfWeapon(weaponnum);
+		if (modelnum >= 0) {
+			chrGiveWeapon(chr, modelnum, weaponnum, 0);
+		}
+	}
+
+	// Same flag the damage path sets: switch straight to the shot/alert list.
+	chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
+	return chr->chrnum;
+}
+
+// pd.body_snatch(chrnum): the Counter-Operative takeover, solo only —
+// playerSpawnAnti moves the player into the target chr's body (position,
+// weapons, health, shield, third-person model; the host chr is freed), and we
+// layer the disguise flag on top so guard AI treats the player as one of
+// their own until the disguise is blown (the gailists.c patroller logic).
+// One-way for the rest of the level: there is no "return to Jo" path in the
+// engine (Counter-Op players stay guards until death). The wildest effect in
+// the table — keep its weight low.
+s32 chraiLuaBodySnatch(s32 chrnum)
+{
+	struct chrdata *chr;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode != NETMODE_NONE || g_Vars.normmplayerisrunning) {
+		return 0;
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL || chr->prop == NULL || chr->prop->type != PROPTYPE_CHR
+			|| chr->model == NULL || chrIsDead(chr)
+			|| chr->prop == g_Vars.currentplayer->prop) {
+		return 0;
+	}
+	if (!playerSpawnAnti(chr, true)) {
+		return 0;
+	}
+	g_Vars.currentplayer->disguised = true;
+	return 1;
+}
+
+// Chaos aspect multiplier (playermgr.c, playermgrSetAspectRatio).
+extern f32 g_ChaosAspectMult;
+
+// pd.aspect_scale(mult): stretch the projection aspect — 2.0 = extra wide
+// (2:1-style CinemaScope), 0.5 = extra tall. 1.0 (or no arg) restores;
+// playerTick re-derives the natural aspect every tick so restore is instant.
+s32 chraiLuaAspectScale(f32 mult)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (mult <= 0.0f) mult = 1.0f;
+	if (mult < 0.25f) mult = 0.25f;
+	if (mult > 4.0f) mult = 4.0f;
+	g_ChaosAspectMult = mult;
 	return 1;
 }
 

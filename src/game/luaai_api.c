@@ -1136,6 +1136,70 @@ static int l_pd_backfire(lua_State *L)
 	return 1;
 }
 
+/* pd.nbomb() -> bool. N-Bomb storm on the player. */
+static int l_pd_nbomb(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaNbomb() != 0);
+	return 1;
+}
+
+/* pd.gust([force]) -> bool. Shove everything in one random direction. */
+static int l_pd_gust(lua_State *L)
+{
+	f32 force = (f32)luaL_optnumber(L, 1, 150.0);
+	lua_pushboolean(L, chraiLuaGust(force) != 0);
+	return 1;
+}
+
+/* pd.dual_wield(weaponnum [, funcnum]) -> bool. Dual-equip a weapon with
+ * full ammo; funcnum 0/1 also forces that fire function on both hands. */
+static int l_pd_dual_wield(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	s32 funcnum = (s32)luaL_optinteger(L, 2, -1);
+	lua_pushboolean(L, chraiLuaDualWield(weaponnum, funcnum) != 0);
+	return 1;
+}
+
+/* pd.aspect_scale([mult]) -> bool. Projection aspect multiplier: 2 = extra
+ * wide, 0.5 = extra tall, 1 / no arg = normal. */
+static int l_pd_aspect_scale(lua_State *L)
+{
+	f32 mult = (f32)luaL_optnumber(L, 1, 1.0);
+	lua_pushboolean(L, chraiLuaAspectScale(mult) != 0);
+	return 1;
+}
+
+/* pd.song(slot) / pd.song() -> bool. Play an unlocked Combat Sim track over
+ * the stage music (slot wraps into range); no arg stops it. */
+static int l_pd_song(lua_State *L)
+{
+	s32 slot = (s32)luaL_optinteger(L, 1, -1);
+	lua_pushboolean(L, chraiLuaPlaySong(slot) != 0);
+	return 1;
+}
+
+/* pd.spawn_body(bodynum [, weaponnum, dx, dz]) -> chrnum | -1. Spawn a
+ * hostile chr of the given body at the player plus a horizontal offset. */
+static int l_pd_spawn_body(lua_State *L)
+{
+	s32 bodynum = (s32)luaL_checkinteger(L, 1);
+	s32 weaponnum = (s32)luaL_optinteger(L, 2, -1);
+	f32 dx = (f32)luaL_optnumber(L, 3, 0.0);
+	f32 dz = (f32)luaL_optnumber(L, 4, 0.0);
+	lua_pushinteger(L, chraiLuaSpawnBody(bodynum, weaponnum, dx, dz));
+	return 1;
+}
+
+/* pd.body_snatch(chrnum) -> bool. Counter-Op takeover: become that chr
+ * (solo only, one-way for the rest of the level). */
+static int l_pd_body_snatch(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaBodySnatch(chrnum) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1269,6 +1333,13 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");
 	lua_pushcfunction(L, l_pd_ammo_swap);     lua_setfield(L, -2, "ammo_swap");
 	lua_pushcfunction(L, l_pd_backfire);      lua_setfield(L, -2, "backfire");
+	lua_pushcfunction(L, l_pd_nbomb);         lua_setfield(L, -2, "nbomb");
+	lua_pushcfunction(L, l_pd_gust);          lua_setfield(L, -2, "gust");
+	lua_pushcfunction(L, l_pd_dual_wield);    lua_setfield(L, -2, "dual_wield");
+	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");
+	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");
+	lua_pushcfunction(L, l_pd_spawn_body);    lua_setfield(L, -2, "spawn_body");
+	lua_pushcfunction(L, l_pd_body_snatch);   lua_setfield(L, -2, "body_snatch");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

@@ -5297,7 +5297,9 @@ struct menudialogdef g_LuaDirectorMenuDialog = {
 	(uintptr_t)"Lua Director",
 	g_LuaDirectorMenuItems,
 	menudialogLuaDirector,
-	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS,
+	// SMOOTHSCROLLABLE (the endscreen long-content mechanism): the chaos
+	// per-effect test entries push the list far past one screen height.
+	MENUDIALOGFLAG_LITERAL_TEXT | MENUDIALOGFLAG_STARTSELECTS | MENUDIALOGFLAG_SMOOTHSCROLLABLE,
 	NULL,
 };
 #endif

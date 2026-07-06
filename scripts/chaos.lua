@@ -125,9 +125,15 @@ chaos.effects = {
   godmode      = { label="Invincible!",       w=4, dur=10,
                    start=function() pd.invincible(true) end,
                    stop=function() pd.invincible(false) end },
-  cloak        = { label="Now you see me...", w=5, dur=20, start=function() pd.device_on(W.CLOAK) end },
-  xray         = { label="X-ray specs",       w=4, dur=20, start=function() pd.device_on(W.XRAY) end },
-  nightvision  = { label="Night vision",      w=4, dur=20, start=function() pd.device_on(W.NIGHTVISION) end },
+  cloak        = { label="Now you see me...", w=5, dur=20,
+                   start=function() pd.device_on(W.CLOAK) end,
+                   stop=function() pd.device_off(W.CLOAK) end },
+  xray         = { label="X-ray specs",       w=4, dur=20,
+                   start=function() pd.device_on(W.XRAY) end,
+                   stop=function() pd.device_off(W.XRAY) end },
+  nightvision  = { label="Night vision",      w=4, dur=20,
+                   start=function() pd.device_on(W.NIGHTVISION) end,
+                   stop=function() pd.device_off(W.NIGHTVISION) end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
   blink        = { label="Blink",             w=5, dur=0, start=function() pd.fade(255,255,255,255, 45) end },
   -- ammo roulette (pd.ammo_swap: every held gun fires another weapon's
@@ -498,13 +504,18 @@ pd.on("tick", function()
     if not ok then pd.log("[chaos] handler error: " .. tostring(err)) end
   end
 
-  if not st.enabled then return end
+  -- Advance on GAME time, not frames: lvupdate() is the ticks the sim
+  -- actually ran this frame — 0 while paused (no pausing out a bad effect),
+  -- scaled during slo-mo/boost. Everything below (effect timers, the vote
+  -- window, the drumbeat) freezes with the game.
+  local dt = pd.lvupdate and pd.lvupdate() or 1
+  if not st.enabled or dt <= 0 then return end
 
   -- timed effect expiry (+ optional per-tick driver, e.g. disco's hue cycle)
   for name, left in pairs(st.active) do
     local e = chaos.effects[name]
     if e and e.tick then pcall(e.tick, left) end
-    left = left - 1
+    left = left - dt
     if left <= 0 then
       stop_effect(name)
       announce((e and e.label or name) .. " wore off")
@@ -518,7 +529,7 @@ pd.on("tick", function()
   -- While voting is on it REPLACES the random drumbeat below.
   if st.votetime > 0 then
     if #st.candidates == 0 then pick_candidates() end
-    st.votetimer = st.votetimer - 1
+    st.votetimer = st.votetimer - dt
     if st.votetimer <= 0 then
       st.votetimer = st.votetime * TICKS
       local best, bestn = {}, -1
@@ -538,7 +549,7 @@ pd.on("tick", function()
   end
 
   -- the random drumbeat
-  st.timer = st.timer - 1
+  st.timer = st.timer - dt
   if st.timer <= 0 then
     st.timer = st.interval * TICKS
     local name = pick_random()

@@ -228,6 +228,8 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.chr_yeet(chrnum, force)` | `chraiLuaYeetChr` | `chrYeetFromPos` away from the player (default force 100) |
 | `pd.explosion(chrnum, type)` | `chraiLuaExplodeAtChr` | `explosionCreateSimple` at the chr (default type 9) |
 | `pd.ext_poll()` | ring queue pop | returns `source, text` or `nil`; also drains the UDP socket |
+| `pd.device_off(num)` | `currentPlayerSetDeviceActive(num, false)` | the `device_on` inverse — clears the `devicesactive` bit; the timed gadget effects (cloak/xray/nightvision) call it in `stop` |
+| `pd.lvupdate()` | `g_Vars.lvupdate60` | game ticks elapsed this frame — 0 while paused; all chaos timers (effects, vote window, drumbeat) advance by it, so pausing can't run out a bad effect |
 | `pd.alarm(on)` | `alarmActivate`/`alarmDeactivate` | server-side; SVC_ALARM (proto 85) mirrors to clients |
 | `pd.boost(secs)` | `bgunAddBoost` | Speed Pill boost; self-decays via `bgunTickBoost`; ≤0 cancels |
 | `pd.player_set_health(frac)` | `bondhealth` write | clamped 0.01..1 — never kills |

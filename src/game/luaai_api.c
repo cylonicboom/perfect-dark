@@ -1026,6 +1026,21 @@ static int l_pd_explosion(lua_State *L)
 	return 1;
 }
 
+/* pd.device_off(weaponnum) -> bool. Deactivate a device (device_on inverse). */
+static int l_pd_device_off(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaDeviceOff(weaponnum) != 0);
+	return 1;
+}
+
+/* pd.lvupdate() -> int. Game ticks elapsed this frame (0 while paused). */
+static int l_pd_lvupdate(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaLvUpdate());
+	return 1;
+}
+
 /* pd.alarm(on) -> bool. Stage alarm on/off (server-side; SVC_ALARM mirrors). */
 static int l_pd_alarm(lua_State *L)
 {
@@ -1371,6 +1386,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_give_ammo);        lua_setfield(L, -2, "give_ammo");
 	lua_pushcfunction(L, l_pd_give_weapon);      lua_setfield(L, -2, "give_weapon");
 	lua_pushcfunction(L, l_pd_device_on);        lua_setfield(L, -2, "device_on");
+	lua_pushcfunction(L, l_pd_device_off);       lua_setfield(L, -2, "device_off");
+	lua_pushcfunction(L, l_pd_lvupdate);         lua_setfield(L, -2, "lvupdate");
 	lua_pushcfunction(L, l_pd_invincible);       lua_setfield(L, -2, "invincible");
 	lua_pushcfunction(L, l_pd_spawn_ally);       lua_setfield(L, -2, "spawn_ally");
 	/* director pause-menu registry */

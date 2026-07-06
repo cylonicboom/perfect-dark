@@ -274,6 +274,8 @@ s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
  * apLuaPlayerChr() contract as the AP helpers above. */
+s32 chraiLuaDeviceOff(s32 weaponnum);         /* deactivate a device (device_on inverse) */
+s32 chraiLuaLvUpdate(void);                   /* game ticks this frame (0 while paused) */
 s32 chraiLuaTakeWeapon(s32 weaponnum);        /* remove weapon (+ cycle off it) */
 s32 chraiLuaWeaponHeld(void);                 /* right-hand weaponnum, -1 = no pawn */
 s32 chraiLuaSwitchWeapon(s32 weaponnum);      /* force-equip an owned weapon */

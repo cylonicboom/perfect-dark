@@ -8288,6 +8288,27 @@ s32 chraiLuaSetInvincible(s32 on)
 // through the external event queue).
 // --------------------------------------------------------------------------
 
+// pd.lvupdate(): game ticks elapsed this frame (g_Vars.lvupdate60) — exactly
+// 0 while the game is paused, scaled during slo-mo/boost. Chaos uses it to
+// advance effect timers on GAME time, so pausing can't run out a bad effect.
+s32 chraiLuaLvUpdate(void)
+{
+	return g_Vars.lvupdate60;
+}
+
+// pd.device_off(weaponnum): deactivate a device (the pd.device_on inverse —
+// currentPlayerSetDeviceActive with active=false clears the devicesactive
+// bit, which is all device_on ever set). Backs the timed gadget effects'
+// stop functions (X-ray specs / night vision / cloak wearing off).
+s32 chraiLuaDeviceOff(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	currentPlayerSetDeviceActive(weaponnum, false);
+	return 1;
+}
+
 // pd.take_weapon(weaponnum): remove a weapon from the player's inventory and
 // cycle off it if held (the aiChrDropWeapon player branch, minus the world
 // drop — chaos takes the gun, it doesn't gift it to the floor).

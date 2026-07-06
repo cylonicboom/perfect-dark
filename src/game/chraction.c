@@ -8821,6 +8821,20 @@ s32 chraiLuaAspectScale(f32 mult)
 	return 1;
 }
 
+// Chaos Gormless master switch (bondmove.c, bmoveProcessInput).
+extern s32 g_ChaosGormless;
+
+// pd.gormless(on): flip movement AND look — forward/back, strafe, and both
+// look axes all inverted at the input chokepoints in bmoveProcessInput.
+s32 chraiLuaGormless(s32 on)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	g_ChaosGormless = on ? 1 : 0;
+	return 1;
+}
+
 // Chaos backfire master switch (bondgun.c, bgunCalculatePlayerShotSpread).
 extern s32 g_ChaosBackfire;
 

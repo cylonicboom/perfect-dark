@@ -237,6 +237,9 @@ chaos.effects = {
                        end
                        error("no snatchable chr")
                      end },
+  gormless       = { label="Gormless",            w=4, dur=20,
+                     start=function() pd.gormless(true) end,
+                     stop=function() pd.gormless(false) end },
   one_punch      = { label="ONE PUNCH",           w=3, dur=25,
                      start=function()
                        pd.cheat(CHEAT.FISTS, true) -- Hurricane Fists punch speed
@@ -498,6 +501,7 @@ pd.on("stage", function()
   if pd.fov_scale then pd.fov_scale(1) end
   if pd.song then pd.song() end
   if pd.one_punch then pd.one_punch(false) end
+  if pd.gormless then pd.gormless(false) end
 end)
 
 if pd.menu_add then

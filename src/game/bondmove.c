@@ -49,6 +49,12 @@
 #include "net/net.h"
 #include "net/netmsg.h"
 
+// Chaos "Gormless" (docs/PORT_CHAOS.md, pd.gormless): flip movement AND look —
+// forward/back, strafe left/right, look left/right, look up/down all
+// inverted. Applied at the two input chokepoints in bmoveProcessInput (the
+// c1 stick negate + the mouse-look delta negate).
+s32 g_ChaosGormless = 0;
+
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
 			|| ((c1buttons & (buttons2)) && (c1buttonsthisframe & (buttons1))))
@@ -1175,6 +1181,23 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	movedata.c1stickxraw = c1stickx;
 	movedata.c1stickyraw = c1sticky;
 
+#ifndef PLATFORM_N64
+	// Chaos "Gormless": the c1 stick feeds walk/strafe (movement) AND
+	// turn/pitch (look) alike, so negating it here flips all four axes for
+	// both a gamepad stick and the port's keyboard-to-stick mapping; the
+	// mouse-look deltas are negated at the inputMouseGetScaledDelta site
+	// below. Local player only; scripted autowalk drives synthetic stick
+	// input aimed at a WORLD target (the CHEAT_MIRROR bwalkUpdateTheta
+	// exception), so it is exempt or the player would walk away from it.
+	if (g_ChaosGormless && !g_Vars.currentplayer->isremote
+			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
+		movedata.c1stickxsafe = -movedata.c1stickxsafe;
+		movedata.c1stickysafe = -movedata.c1stickysafe;
+		movedata.c1stickxraw = -movedata.c1stickxraw;
+		movedata.c1stickyraw = -movedata.c1stickyraw;
+	}
+#endif
+
 	// These are zeroed further down conditionally on control style
 	movedata.analogturn = movedata.c1stickxsafe;
 	movedata.analogstrafe = movedata.c1stickxsafe;
@@ -1187,6 +1210,13 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		allowmcross = (PLAYER_EXTCFG().mouseaimmode == MOUSEAIM_CLASSIC) &&
 			(movedata.freelookdx || movedata.freelookdy || g_Vars.currentplayer->swivelpos[0] || g_Vars.currentplayer->swivelpos[1]);
 		if (movedata.invertpitch) {
+			movedata.freelookdy = -movedata.freelookdy;
+		}
+		// Chaos "Gormless": invert the whole mouse look (both axes). Stacks
+		// with the user's invert-pitch option above by design — Gormless
+		// means "backwards from whatever you're used to".
+		if (g_ChaosGormless && !g_Vars.currentplayer->isremote) {
+			movedata.freelookdx = -movedata.freelookdx;
 			movedata.freelookdy = -movedata.freelookdy;
 		}
 	}

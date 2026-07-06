@@ -307,6 +307,7 @@ s32 chraiLuaDoorsAll(s32 open);               /* open (1) / close (0) every door
 s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the player */
 s32 chraiLuaFovScale(f32 mult);               /* vertical-FOV multiplier (1.0 = normal) */
 s32 chraiLuaOnePunch(s32 on);                 /* unarmed strikes: lethal + mega knockback */
+s32 chraiLuaGormless(s32 on);                 /* invert movement + look axes */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

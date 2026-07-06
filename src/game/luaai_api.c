@@ -1250,6 +1250,13 @@ static int l_pd_one_punch(lua_State *L)
 	return 1;
 }
 
+/* pd.gormless(on) -> bool. Invert movement + look axes. */
+static int l_pd_gormless(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGormless(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1396,6 +1403,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_summon);    lua_setfield(L, -2, "chr_summon");
 	lua_pushcfunction(L, l_pd_fov_scale);     lua_setfield(L, -2, "fov_scale");
 	lua_pushcfunction(L, l_pd_one_punch);     lua_setfield(L, -2, "one_punch");
+	lua_pushcfunction(L, l_pd_gormless);      lua_setfield(L, -2, "gormless");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

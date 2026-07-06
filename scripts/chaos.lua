@@ -237,6 +237,22 @@ chaos.effects = {
                        end
                        error("no snatchable chr")
                      end },
+  joyride        = { label="Joyride",             w=3, dur=0,
+                     start=function()
+                       if not pd.spawn_bike() then error("no bike here") end
+                     end },
+  soundboard     = { label="Soundboard",          w=4, dur=20,
+                     start=function() pd.sfx_shuffle(true) end,
+                     stop=function() pd.sfx_shuffle(false) end },
+  kazoo          = { label="Discount orchestra",  w=4, dur=60,
+                     start=function()
+                       pd.instrument_shuffle(true)
+                       pd.song(math.random(0, 255)) -- program changes fire at track start
+                     end,
+                     stop=function()
+                       pd.instrument_shuffle(false)
+                       pd.song()
+                     end },
   gormless       = { label="Gormless",            w=4, dur=20,
                      start=function() pd.gormless(true) end,
                      stop=function() pd.gormless(false) end },
@@ -502,6 +518,8 @@ pd.on("stage", function()
   if pd.song then pd.song() end
   if pd.one_punch then pd.one_punch(false) end
   if pd.gormless then pd.gormless(false) end
+  if pd.sfx_shuffle then pd.sfx_shuffle(false) end
+  if pd.instrument_shuffle then pd.instrument_shuffle(false) end
 end)
 
 if pd.menu_add then

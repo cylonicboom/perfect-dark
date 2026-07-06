@@ -82,6 +82,12 @@ const char var70053b3c[] = "Snd: SoundHeaderCacheInit\n";
 bool g_SndDisabled = false;
 u32 var8005dda4 = 0x00000000;
 
+#ifndef PLATFORM_N64
+// Chaos SFX shuffle master switch (docs/PORT_CHAOS.md, pd.sfx_shuffle):
+// applied in sndStart just before the sound-id validity check.
+s32 g_ChaosSfxShuffle = 0;
+#endif
+
 s32 g_SndNosediveVolume = 0;
 s32 g_SndNosediveAge240 = -1;
 s32 g_SndNosediveDuration240 = 0;
@@ -2217,6 +2223,19 @@ struct sndstate *sndStart(s32 arg0, s16 sound, struct sndstate **handle, s32 vol
 
 		return NULL;
 	}
+
+#ifndef PLATFORM_N64
+	// Chaos SFX shuffle (docs/PORT_CHAOS.md, pd.sfx_shuffle): every one-shot
+	// sound plays as a random other sound. Remapped here — after the MP3
+	// branch, right before the id-vs-g_NumSounds validity check — so any
+	// remap target is by construction a valid sound-table entry. Local LCG
+	// (not rngRandom) so game RNG state is untouched.
+	if (g_ChaosSfxShuffle && g_NumSounds > 0) {
+		static u32 shuffleseed = 0x2545f491;
+		shuffleseed = shuffleseed * 1664525u + 1013904223u;
+		sp40.id = (shuffleseed >> 8) % (u32)g_NumSounds;
+	}
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	if (sp40.id < (u32)g_NumSounds) {

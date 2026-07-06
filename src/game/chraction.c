@@ -30,6 +30,8 @@
 #include "game/mplayer/mplayer.h"
 #include "game/music.h"
 #include "game/nbomb.h"
+#include "game/setup.h"
+#include "game/setuputils.h"
 #include "game/mpstats.h"
 #include "game/objectives.h"
 #include "game/options.h"
@@ -8818,6 +8820,129 @@ s32 chraiLuaAspectScale(f32 mult)
 	if (mult < 0.25f) mult = 0.25f;
 	if (mult > 4.0f) mult = 4.0f;
 	g_ChaosAspectMult = mult;
+	return 1;
+}
+
+// Chaos SFX shuffle (src/lib/snd.c, sndStart) — s32, no bool-width gotcha.
+extern s32 g_ChaosSfxShuffle;
+
+// pd.sfx_shuffle(on): every one-shot sound effect plays as a random other
+// sound (remapped inside sndStart, always to a valid sound-table id).
+s32 chraiLuaSfxShuffle(s32 on)
+{
+	g_ChaosSfxShuffle = on ? 1 : 0;
+	return 1;
+}
+
+// Chaos instrument shuffle (src/lib/naudio/n_csplayer.c). Defined there as a
+// C `u8` — declare 1-byte here, NOT game `bool` (= s32), the same width
+// gotcha as g_SndTonalInversion (see bg.c).
+extern unsigned char g_ChaosInstrumentShuffle;
+
+// pd.instrument_shuffle(on): every MIDI program change picks a random
+// instrument from the loaded bank. Applies when a track (re)starts — pair
+// with pd.song() to hear it immediately.
+s32 chraiLuaInstrumentShuffle(s32 on)
+{
+	g_ChaosInstrumentShuffle = on ? 1 : 0;
+	return 1;
+}
+
+// pd.spawn_bike(): spawn a personal HALF-SIZE hoverbike at the player's feet
+// (extrascale 128 — the collision cylinder radius scales with it via the
+// propobj.c geo fix, so it genuinely fits where a full bike wouldn't).
+// One static instance: retriggering repositions the existing bike back to
+// the player instead of allocating another. Solo/offline only — runtime
+// objects have no syncid, so netplay clients would never see it.
+static struct hoverbikeobj g_ChaosBike;
+static s32 g_ChaosBikeSpawned = 0;
+
+s32 chraiLuaSpawnBike(void)
+{
+	static const struct hoverbikeobj zerobike; // BSS zero template for reinit
+	struct hoverbikeobj *bike = &g_ChaosBike;
+	struct defaultobj *obj = &bike->base;
+	struct coord pos;
+	Mtxf mtx;
+	RoomNum seedrooms[8];
+	RoomNum floorroom;
+	f32 floory;
+	struct modelrodata_bbox *bbox;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode != NETMODE_NONE) {
+		return 0;
+	}
+
+	pos.x = g_Vars.currentplayer->prop->pos.x + g_Vars.currentplayer->bond2.unk00.x * 150.0f;
+	pos.y = g_Vars.currentplayer->prop->pos.y;
+	pos.z = g_Vars.currentplayer->prop->pos.z + g_Vars.currentplayer->bond2.unk00.z * 150.0f;
+	mtx4LoadIdentity(&mtx);
+	roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms);
+
+	// Already spawned this stage (prop still points back at us — a stage
+	// unload recycles the prop pool, which breaks this backlink): just
+	// summon the existing bike back to the player.
+	if (g_ChaosBikeSpawned && obj->prop && obj->prop->obj == obj
+			&& obj->prop->type == PROPTYPE_OBJ && obj->model) {
+		bbox = modelFindBboxRodata(obj->model);
+		floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &obj->floorcol, NULL);
+		if (floorroom > 0) {
+			RoomNum placerooms[2];
+			struct coord placepos;
+			placepos.x = pos.x;
+			placepos.y = floory - objGetRotatedLocalYMinByMtx4(bbox, &mtx);
+			placepos.z = pos.z;
+			placerooms[0] = floorroom;
+			placerooms[1] = -1;
+			func0f06a580(obj, &placepos, &mtx, placerooms);
+		} else {
+			func0f06a580(obj, &pos, &mtx, seedrooms);
+		}
+		return 1;
+	}
+
+	// Fresh spawn: build the template (the setup.c OBJTYPE_HOVERBIKE recipe,
+	// minus the pad — we place manually like chraiLuaSpawnAtPos).
+	*bike = zerobike;
+	obj->extrascale = 128; // HALF SIZE
+	obj->type = OBJTYPE_HOVERBIKE;
+	obj->modelnum = MODEL_HOVBIKE;
+	obj->pad = -1;
+	obj->flags = OBJFLAG_FALL;
+	obj->flags3 = OBJFLAG3_GEOCYL; // bikes use the cylinder geo
+	obj->realrot[0][0] = 1;
+	obj->realrot[1][1] = 1;
+	obj->realrot[2][2] = 1;
+	obj->maxdamage = 1000;
+	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
+	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
+	obj->floorcol = 0x0fff;
+
+	if (!setupLoadModeldef(MODEL_HOVBIKE)) {
+		return 0;
+	}
+	if (objInitWithModelDef(obj, g_ModelStates[MODEL_HOVBIKE].modeldef) == NULL || obj->model == NULL) {
+		return 0;
+	}
+	modelSetScale(obj->model, obj->model->scale * (obj->extrascale * (1.0f / 256.0f)));
+	setupCreateHov(obj, &bike->hov);
+
+	bbox = modelFindBboxRodata(obj->model);
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &obj->floorcol, NULL);
+	if (floorroom > 0) {
+		RoomNum placerooms[2];
+		struct coord placepos;
+		placepos.x = pos.x;
+		placepos.y = floory - objGetRotatedLocalYMinByMtx4(bbox, &mtx);
+		placepos.z = pos.z;
+		placerooms[0] = floorroom;
+		placerooms[1] = -1;
+		func0f06a580(obj, &placepos, &mtx, placerooms);
+	} else {
+		func0f06a580(obj, &pos, &mtx, seedrooms);
+	}
+
+	g_ChaosBikeSpawned = 1;
 	return 1;
 }
 

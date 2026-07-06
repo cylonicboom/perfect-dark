@@ -86,7 +86,7 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## Effect table (scripts/chaos.lua)
 
-~69 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
+~72 effects, all self-cleaning. Weights (`w`) bias the random pick; `dur` in
 seconds (0 = instant). Cheat-bank effects use the `cheat_effect(id, secs)`
 factory (activate → timed deactivate). Timed effects may also carry a `tick`
 function, called every frame while active (disco's hue cycle).
@@ -134,6 +134,21 @@ function, called every frame while active (disco's hue cycle).
   body carrying your held weapon spawns nearby; `pd.spawn_body(-1, …)`).
 - **Doors**: `open_sesame` (every door on the stage opens at once),
   `lockdown` (every door closes — transient, they re-trigger).
+- **`joyride`** — a personal HALF-SIZE hoverbike spawns in front of the
+  player (`pd.spawn_bike`: the setup.c OBJTYPE_HOVERBIKE recipe built at
+  runtime, extrascale 128, floor-snapped; one static instance — retriggering
+  summons the existing bike back; solo only, no syncid). The hardcoded
+  90-unit collision-cylinder radius in propobj.c now scales with extrascale,
+  so the half bike genuinely fits where a full one wouldn't.
+- **`soundboard`** — "Soundboard" (20s, `pd.sfx_shuffle`): every one-shot
+  SFX plays as a random other sound (remapped inside `sndStart` just before
+  the `g_NumSounds` validity check — always a real sound-table entry).
+- **`kazoo`** — "Discount orchestra" (60s, `pd.instrument_shuffle`): every
+  MIDI program change picks a random instrument from the loaded bank
+  (remapped before the `instCount` bounds check in the sequence player's
+  `AL_MIDI_ProgramChange` handler). Program changes fire at track start, so
+  the effect pairs the toggle with a random `pd.song`; NRG/death stingers
+  mid-stage shuffle too.
 - **`gormless`** — "Gormless" (20s): movement AND look fully inverted —
   forward/back, strafe left/right, and both look axes. Implemented at the
   two input chokepoints in `bmoveProcessInput`: the c1-stick negate (covers
@@ -208,6 +223,9 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.doors_all(open)` | `doorsRequestMode` on every `PROPTYPE_DOOR` | returns the door count; closing is transient |
 | `pd.chr_summon(chrnum, dx, dz)` | `chrMoveToPos` with the player's rooms | ground-validated; fails cleanly (returns false) if the spot doesn't validate |
 | `pd.gormless(on)` | `g_ChaosGormless` → `bmoveProcessInput` (bondmove.c) | negates the c1 stick (safe + raw) and the mouse-look deltas; local player only, autowalk exempt |
+| `pd.spawn_bike()` | runtime `hoverbikeobj` template + `objInitWithModelDef` + `setupCreateHov` | half size via `extrascale=128` + `modelSetScale` (the `setupCreateObject` semantics); the propobj.c geo-cyl radius now scales with extrascale (stage bikes at 256 are byte-identical); solo only; one static instance, revalidated via the `prop->obj` backlink across stage reloads |
+| `pd.sfx_shuffle(on)` | `g_ChaosSfxShuffle` → `sndStart` (src/lib/snd.c) | remap to `LCG % g_NumSounds` after the MP3 branch, before the validity check; local LCG so game RNG is untouched |
+| `pd.instrument_shuffle(on)` | `g_ChaosInstrumentShuffle` (u8!) → `AL_MIDI_ProgramChange` (n_csplayer.c) | remap to `LCG % bank->instCount`; **1-byte extern like `g_SndTonalInversion`** — never declare as game `bool`; audio thread, so local LCG only |
 | `pd.one_punch(on)` | `g_ChaosOnePunch` → `chrDamage` boost (chraction.c) | player + `WEAPON_UNARMED` + NPC victim → damage = maxdamage+shield+100 and `chrYeetFromPos(victim, attacker, 250)`; boosted before the `SVC_CHR_DAMAGE` broadcast |
 | `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
 | `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |

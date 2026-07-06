@@ -1837,6 +1837,14 @@ void func0f069850(struct defaultobj *obj, struct coord *pos, f32 rot[3][3], stru
 		cyl->x = pos->x;
 		cyl->z = pos->z;
 		cyl->radius = 90.0f;
+#ifndef PLATFORM_N64
+		// The 90-unit radius above is hardcoded, so a scaled object (the
+		// chaos half-size hoverbike, extrascale 128) would still block
+		// walk/sight/shoot at full size while rendering small. Scale the
+		// radius by extrascale — stage objects carry 256 (= x1.0) and are
+		// byte-identical.
+		cyl->radius = 90.0f * (obj->extrascale * (1.0f / 256.0f));
+#endif
 	} else {
 		if (rodata19 != NULL) {
 			objCalculateGeoBlockFromNode19Data(rodata19, bbox, &mtx, (struct geoblock *)cyl);

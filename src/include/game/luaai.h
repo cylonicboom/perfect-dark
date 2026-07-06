@@ -308,6 +308,9 @@ s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the
 s32 chraiLuaFovScale(f32 mult);               /* vertical-FOV multiplier (1.0 = normal) */
 s32 chraiLuaOnePunch(s32 on);                 /* unarmed strikes: lethal + mega knockback */
 s32 chraiLuaGormless(s32 on);                 /* invert movement + look axes */
+s32 chraiLuaSpawnBike(void);                  /* half-size hoverbike at the player (solo) */
+s32 chraiLuaSfxShuffle(s32 on);               /* every SFX plays as a random other SFX */
+s32 chraiLuaInstrumentShuffle(s32 on);        /* MIDI program changes pick random instruments */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

@@ -1257,6 +1257,27 @@ static int l_pd_gormless(lua_State *L)
 	return 1;
 }
 
+/* pd.spawn_bike() -> bool. Half-size hoverbike at the player (solo only). */
+static int l_pd_spawn_bike(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSpawnBike() != 0);
+	return 1;
+}
+
+/* pd.sfx_shuffle(on) -> bool. Every SFX plays as a random other SFX. */
+static int l_pd_sfx_shuffle(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSfxShuffle(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.instrument_shuffle(on) -> bool. Random instruments on program change. */
+static int l_pd_instrument_shuffle(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaInstrumentShuffle(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* --- External event queue (the Twitch/YouTube window) ----------------------
  * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
  * UDP listener in net.c, or any future embedded chat bridge) and drained by
@@ -1404,6 +1425,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_fov_scale);     lua_setfield(L, -2, "fov_scale");
 	lua_pushcfunction(L, l_pd_one_punch);     lua_setfield(L, -2, "one_punch");
 	lua_pushcfunction(L, l_pd_gormless);      lua_setfield(L, -2, "gormless");
+	lua_pushcfunction(L, l_pd_spawn_bike);    lua_setfield(L, -2, "spawn_bike");
+	lua_pushcfunction(L, l_pd_sfx_shuffle);   lua_setfield(L, -2, "sfx_shuffle");
+	lua_pushcfunction(L, l_pd_instrument_shuffle); lua_setfield(L, -2, "instrument_shuffle");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

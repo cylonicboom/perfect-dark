@@ -33,6 +33,13 @@ load("scripts/ap/test.lua")
 -- tools/ap/mock_ws.py. Inert until you call ap.connect.
 load("scripts/ap/client.lua")
 
+-- Chaos / randomiser mode: timed random effects, external event ingress
+-- (/chaos console command + localhost UDP via Chaos.EventPort — the Twitch /
+-- YouTube window), vote mode, and chaos.trigger()/chaos.set_seed() for the AP
+-- client (trap items / DeathLink). Inert until "/chaos on". See
+-- docs/PORT_CHAOS.md.
+load("scripts/chaos.lua")
+
 -- Live octree-culling stats overlay (testing the outdoor-room octree). Shows
 -- top-right only while an octree room is rendering. Comment out to hide.
 load("scripts/octree_overlay.lua")

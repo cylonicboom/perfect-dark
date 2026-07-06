@@ -28,6 +28,14 @@ u32 var8009c350[16];
 // the sequence player).
 u8 g_SndTonalInversion = 0;
 
+// Chaos instrument shuffle (docs/PORT_CHAOS.md, pd.instrument_shuffle): while
+// set, every MIDI program change picks a random instrument from the loaded
+// bank instead of the one the song asked for. Same 1-byte extern contract as
+// g_SndTonalInversion above. Program changes fire when a track (re)starts,
+// so the chaos effect pairs the toggle with starting a song. Local xorshift-
+// style LCG (audio thread — never call game RNG from here).
+u8 g_ChaosInstrumentShuffle = 0;
+
 // Per-channel inversion axis, stored as key+1 (0 = unlatched). Latched from
 // the first melodic note-on per channel; reset on AL_SEQP_PLAY_EVT (new
 // song) and whenever the cheat is switched on.
@@ -1221,6 +1229,17 @@ void __n_CSPHandleMIDIMsg(N_ALCSPlayer *seqp, N_ALEvent *event)
 	case (AL_MIDI_ProgramChange):
 		/* sct 1/16/96 - We must have a valid bank in order to process the program change. */
 		sp90 = (seqp->chanState[chan].unk32 << 7) + key;
+
+#ifndef PLATFORM_N64
+		// Chaos instrument shuffle: any instrument in the loaded bank will
+		// do. Remapped before the instCount bounds check below, so the pick
+		// is always a valid bank entry.
+		if (g_ChaosInstrumentShuffle && seqp->bank->instCount > 0) {
+			static u32 instseed = 0xbadc0ffe;
+			instseed = instseed * 1664525u + 1013904223u;
+			sp90 = (instseed >> 8) % (u32)seqp->bank->instCount;
+		}
+#endif
 
 		if (sp90 < seqp->bank->instCount) {
 			ALInstrument *inst = seqp->bank->instArray[sp90];

@@ -31,6 +31,7 @@
 #include "game/luaai.h"
 #include "game/game_1531a0.h" /* text0f153628 / text0f153780 / textRenderProjected */
 #include "game/hudmsg.h"      /* hudmsgRenderBox */
+#include "game/cheats.h"      /* cheatActivate/Deactivate/IsActive (pd.cheat, chaos mode) */
 #include "game/bg.h"          /* g_BgOctreeStats (port-only octree cull counters) */
 #include "data.h"             /* g_FontHandelGothicXs / g_CharsHandelGothicXs */
 #include "lib/vi.h"           /* viGetWidth / viGetHeight */
@@ -932,6 +933,402 @@ static int l_pd_perf(lua_State *L)
 }
 #endif
 
+/* ------------------------------------------------------------------------- *
+ * Chaos-mode bindings (docs/PORT_CHAOS.md). Thin wrappers over the chraiLua*
+ * game-side helpers, plus the cheat-bank toggles and the external event queue.
+ * ------------------------------------------------------------------------- */
+
+/* pd.cheat(cheat_id, on) -> bool. Flip a CHEAT_* active bit live (the same
+ * banks the /wireframe & /mirror console commands drive). One binding unlocks
+ * every port + vanilla cheat as a chaos effect: mirror, wireframe, tonal
+ * inversion, hurricane fists, slo-mo, DK mode, classic options, ... */
+static int l_pd_cheat(lua_State *L)
+{
+	s32 cheat_id = (s32)luaL_checkinteger(L, 1);
+	s32 on = lua_toboolean(L, 2);
+	/* two 32-bit active banks -> ids 0..63; highest defined id is 60 */
+	if (cheat_id < 0 || cheat_id >= 64) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	if (on) {
+		cheatActivate(cheat_id);
+	} else {
+		cheatDeactivate(cheat_id);
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* pd.cheat_active(cheat_id) -> bool */
+static int l_pd_cheat_active(lua_State *L)
+{
+	s32 cheat_id = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, cheat_id >= 0 && cheat_id < 64 && cheatIsActive(cheat_id));
+	return 1;
+}
+
+/* pd.sound(sfxnum) -> bool. One-shot local sound (announcer stingers). */
+static int l_pd_sound(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlaySound((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.take_weapon(weaponnum) -> bool */
+static int l_pd_take_weapon(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTakeWeapon((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.weapon_held() -> weaponnum | -1 */
+static int l_pd_weapon_held(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaWeaponHeld());
+	return 1;
+}
+
+/* pd.switch_weapon(weaponnum) -> bool */
+static int l_pd_switch_weapon(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSwitchWeapon((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.fade(r,g,b,a,time60) -> bool. Viewport fade (flashbang/blink effects). */
+static int l_pd_fade(lua_State *L)
+{
+	s32 r = (s32)luaL_checkinteger(L, 1);
+	s32 g = (s32)luaL_checkinteger(L, 2);
+	s32 b = (s32)luaL_checkinteger(L, 3);
+	s32 a = (s32)luaL_checkinteger(L, 4);
+	f32 time60 = (f32)luaL_checknumber(L, 5);
+	lua_pushboolean(L, chraiLuaScreenFade(r, g, b, a, time60) != 0);
+	return 1;
+}
+
+/* pd.chr_yeet(chrnum, force) -> bool. Fling a chr away from the player. */
+static int l_pd_chr_yeet(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	f32 force = (f32)luaL_optnumber(L, 2, 100.0);
+	lua_pushboolean(L, chraiLuaYeetChr(chrnum, force) != 0);
+	return 1;
+}
+
+/* pd.explosion(chrnum [, type]) -> bool. Detonate at a chr's feet. */
+static int l_pd_explosion(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 type = (s32)luaL_optinteger(L, 2, 9); /* a mid-size default type */
+	lua_pushboolean(L, chraiLuaExplodeAtChr(chrnum, type) != 0);
+	return 1;
+}
+
+/* pd.alarm(on) -> bool. Stage alarm on/off (server-side; SVC_ALARM mirrors). */
+static int l_pd_alarm(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSetAlarm(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.boost([secs]) -> bool. Speed Pill boost for N seconds (self-decaying);
+ * secs <= 0 cancels an active boost. */
+static int l_pd_boost(lua_State *L)
+{
+	f32 secs = (f32)luaL_optnumber(L, 1, 10.0);
+	lua_pushboolean(L, chraiLuaBoost(secs) != 0);
+	return 1;
+}
+
+/* pd.player_set_health(frac) -> bool. Set health 0.01..1 (never kills). */
+static int l_pd_player_set_health(lua_State *L)
+{
+	f32 frac = (f32)luaL_checknumber(L, 1);
+	lua_pushboolean(L, chraiLuaPlayerSetHealth(frac) != 0);
+	return 1;
+}
+
+/* pd.dizzy([amount]) -> bool. Tranquiliser screen-sway (decays naturally). */
+static int l_pd_dizzy(lua_State *L)
+{
+	s32 amount = (s32)luaL_optinteger(L, 1, 3000);
+	lua_pushboolean(L, chraiLuaDizzy(amount) != 0);
+	return 1;
+}
+
+/* pd.chr_cloak(chrnum, on) -> bool. Toggle a chr's cloaking device flag. */
+static int l_pd_chr_cloak(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrCloak(chrnum, lua_toboolean(L, 2)) != 0);
+	return 1;
+}
+
+/* pd.strip_ammo() -> bool. Zero every ammo pool (weapons stay). */
+static int l_pd_strip_ammo(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaStripAmmo() != 0);
+	return 1;
+}
+
+/* pd.teleport_to_chr(chrnum) -> bool. Snap the player to a chr (server-side). */
+static int l_pd_teleport_to_chr(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaTeleportToChr(chrnum) != 0);
+	return 1;
+}
+
+/* pd.flattex(mode) -> bool. 0 normal / 1 white textures (vertex shading only)
+ * / 2 average-colour textures. Cosmetic only. */
+static int l_pd_flattex(lua_State *L)
+{
+	s32 mode = (s32)luaL_optinteger(L, 1, 0);
+	lua_pushboolean(L, chraiLuaFlatTex(mode) != 0);
+	return 1;
+}
+
+/* pd.grayscale(on) -> bool. Force the renderer grayscale path (film noir). */
+static int l_pd_grayscale(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGrayscale(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
+ * channel). pd.room_tint() with no args turns the tint off. */
+static int l_pd_room_tint(lua_State *L)
+{
+	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
+		lua_pushboolean(L, chraiLuaRoomTint(255, 255, 255, 0) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaRoomTint(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_checkinteger(L, 2),
+			(s32)luaL_checkinteger(L, 3), 1) != 0);
+	return 1;
+}
+
+/* pd.explosions_around(on) -> bool. The Air Force One crash sequence:
+ * staggered explosions surround the player until turned off. */
+static int l_pd_explosions_around(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerExplosions(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.ammo_swap(weaponnum) -> bool. Held guns fire this weapon's primary
+ * rounds (must be a SHOOT-type function). pd.ammo_swap() turns it off. */
+static int l_pd_ammo_swap(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_optinteger(L, 1, -1);
+	lua_pushboolean(L, chraiLuaAmmoSwap(weaponnum) != 0);
+	return 1;
+}
+
+/* pd.backfire(on) -> bool. Shots leave 180 degrees behind the player. */
+static int l_pd_backfire(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaBackfire(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.nbomb() -> bool. N-Bomb storm on the player. */
+static int l_pd_nbomb(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaNbomb() != 0);
+	return 1;
+}
+
+/* pd.gust([force]) -> bool. Shove everything in one random direction. */
+static int l_pd_gust(lua_State *L)
+{
+	f32 force = (f32)luaL_optnumber(L, 1, 150.0);
+	lua_pushboolean(L, chraiLuaGust(force) != 0);
+	return 1;
+}
+
+/* pd.dual_wield(weaponnum [, funcnum]) -> bool. Dual-equip a weapon with
+ * full ammo; funcnum 0/1 also forces that fire function on both hands. */
+static int l_pd_dual_wield(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	s32 funcnum = (s32)luaL_optinteger(L, 2, -1);
+	lua_pushboolean(L, chraiLuaDualWield(weaponnum, funcnum) != 0);
+	return 1;
+}
+
+/* pd.aspect_scale([mult]) -> bool. Projection aspect multiplier: 2 = extra
+ * wide, 0.5 = extra tall, 1 / no arg = normal. */
+static int l_pd_aspect_scale(lua_State *L)
+{
+	f32 mult = (f32)luaL_optnumber(L, 1, 1.0);
+	lua_pushboolean(L, chraiLuaAspectScale(mult) != 0);
+	return 1;
+}
+
+/* pd.song(slot) / pd.song() -> bool. Play an unlocked Combat Sim track over
+ * the stage music (slot wraps into range); no arg stops it. */
+static int l_pd_song(lua_State *L)
+{
+	s32 slot = (s32)luaL_optinteger(L, 1, -1);
+	lua_pushboolean(L, chraiLuaPlaySong(slot) != 0);
+	return 1;
+}
+
+/* pd.spawn_body(bodynum [, weaponnum, dx, dz]) -> chrnum | -1. Spawn a
+ * hostile chr of the given body at the player plus a horizontal offset. */
+static int l_pd_spawn_body(lua_State *L)
+{
+	s32 bodynum = (s32)luaL_checkinteger(L, 1);
+	s32 weaponnum = (s32)luaL_optinteger(L, 2, -1);
+	f32 dx = (f32)luaL_optnumber(L, 3, 0.0);
+	f32 dz = (f32)luaL_optnumber(L, 4, 0.0);
+	lua_pushinteger(L, chraiLuaSpawnBody(bodynum, weaponnum, dx, dz));
+	return 1;
+}
+
+/* pd.body_snatch(chrnum) -> bool. Counter-Op takeover: become that chr
+ * (solo only, one-way for the rest of the level). */
+static int l_pd_body_snatch(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaBodySnatch(chrnum) != 0);
+	return 1;
+}
+
+/* pd.chr_target(chrnum, victimchrnum) -> bool. Point a chr's AI at a chr. */
+static int l_pd_chr_target(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 victim = (s32)luaL_checkinteger(L, 2);
+	lua_pushboolean(L, chraiLuaChrTarget(chrnum, victim) != 0);
+	return 1;
+}
+
+/* pd.chr_calm(chrnum) -> bool. Zero a chr's alertness and target. */
+static int l_pd_chr_calm(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrCalm(chrnum) != 0);
+	return 1;
+}
+
+/* pd.doors_all(open) -> count. Open (true) / close (false) every door. */
+static int l_pd_doors_all(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaDoorsAll(lua_toboolean(L, 1)));
+	return 1;
+}
+
+/* pd.chr_summon(chrnum [, dx, dz]) -> bool. Teleport a chr to the player. */
+static int l_pd_chr_summon(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	f32 dx = (f32)luaL_optnumber(L, 2, 0.0);
+	f32 dz = (f32)luaL_optnumber(L, 3, 0.0);
+	lua_pushboolean(L, chraiLuaChrSummon(chrnum, dx, dz) != 0);
+	return 1;
+}
+
+/* pd.fov_scale([mult]) -> bool. Vertical-FOV multiplier: >1 fisheye,
+ * <1 tunnel vision, 1 / no arg = normal. */
+static int l_pd_fov_scale(lua_State *L)
+{
+	f32 mult = (f32)luaL_optnumber(L, 1, 1.0);
+	lua_pushboolean(L, chraiLuaFovScale(mult) != 0);
+	return 1;
+}
+
+/* pd.one_punch(on) -> bool. Unarmed strikes: lethal + mega knockback. */
+static int l_pd_one_punch(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaOnePunch(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.gormless(on) -> bool. Invert movement + look axes. */
+static int l_pd_gormless(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGormless(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.spawn_bike() -> bool. Half-size hoverbike at the player (solo only). */
+static int l_pd_spawn_bike(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSpawnBike() != 0);
+	return 1;
+}
+
+/* pd.sfx_shuffle(on) -> bool. Every SFX plays as a random other SFX. */
+static int l_pd_sfx_shuffle(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSfxShuffle(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.instrument_shuffle(on) -> bool. Random instruments on program change. */
+static int l_pd_instrument_shuffle(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaInstrumentShuffle(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* --- External event queue (the Twitch/YouTube window) ----------------------
+ * A tiny {source, text} ring fed by C (console /chaos, the Chaos.EventPort
+ * UDP listener in net.c, or any future embedded chat bridge) and drained by
+ * Lua via pd.ext_poll(). Text is opaque to C — the protocol lives entirely in
+ * scripts/chaos.lua, so a stream bot can grow new verbs without a rebuild. */
+#define LUA_EXTEV_MAX  32
+#define LUA_EXTEV_TEXT 128
+struct luaextevent {
+	char source[16];
+	char text[LUA_EXTEV_TEXT];
+};
+static struct luaextevent g_LuaExtEvents[LUA_EXTEV_MAX];
+static u32 g_LuaExtEvHead; /* next write */
+static u32 g_LuaExtEvTail; /* next read */
+
+void luaExtEventPush(const char *source, const char *text)
+{
+	struct luaextevent *ev;
+	if (!text || !text[0]) {
+		return;
+	}
+	if (g_LuaExtEvHead - g_LuaExtEvTail >= LUA_EXTEV_MAX) {
+		g_LuaExtEvTail++; /* overflow: drop the oldest (chat spam friendly) */
+	}
+	ev = &g_LuaExtEvents[g_LuaExtEvHead % LUA_EXTEV_MAX];
+	snprintf(ev->source, sizeof(ev->source), "%s", source ? source : "?");
+	snprintf(ev->text, sizeof(ev->text), "%s", text);
+	g_LuaExtEvHead++;
+}
+
+/* Optional localhost UDP ingress, implemented in net.c (socket infra lives
+ * there); drained lazily whenever Lua polls so no per-frame hook is needed.
+ * Weak default: absent in builds without net (never true on this branch). */
+extern void netChaosEventDrain(void);
+
+/* pd.ext_poll() -> source, text | nil. Pop one external event. */
+static int l_pd_ext_poll(lua_State *L)
+{
+	struct luaextevent *ev;
+	netChaosEventDrain();
+	if (g_LuaExtEvTail == g_LuaExtEvHead) {
+		lua_pushnil(L);
+		return 1;
+	}
+	ev = &g_LuaExtEvents[g_LuaExtEvTail % LUA_EXTEV_MAX];
+	g_LuaExtEvTail++;
+	lua_pushstring(L, ev->source);
+	lua_pushstring(L, ev->text);
+	return 2;
+}
+
 void luaApiRegister(lua_State *L)
 {
 	/* create the events registry table (replaces any previous one) */
@@ -989,6 +1386,48 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_is_unlocked); lua_setfield(L, -2, "is_unlocked");
 	lua_pushcfunction(L, l_pd_ap_reset);    lua_setfield(L, -2, "ap_reset");
 	lua_pushcfunction(L, l_pd_ap_list_header); lua_setfield(L, -2, "ap_list_header");
+
+	/* chaos-mode primitives + external event ingress (docs/PORT_CHAOS.md) */
+	lua_pushcfunction(L, l_pd_cheat);         lua_setfield(L, -2, "cheat");
+	lua_pushcfunction(L, l_pd_cheat_active);  lua_setfield(L, -2, "cheat_active");
+	lua_pushcfunction(L, l_pd_sound);         lua_setfield(L, -2, "sound");
+	lua_pushcfunction(L, l_pd_take_weapon);   lua_setfield(L, -2, "take_weapon");
+	lua_pushcfunction(L, l_pd_weapon_held);   lua_setfield(L, -2, "weapon_held");
+	lua_pushcfunction(L, l_pd_switch_weapon); lua_setfield(L, -2, "switch_weapon");
+	lua_pushcfunction(L, l_pd_fade);          lua_setfield(L, -2, "fade");
+	lua_pushcfunction(L, l_pd_chr_yeet);      lua_setfield(L, -2, "chr_yeet");
+	lua_pushcfunction(L, l_pd_explosion);     lua_setfield(L, -2, "explosion");
+	lua_pushcfunction(L, l_pd_ext_poll);      lua_setfield(L, -2, "ext_poll");
+	lua_pushcfunction(L, l_pd_alarm);         lua_setfield(L, -2, "alarm");
+	lua_pushcfunction(L, l_pd_boost);         lua_setfield(L, -2, "boost");
+	lua_pushcfunction(L, l_pd_player_set_health); lua_setfield(L, -2, "player_set_health");
+	lua_pushcfunction(L, l_pd_dizzy);         lua_setfield(L, -2, "dizzy");
+	lua_pushcfunction(L, l_pd_chr_cloak);     lua_setfield(L, -2, "chr_cloak");
+	lua_pushcfunction(L, l_pd_strip_ammo);    lua_setfield(L, -2, "strip_ammo");
+	lua_pushcfunction(L, l_pd_teleport_to_chr); lua_setfield(L, -2, "teleport_to_chr");
+	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
+	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
+	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
+	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");
+	lua_pushcfunction(L, l_pd_ammo_swap);     lua_setfield(L, -2, "ammo_swap");
+	lua_pushcfunction(L, l_pd_backfire);      lua_setfield(L, -2, "backfire");
+	lua_pushcfunction(L, l_pd_nbomb);         lua_setfield(L, -2, "nbomb");
+	lua_pushcfunction(L, l_pd_gust);          lua_setfield(L, -2, "gust");
+	lua_pushcfunction(L, l_pd_dual_wield);    lua_setfield(L, -2, "dual_wield");
+	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");
+	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");
+	lua_pushcfunction(L, l_pd_spawn_body);    lua_setfield(L, -2, "spawn_body");
+	lua_pushcfunction(L, l_pd_body_snatch);   lua_setfield(L, -2, "body_snatch");
+	lua_pushcfunction(L, l_pd_chr_target);    lua_setfield(L, -2, "chr_target");
+	lua_pushcfunction(L, l_pd_chr_calm);      lua_setfield(L, -2, "chr_calm");
+	lua_pushcfunction(L, l_pd_doors_all);     lua_setfield(L, -2, "doors_all");
+	lua_pushcfunction(L, l_pd_chr_summon);    lua_setfield(L, -2, "chr_summon");
+	lua_pushcfunction(L, l_pd_fov_scale);     lua_setfield(L, -2, "fov_scale");
+	lua_pushcfunction(L, l_pd_one_punch);     lua_setfield(L, -2, "one_punch");
+	lua_pushcfunction(L, l_pd_gormless);      lua_setfield(L, -2, "gormless");
+	lua_pushcfunction(L, l_pd_spawn_bike);    lua_setfield(L, -2, "spawn_bike");
+	lua_pushcfunction(L, l_pd_sfx_shuffle);   lua_setfield(L, -2, "sfx_shuffle");
+	lua_pushcfunction(L, l_pd_instrument_shuffle); lua_setfield(L, -2, "instrument_shuffle");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

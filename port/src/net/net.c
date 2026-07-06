@@ -67,6 +67,10 @@ s32 g_NetMode = NETMODE_NONE;
 // g_NetCoopObjStatuses, which has an extern in net.h covering its forward use.
 static u32 g_NetLastStageFlags;
 
+// Last alarm state broadcast to co-op clients (SVC_ALARM, the g_StageFlags
+// pattern). Reset at co-op stage entry.
+static u8 g_NetLastAlarmActive;
+
 // Last co-op cutscene state broadcast (active + anim), so netEndFrame only sends
 // SVC_CUTSCENE on a transition. Reset at co-op stage entry.
 static s32 g_NetLastCutsceneActive;
@@ -143,6 +147,89 @@ s32 netPlayerOwnsMouse(void)
 				&& !g_NetLocalClient->is_spectator;
 	}
 	return g_Vars.currentplayernum == 0;
+}
+
+// "Is the current player the primary local viewport?" — the netplay-safe form
+// of the raw `g_Vars.currentplayernum == 0` idiom (the slot-0 assumption
+// family, PORT_HOSTED_SERVER_FINDINGS). Offline / splitscreen: viewport 0,
+// verbatim. Netplay: the LOCAL pawn, whatever slot it sits at (dedicated-
+// server clients historically; co-op drop-in claimants at wire slot N today)
+// — there is exactly one local combatant, so "once per frame" semantics hold.
+// NOTE: only for sites that mean "the one local player"; the many
+// splitscreen-layout `== 0` gates (viewport quadrant math in bondview /
+// hudmsg / player.c / zbuf) key on the VIEWPORT index and must stay raw —
+// audited 2026-07-04, see the netplay perf/gotcha commits.
+s32 netPlayerIsPrimaryLocal(void)
+{
+	return netPlayerOwnsMouse();
+}
+
+// --------------------------------------------------------------------------
+// Chaos external-event UDP ingress (docs/PORT_CHAOS.md — the Twitch/YouTube
+// integration window). When Chaos.EventPort is nonzero, a LOCALHOST-ONLY
+// datagram socket accepts newline-free text events ("trigger mirror",
+// "vote yeet", ...) from any companion process — a Twitch IRC bot, a YouTube
+// chat poller, Streamer.bot / SAMMI, or plain `echo trigger ap | nc -u
+// 127.0.0.1 <port>`. Each datagram becomes one {source="udp", text} entry in
+// the Lua external event queue (luaExtEventPush), which scripts/chaos.lua
+// drains via pd.ext_poll(). Drained lazily from the poll itself, so there is
+// no per-frame cost when chaos mode is off and no dependency on a net
+// session (enet_initialize runs unconditionally in netInit). Default 0 = off;
+// the bind is pinned to 127.0.0.1 so it can never become a remote ingress.
+s32 g_ChaosEventPort = 0;
+static ENetSocket s_chaosEvSock = ENET_SOCKET_NULL;
+static s32 s_chaosEvPortOpen = 0; // port the socket is currently bound to
+
+void netChaosEventDrain(void)
+{
+	// Lazy open/close tracking the config value.
+	if (g_ChaosEventPort != s_chaosEvPortOpen) {
+		if (s_chaosEvSock != ENET_SOCKET_NULL) {
+			enet_socket_destroy(s_chaosEvSock);
+			s_chaosEvSock = ENET_SOCKET_NULL;
+		}
+		s_chaosEvPortOpen = g_ChaosEventPort;
+		if (g_ChaosEventPort > 0 && g_ChaosEventPort <= 65535) {
+			ENetAddress addr;
+			s_chaosEvSock = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+			if (s_chaosEvSock != ENET_SOCKET_NULL) {
+				enet_socket_set_option(s_chaosEvSock, ENET_SOCKOPT_NONBLOCK, 1);
+				enet_address_set_ip(&addr, "127.0.0.1"); // literal IP — no DNS; keeps the bind loopback-only
+				addr.port = (u16)g_ChaosEventPort;
+				if (enet_socket_bind(s_chaosEvSock, &addr) < 0) {
+					sysLogPrintf(LOG_WARNING, "chaos: could not bind event port %d", g_ChaosEventPort);
+					enet_socket_destroy(s_chaosEvSock);
+					s_chaosEvSock = ENET_SOCKET_NULL;
+				} else {
+					sysLogPrintf(LOG_NOTE, "chaos: event ingress listening on 127.0.0.1:%d", g_ChaosEventPort);
+				}
+			}
+		}
+	}
+
+	if (s_chaosEvSock == ENET_SOCKET_NULL) {
+		return;
+	}
+
+	// Drain everything queued (bounded so a datagram flood can't stall the
+	// game thread; the Lua-side queue drops oldest on overflow anyway).
+	for (s32 i = 0; i < 16; i++) {
+		char buf[256];
+		ENetAddress from;
+		ENetBuffer rb;
+		rb.data = buf;
+		rb.dataLength = sizeof(buf) - 1;
+		const int len = enet_socket_receive(s_chaosEvSock, &from, &rb, 1);
+		if (len <= 0) {
+			break;
+		}
+		buf[len] = '\0';
+		// strip a trailing newline so `echo`-piped events are clean
+		while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+			buf[len - 1] = '\0';
+		}
+		luaExtEventPush("udp", buf);
+	}
 }
 
 void netMpConfigFixLocalPads(s32 slot)
@@ -1259,6 +1346,7 @@ void netCoopEnterStage(s32 stagenum, s32 difficulty, s32 numplayers)
 	memset(g_NetCoopClientObjDone, 0, sizeof(u8) * MAX_OBJECTIVES); // host: clear client-reported completions
 	memset(g_NetCoopObjToastShown, 0, sizeof(u8) * MAX_OBJECTIVES); // clear per-objective completion-toast latches
 	g_NetLastStageFlags = 0; // re-broadcast flags from scratch for the new stage
+	g_NetLastAlarmActive = 0; // re-broadcast alarm state from scratch for the new stage
 	g_NetCoopLocalStageFlags = 0; // client: clear locally-set stage flags for the new stage
 	g_NetLastCutsceneActive = 0;
 	g_NetLastCutsceneAnim = 0;
@@ -2251,6 +2339,7 @@ static void netClientEvReceive(struct netclient *cl)
 			case SVC_CHR_SPAWN: rc = netmsgSvcChrSpawnRead(&cl->in, cl); break;
 			case SVC_CHR_TALK: rc = netmsgSvcChrTalkRead(&cl->in, cl); break;
 			case SVC_STAGE_FLAGS: rc = netmsgSvcStageFlagsRead(&cl->in, cl); break;
+			case SVC_ALARM: rc = netmsgSvcAlarmRead(&cl->in, cl); break;
 			case SVC_CUTSCENE: rc = netmsgSvcCutsceneRead(&cl->in, cl); break;
 			case SVC_COOP_LIVES: rc = netmsgSvcCoopLivesRead(&cl->in, cl); break;
 			case SVC_TIMESCALE: rc = netmsgSvcTimescaleRead(&cl->in, cl); break;
@@ -2612,6 +2701,23 @@ void netStartFrame(void)
 	}
 }
 
+// Corpse chr-state throttle: a fully-settled corpse (ACT_DEAD — ACT_DIE, the
+// falling anim, still streams at full cadence) has a static pos and finished
+// anim, so refreshing its ~30-60 byte chr-state block every send tick is pure
+// waste — and corpses accumulate (co-op guards; kept bot bodies under the
+// Lives system). Include a dead chr only on ~every 8th send opportunity,
+// staggered by syncid so the refreshes spread across ticks. Keyed on
+// (g_NetTick >> 1) so the phase advances across send ticks at ANY svcrate
+// parity — at rate 2 all send ticks share parity, so keying on raw g_NetTick
+// would starve odd-offset corpses forever. Worst-case refresh ~250ms, well
+// inside the 500ms stale-snapshot hard-snap window; a just-died chr keeps
+// full cadence until the death anim settles into ACT_DEAD.
+static inline bool netChrCorpseThrottled(const struct chrdata *chr)
+{
+	return chr->actiontype == ACT_DEAD
+			&& ((((g_NetTick >> 1) + chr->prop->syncid) & 7) != 0);
+}
+
 void netEndFrame(void)
 {
 	if (!g_NetMode) {
@@ -2793,6 +2899,21 @@ void netEndFrame(void)
 					}
 				}
 			}
+
+			// State-send cadence gate (svcrate / the P3 adaptive rate). Player
+			// moves already respect it via netClientNeedMove's g_NetNextUpdate
+			// check, but the sim / co-op-NPC chr-state loops and the dynamic-
+			// prop position streams below did NOT — so --svcrate 2 (the
+			// documented "~half bandwidth" knob, and the pdmaster dedicated
+			// default) only ever halved the player moves while the DOMINANT
+			// chr-state stream stayed at 60Hz. Evaluate once here:
+			// g_NetNextUpdate is only advanced at the end of this block, so the
+			// answer is consistent for every stream this tick. At the default
+			// rate 1 (small matches) this is always true — no behaviour change.
+			// Interpolation is already sized for the stretched cadence (players
+			// have ridden it since P3; snapshots 2 ticks apart sit well inside
+			// the interp window and the 30-tick stale hard-snap threshold).
+			const bool svsendtick = g_NetNextUpdate <= g_NetTick;
 #ifndef PLATFORM_N64
 			// broadcast sim (bot) chr positions so clients can position-drive them.
 			// BYTE-BUDGETED ROUND-ROBIN (same scheme as the co-op NPC loop below):
@@ -2805,7 +2926,7 @@ void netEndFrame(void)
 			// rotating cursor and stop before the buffer fills, so the loss (when it
 			// happens at all) is shared and interpolation hides it. Player moves were
 			// written above, so the threshold accounts for them.
-			if (g_Vars.lvmpbotlevel && g_BotCount > 0) {
+			if (svsendtick && g_Vars.lvmpbotlevel && g_BotCount > 0) {
 				if (g_NetRelevancy) {
 					// P2: per-client relevancy cull. Build each remote client its own
 					// chr-state packet of only the sims relevant to it
@@ -2828,7 +2949,8 @@ void netEndFrame(void)
 						s32 i = simcursor[c];
 						while (scanned < g_BotCount && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
 							struct chrdata *chr = g_MpBotChrPtrs[i];
-							if (chr && chr->prop && chr->prop->syncid && netChrRelevantTo(chr, cl)) {
+							if (chr && chr->prop && chr->prop->syncid
+									&& !netChrCorpseThrottled(chr) && netChrRelevantTo(chr, cl)) {
 								const u32 b0 = g_NetRelevBuf.wp;
 								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
 								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
@@ -2850,7 +2972,7 @@ void netEndFrame(void)
 					s32 i = simcursor;
 					while (scanned < g_BotCount && g_NetMsg.wp < NET_BUFSIZE - 340) {
 						struct chrdata *chr = g_MpBotChrPtrs[i];
-						if (chr && chr->prop && chr->prop->syncid) {
+						if (chr && chr->prop && chr->prop->syncid && !netChrCorpseThrottled(chr)) {
 							const u32 b0 = g_NetMsg.wp;
 							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
 							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
@@ -2873,7 +2995,7 @@ void netEndFrame(void)
 			// the buffer nears full, so every NPC updates over a few ticks (interpolation
 			// hides the gap) and the packet never overflows. Player moves were already
 			// written above, so the threshold accounts for them.
-			if (g_Vars.coopplayernum >= 0 && g_ChrSlots) {
+			if (svsendtick && g_Vars.coopplayernum >= 0 && g_ChrSlots) {
 				const s32 numslots = chrsGetNumSlots();
 				if (g_NetRelevancy) {
 					// P2: per-client relevancy cull (see the sim loop above). Each remote
@@ -2894,7 +3016,8 @@ void netEndFrame(void)
 						while (scanned < numslots && g_NetRelevBuf.wp < NET_BUFSIZE - 340) {
 							struct chrdata *chr = &g_ChrSlots[i];
 							if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
-									&& chr->prop->type == PROPTYPE_CHR && netChrRelevantTo(chr, cl)) {
+									&& chr->prop->type == PROPTYPE_CHR
+									&& !netChrCorpseThrottled(chr) && netChrRelevantTo(chr, cl)) {
 								const u32 b0 = g_NetRelevBuf.wp;
 								netmsgSvcPropMoveWrite(&g_NetRelevBuf, chr->prop, NULL);
 								netStatAdd(NETSTAT_PROPMOVE, g_NetRelevBuf.wp - b0);
@@ -2917,7 +3040,8 @@ void netEndFrame(void)
 					while (scanned < numslots && g_NetMsg.wp < NET_BUFSIZE - 340) {
 						struct chrdata *chr = &g_ChrSlots[i];
 						if (chr->chrnum >= 0 && chr->prop && chr->prop->syncid
-								&& chr->prop->type == PROPTYPE_CHR) {
+								&& chr->prop->type == PROPTYPE_CHR
+								&& !netChrCorpseThrottled(chr)) {
 							const u32 b0 = g_NetMsg.wp;
 							netmsgSvcPropMoveWrite(&g_NetMsg, chr->prop, NULL);
 							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
@@ -2947,7 +3071,8 @@ void netEndFrame(void)
 			//    impulse packet, or a JIP client, without a once-a-second burst.
 			// Unreliable (g_NetMsg) like the sim/NPC moves above: latest-wins, and a
 			// dropped frame self-heals on the next tick / cursor sweep.
-			if (g_Vars.coopplayernum >= 0) {
+			// svsendtick: rides the same state-send cadence as the chr streams.
+			if (svsendtick && g_Vars.coopplayernum >= 0) {
 				const s32 maxprops = g_Vars.maxprops;
 				// Pass 1: moving objs, every tick.
 				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 64; i++) {
@@ -3012,7 +3137,8 @@ void netEndFrame(void)
 			// re-registering wire rooms on them would fight the child linkage);
 			// doors (synced via SVC_PROP_DOOR; wire pos breaks the open anim).
 			// Unreliable (g_NetMsg): latest-wins, self-heals next tick/sweep.
-			if (g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
+			// svsendtick: rides the same state-send cadence as the chr streams.
+			if (svsendtick && g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
 				const s32 maxprops = g_Vars.maxprops;
 				// Pass 1: props in projectile motion, every tick.
 				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 160; i++) {
@@ -3075,6 +3201,22 @@ void netEndFrame(void)
 						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
 				g_NetLastStageFlags = g_StageFlags;
 				netmsgSvcStageFlagsWrite(&g_NetMsgRel);
+			}
+
+			// Co-op alarm mirror (SVC_ALARM, proto 85): the alarm is raised by
+			// host-side NPC AI (gated off on clients) or scripts, so without the
+			// mirror a client never heard the klaxon and its monitor scripts'
+			// alarmIsActive() conditionals silently diverged from the host. On
+			// change + a heartbeat heal at phase 25 (the g_StageFlags pattern;
+			// free phase — KoH 0, reconcile 10, score 15, flags 20, lobby 30,
+			// stats 45, timescale 50).
+			if (g_Vars.coopplayernum >= 0) {
+				const u8 alarmnow = alarmIsActive() ? 1 : 0;
+				if (alarmnow != g_NetLastAlarmActive
+						|| (g_NetTick % NET_HEARTBEAT_INTERVAL) == 25u) {
+					g_NetLastAlarmActive = alarmnow;
+					netmsgSvcAlarmWrite(&g_NetMsgRel, alarmnow);
+				}
 			}
 
 			// Co-op cutscene state: in-engine cutscenes (intro, mid-mission, outro)
@@ -3736,6 +3878,34 @@ void netPlayersAllocate(void)
 			}
 		}
 	}
+}
+
+// Co-op scripted player-target remap (known-issues "option 3"). Script player
+// ids (CHR_BOND / CHR_COOP / player chrnums) resolve through g_Vars.players[]
+// by LOCAL slot, but the slot a script semantically targets is the HOST's
+// numbering — the host runs the authoritative scripts and its local slots ARE
+// the wire slots (no swap on the server). On a client, netPlayersAllocate
+// transposed local slots 0 <-> svplayernum to put the local player at 0, so a
+// script-resolved player slot must be transposed back to reach the same
+// PHYSICAL player the host targets. Identity everywhere else: server, no-swap
+// clients (the first joiner already at wire slot 0) and drop-in claimants
+// (seated at their wire slot, no swap). Self-inverse, so it maps either
+// direction of the transposition.
+s32 netCoopRemapWirePlayernum(s32 playernum)
+{
+	if (g_NetMode == NETMODE_CLIENT && s_netSlot0SwapOccupant) {
+		const s32 svplayernum = s_netSlot0SwapOccupant->playernum;
+
+		if (playernum == 0) {
+			return svplayernum;
+		}
+
+		if (playernum == svplayernum) {
+			return 0;
+		}
+	}
+
+	return playernum;
 }
 
 void netSyncIdsAllocate(void)
@@ -5647,6 +5817,16 @@ s32 netConsoleCommand(const char *line)
 		return 1;
 	}
 
+	// Chaos mode (docs/PORT_CHAOS.md): forward the raw argument line to the
+	// Lua external event queue — the protocol (on/off/trigger/vote/say/...)
+	// lives entirely in scripts/chaos.lua, so new verbs need no rebuild. The
+	// same queue is fed by the Chaos.EventPort UDP listener below (the
+	// Twitch/YouTube bridge ingress).
+	if (strcmp(cmd, "chaos") == 0) {
+		luaExtEventPush("console", *arg ? arg : "status");
+		return 1;
+	}
+
 	// Demo recorder (/demorec start|stop|status), port/src/demo.c.
 	if (netDemoConsoleCommand(cmd, arg)) {
 		return 1;
@@ -7366,6 +7546,9 @@ Gfx *netDebugRender(Gfx *gdl)
 PD_CONSTRUCTOR static void netConfigInit(void)
 {
 	configRegisterUInt("Net.LerpTicks", &g_NetInterpTicks, 0, 600);
+	// Chaos external-event ingress (docs/PORT_CHAOS.md): localhost-only UDP
+	// port for stream-bot events (Twitch/YouTube bridges). 0 = off (default).
+	configRegisterInt("Chaos.EventPort", &g_ChaosEventPort, 0, 65535);
 
 	configRegisterString("Net.Client.LastJoinAddr", g_NetLastJoinAddr, NET_MAX_ADDR);
 	configRegisterUInt("Net.Client.InRate", &g_NetClientInRate, 0, 10 * 1024 * 1024);

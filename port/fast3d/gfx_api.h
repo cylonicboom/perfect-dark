@@ -38,6 +38,8 @@ extern bool gfx_framebuffers_enabled;
 extern bool gfx_detail_textures_enabled;
 extern bool gfx_wireframe_mode;
 extern bool gfx_mirror_mode;                 // flip the 3D scene left-right (CHEAT_MIRROR)
+extern int gfx_flattex_mode;                 // chaos: 1 = white textures (vertex shading only), 2 = per-texture average colour
+extern int gfx_force_grayscale;              // chaos: force the grayscale shader path with a neutral colour
 // HDR dazzle weight 0..1 set by the G_SETDAZZLE_EXT display-list command
 // (flush-aligned): draws issued while non-zero are emissive-boosted toward
 // the HDR peak by the SDL_GPU backend. GL and SDR ignore it.

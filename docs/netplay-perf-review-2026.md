@@ -150,6 +150,43 @@ with far less desync risk than delta encoding, and each is independently testabl
 
 ---
 
+### P3b — svcrate gate extended to the chr-state + prop streams; corpse throttle **[DONE — 2026-07-03 audit, no wire change]**
+
+Follow-up audit finding: the `g_NetNextUpdate` cadence gate (svcrate / the P3
+adaptive rate) only ever throttled **player moves** (via `netClientNeedMove`).
+The sim chr-state loop, the co-op NPC chr-state loop, and both dynamic-prop
+position streams — the streams P1/P2 identified as the bandwidth drivers — ran
+at the full 60Hz regardless, so `--svcrate 2` (the documented "~half
+bandwidth" knob, and the pdmaster dedicated default) never actually halved the
+dominant traffic. All four blocks now gate on one `svsendtick` evaluated at
+the top of the server send section (`g_NetNextUpdate` is only advanced at the
+end of the block, so the answer is consistent across the streams). At the
+default rate 1 (2-4 player matches) nothing changes; at rate 2 the chr-state
+and prop streams genuinely halve, matching what interpolation was already
+sized for (players have ridden the stretched cadence since P3; 2-tick
+snapshot spacing sits well inside the interp window and the 30-tick stale
+hard-snap threshold).
+
+On top of that, **settled corpses are throttled ~8x** (`netChrCorpseThrottled`,
+net.c): a chr in `ACT_DEAD` (fully down — `ACT_DIE`, the falling anim, keeps
+full cadence) has a static pos and finished anim, yet each one still cost a
+chr-state block every send tick forever — and corpses accumulate (campaign
+co-op guards; kept bot bodies under the Lives system). Dead chrs are now
+included only ~every 8th send opportunity, staggered by syncid, keyed on
+`g_NetTick >> 1` so the stagger phase advances at any svcrate parity
+(send ticks at rate 2 all share parity — raw `g_NetTick & 7` would starve
+odd-offset corpses forever). Worst-case corpse refresh ~250ms, inside the
+500ms stale-snapshot window.
+
+**Not done (audited, deliberately skipped):** a server-side dirty gate on the
+settled-prop pass-2 sweeps — the periodic resend exists to heal **client-side**
+divergence (the client's own physics moved its copy), which the server cannot
+detect, so "unchanged on the server" is not a safe skip condition; the sweeps
+stay periodic (now at the svcrate cadence). The wire-level leftovers (the
+discarded `actiontype` byte in the chr-state block; delta encoding per the P2
+step-3 plan) remain deferred — both need a proto bump and the latter needs a
+test environment.
+
 ## Smaller / lower-priority (recommendations)
 
 - **`netStartFrame` event pump** **[FIXED]** — did one `enet_host_service(…, 1)`

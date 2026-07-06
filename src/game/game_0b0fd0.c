@@ -41,9 +41,47 @@ struct weaponfunc *weaponGetFunctionById(u32 weaponnum, u32 which)
 	return NULL;
 }
 
+#ifndef PLATFORM_N64
+// Chaos ammo swap (docs/PORT_CHAOS.md, pd.ammo_swap): while >= 0, the local
+// player's HELD guns resolve their fire function to this weapon's primary —
+// "every gun fires rockets". Scoped tightly to the current local player's
+// hand gsets, so menus / inventory screens (which pass their own gset
+// copies), NPC AI, and remote netplay pawns all keep the real function.
+// Gun-range weapons only: melee/throwable/device hand state machines can't
+// drive a shoot function. The swap TARGET is validated to be a SHOOT-type
+// primary at set time (chraiLuaAmmoSwap).
+s32 g_ChaosAmmoSwapWeapon = -1;
+
+static struct weaponfunc *gsetChaosAmmoSwap(struct gset *gset)
+{
+	struct player *pl = g_Vars.currentplayer;
+
+	if (g_ChaosAmmoSwapWeapon < 0 || pl == NULL || pl->isremote) {
+		return NULL;
+	}
+	if (gset != &pl->hands[HAND_RIGHT].gset && gset != &pl->hands[HAND_LEFT].gset) {
+		return NULL;
+	}
+	if (gset->weaponnum < WEAPON_FALCON2 || gset->weaponnum > WEAPON_CROSSBOW
+			|| gset->weaponnum == WEAPON_COMBATKNIFE
+			|| gset->weaponnum == g_ChaosAmmoSwapWeapon) {
+		return NULL;
+	}
+	return weaponGetFunctionById(g_ChaosAmmoSwapWeapon, FUNC_PRIMARY);
+}
+#endif
+
 struct weaponfunc *gsetGetWeaponFunction2(struct gset *gset)
 {
 	struct weapon *weapon = weaponFindById(gset->weaponnum);
+
+#ifndef PLATFORM_N64
+	struct weaponfunc *swap = gsetChaosAmmoSwap(gset);
+
+	if (swap) {
+		return swap;
+	}
+#endif
 
 	if (weapon) {
 		return weapon->functions[gset->weaponfunc];
@@ -55,6 +93,14 @@ struct weaponfunc *gsetGetWeaponFunction2(struct gset *gset)
 struct weaponfunc *gsetGetWeaponFunction(struct gset *gset)
 {
 	struct weapon *weapon = g_Weapons[gset->weaponnum];
+
+#ifndef PLATFORM_N64
+	struct weaponfunc *swap = gsetChaosAmmoSwap(gset);
+
+	if (swap) {
+		return swap;
+	}
+#endif
 
 	if (weapon) {
 #ifdef AVOID_UB

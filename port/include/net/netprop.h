@@ -42,6 +42,7 @@ enum netpropev {
 	NETPROP_EV_EXPLODE_GATED,    // client suppressed local propExplode for a synced prop
 	NETPROP_EV_HARDFREE_GATED,   // client skipped hard-free fade of a synced prop
 	NETPROP_EV_PICKUP_REQ,       // client sent CLC_PICKUP_REQUEST for this prop
+	NETPROP_EV_TWIN_SUPPRESS,    // client suppressed a local corpse-drop twin (proto 86 "wire owns the lifetime"; extra = hand)
 };
 
 // netPropFreeSynced reasons (NETPROP_EV_NETFREE extra).

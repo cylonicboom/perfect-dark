@@ -97,9 +97,20 @@ def summarize(path, audits, other):
     netprops_max = max((_ai(a, "netprops") for a in audits), default=0)
     span = (audits[-1]["tick"] - audits[0]["tick"]) if len(audits) > 1 else 0
 
+    # proto-86 ghost-twin detector: floorlocal counts CLIENT-side local
+    # (syncid-0) weapons loose in the world. Transient nonzero cycles are
+    # normal (a twin exists for one cycle mid-drop); a value that stays
+    # nonzero through the final 5 cycles means a corpse-drop path escaped
+    # the chrBeginDeath suppression -> FAIL.
+    floorlocal_peak = max((_ai(a, "floorlocal") for a in audits), default=0)
+    tail = audits[-5:]
+    floorlocal_persist = (len(tail) >= 5
+                          and all(_ai(a, "floorlocal") > 0 for a in tail))
+
     ok = (fail_cycles == 0 and dupes == 0 and corpses == 0
           and orphan == 0 and overcap == 0
-          and heal == 0 and reap == 0 and orphreap == 0)
+          and heal == 0 and reap == 0 and orphreap == 0
+          and not floorlocal_persist)
 
     out.append("  role=%s  cycles=%d  span=%d ticks (~%.1f min)"
                % (role, len(audits), span, span / 3600.0))
@@ -109,6 +120,10 @@ def summarize(path, audits, other):
     out.append("  heal-layer fires: heal=%d reap=%d orphreap=%d" % (heal, reap, orphreap))
     out.append("  weapon slots:     peak occ=%d / %d   peak netprops=%d"
                % (occ_max, slots_max, netprops_max))
+    out.append("  local floor twins: peak=%d%s"
+               % (floorlocal_peak,
+                  "  <-- PERSISTENT in final 5 cycles (unsuppressed drop path)"
+                  if floorlocal_persist else ""))
     # Context from non-audit tripwire lines if present.
     for ev in ("orphan_reap", "weaponslots"):
         if ev in other:

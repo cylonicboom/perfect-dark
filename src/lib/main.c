@@ -1,9 +1,15 @@
+// ============================================================================
+// N64 BUILD ONLY — THIS FILE IS NOT COMPILED INTO THE PORT.
+// port/src/pdmain.c replaces it wholesale (see CMakeLists.txt SRC_LIB, which
+// omits it). Any port feature added here is silently dead: this has happened
+// twice (the det fixed-step loop and the record/replay hooks — see
+// port/src/CLAUDE.md). Put port changes in port/src/pdmain.c instead.
+// ============================================================================
 #include <ultra64.h>
 #include <sched.h>
 #include "lib/sched.h"
 #include "lib/vars.h"
 #include "constants.h"
-#include "det.h"
 #include "game/camdraw.h"
 #include "game/cheats.h"
 #include "game/debug.h"
@@ -70,11 +76,6 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
-#ifndef PLATFORM_N64
-#include "net/net.h"
-#include "spectator.h"
-#include "game/lv.h"
-#endif
 
 // mainLoop calls rngSetSeed with a u32 argument,
 // but the function takes a u64 so an incorrect declaration is needed.
@@ -894,20 +895,6 @@ void mainLoop(void)
 			if (getNumPlayers() >= 2) {
 				numplayers = getNumPlayers();
 			}
-
-#ifndef PLATFORM_N64
-			// Host spectator mode: replace the single local player with up to
-			// SPEC_MAX_PANELS panel viewports. Each panel gets a struct player
-			// slot in g_Vars.players[]; netPlayersAllocate's spectator guard
-			// keeps remote combatants from clobbering them. Source of truth is
-			// g_NetLocalClient->is_spectator — g_MpSetup gets clobbered by
-			// mpsetupLoadCurrentFile so MPOPTION bits don't survive.
-			if (g_NetMode == NETMODE_SERVER && g_NetLocalClient && g_NetLocalClient->is_spectator) {
-				if (g_SpectatorPanelCount >= 1 && g_SpectatorPanelCount <= SPEC_MAX_PANELS) {
-					numplayers = g_SpectatorPanelCount;
-				}
-			}
-#endif
 		}
 
 		if (numplayers < 2) {
@@ -1056,75 +1043,10 @@ void mainTick(void)
 			}
 #endif
 
-			// Fixed-timestep gameplay (opt-in, Game.FixedTick / /fixedtick): run
-			// the sim a whole number of fixed 1/60 steps this frame (diffframe60,
-			// which frametimeCalculate already accumulates from wall-clock) and
-			// render once after the loop; detPinTimestep pins each lvTick to a
-			// single 1/60 step. This decouples gameplay (a deterministic 60Hz)
-			// from the frame rate — >60fps frames run 0 sim steps (render-only),
-			// <60fps frames run several catch-up steps. Default off => mainnsteps
-			// stays 1 and this is byte-identical to the original variable-dt path.
-			// The loop body is kept at its original indentation so the diff is a
-			// pure wrap; the matching close brace is just before lvRender.
-			s32 mainnsteps = 1;
-			// During det record/replay keep it at exactly one step per render
-			// frame so the run is reproducible (the fps-driven diffframe60 would
-			// differ between record and replay and cause false divergence). The
-			// det pin still fixes each step to 1/60.
-			// Netplay always runs the sim on the fixed timestep (forced 60Hz below),
-			// even when Game.FixedTick is off for single player: a steady cadence is
-			// required or the remote interpolation/lag-comp (timed against g_NetTick)
-			// jitters and client/server step differently. Disabling it broke netplay.
-			if ((g_FixedTickEnabled || g_NetMode) && g_DetMode != DET_RECORD && g_DetMode != DET_REPLAY) {
-				// Run the sim at g_FixedTickRate ticks/sec in REAL TIME: each tick
-				// advances game-time by 1/rate second (detPinTimestep pins the
-				// per-tick dt to match), so rate*step == 1 sec/sec — the game runs
-				// at normal speed, just in coarser or finer chunks. rate=60 is the
-				// normal 1/60 step (real-time, smooth); rate=20 → 1/20-sec steps;
-				// rate=1 → one tick/sec, each a 1-second MEGA-STEP (intentionally
-				// extreme test mode — physics sees a huge dt). step240 = 240/rate is
-				// the per-tick wall-clock window in 1/240ths; we emit one tick per
-				// step240 of TRUE elapsed time (diffframe240, NOT diffframe60 — the
-				// latter is clamped by the mininc60 wait-loop and would run a step
-				// every frame, e.g. 4x speed at 240fps). The remainder carries so the
-				// long-run rate is exact at any frame rate. rate=60 reduces to the
-				// old `>> 2` (240/60 == 4).
-				s32 rate = g_NetMode ? 60 : g_FixedTickRate; // netplay is a fixed 60Hz tick
-				if (rate < 1) {
-					rate = 1;
-				} else if (rate > 240) {
-					rate = 240; // 1/240 is the finest step (lvupdate240 >= 1)
-				}
-				const s32 step240 = 240 / rate;
-				static s32 s_fixedAccum240 = 0;
-				s_fixedAccum240 += g_Vars.diffframe240;
-				if (s_fixedAccum240 < 0) {
-					s_fixedAccum240 = 0; // guard a stage-load time jump
-				}
-				mainnsteps = s_fixedAccum240 / step240;
-				s_fixedAccum240 -= mainnsteps * step240; // keep sub-step remainder
-				if (mainnsteps > 6) {
-					mainnsteps = 6;      // anti-spiral at very low fps
-					s_fixedAccum240 = 0; // drop backlog rather than chase it
-				}
-			}
-			for (s32 mainstep = 0; mainstep < mainnsteps; mainstep++) {
-
 			lvTick();
 			playermgrShuffle();
 
 			if (g_StageNum < STAGE_TITLE) {
-#ifndef PLATFORM_N64
-				// Spectator input runs once per frame (not per panel) — it
-				// only modifies the active panel's freecam state. Cheap no-op
-				// when the host isn't spectating.
-				spectatorReadInput();
-#endif
-				// Determinism harness: capture (record) or inject (replay) this
-				// frame's controller input once, before the per-player loop — the
-				// joy ring is global; setCurrentPlayerNum only re-points which
-				// slice each player reads. No-op outside record/replay.
-				detFrameBegin();
 				for (i = 0; i < PLAYERCOUNT(); i++) {
 					setCurrentPlayerNum(playermgrGetPlayerAtOrder(i));
 
@@ -1135,28 +1057,9 @@ void mainTick(void)
 								g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
 					}
 
-#ifndef PLATFORM_N64
-					if (g_Vars.currentplayer && g_Vars.currentplayer->is_spectator) {
-						// Spectator panels have no prop / no mpchr — lvTickPlayer
-						// would deref prop->pos and crash. spectatorTickPanel
-						// runs the minimum needed: cam pose + matrices for
-						// lvRender to read this frame.
-						spectatorTickPanel(g_Vars.currentplayer->spectator_panel);
-					} else {
-						lvTickPlayer();
-					}
-#else
 					lvTickPlayer();
-#endif
 				}
-
-				// Determinism harness: hash post-tick state and write the record
-				// (record) or compare against the recording (replay). No-op
-				// outside record/replay.
-				detEndTick();
 			}
-
-			} // end fixed-timestep sim loop (mainnsteps; default 1)
 
 			gdl = lvRender(gdl);
 			func000034e0(&gdl);

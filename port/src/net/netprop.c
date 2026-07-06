@@ -51,6 +51,7 @@ static const char *netPropEvName(u8 ev)
 		case NETPROP_EV_EXPLODE_GATED:   return "explode_gated";
 		case NETPROP_EV_HARDFREE_GATED:  return "hardfree_gated";
 		case NETPROP_EV_PICKUP_REQ:      return "pickup_req";
+		case NETPROP_EV_TWIN_SUPPRESS:   return "twin_suppress";
 		default:                         return "?";
 	}
 }
@@ -367,6 +368,14 @@ bool netPropAudit(void)
 	s32 dupes = 0;      // two props sharing a syncid
 	s32 corpses = 0;    // listed null-union weapon/obj/door/explosion/smoke
 	s32 overcap = 0;    // networked syncid >= coverage cap
+	s32 floorlocal = 0; // CLIENT: local (syncid-0) WEAPON props loose in the
+	                    // world — the proto-86 ghost-twin fix's failure mode
+	                    // (a corpse-drop twin that escaped the chrBeginDeath
+	                    // suppression). Held mirrors are parented so they
+	                    // don't count. Report-only: transients are possible,
+	                    // so it never fails a cycle — the SOAK trends it and
+	                    // a persistently growing value means an unsuppressed
+	                    // drop path.
 	u32 manifest = 0;   // xor-hash of the networked weapon/obj syncid set
 
 	// Pure pool iteration — never follows ->next, so a corrupt/cyclic active
@@ -383,6 +392,12 @@ bool netPropAudit(void)
 					|| prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_EXPLOSION
 					|| prop->type == PROPTYPE_SMOKE)) {
 			corpses++;
+		}
+
+		if (g_NetMode == NETMODE_CLIENT && prop->active && prop->obj
+				&& prop->type == PROPTYPE_WEAPON && prop->syncid == 0
+				&& prop->parent == NULL) {
+			floorlocal++;
 		}
 
 		if (prop->syncid
@@ -455,9 +470,9 @@ bool netPropAudit(void)
 	// Always to the diag log (machine-parseable, offline-comparable manifest).
 	netDiagLogf("audit",
 			"role=%c result=%s netprops=%d manifest=0x%08x dupes=%d corpses=%d overcap=%d "
-			"slots_occ=%d synced=%d local=%d proj=%d projdead=%d orphan=%d heal=%u reap=%u orphreap=%u",
+			"slots_occ=%d synced=%d local=%d proj=%d projdead=%d orphan=%d heal=%u reap=%u orphreap=%u floorlocal=%d",
 			role, pass ? "PASS" : "FAIL", netprops, manifest, dupes, corpses, overcap,
-			occ, g_MaxWeaponSlots, occ - synced, proj, projdead, orphan, heal, reap, orphreap);
+			occ, g_MaxWeaponSlots, occ - synced, proj, projdead, orphan, heal, reap, orphreap, floorlocal);
 
 	// To the console only when there's something to see, so a healthy soak is
 	// quiet but a regression is loud even without a diag file open.

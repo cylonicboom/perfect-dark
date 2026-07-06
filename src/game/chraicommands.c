@@ -2317,6 +2317,11 @@ bool aiGiveObjectToChr(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	struct defaultobj *obj = objFindByTagId(cmd[2]);
+	// Net co-op client: CHR_BOND/CHR_COOP resolve to the correct PHYSICAL
+	// player inside chrResolveId (chrResolveCoopSlotPlayer — the generalised
+	// "option 3" slot remap, which covers every player-targeted AI command,
+	// e.g. the Cassandra's-necklace give). No per-site remap here: the
+	// transposition is self-inverse, so re-applying it would undo the fix.
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[3]);
 
 	if (obj && obj->prop && chr && chr->prop) {

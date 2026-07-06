@@ -272,6 +272,52 @@ s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) 
 s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
 s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
 
+/* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
+ * apLuaPlayerChr() contract as the AP helpers above. */
+s32 chraiLuaTakeWeapon(s32 weaponnum);        /* remove weapon (+ cycle off it) */
+s32 chraiLuaWeaponHeld(void);                 /* right-hand weaponnum, -1 = no pawn */
+s32 chraiLuaSwitchWeapon(s32 weaponnum);      /* force-equip an owned weapon */
+s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60); /* viewport fade */
+s32 chraiLuaYeetChr(s32 chrnum, f32 force);   /* knockback-fling a chr away from the player */
+s32 chraiLuaExplodeAtChr(s32 chrnum, s32 type); /* explosion at a chr's feet */
+s32 chraiLuaPlaySound(s32 sfxnum);            /* one-shot local sound */
+s32 chraiLuaSetAlarm(s32 on);                 /* stage alarm on/off (server-side) */
+s32 chraiLuaBoost(f32 secs);                  /* Speed Pill boost for N secs (<=0 cancels) */
+s32 chraiLuaPlayerSetHealth(f32 frac);        /* health 0.01..1 (never kills) */
+s32 chraiLuaDizzy(s32 amount);                /* tranq screen-sway, 0..4000 blur units */
+s32 chraiLuaChrCloak(s32 chrnum, s32 on);     /* toggle CHRHFLAG_CLOAKED on a chr */
+s32 chraiLuaStripAmmo(void);                  /* zero every ammo pool */
+s32 chraiLuaTeleportToChr(s32 chrnum);        /* snap player to a chr (server-side) */
+s32 chraiLuaFlatTex(s32 mode);                /* 0 normal, 1 white/vertex-only, 2 avg-colour textures */
+s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale path */
+s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
+s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */
+s32 chraiLuaAmmoSwap(s32 weaponnum);          /* held guns fire this weapon's primary; -1 off */
+s32 chraiLuaBackfire(s32 on);                 /* shots leave 180 degrees behind the player */
+s32 chraiLuaNbomb(void);                      /* N-Bomb storm on the player */
+s32 chraiLuaGust(f32 force);                  /* shove chrs/objects/player in one random direction */
+s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum); /* dual-equip a weapon; funcnum 0/1 forces fire func */
+s32 chraiLuaAspectScale(f32 mult);            /* projection aspect multiplier (1.0 = normal) */
+s32 chraiLuaPlaySong(s32 slot);               /* play an unlocked MP track over the stage music; -1 stops */
+s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz); /* hostile chr at player + offset */
+s32 chraiLuaBodySnatch(s32 chrnum);           /* Counter-Op takeover of a chr (solo, one-way) */
+s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum); /* point a chr's combat AI at another chr */
+s32 chraiLuaChrCalm(s32 chrnum);              /* zero alertness, clear target (neuralyzer) */
+s32 chraiLuaDoorsAll(s32 open);               /* open (1) / close (0) every door; returns count */
+s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the player */
+s32 chraiLuaFovScale(f32 mult);               /* vertical-FOV multiplier (1.0 = normal) */
+s32 chraiLuaOnePunch(s32 on);                 /* unarmed strikes: lethal + mega knockback */
+s32 chraiLuaGormless(s32 on);                 /* invert movement + look axes */
+s32 chraiLuaSpawnBike(void);                  /* half-size hoverbike at the player (solo) */
+s32 chraiLuaSfxShuffle(s32 on);               /* every SFX plays as a random other SFX */
+s32 chraiLuaInstrumentShuffle(s32 on);        /* MIDI program changes pick random instruments */
+
+/* External event ingress (luaai_api.c): generic {source, text} queue backing
+ * pd.ext_poll(). Fed by the /chaos console command, the optional localhost
+ * UDP listener (Chaos.EventPort, net.c), and any future chat bridge
+ * (Twitch/YouTube) — see docs/PORT_CHAOS.md. Safe to call from game code. */
+void luaExtEventPush(const char *source, const char *text);
+
 /* ------------------------------------------------------------------------- *
  * Controllable entity / possession (port/src/possess.c + chraction.c bridges).
  * Solo/missions only; lets the player fly a spawned "cube" (free-fly) and return

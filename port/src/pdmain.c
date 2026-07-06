@@ -6,6 +6,7 @@
 #include "lib/vars.h"
 #include "constants.h"
 #include "game/camdraw.h"
+#include "game/chraction.h" // chrGetShield/chrSetShield/chrHasStageFlag (co-op revive health-steal mirror)
 #include "game/cheats.h"
 #include "game/luaai.h"
 #include "game/debug.h"
@@ -1147,6 +1148,58 @@ void mainTick(void)
 								&& p->respawnallowtick
 								&& (u32)g_Vars.lvframe60 >= p->respawnallowtick + 600u) {
 							wantrespawn = true;
+						}
+						// §6.7 (PORT_HEADLESS_BLIND_SERVER): co-op buddy
+						// health-steal. The render-tier grant (playerRenderHud
+						// ~5610) halves the living buddy's health+shield into
+						// the respawner and VETOES the respawn when no buddy
+						// can afford it; headless skipped the whole block, so
+						// a dedicated co-op host granted free full-health
+						// respawns. Mirror the NTSC-final rules: first living
+						// non-dormant buddy pays (vanilla co-op has exactly
+						// one); total health <= 0.125 or the Deep Sea
+						// post-cutscene lockout vetoes. playerDisplayHealth
+						// (the buddy's HUD flash) is render-tier and skipped.
+						if (wantrespawn && g_Vars.coopplayernum >= 0) {
+							s32 buddynum = -1;
+							for (s32 bi = 0; bi < PLAYERCOUNT(); bi++) {
+								struct player *bp = g_Vars.players[bi];
+								if (bi != g_Vars.currentplayernum && bp && !bp->isdead
+										&& !bp->isdormant && bp->prop && bp->prop->chr) {
+									buddynum = bi;
+									break;
+								}
+							}
+							if (buddynum < 0
+									|| (mainGetStageNum() == STAGE_DEEPSEA
+										&& chrHasStageFlag(NULL, 0x00000200))) {
+								wantrespawn = false;
+							} else {
+								const s32 prevpnum_hs = g_Vars.currentplayernum;
+								f32 shield;
+								f32 totalhealth;
+								setCurrentPlayerNum(buddynum);
+								shield = chrGetShield(g_Vars.currentplayer->prop->chr) * 0.125f;
+								totalhealth = g_Vars.currentplayer->bondhealth + shield;
+								if (totalhealth > 0.125f) {
+									const f32 stealhealth = totalhealth * 0.5f;
+									if (stealhealth < shield) {
+										chrSetShield(g_Vars.currentplayer->prop->chr, (shield - stealhealth) * 8.0f);
+									} else {
+										chrSetShield(g_Vars.currentplayer->prop->chr, 0);
+										g_Vars.currentplayer->bondhealth -= stealhealth - shield;
+									}
+									setCurrentPlayerNum(prevpnum_hs);
+									p->stealhealth = stealhealth;
+									p->oldhealth = 0;
+									p->oldarmour = 0;
+									p->apparenthealth = 0;
+									p->apparentarmour = 0;
+								} else {
+									setCurrentPlayerNum(prevpnum_hs);
+									wantrespawn = false;
+								}
+							}
 						}
 						if (wantrespawn) {
 							netDiagLogf("respawn_ucmd_seen",

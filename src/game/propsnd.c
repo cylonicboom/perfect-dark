@@ -41,7 +41,7 @@ u32 var8006ae4c = 0;
 s16 var8006ae50 = -1;
 u32 var8006ae54 = 999;
 
-#define CHANNELCOUNT()         (IS4MB() ? 30 : 40)
+#define CHANNELCOUNT()         PROPSND_CHANNELCOUNT()
 #define CHANNEL_IS_AI(channel) (channel >= 0 && channel <= 7)
 #define CHANNEL_HEAP_FIRST     CHANNEL_8
 

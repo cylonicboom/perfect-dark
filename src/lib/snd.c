@@ -82,6 +82,12 @@ const char var70053b3c[] = "Snd: SoundHeaderCacheInit\n";
 bool g_SndDisabled = false;
 u32 var8005dda4 = 0x00000000;
 
+#ifndef PLATFORM_N64
+// Chaos SFX shuffle master switch (docs/PORT_CHAOS.md, pd.sfx_shuffle):
+// applied in sndStart just before the sound-id validity check.
+s32 g_ChaosSfxShuffle = 0;
+#endif
+
 s32 g_SndNosediveVolume = 0;
 s32 g_SndNosediveAge240 = -1;
 s32 g_SndNosediveDuration240 = 0;
@@ -1463,6 +1469,15 @@ void sndInit(void)
 	heaplen = 1024 * 745;
 #endif
 
+#ifndef PLATFORM_N64
+	// Expanded polyphony (see the maxPVoices/maxSounds/ACMD/adma bumps below
+	// and in audiomgr.c/audiodma.c): the extra voices, sound states, command
+	// list space and sample-DMA buffers all come out of this heap, so grow it
+	// well past the computed ~1.1MB need. Applies to 32- and 64-bit port
+	// builds (the 745KB above was only the 64-bit pointer-growth bump).
+	heaplen = 1024 * 2048;
+#endif
+
 	g_Vars.langfilteron = false;
 
 	if (IS4MB()) {
@@ -1534,9 +1549,23 @@ void sndInit(void)
 			g_SeqRomAddrs[i] = g_SeqTable->entries[i].romaddr + (romptr_t) REF_SEG _sequencesSegmentRomStart;
 		}
 
+#ifndef PLATFORM_N64
+		// Expanded polyphony for netplay: positional (proximity) routing of
+		// remote players' weapon/footstep/pickup sounds means many more
+		// simultaneous one-shot sounds than the N64 mix ever produced. The
+		// mixing is CPU-side on the port, so the N64 RSP budget (30 physical
+		// voices) no longer applies. maxUpdates scales with voices — it's the
+		// shared per-frame param pool; when it runs dry, volume/pitch updates
+		// are silently dropped. maxVVoices is unused by this naudio (voices
+		// are embedded in sound states) but kept >= maxPVoices for sanity.
+		synconfig.maxVVoices = 128;
+		synconfig.maxPVoices = 96;
+		synconfig.maxUpdates = 256;
+#else
 		synconfig.maxVVoices = 44;
 		synconfig.maxPVoices = 30;
 		synconfig.maxUpdates = 64;
+#endif
 		synconfig.dmaproc = NULL;
 		synconfig.outputRate = 0;
 		synconfig.heap = &g_SndHeap;
@@ -1546,9 +1575,22 @@ void sndInit(void)
 			synconfig.fxTypes[i] = 6;
 		}
 
+#ifndef PLATFORM_N64
+		// maxSounds is the simultaneous-SFX cap (over it, the sound player
+		// steals the oldest stealable sound — n_sndplayer.c AL_SNDP_PLAY_EVT).
+		// 20 was audibly tight once every remote weapon/footstep went through
+		// the positional channel. States/events pools sized to match: each
+		// playing sound holds a state and queues events, and running out of
+		// states makes sndStart return NULL (callers treat that as "didn't
+		// play").
+		sndpconfig.maxEvents = 192;
+		sndpconfig.maxStates = 192;
+		sndpconfig.maxSounds = 64;
+#else
 		sndpconfig.maxEvents = 64;
 		sndpconfig.maxStates = 64;
 		sndpconfig.maxSounds = 20;
+#endif
 		sndpconfig.unk10 = NUM_KEYTHINGS;
 		sndpconfig.heap = &g_SndHeap;
 
@@ -2181,6 +2223,19 @@ struct sndstate *sndStart(s32 arg0, s16 sound, struct sndstate **handle, s32 vol
 
 		return NULL;
 	}
+
+#ifndef PLATFORM_N64
+	// Chaos SFX shuffle (docs/PORT_CHAOS.md, pd.sfx_shuffle): every one-shot
+	// sound plays as a random other sound. Remapped here — after the MP3
+	// branch, right before the id-vs-g_NumSounds validity check — so any
+	// remap target is by construction a valid sound-table entry. Local LCG
+	// (not rngRandom) so game RNG state is untouched.
+	if (g_ChaosSfxShuffle && g_NumSounds > 0) {
+		static u32 shuffleseed = 0x2545f491;
+		shuffleseed = shuffleseed * 1664525u + 1013904223u;
+		sp40.id = (shuffleseed >> 8) % (u32)g_NumSounds;
+	}
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	if (sp40.id < (u32)g_NumSounds) {

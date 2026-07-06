@@ -774,13 +774,39 @@ void playermgrSetViewPosition(s32 viewleft, s32 viewtop)
 	g_Vars.currentplayer->viewtop = viewtop;
 }
 
+#ifndef PLATFORM_N64
+// Chaos FOV multiplier (docs/PORT_CHAOS.md, pd.fov_scale): same self-
+// restoring setter-hook pattern as g_ChaosAspectMult below — playerTick
+// re-sets the FOV every tick, so this is the only stable interception point.
+f32 g_ChaosFovMult = 1.0f;
+#endif
+
 void playermgrSetFovY(f32 fovy)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosFovMult > 0.0f && g_ChaosFovMult != 1.0f) {
+		fovy *= g_ChaosFovMult;
+	}
+#endif
 	g_Vars.currentplayer->fovy = fovy;
 }
 
+#ifndef PLATFORM_N64
+// Chaos aspect scale (docs/PORT_CHAOS.md, pd.aspect_scale): multiplier on the
+// projection aspect ratio, applied here because playerTick recomputes and
+// re-sets the natural aspect every tick (a one-shot write elsewhere would be
+// immediately overwritten — and conversely, clearing the multiplier
+// self-restores on the next tick). >1 stretches the world wide, <1 tall.
+f32 g_ChaosAspectMult = 1.0f;
+#endif
+
 void playermgrSetAspectRatio(f32 aspect)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosAspectMult > 0.0f && g_ChaosAspectMult != 1.0f) {
+		aspect *= g_ChaosAspectMult;
+	}
+#endif
 	g_Vars.currentplayer->aspect = aspect;
 }
 

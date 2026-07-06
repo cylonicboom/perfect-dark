@@ -33,8 +33,10 @@ local st = {
   votetime = tonumber(pd.persist_get and pd.persist_get("chaos_votetime") or "") or 0,
   timer    = 0,          -- ticks until the next random effect
   votetimer = 0,         -- ticks left in the current vote window
-  votes    = {},         -- effect -> count
+  candidates = {},       -- the 3 effects chat can vote on this window
+  cvotes   = {0, 0, 0},  -- votes per candidate slot
   active   = {},         -- name -> ticks remaining (timed effects)
+  duration = {},         -- name -> total ticks (for the HUD bars)
   history  = {},         -- last few names, to avoid instant repeats
 }
 
@@ -361,6 +363,7 @@ local function stop_effect(name)
   local e = chaos.effects[name]
   if e and e.stop then pcall(e.stop) end
   st.active[name] = nil
+  st.duration[name] = nil
 end
 
 local function stop_all()
@@ -379,7 +382,10 @@ function chaos.trigger(name, who)
     pd.log("[chaos] effect '" .. name .. "' failed: " .. tostring(err))
     return false
   end
-  if e.dur and e.dur > 0 then st.active[name] = e.dur * TICKS end
+  if e.dur and e.dur > 0 then
+    st.active[name] = e.dur * TICKS
+    st.duration[name] = e.dur * TICKS
+  end
   announce(e.label .. (who and ("  [" .. who .. "]") or ""))
   table.insert(st.history, 1, name)
   if #st.history > 4 then table.remove(st.history) end
@@ -408,6 +414,24 @@ function chaos.set_seed(n)
   pd.log("[chaos] seeded with " .. tostring(n) .. " (deterministic effect stream)")
 end
 
+-- Pick the 3 distinct effects chat votes on this window (weighted, history-
+-- avoided, like the drumbeat). The Twitch/YouTube voting foundation: a bot
+-- forwards chat "1"/"2"/"3" as `vote N` datagrams; the HUD shows the slate.
+local function pick_candidates()
+  st.candidates = {}
+  st.cvotes = {0, 0, 0}
+  local tries = 0
+  while #st.candidates < 3 and tries < 60 do
+    tries = tries + 1
+    local name = pick_random()
+    if name then
+      local dup = false
+      for _, c in ipairs(st.candidates) do if c == name then dup = true end end
+      if not dup then st.candidates[#st.candidates + 1] = name end
+    end
+  end
+end
+
 -- ---------------------------------------------------- external protocol ----
 function chaos.handle(source, text)
   local cmd, arg = text:match("^(%S+)%s*(.*)$")
@@ -415,6 +439,7 @@ function chaos.handle(source, text)
   cmd = cmd:lower()
   if cmd == "on" then
     st.enabled = true; st.timer = st.interval * TICKS; persist(); announce("enabled")
+    if st.votetime > 0 then st.votetimer = st.votetime * TICKS; pick_candidates() end
   elseif cmd == "off" then
     st.enabled = false; stop_all(); persist(); announce("disabled")
   elseif cmd == "toggle" then
@@ -433,15 +458,26 @@ function chaos.handle(source, text)
     pd.log("[chaos] interval = " .. st.interval .. "s")
   elseif cmd == "votetime" then
     st.votetime = math.max(0, tonumber(arg) or 0); st.votetimer = st.votetime * TICKS
-    st.votes = {}; persist()
+    persist()
+    if st.votetime > 0 then pick_candidates() else st.candidates = {} end
     pd.log("[chaos] votetime = " .. st.votetime .. "s" .. (st.votetime == 0 and " (off)" or ""))
   elseif cmd == "trigger" then
     local name, who = arg:match("^(%S+)%s*(.*)$")
     chaos.trigger(name or "", who ~= "" and who or source)
   elseif cmd == "vote" then
-    local name = arg:match("^(%S+)")
-    if name and chaos.effects[name] and st.votetime > 0 then
-      st.votes[name] = (st.votes[name] or 0) + 1
+    -- chat votes by slate number ("vote 1") or by candidate name; anything
+    -- not on the current slate is ignored
+    if st.votetime > 0 and #st.candidates > 0 then
+      local slot = tonumber(arg:match("^(%d)"))
+      if not slot then
+        local name = arg:match("^(%S+)")
+        for i, c in ipairs(st.candidates) do
+          if c == name then slot = i end
+        end
+      end
+      if slot and st.candidates[slot] then
+        st.cvotes[slot] = (st.cvotes[slot] or 0) + 1
+      end
     end
   elseif cmd == "seed" then
     chaos.set_seed(arg)
@@ -477,18 +513,28 @@ pd.on("tick", function()
     end
   end
 
-  -- vote window
+  -- vote mode: chat picks from the 3-candidate slate; the winner fires when
+  -- the window closes (ties / no votes -> random candidate, chaos must flow).
+  -- While voting is on it REPLACES the random drumbeat below.
   if st.votetime > 0 then
+    if #st.candidates == 0 then pick_candidates() end
     st.votetimer = st.votetimer - 1
     if st.votetimer <= 0 then
       st.votetimer = st.votetime * TICKS
-      local best, bestn = nil, 0
-      for name, n in pairs(st.votes) do
-        if n > bestn then best, bestn = name, n end
+      local best, bestn = {}, -1
+      for i = 1, #st.candidates do
+        local n = st.cvotes[i] or 0
+        if n > bestn then best, bestn = { i }, n
+        elseif n == bestn then best[#best + 1] = i end
       end
-      st.votes = {}
-      if best then chaos.trigger(best, "chat vote x" .. bestn) end
+      local slot = best[math.random(#best)]
+      if slot then
+        chaos.trigger(st.candidates[slot],
+            bestn > 0 and ("chat vote x" .. bestn) or "no votes, dealer's choice")
+      end
+      pick_candidates()
     end
+    return
   end
 
   -- the random drumbeat
@@ -504,8 +550,10 @@ pd.on("stage", function()
   -- fresh world: drop timed-effect bookkeeping (cheat banks reset with the
   -- stage; re-arm the timer so the first effect isn't instant)
   st.active = {}
-  st.votes = {}
+  st.duration = {}
+  st.cvotes = {0, 0, 0}
   st.timer = st.interval * TICKS
+  st.votetimer = st.votetime * TICKS
   -- the visual modes + ammo swap live in globals that SURVIVE the stage
   -- reload (unlike the cheat bank) — reset them explicitly
   if pd.flattex then pd.flattex(0) end
@@ -522,9 +570,72 @@ pd.on("stage", function()
   if pd.instrument_shuffle then pd.instrument_shuffle(false) end
 end)
 
+-- ---- HUD: active-effect timer bars + the chat-vote slate (top right) -------
+-- Item-pickup-style bars: label, then a dark backing box with a filled
+-- fraction that drains as the effect runs out. Below the bars, the 3-effect
+-- vote slate + live counts + a window-countdown bar — the on-screen half of
+-- the Twitch/YouTube voting foundation (chat sends `vote 1|2|3` via the UDP
+-- ingress; this panel is what the streamer's viewers read).
+local HUD_X, HUD_W = 232, 74
+local C_TEXT, C_BAR, C_BARBG, C_VOTE = 0xffffffff, 0x40c0ffff, 0x00000090, 0xffe040ff
+
+pd.on("draw", function()
+  local y = 4
+
+  -- active timed effects, stable order
+  if next(st.active) ~= nil then
+    local names = {}
+    for name in pairs(st.active) do names[#names + 1] = name end
+    table.sort(names)
+    for i = 1, math.min(#names, 5) do
+      local name = names[i]
+      local e = chaos.effects[name]
+      local left = st.active[name]
+      local total = st.duration[name] or left
+      local frac = (total > 0) and (left / total) or 0
+      pd.draw_text(HUD_X, y, e and e.label or name, C_TEXT)
+      pd.draw_box(HUD_X, y + 8, HUD_W, 4, C_BARBG)
+      pd.draw_box(HUD_X, y + 8, math.max(1, math.floor(HUD_W * frac)), 4, C_BAR)
+      y = y + 16
+    end
+  end
+
+  -- vote slate
+  if st.enabled and st.votetime > 0 and #st.candidates > 0 then
+    y = y + 2
+    pd.draw_text(HUD_X, y, "VOTE NEXT:", C_VOTE)
+    y = y + 9
+    for i = 1, #st.candidates do
+      local e = chaos.effects[st.candidates[i]]
+      pd.draw_text(HUD_X, y, string.format("%d %s (%d)", i,
+          e and e.label or st.candidates[i], st.cvotes[i] or 0), C_TEXT)
+      y = y + 9
+    end
+    local frac = st.votetimer / (st.votetime * TICKS)
+    if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+    pd.draw_box(HUD_X, y + 1, HUD_W, 3, C_BARBG)
+    pd.draw_box(HUD_X, y + 1, math.max(1, math.floor(HUD_W * frac)), 3, C_VOTE)
+  end
+end)
+
 if pd.menu_add then
   pd.menu_add("Chaos: toggle",      function() chaos.handle("menu", "toggle") end)
   pd.menu_add("Chaos: random now",  function() local n = pick_random(); if n then chaos.trigger(n, "menu") end end)
+  pd.menu_add("Chaos: vote 30s on/off", function()
+    chaos.handle("menu", st.votetime > 0 and "votetime 0" or "votetime 30")
+  end)
+
+  -- Test menu: every effect as its own pause-menu entry (the Lua Director
+  -- dialog smooth-scrolls past one screen). Sorted by internal name so the
+  -- list order is stable between sessions.
+  local names = {}
+  for name in pairs(chaos.effects) do names[#names + 1] = name end
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local n = name
+    local e = chaos.effects[n]
+    pd.menu_add("Test: " .. (e.label or n), function() chaos.trigger(n, "test") end)
+  end
 end
 
 pd.log("chaos.lua loaded (" .. (st.enabled and "ENABLED" or "off") .. ") — /chaos on | /chaos list")

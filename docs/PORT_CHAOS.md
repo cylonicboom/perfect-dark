@@ -68,7 +68,7 @@ text)`. One command per line/datagram:
 | `interval N` | Seconds between random effects (min 5, default 30, persisted) |
 | `votetime N` | Vote window length in seconds; 0 = vote mode off (persisted) |
 | `trigger <effect> [who]` | Fire an effect immediately (channel-point style); `who` shows in the HUD announce |
-| `vote <effect>` | Tally a vote; winner fires when the window closes |
+| `vote <1\|2\|3\|name>` | Vote for a slate candidate by number or name; winner fires when the window closes (off-slate votes ignored) |
 | `seed N` | `math.randomseed(N)` — deterministic effect stream (AP per-slot seeding) |
 | `say <text>` | HUD message passthrough (chat shoutouts) |
 
@@ -83,6 +83,35 @@ echo "trigger mirror" | nc -u -w0 127.0.0.1 27110
 External events are drained even while chaos is **disabled**, so `on` can
 arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 "chat controls the game" mode: `interval` high or `off` + direct triggers).
+
+## HUD + vote slate (the Twitch/YouTube on-screen foundation)
+
+chaos.lua registers a `pd.on("draw")` overlay in the **top-right corner**
+(x=232, the overlay right column — above the octree/perf overlays):
+
+- **Active-effect timers**: up to 5 rows, each an item-pickup-style bar —
+  effect label + a dark backing box with a filled fraction that drains as
+  the effect's time runs out (`st.duration` recorded at trigger).
+- **Vote slate** (only while `votetime > 0`): "VOTE NEXT:" + the 3 candidate
+  effects numbered 1–3 with live vote counts, and a window-countdown bar.
+
+**Vote mode** (`votetime N` > 0) now *replaces* the random drumbeat: each
+window, 3 distinct candidates are drawn (weighted, history-avoided); chat
+votes by slate number (`vote 1`) or candidate name (`vote yeet`) — anything
+off-slate is ignored; when the window closes the winner fires (ties and
+zero-vote windows pick a random candidate — chaos must flow) and a fresh
+slate is drawn. A Twitch/YouTube bot only has to forward chat "1"/"2"/"3"
+messages as `vote N` datagrams to the UDP ingress; the slate panel is what
+viewers read on stream. `votetime 0` returns to the solo drumbeat.
+
+## Test menu
+
+Every effect is registered as a `Test: <label>` entry in the **Lua
+Director** pause-menu panel (sorted by internal name), alongside
+"Chaos: toggle", "Chaos: random now", and "Chaos: vote 30s on/off".
+Supporting C changes: `LUA_MENU_MAX` raised 24 → 160 (luaai.h) and the
+Director dialog got `MENUDIALOGFLAG_SMOOTHSCROLLABLE` (mainmenu.c, the
+endscreen long-content mechanism) so the ~100-entry list scrolls.
 
 ## Effect table (scripts/chaos.lua)
 
@@ -318,8 +347,17 @@ Until then, the UDP bridge is the supported route.
    ghost announces, first post-load effect waits a full interval.
 5. UDP: set `EventPort=27110`, `nc -u` a `trigger yeet` from the same machine
    (works) and from another machine (must NOT work).
-6. Vote mode: `votetime 15`, send several `vote` datagrams, winner fires at
-   window close.
+6. Vote mode: `votetime 15` — the 3-candidate slate + countdown bar appear
+   top-right; send `vote 1`/`vote 2` datagrams and watch the counts tick up;
+   winner fires at window close and a fresh slate draws; a zero-vote window
+   fires a random candidate ("dealer's choice"). `votetime 0` clears the
+   panel and the drumbeat resumes.
+6b. HUD: trigger two timed effects (`mirror` + `turbo`) — two labelled bars
+   appear top-right and drain in sync with the effect timers, disappearing
+   as each wears off. Check they don't collide with the octree/perf overlays
+   if those are on.
+6c. Test menu: pause → Lua Director — "Test: <label>" entries for every
+   effect, list scrolls smoothly past one screen, selecting one fires it.
 7. `seed 12345`, note the first 5 effects; `/lua reload`, `seed 12345` again —
    same 5 effects.
 8. AP smoke: `ap.connect` to the mock server, call

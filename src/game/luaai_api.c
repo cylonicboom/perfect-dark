@@ -1299,6 +1299,14 @@ static int l_pd_t_pose(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_ko(chrnum) -> bool. Tranquiliser-style knockout: the chr collapses,
+ * drops its weapon, and wakes up later. */
+static int l_pd_chr_ko(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaChrKo((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
  * channel). pd.room_tint() with no args turns the tint off. */
 static int l_pd_room_tint(lua_State *L)
@@ -1633,6 +1641,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");
 	lua_pushcfunction(L, l_pd_gas);           lua_setfield(L, -2, "gas");
 	lua_pushcfunction(L, l_pd_t_pose);        lua_setfield(L, -2, "t_pose");
+	lua_pushcfunction(L, l_pd_chr_ko);        lua_setfield(L, -2, "chr_ko");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");

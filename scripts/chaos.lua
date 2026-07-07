@@ -496,6 +496,93 @@ chaos.effects = {
   monsoon      = { label="Monsoon",           w=4, dur=30,
                    start=function() pd.weather(1, 2); st.weather_set = true end,
                    stop=function() pd.weather(0); st.weather_set = false end },
+  -- composite batch: pure-Lua combos over the existing hook surface
+  nap_time     = { label="Nap time",          w=4, dur=0, start=function()
+                     local n = 0
+                     for _, c in ipairs(pd.all_chrs() or {}) do
+                       if pd.chr_ko(c) then n = n + 1 end
+                     end
+                     if n == 0 then error("nobody to KO") end end },
+  gun_game     = { label="Gun Game",          w=3, dur=60,
+                   start=function()
+                     st.gungame_idx = 1
+                     pd.give_weapon(GUNS[1]); pd.switch_weapon(GUNS[1]); pd.refill_ammo()
+                   end,
+                   stop=function() st.gungame_idx = nil end },
+  glass_cannon = { label="Glass cannons",     w=4, dur=15,
+                   start=function() pd.damage_scale(8) end,
+                   stop=function() pd.damage_scale(1) end },
+  karma        = { label="Empath",            w=4, dur=20,
+                   start=function() end }, -- reflect handled in the damage hook
+  pinata       = { label="Pinata party",      w=4, dur=30,
+                   start=function() end }, -- kill rewards handled in the kill hook
+  clone_army   = { label="Clone army",        w=2, dur=0, start=function()
+                     local held = pd.weapon_held()
+                     local wpn = (held and held > 1) and held or W.FALCON2
+                     for i = 0, 4 do
+                       local a = i * 2 * math.pi / 5
+                       pd.spawn_body(-1, wpn, math.sin(a) * 200, math.cos(a) * 200)
+                     end end },
+  musical_statues = { label="Musical statues", w=3, dur=21,
+                   start=function()
+                     pd.song(math.random(0, 255))
+                     pd.chr_freeze(false)
+                   end,
+                   tick=function(left)
+                     if left % 180 == 0 then pd.chr_freeze(false)
+                     elseif left % 90 == 0 then pd.chr_freeze(true) end
+                   end,
+                   stop=function()
+                     pd.chr_freeze(false)
+                     pd.song()
+                   end },
+  full_flip    = { label="Full rotation",     w=2, dur=20,
+                   start=function() pd.cheat(CHEAT.MIRROR, true); pd.upside_down(true) end,
+                   stop=function() pd.cheat(CHEAT.MIRROR, false); pd.upside_down(false) end },
+  personal_space = { label="Personal space",  w=3, dur=16,
+                   start=function() end,
+                   tick=function(left)
+                     if left % 240 == 0 then
+                       local list = pd.all_chrs() or {}
+                       for i, c in ipairs(list) do
+                         local a = (i / #list) * 2 * math.pi
+                         pd.chr_summon(c, math.sin(a) * 250, math.cos(a) * 250)
+                       end
+                     end
+                   end },
+  shields_up   = { label="Shields up",        w=4, dur=0, start=function()
+                     local list = pd.all_chrs() or {}
+                     if #list == 0 then error("no chrs") end
+                     for _, c in ipairs(list) do pd.chr_set_shield(c, 8) end end },
+  fire_sale    = { label="Fire sale",         w=4, dur=0, start=function()
+                     local list = pd.all_chrs() or {}
+                     if #list == 0 then error("no chrs") end
+                     for _, c in ipairs(list) do
+                       pd.spawn_at_chr(c, GUNS[math.random(#GUNS)])
+                     end end },
+  quantum_instability = { label="Quantum instability", w=3, dur=20,
+                   start=function() end,
+                   tick=function(left)
+                     if left % 300 == 0 then
+                       local c = random_chr()
+                       if c then pd.teleport_to_chr(c) end
+                     end
+                   end },
+  motivator    = { label="Motivational speaker", w=3, dur=20,
+                   start=function() end,
+                   tick=function(left)
+                     if left % 240 == 0 then
+                       local lines = {
+                         "YOU'RE DOING GREAT",
+                         "believe in yourself",
+                         "have you tried shooting them?",
+                         "perfect agents hydrate",
+                         "your K/D is a social construct",
+                         "remember to stretch",
+                       }
+                       pd.hud_message(lines[math.random(#lines)])
+                     end
+                   end },
   assert_authority = { label="Assert Authority", w=3, dur=20,
                    -- every skeletal model drops into its bind pose; root
                    -- motion still applies, so T-posers glide around dominantly
@@ -734,10 +821,38 @@ pd.on("weaponfire", function(weaponnum, playernum)
 end)
 
 -- Vampire: damaging any chr while the effect is active feeds you.
+-- Empath (karma): damaging any chr hurts you a little too.
 pd.on("damage", function(chrnum, attackerplayernum, amount)
   if st.active.vampire and attackerplayernum == 0 then
     local h = pd.player_health()
     pd.player_set_health(math.min(1, h + 0.04))
+  end
+  if st.active.karma and attackerplayernum == 0 then
+    pd.player_damage(0.3)
+  end
+end)
+
+-- Gun Game: each kill advances to the next weapon in the list.
+-- Pinata party: each kill bursts ammo + health.
+pd.on("kill", function(chrnum, killerplayernum)
+  if killerplayernum ~= 0 then return end
+  if st.active.gun_game and st.gungame_idx then
+    local cur = GUNS[st.gungame_idx]
+    st.gungame_idx = st.gungame_idx + 1
+    if st.gungame_idx > #GUNS then
+      st.gungame_idx = 1
+      pd.hud_message("CHAOS: GUN GAME COMPLETE!")
+    else
+      pd.hud_message(string.format("CHAOS: gun %d/%d", st.gungame_idx, #GUNS))
+    end
+    local nxt = GUNS[st.gungame_idx]
+    if cur then pd.take_weapon(cur) end
+    pd.give_weapon(nxt); pd.switch_weapon(nxt); pd.refill_ammo()
+  end
+  if st.active.pinata then
+    pd.refill_ammo()
+    local h = pd.player_health()
+    if h then pd.player_set_health(math.min(1, h + 0.15)) end
   end
 end)
 
@@ -750,6 +865,7 @@ pd.on("stage", function()
   st.timer = st.interval * TICKS
   st.votetimer = st.votetime * TICKS
   st.misfire_armed = false
+  st.gungame_idx = nil
   -- the visual modes + ammo swap live in globals that SURVIVE the stage
   -- reload (unlike the cheat bank) — reset them explicitly
   if pd.flattex then pd.flattex(0) end

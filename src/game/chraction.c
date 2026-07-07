@@ -9382,6 +9382,34 @@ s32 chraiLuaTPose(s32 on)
 	return 1;
 }
 
+// pd.chr_ko(chrnum): knock a chr out via the tranquiliser's sanctioned
+// knockout path (chrBeginDeath with knockout=true -> ACT_DRUGGEDDROP).
+// The chr collapses, drops its weapon, and wakes back up later — exactly
+// the tranq secondary behaviour. NPCs only; dead/already-KO'd chrs skip.
+s32 chraiLuaChrKo(s32 chrnum)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+	struct coord dir = {0, 0, 1};
+	struct gset gset = {0};
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || chr->model == NULL) {
+		return 0;
+	}
+	if (chr->prop->type != PROPTYPE_CHR || chr->aibot) {
+		return 0;
+	}
+	if (chrIsDead(chr) || chr->actiontype == ACT_DIE || chr->actiontype == ACT_DEAD
+			|| chr->actiontype == ACT_DRUGGEDDROP || chr->actiontype == ACT_DRUGGEDKO
+			|| chr->actiontype == ACT_DRUGGEDCOMINGUP) {
+		return 0;
+	}
+
+	gset.weaponnum = WEAPON_TRANQUILIZER;
+	gset.weaponfunc = FUNC_SECONDARY;
+	chrBeginDeath(chr, &dir, 0.0f, HITPART_GENERAL, &gset, true, -1);
+	return 1;
+}
+
 // pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB
 // multiplier (0..255 per channel = 0..1x) — the KotH hill-highlight effect
 // applied stage-wide. Dirties all rooms so the reshade re-runs; rooms

@@ -9372,6 +9372,16 @@ s32 chraiLuaGas(s32 on)
 	return 1;
 }
 
+// pd.t_pose(on): every skeletal model renders in its bind pose (anim.c joint
+// rotations read as zero). Root motion still applies — T-posers glide.
+s32 chraiLuaTPose(s32 on)
+{
+	extern s32 g_ChaosTPose;
+
+	g_ChaosTPose = on ? 1 : 0;
+	return 1;
+}
+
 // pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB
 // multiplier (0..255 per channel = 0..1x) — the KotH hill-highlight effect
 // applied stage-wide. Dirties all rooms so the reshade re-runs; rooms

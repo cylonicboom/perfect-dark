@@ -1292,6 +1292,13 @@ static int l_pd_gas(lua_State *L)
 	return 1;
 }
 
+/* pd.t_pose(on) -> bool. Every skeletal model renders in its bind pose. */
+static int l_pd_t_pose(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTPose(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
  * channel). pd.room_tint() with no args turns the tint off. */
 static int l_pd_room_tint(lua_State *L)
@@ -1625,6 +1632,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_upside_down);   lua_setfield(L, -2, "upside_down");
 	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");
 	lua_pushcfunction(L, l_pd_gas);           lua_setfield(L, -2, "gas");
+	lua_pushcfunction(L, l_pd_t_pose);        lua_setfield(L, -2, "t_pose");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");

@@ -496,6 +496,11 @@ chaos.effects = {
   monsoon      = { label="Monsoon",           w=4, dur=30,
                    start=function() pd.weather(1, 2); st.weather_set = true end,
                    stop=function() pd.weather(0); st.weather_set = false end },
+  assert_authority = { label="Assert Authority", w=3, dur=20,
+                   -- every skeletal model drops into its bind pose; root
+                   -- motion still applies, so T-posers glide around dominantly
+                   start=function() pd.t_pose(true) end,
+                   stop=function() pd.t_pose(false) end },
   woof_gas     = { label="WOOF GAS",          w=4, dur=30,
                    -- the Investigation nerve gas, anywhere: green env wash on
                    -- fog stages, coughing + hiss + damage every ~4s. The green
@@ -776,6 +781,7 @@ pd.on("stage", function()
   if pd.screen_tint then pd.screen_tint() end
   if pd.upside_down then pd.upside_down(false) end
   if pd.gas then pd.gas(false) end
+  if pd.t_pose then pd.t_pose(false) end
   if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
   st.scaled_g = nil
   st.scaled_a = nil

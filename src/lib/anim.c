@@ -449,6 +449,15 @@ s32 animReadSignedShort(u8 *ptr, u8 readbitlen, s32 bitoffset)
  *
  * Both the anim header and frame data must be loaded already.
  */
+#ifndef PLATFORM_N64
+// Chaos "Assert Authority" (pd.t_pose, docs/PORT_CHAOS.md): while set, every
+// sampled joint rotation reads as zero, so all skeletal models render in
+// their bind pose (the T-pose). Translations/scales are left alone — root
+// motion still applies, so T-posed chrs glide around the level, which is
+// the entire joke.
+s32 g_ChaosTPose = 0;
+#endif
+
 void animGetRotTranslateScale(s32 part, bool flip, struct skeleton *skel, s16 animnum, u8 frameslot, struct coord *rot, struct coord *translate, struct coord *scale)
 {
 	s32 i;
@@ -624,6 +633,14 @@ void animGetRotTranslateScale(s32 part, bool flip, struct skeleton *skel, s16 an
 		} else {
 			scale->x = scale->y = scale->z = 1.0f;
 		}
+
+#ifndef PLATFORM_N64
+		// Chaos "Assert Authority": bind pose = no joint rotation. (The
+		// no-data fallthrough below already returns zero rotations.)
+		if (g_ChaosTPose) {
+			rot->x = rot->y = rot->z = 0.0f;
+		}
+#endif
 
 		return;
 	}

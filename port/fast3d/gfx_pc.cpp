@@ -274,6 +274,15 @@ int gfx_force_grayscale = 0;
 // bg.c gates dlcache off while this is active (cached rooms replay recorded
 // UVs, so they would stay matte while everything else shines).
 int gfx_shiny_mode = 0;
+// Chaos upside-down mode (pd.upside_down): negate clip-space Y — the exact
+// sibling of gfx_mirror_mode's X flip (winding compensated in gfx_sp_tri1,
+// scissor reflected about the viewport's vertical centre, G_NOMIRROR_EXT
+// geometry exempt). bg.c gates dlcache off while active (cached replay's
+// uMVP is not Y-flipped), the gfx_shiny_mode pattern.
+bool gfx_upsidedown_mode = false;
+// Chaos screen tint (pd.screen_tint): 0x00RRGGBB, 0 = off. Rides the
+// grayscale shader path (luminance * tint) like the Midas gold mode.
+int gfx_screen_tint = 0;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
@@ -1436,6 +1445,13 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             x = -x;
         }
 
+        // Chaos upside-down: the same trick about the horizontal axis. Winding
+        // is compensated in gfx_sp_tri1 alongside the mirror compensation (two
+        // active flips cancel there, correctly).
+        if (gfx_upsidedown_mode && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT)) {
+            y = -y;
+        }
+
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
 
@@ -1612,6 +1628,12 @@ static inline float gfx_mirror_scissor_x(float scissor_x, float scissor_w) {
     return 2.0f * vp_centre - (scissor_x + scissor_w);
 }
 
+// Chaos upside-down: the vertical analogue of gfx_mirror_scissor_x.
+static inline float gfx_upsidedown_scissor_y(float scissor_y, float scissor_h) {
+    const float vp_centre = rdp.viewport.y + rdp.viewport.height * 0.5f;
+    return 2.0f * vp_centre - (scissor_y + scissor_h);
+}
+
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     struct LoadedVertex* v1 = &rsp.loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
@@ -1660,6 +1682,13 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             cross = -cross;
         }
 
+        // Chaos upside-down reverses winding the same way; with mirror also
+        // active the two X/Y flips restore the original winding, and the two
+        // negates here cancel to match.
+        if (gfx_upsidedown_mode && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT)) {
+            cross = -cross;
+        }
+
         switch (rsp.geometry_mode & G_CULL_BOTH) {
             case G_CULL_FRONT:
                 if (cross <= 0) {
@@ -1704,7 +1733,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             // full-screen viewport, so reflecting its scissor would misplace the
             // HUD (notably in split-screen). is_rect distinguishes the two.
             const float scx = (gfx_mirror_mode && !is_rect) ? gfx_mirror_scissor_x(rdp.scissor.x, rdp.scissor.width) : rdp.scissor.x;
-            gfx_rapi->set_scissor(scx, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
+            const float scy = (gfx_upsidedown_mode && !is_rect) ? gfx_upsidedown_scissor_y(rdp.scissor.y, rdp.scissor.height) : rdp.scissor.y;
+            gfx_rapi->set_scissor(scx, scy, rdp.scissor.width, rdp.scissor.height);
             rendering_state.scissor = rdp.scissor;
         }
         rdp.viewport_or_scissor_changed = false;
@@ -3622,25 +3652,34 @@ extern "C" void gfx_start_frame(void) {
         flattex_applied = gfx_flattex_mode;
         gfx_texture_cache_clear();
     }
-    // The grayscale shader path serves two chaos modes: plain forced grayscale
-    // (film noir, neutral colour) and gold-shiny (gfx_shiny_mode == 2 —
-    // luminance * gold reads as metal once the shiny UV warp is on). Gold wins
-    // when both are somehow active; turning either off re-applies the other.
+    // The grayscale shader path serves three chaos modes: gold-shiny
+    // (gfx_shiny_mode == 2 — luminance * gold reads as metal once the shiny
+    // UV warp is on), the generic screen tint (pd.screen_tint, 0x00RRGGBB),
+    // and plain forced grayscale (film noir, neutral colour) — in that
+    // priority order; turning one off re-applies the next.
     {
-        const int grayscale_want = (gfx_shiny_mode == 2) ? 2 : (gfx_force_grayscale ? 1 : 0);
-        if (grayscale_want != grayscale_applied) {
-            grayscale_applied = grayscale_want;
-            rdp.grayscale = grayscale_want != 0;
-            if (grayscale_want == 2) {
-                // gold: bright yellow-orange metal tint
-                rdp.grayscale_color.r = 255;
-                rdp.grayscale_color.g = 196;
-                rdp.grayscale_color.b = 64;
-            } else {
-                rdp.grayscale_color.r = 255;
-                rdp.grayscale_color.g = 255;
-                rdp.grayscale_color.b = 255;
-            }
+        int want_on = 0;
+        uint32_t want_col = 0x00ffffff;
+
+        if (gfx_shiny_mode == 2) {
+            want_on = 1;
+            want_col = 0x00ffc440; // gold: bright yellow-orange metal tint
+        } else if (gfx_screen_tint != 0) {
+            want_on = 1;
+            want_col = (uint32_t)gfx_screen_tint & 0x00ffffff;
+        } else if (gfx_force_grayscale) {
+            want_on = 1;
+        }
+
+        // grayscale_applied packs (on << 24 | colour) so a colour change while
+        // already on still re-applies.
+        const int want_key = want_on ? (int)(0x01000000u | want_col) : 0;
+        if (want_key != grayscale_applied) {
+            grayscale_applied = want_key;
+            rdp.grayscale = want_on != 0;
+            rdp.grayscale_color.r = (want_col >> 16) & 0xff;
+            rdp.grayscale_color.g = (want_col >> 8) & 0xff;
+            rdp.grayscale_color.b = want_col & 0xff;
             rdp.grayscale_color.a = 255; // full lerp to luminance
             dlcacheInvalidateAll();
         }

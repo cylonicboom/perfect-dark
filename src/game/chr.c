@@ -1968,6 +1968,10 @@ void chr0f0220ac(struct chrdata *chr)
 // non-player chr's anim playback pauses (gate below) and NPC firing is
 // suppressed (chrTickShoot, chraction.c).
 s32 g_ChaosChrFreeze = 0;
+// Chaos chr speed (pd.chr_speed): scales every non-player chr's animation
+// playback rate — and with it their movement (anim root motion) and attack
+// cadence. > 1 = Benny Hill guards, < 1 = zombie shuffle. 1.0 = off.
+f32 g_ChaosChrSpeedMult = 1.0f;
 #endif
 
 void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
@@ -1983,6 +1987,13 @@ void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
 	// in chrTickShoot.
 	if (g_ChaosChrFreeze && chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
 		return;
+	}
+
+	// Chaos chr speed: stretch/shrink this tick's anim time for non-player
+	// chrs. Rounded so slow factors still advance (0.4 * 4 -> 2).
+	if (g_ChaosChrSpeedMult > 0.0f && g_ChaosChrSpeedMult != 1.0f
+			&& chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
+		lvupdate240 = (s32)(lvupdate240 * g_ChaosChrSpeedMult + 0.5f);
 	}
 #endif
 

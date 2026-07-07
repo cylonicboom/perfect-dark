@@ -48,6 +48,7 @@
 #include "game/stagetable.h"
 #include "game/tex.h"
 #include "game/wallhit.h"
+#include "game/weather.h"
 #include "bss.h"
 #include "lib/joy.h"
 #include "lib/lib_17ce0.h"
@@ -9267,6 +9268,97 @@ s32 chraiLuaMute(s32 on)
 s32 chraiLuaPlayFile(const char *path)
 {
 	return audioPlayExternal(path);
+}
+
+// pd.chr_speed(mult): scale every non-player chr's anim playback (movement +
+// attack cadence ride along). 1 = off. chr.c consumes it in chr0f0220ec.
+s32 chraiLuaChrSpeed(f32 mult)
+{
+	extern f32 g_ChaosChrSpeedMult;
+
+	if (mult < 0.1f) mult = 0.1f;
+	if (mult > 8.0f) mult = 8.0f;
+	g_ChaosChrSpeedMult = mult;
+	return 1;
+}
+
+// pd.chr_damage(chrnum, amount): hurt any chr (or player pawn) through the
+// real damage path — shield, flinch, death, kill credit as environment.
+s32 chraiLuaChrDamage(s32 chrnum, f32 amount)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+	struct coord vec = {0, 0, 1};
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || amount <= 0.0f) {
+		return 0;
+	}
+	chrDamageByMisc(chr, amount, &vec, NULL, NULL);
+	return 1;
+}
+
+// pd.chr_scale(chrnum, mult): multiply a chr's model scale (visual size).
+// Cosmetic — collision/eye height keep the original values, which is fine
+// for a chaos gag. Callers undo with the inverse multiplier.
+s32 chraiLuaChrScale(s32 chrnum, f32 mult)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || chr->model == NULL) {
+		return 0;
+	}
+	if (mult < 0.05f) mult = 0.05f;
+	if (mult > 8.0f) mult = 8.0f;
+	modelSetScale(chr->model, chr->model->scale * mult);
+	return 1;
+}
+
+// pd.shake(ticks): kick the explosion screen-shake for N ticks (~60/s).
+extern s32 g_ExplosionShakeTotalTimer;
+extern s32 g_ExplosionShakeIntensityTimer;
+s32 chraiLuaShake(s32 ticks)
+{
+	if (ticks < 1) ticks = 1;
+	if (ticks > 120) ticks = 120;
+	g_ExplosionShakeTotalTimer = ticks;
+	g_ExplosionShakeIntensityTimer = ticks;
+	return 1;
+}
+
+// pd.screen_tint(r,g,b) / pd.screen_tint(): full-screen luminance tint via
+// the grayscale shader path (the Midas gold mechanism with a custom colour).
+extern s32 gfx_screen_tint;
+s32 chraiLuaScreenTint(s32 r, s32 g, s32 b, s32 on)
+{
+	if (!on) {
+		gfx_screen_tint = 0;
+		return 1;
+	}
+	r = r < 0 ? 0 : r > 255 ? 255 : r;
+	g = g < 0 ? 0 : g > 255 ? 255 : g;
+	b = b < 0 ? 0 : b > 255 ? 255 : b;
+	gfx_screen_tint = (r << 16) | (g << 8) | b;
+	if (gfx_screen_tint == 0) {
+		gfx_screen_tint = 1; // black tint, still distinct from "off"
+	}
+	return 1;
+}
+
+// pd.upside_down(on): flip the rendered 3D world top-bottom (the mirror
+// cheat's vertical sibling; renderer 1-byte bool — the wireframe gotcha).
+extern unsigned char gfx_upsidedown_mode;
+s32 chraiLuaUpsideDown(s32 on)
+{
+	gfx_upsidedown_mode = on ? 1 : 0;
+	return 1;
+}
+
+// pd.weather(type, intensity): 0 off / 1 rain / 2 snow, on any stage.
+s32 chraiLuaWeather(s32 type, s32 intensity)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return weatherChaosSet(type, intensity);
 }
 
 // pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB

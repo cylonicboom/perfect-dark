@@ -305,7 +305,14 @@ s32 chraiLuaDamageScale(f32 frac);            /* scale all chr/player damage; 1 
 s32 chraiLuaZoomScale(f32 mult);              /* scale weapon aim-zoom FOV; >1 zooms OUT */
 s32 chraiLuaGunSound(s32 weaponnum);          /* all guns fire with this weapon's shoot sound; 0 = off */
 s32 chraiLuaMute(s32 on);                     /* master audio mute */
-s32 chraiLuaPlayFile(const char *path);       /* play an external WAV through the device stream */
+s32 chraiLuaPlayFile(const char *path);       /* play an external WAV/MP3 through the device stream */
+s32 chraiLuaChrSpeed(f32 mult);               /* scale all non-player chr anim/movement speed; 1 = off */
+s32 chraiLuaChrDamage(s32 chrnum, f32 amount); /* hurt any chr via the real damage path */
+s32 chraiLuaChrScale(s32 chrnum, f32 mult);   /* multiply a chr's visual scale */
+s32 chraiLuaShake(s32 ticks);                 /* explosion screen-shake for N ticks */
+s32 chraiLuaScreenTint(s32 r, s32 g, s32 b, s32 on); /* full-screen luminance tint; on=0 clears */
+s32 chraiLuaUpsideDown(s32 on);               /* flip the rendered world top-bottom */
+s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */
 s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
 s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */
 s32 chraiLuaAmmoSwap(s32 weaponnum);          /* held guns fire this weapon's primary; -1 off */

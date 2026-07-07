@@ -173,6 +173,10 @@ extern f32 gfx_wireframe_line_width;
 // Chaos forced-shiny mode (gfx_pc.cpp, C++ int == s32 — the 1-byte bool
 // gotcha above does not apply). Read here to gate dlcache off while active.
 extern s32 gfx_shiny_mode;
+// Chaos upside-down mode (gfx_pc.cpp, C++ 1-byte bool — same gotcha as
+// gfx_wireframe_mode). Gates dlcache off while active (the cached replay's
+// uMVP is not Y-flipped).
+extern unsigned char gfx_upsidedown_mode;
 s32 g_WireframeAnimSpeed = 0; // /wireframe vomit|trip: 0=off, else hue degrees/frame (vomit 4, trip 1)
 #endif
 s32 g_BgMostAttemptedDrawSlots = 0;
@@ -4214,7 +4218,7 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		// Chaos shiny mode also forces it off: the fake-chrome UV warp runs at
 		// CPU vertex processing, which cached rooms (GPU replay of recorded
 		// verts) never re-run - rooms would stay matte while props shine.
-		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode
+		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode && !gfx_upsidedown_mode
 				&& (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer
 			// keys the cache by block->gdl, peeked from the gSPDisplayList between

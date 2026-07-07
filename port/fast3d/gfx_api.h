@@ -41,6 +41,8 @@ extern bool gfx_mirror_mode;                 // flip the 3D scene left-right (CH
 extern int gfx_flattex_mode;                 // chaos: 1 = white textures (vertex shading only), 2 = per-texture average colour
 extern int gfx_force_grayscale;              // chaos: force the grayscale shader path with a neutral colour
 extern int gfx_shiny_mode;                   // chaos: 1 = fake-chrome screen-space UVs on all 3D geometry, 2 = + gold tint
+extern bool gfx_upsidedown_mode;             // chaos: flip the 3D scene top-bottom (the mirror flip's vertical sibling)
+extern int gfx_screen_tint;                  // chaos: 0x00RRGGBB luminance tint via the grayscale path; 0 = off
 // HDR dazzle weight 0..1 set by the G_SETDAZZLE_EXT display-list command
 // (flush-aligned): draws issued while non-zero are emissive-boosted toward
 // the HDR peak by the SDL_GPU backend. GL and SDR ignore it.

@@ -1219,6 +1219,71 @@ static int l_pd_play_file(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_speed(mult) -> bool. Scale every non-player chr's anim playback
+ * (movement + attack cadence follow). 1 = normal. */
+static int l_pd_chr_speed(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaChrSpeed((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
+/* pd.chr_damage(chrnum, amount) -> bool. Hurt any chr via the real damage
+ * path; ~1.0 is roughly one gunshot. */
+static int l_pd_chr_damage(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrDamage(chrnum, (f32)luaL_checknumber(L, 2)) != 0);
+	return 1;
+}
+
+/* pd.chr_scale(chrnum, mult) -> bool. Multiply a chr's visual scale; undo by
+ * calling again with the inverse. */
+static int l_pd_chr_scale(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrScale(chrnum, (f32)luaL_checknumber(L, 2)) != 0);
+	return 1;
+}
+
+/* pd.shake(ticks) -> bool. Explosion-style screen shake for N ticks. */
+static int l_pd_shake(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaShake((s32)luaL_optinteger(L, 1, 24)) != 0);
+	return 1;
+}
+
+/* pd.screen_tint(r, g, b) -> bool. Full-screen luminance tint (sepia,
+ * terminal green, ...). pd.screen_tint() clears it. */
+static int l_pd_screen_tint(lua_State *L)
+{
+	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
+		lua_pushboolean(L, chraiLuaScreenTint(0, 0, 0, 0) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaScreenTint(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_checkinteger(L, 2),
+			(s32)luaL_checkinteger(L, 3), 1) != 0);
+	return 1;
+}
+
+/* pd.upside_down(on) -> bool. Flip the rendered 3D world top-bottom. */
+static int l_pd_upside_down(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaUpsideDown(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.weather(type, intensity) -> bool. 0 = off, 1 = rain, 2 = snow — on any
+ * stage (unconfigured stages rain indoors too; that's the joke). */
+static int l_pd_weather(lua_State *L)
+{
+	s32 type = (s32)luaL_optinteger(L, 1, 0);
+	s32 intensity = (s32)luaL_optinteger(L, 2, 2);
+	lua_pushboolean(L, chraiLuaWeather(type, intensity) != 0);
+	return 1;
+}
+
 /* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
  * channel). pd.room_tint() with no args turns the tint off. */
 static int l_pd_room_tint(lua_State *L)
@@ -1544,6 +1609,13 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_gun_sound);     lua_setfield(L, -2, "gun_sound");
 	lua_pushcfunction(L, l_pd_mute);          lua_setfield(L, -2, "mute");
 	lua_pushcfunction(L, l_pd_play_file);     lua_setfield(L, -2, "play_file");
+	lua_pushcfunction(L, l_pd_chr_speed);     lua_setfield(L, -2, "chr_speed");
+	lua_pushcfunction(L, l_pd_chr_damage);    lua_setfield(L, -2, "chr_damage");
+	lua_pushcfunction(L, l_pd_chr_scale);     lua_setfield(L, -2, "chr_scale");
+	lua_pushcfunction(L, l_pd_shake);         lua_setfield(L, -2, "shake");
+	lua_pushcfunction(L, l_pd_screen_tint);   lua_setfield(L, -2, "screen_tint");
+	lua_pushcfunction(L, l_pd_upside_down);   lua_setfield(L, -2, "upside_down");
+	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");

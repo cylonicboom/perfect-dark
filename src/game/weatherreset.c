@@ -40,6 +40,78 @@ static void weatherResetRooms(void)
 
 #endif
 
+#ifndef PLATFORM_N64
+// Chaos weather (pd.weather, docs/PORT_CHAOS.md): force rain/snow on ANY
+// stage. type 0 = off (weatherStop), 1 = rain, 2 = snow; intensity 0..3.
+// Stages without configured weather never allocate g_WeatherData, so this
+// replicates weatherReset's init on demand (MEMPOOL_STAGE — freed with the
+// stage). No weatherproof room flags are set up for unconfigured stages, so
+// it "rains" indoors too — which is the chaos-mode joke, not a bug.
+s32 weatherChaosSet(s32 type, s32 intensity)
+{
+	if (intensity < 0) intensity = 0;
+	if (intensity > 3) intensity = 3;
+
+	if (type <= 0) {
+		if (g_WeatherData) {
+			weatherStop(); // frees handles + nulls g_WeatherData
+		}
+		g_WeatherActive = false;
+		return 1;
+	}
+
+	if (!g_WeatherData) {
+		g_WeatherData = mempAlloc(sizeof(struct weatherdata), MEMPOOL_STAGE);
+		if (!g_WeatherData) {
+			return 0;
+		}
+		g_WeatherData->particledata[0] = weatherAllocateParticles();
+		g_WeatherData->type = -1;
+		g_WeatherData->windanglerad = 0;
+		g_WeatherData->unk0c = 0;
+		g_WeatherData->unk10 = 1;
+		g_WeatherData->windspeed = 15;
+		g_WeatherData->audiohandles[0] = 0;
+		g_WeatherData->audiohandles[1] = 0;
+		g_WeatherData->audiohandles[2] = 0;
+		g_WeatherData->audiohandles[3] = 0;
+		g_WeatherData->unk44 = 0;
+		g_WeatherData->unk94 = -1;
+		g_WeatherData->unk48 = 1;
+		g_WeatherData->unk4c = 0;
+		g_WeatherData->unk50 = 0;
+		g_WeatherData->unk54 = 0;
+		g_WeatherData->unk58[0].unk00 = 0;
+		g_WeatherData->unk58[1].unk00 = 0;
+		g_WeatherData->unk58[2].unk00 = 0;
+		g_WeatherData->unk58[3].unk00 = 1;
+		g_WeatherData->unk58[0].unk04 = 1;
+		g_WeatherData->unk58[0].unk08 = 0;
+		g_WeatherData->unk58[1].unk08 = 0;
+		g_WeatherData->unk58[2].unk08 = 0;
+		g_WeatherData->unk58[3].unk08 = 0;
+		g_WeatherData->unkb8 = 150;
+		g_WeatherData->unkc0 = 0;
+		g_WeatherData->unkc4 = 0;
+		g_WeatherData->unkc8 = 15;
+		g_WeatherData->unk88 = 1;
+		g_WeatherData->unk90 = 0;
+		g_WeatherData->intensity = 0;
+		g_WeatherData->unkd0 = 0;
+		g_WeatherData->unkd4 = 0;
+		g_WeatherActive = true;
+	}
+
+	if (type == 1) {
+		weatherConfigureRain((u32)intensity);
+	} else {
+		weatherConfigureSnow((u32)intensity);
+	}
+
+	return 1;
+}
+#endif
+
 void weatherReset(void)
 {
 	g_WeatherActive = false;

@@ -432,6 +432,73 @@ chaos.effects = {
   negative_zoom = { label="Negative zoom",    w=4, dur=25,
                    start=function() pd.zoom_scale(4) end,
                    stop=function() pd.zoom_scale(1) end },
+  -- freeform batch: hooks nobody asked for but everybody needs
+  benny_hill   = { label="Benny Hill mode",   w=4, dur=20,
+                   start=function() pd.chr_speed(2.5) end,
+                   stop=function() pd.chr_speed(1) end },
+  zombies      = { label="Zombie shuffle",    w=4, dur=20,
+                   start=function() pd.chr_speed(0.4) end,
+                   stop=function() pd.chr_speed(1) end },
+  earthquake   = { label="EARTHQUAKE",        w=4, dur=15,
+                   start=function() pd.shake(40); pd.dizzy(1500) end,
+                   tick=function(left)
+                     if left % 75 == 0 then pd.shake(30) end
+                   end },
+  thanos_snap  = { label="The snap",          w=2, dur=0, start=function()
+                     local list = pd.all_chrs() or {}
+                     if #list == 0 then error("no chrs") end
+                     pd.fade(255, 255, 255, 200, 90)
+                     for i, c in ipairs(list) do
+                       if i % 2 == 0 then pd.chr_damage(c, 100) end
+                     end end },
+  plague       = { label="The plague",        w=3, dur=20,
+                   tick=function(left)
+                     if left % 120 == 0 then
+                       for _, c in ipairs(pd.all_chrs() or {}) do
+                         pd.chr_damage(c, 0.35)
+                       end
+                     end
+                   end,
+                   start=function() end },
+  sepia        = { label="1964 mode",         w=4, dur=30,
+                   start=function() pd.screen_tint(230, 190, 130) end,
+                   stop=function() pd.screen_tint() end },
+  terminal     = { label="Terminal green",    w=4, dur=30,
+                   start=function() pd.screen_tint(110, 255, 130) end,
+                   stop=function() pd.screen_tint() end },
+  australia    = { label="Australia mode",    w=3, dur=20,
+                   start=function() pd.upside_down(true) end,
+                   stop=function() pd.upside_down(false) end },
+  giants       = { label="Attack of the giants", w=3, dur=25,
+                   start=function()
+                     st.scaled_g = {}
+                     for _, c in ipairs(pd.all_chrs() or {}) do
+                       if pd.chr_scale(c, 1.6) then st.scaled_g[#st.scaled_g + 1] = c end
+                     end
+                     if #st.scaled_g == 0 then error("no chrs") end
+                   end,
+                   stop=function()
+                     for _, c in ipairs(st.scaled_g or {}) do pd.chr_scale(c, 1 / 1.6) end
+                     st.scaled_g = nil
+                   end },
+  ant_farm     = { label="Ant farm",          w=3, dur=25,
+                   start=function()
+                     st.scaled_a = {}
+                     for _, c in ipairs(pd.all_chrs() or {}) do
+                       if pd.chr_scale(c, 0.45) then st.scaled_a[#st.scaled_a + 1] = c end
+                     end
+                     if #st.scaled_a == 0 then error("no chrs") end
+                   end,
+                   stop=function()
+                     for _, c in ipairs(st.scaled_a or {}) do pd.chr_scale(c, 1 / 0.45) end
+                     st.scaled_a = nil
+                   end },
+  monsoon      = { label="Monsoon",           w=4, dur=30,
+                   start=function() pd.weather(1, 2); st.weather_set = true end,
+                   stop=function() pd.weather(0); st.weather_set = false end },
+  blizzard     = { label="Blizzard",          w=4, dur=30,
+                   start=function() pd.weather(2, 2); st.weather_set = true end,
+                   stop=function() pd.weather(0); st.weather_set = false end },
 }
 
 -- fix the setmetatable shorthand: pull dur/start/stop through the metatable
@@ -691,6 +758,14 @@ pd.on("stage", function()
   if pd.no_drops then pd.no_drops(false) end
   if pd.mute then pd.mute(false) end
   if pd.zoom_scale then pd.zoom_scale(1) end
+  -- freeform batch globals (weather only if WE turned it on — never kill a
+  -- stage's own configured rain)
+  if pd.chr_speed then pd.chr_speed(1) end
+  if pd.screen_tint then pd.screen_tint() end
+  if pd.upside_down then pd.upside_down(false) end
+  if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
+  st.scaled_g = nil
+  st.scaled_a = nil
 end)
 
 -- ---- HUD: active-effect timer bars + the chat-vote slate (top right) -------

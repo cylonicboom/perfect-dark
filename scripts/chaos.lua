@@ -361,6 +361,76 @@ chaos.effects = {
   buddy        = { label="Backup arrives",    w=5, dur=0, start=function() pd.spawn_ally() end },
   reinforce    = { label="Supply drop",       w=4, dur=0, start=function()
                      local c = random_chr(); if c then pd.spawn_at_chr(c, GUNS[math.random(#GUNS)]) end end },
+  -- request batch 4
+  k7_party     = { label="K7 Avengers for all", w=4, dur=0, start=function()
+                     local list = pd.all_chrs() or {}
+                     if #list == 0 then error("no chrs") end
+                     for _, c in ipairs(list) do pd.chr_give_weapon(c, W.K7) end end },
+  paintball    = { label="Paintball!",        w=5, dur=30,
+                   start=function()
+                     pd.paintball(true)
+                     pd.gun_sound(W.TRANQ)   -- every gun fires with the tranq's pfft
+                     pd.damage_scale(0.1)    -- stings, doesn't kill (much)
+                   end,
+                   stop=function()
+                     pd.paintball(false)
+                     pd.gun_sound()
+                     pd.damage_scale(1)
+                   end },
+  misfire      = { label="Misfire",           w=5, dur=0,
+                   start=function() st.misfire_armed = true end },
+  weapon_jam   = { label="Weapon jam",        w=5, dur=12,
+                   start=function() pd.weapon_jam(true) end,
+                   stop=function() pd.weapon_jam(false) end },
+  take_a_break = { label="Take a break",      w=4, dur=function() return math.random(10, 30) end,
+                   start=function() pd.player_freeze(true) end,
+                   stop=function() pd.player_freeze(false) end },
+  vampire      = { label="Vampire",           w=4, dur=30,
+                   -- drain ~2%/s; damaging enemies feeds you (see the
+                   -- pd.on("damage") handler below)
+                   tick=function(left)
+                     if left % 60 == 0 then
+                       local h = pd.player_health()
+                       if h <= 0.03 then pd.player_damage(20) -- drained dry
+                       else pd.player_set_health(h - 0.02) end
+                     end
+                   end,
+                   start=function() end,
+                   stop=function() end },
+  freeze       = { label="FREEZE!",           w=4, dur=function() return math.random(10, 20) end,
+                   start=function() pd.chr_freeze(true) end,
+                   stop=function() pd.chr_freeze(false) end },
+  no_drops     = { label="No drops",          w=4, dur=45,
+                   start=function() pd.no_drops(true) end,
+                   stop=function() pd.no_drops(false) end },
+  random_loadout = { label="Random loadout",  w=4, dur=0, start=function()
+                     for _, g in ipairs(GUNS) do pd.take_weapon(g) end
+                     pd.take_weapon(W.KNIFE)
+                     local given, n, first = {}, 0, nil
+                     while n < 6 do
+                       local g = GUNS[math.random(#GUNS)]
+                       if not given[g] then
+                         given[g] = true
+                         pd.give_weapon(g)
+                         first = first or g
+                         n = n + 1
+                       end
+                     end
+                     pd.refill_ammo()
+                     if first then pd.switch_weapon(first) end end },
+  muted        = { label="Muted",             w=4, dur=20,
+                   start=function() pd.mute(true) end,
+                   stop=function() pd.mute(false) end },
+  ring_ring    = { label="Ring ring!",        w=4, dur=0, start=function()
+                     -- ships without the sound; drop a WAV at this path
+                     -- (e.g. the Discord call ringtone) to complete the bit
+                     if not pd.play_file("scripts/sounds/chaos/ring.wav") then
+                       error("scripts/sounds/chaos/ring.wav missing")
+                     end
+                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
+  negative_zoom = { label="Negative zoom",    w=4, dur=25,
+                   start=function() pd.zoom_scale(4) end,
+                   stop=function() pd.zoom_scale(1) end },
 }
 
 -- fix the setmetatable shorthand: pull dur/start/stop through the metatable
@@ -398,9 +468,11 @@ function chaos.trigger(name, who)
     pd.log("[chaos] effect '" .. name .. "' failed: " .. tostring(err))
     return false
   end
-  if e.dur and e.dur > 0 then
-    st.active[name] = e.dur * TICKS
-    st.duration[name] = e.dur * TICKS
+  -- dur may be a function for randomised durations (e.g. Take a break 10-30s)
+  local dur = (type(e.dur) == "function") and e.dur() or e.dur
+  if dur and dur > 0 then
+    st.active[name] = dur * TICKS
+    st.duration[name] = dur * TICKS
   end
   announce(e.label .. (who and ("  [" .. who .. "]") or ""))
   table.insert(st.history, 1, name)
@@ -567,6 +639,23 @@ pd.on("tick", function()
   end
 end)
 
+-- Misfire: the next shot fired after arming blows up in the player's face.
+pd.on("weaponfire", function(weaponnum, playernum)
+  if st.misfire_armed then
+    st.misfire_armed = false
+    pd.player_damage(1.5)
+    pd.hud_message("CHAOS: BANG! It misfired!")
+  end
+end)
+
+-- Vampire: damaging any chr while the effect is active feeds you.
+pd.on("damage", function(chrnum, attackerplayernum, amount)
+  if st.active.vampire and attackerplayernum == 0 then
+    local h = pd.player_health()
+    pd.player_set_health(math.min(1, h + 0.04))
+  end
+end)
+
 pd.on("stage", function()
   -- fresh world: drop timed-effect bookkeeping (cheat banks reset with the
   -- stage; re-arm the timer so the first effect isn't instant)
@@ -575,6 +664,7 @@ pd.on("stage", function()
   st.cvotes = {0, 0, 0}
   st.timer = st.interval * TICKS
   st.votetimer = st.votetime * TICKS
+  st.misfire_armed = false
   -- the visual modes + ammo swap live in globals that SURVIVE the stage
   -- reload (unlike the cheat bank) — reset them explicitly
   if pd.flattex then pd.flattex(0) end
@@ -590,6 +680,16 @@ pd.on("stage", function()
   if pd.gormless then pd.gormless(false) end
   if pd.sfx_shuffle then pd.sfx_shuffle(false) end
   if pd.instrument_shuffle then pd.instrument_shuffle(false) end
+  -- request batch 4 globals
+  if pd.gun_sound then pd.gun_sound() end
+  if pd.damage_scale then pd.damage_scale(1) end
+  if pd.paintball then pd.paintball(false) end
+  if pd.weapon_jam then pd.weapon_jam(false) end
+  if pd.player_freeze then pd.player_freeze(false) end
+  if pd.chr_freeze then pd.chr_freeze(false) end
+  if pd.no_drops then pd.no_drops(false) end
+  if pd.mute then pd.mute(false) end
+  if pd.zoom_scale then pd.zoom_scale(1) end
 end)
 
 -- ---- HUD: active-effect timer bars + the chat-vote slate (top right) -------

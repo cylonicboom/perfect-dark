@@ -237,6 +237,29 @@ f32 func0f0b131c(s32 hand)
 	return x;
 }
 
+#ifndef PLATFORM_N64
+// Chaos zoom scale (pd.zoom_scale): multiplies every weapon's aim-zoom FOV.
+// > 1 = "negative zoom" (aiming zooms OUT); clamped so the result stays a
+// renderable FOV. 1.0 = off.
+f32 g_ChaosZoomMult = 1.0f;
+
+static f32 chaosApplyZoomMult(f32 fov)
+{
+	if (g_ChaosZoomMult > 0.0f && g_ChaosZoomMult != 1.0f && fov > 0.0f) {
+		fov *= g_ChaosZoomMult;
+
+		if (fov > 120.0f) {
+			fov = 120.0f;
+		}
+		if (fov < 2.0f) {
+			fov = 2.0f;
+		}
+	}
+
+	return fov;
+}
+#endif
+
 f32 currentPlayerGetGunZoomFov(void)
 {
 	s32 index = -1;
@@ -255,14 +278,22 @@ f32 currentPlayerGetGunZoomFov(void)
 	}
 
 	if (index >= 0) {
+#ifndef PLATFORM_N64
+		return chaosApplyZoomMult(g_Vars.currentplayer->gunzoomfovs[index]);
+#else
 		return g_Vars.currentplayer->gunzoomfovs[index];
+#endif
 	}
 
 	weapon = weaponFindById(bgunGetWeaponNum2(0));
 
 	if (weapon) {
 		f32 fov = weapon->aimsettings->zoomfov;
+#ifndef PLATFORM_N64
+		return chaosApplyZoomMult(ADJUST_ZOOM_FOV(fov));
+#else
 		return ADJUST_ZOOM_FOV(fov);
+#endif
 	}
 
 	return 0;
@@ -610,12 +641,26 @@ u8 gsetGetFireslotDuration(struct gset *gset)
 #endif
 }
 
+#ifndef PLATFORM_N64
+// Chaos gun-sound override (pd.gun_sound / docs/PORT_CHAOS.md): while > 0,
+// every weapon's fire sound resolves to this SFX. This function is the single
+// chokepoint every fire-sound consumer reads (player hands in bondgun.c, NPC
+// fire in chrUpdateFireslot, the demo player), so one hook covers them all.
+// Weapons with NO shoot sound (melee/throwables return 0) stay silent.
+s32 g_ChaosGunSfxOverride = 0;
+#endif
+
 u16 gsetGetSingleShootSound(struct gset *gset)
 {
 	struct weaponfunc *func = gsetGetWeaponFunction(gset);
 
 	if (func && (func->type & 0xff) == INVENTORYFUNCTYPE_SHOOT) {
 		struct weaponfunc_shoot *funcshoot = (struct weaponfunc_shoot *)func;
+#ifndef PLATFORM_N64
+		if (g_ChaosGunSfxOverride > 0 && funcshoot->shootsound != 0) {
+			return (u16)g_ChaosGunSfxOverride;
+		}
+#endif
 		return funcshoot->shootsound;
 	}
 

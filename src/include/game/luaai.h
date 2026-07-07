@@ -293,6 +293,19 @@ s32 chraiLuaTeleportToChr(s32 chrnum);        /* snap player to a chr (server-si
 s32 chraiLuaFlatTex(s32 mode);                /* 0 normal, 1 white/vertex-only, 2 avg-colour textures */
 s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale path */
 s32 chraiLuaShiny(s32 mode);                  /* 0 off, 1 fake-chrome UVs everywhere, 2 + gold tint */
+s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum); /* replace an NPC's held weapons with this one */
+f32 chraiLuaPlayerHealth(void);               /* current health fraction 0..1 */
+s32 chraiLuaPlayerDamage(f32 amount);         /* hurt the local player via the real damage path */
+s32 chraiLuaWeaponJam(s32 on);                /* trigger pulls dry-fire, no shot, no ammo */
+s32 chraiLuaPlayerFreeze(s32 on);             /* root the local player (look/fire still live) */
+s32 chraiLuaChrFreeze(s32 on);                /* statue every non-player chr */
+s32 chraiLuaNoDrops(s32 on);                  /* dead chrs keep their weapons */
+s32 chraiLuaPaintball(s32 on);                /* force paintball visuals */
+s32 chraiLuaDamageScale(f32 frac);            /* scale all chr/player damage; 1 = off */
+s32 chraiLuaZoomScale(f32 mult);              /* scale weapon aim-zoom FOV; >1 zooms OUT */
+s32 chraiLuaGunSound(s32 weaponnum);          /* all guns fire with this weapon's shoot sound; 0 = off */
+s32 chraiLuaMute(s32 on);                     /* master audio mute */
+s32 chraiLuaPlayFile(const char *path);       /* play an external WAV through the device stream */
 s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
 s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */
 s32 chraiLuaAmmoSwap(s32 weaponnum);          /* held guns fire this weapon's primary; -1 off */

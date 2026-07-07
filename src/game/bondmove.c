@@ -54,6 +54,10 @@
 // inverted. Applied at the two input chokepoints in bmoveProcessInput (the
 // c1 stick negate + the mouse-look delta negate).
 s32 g_ChaosGormless = 0;
+// Chaos "Take a break" (pd.player_freeze): zero the movement stick so the
+// player is rooted in place. Mouse look and firing stay live — you can watch
+// and shoot, you just can't move.
+s32 g_ChaosPlayerFreeze = 0;
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -1195,6 +1199,17 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		movedata.c1stickysafe = -movedata.c1stickysafe;
 		movedata.c1stickxraw = -movedata.c1stickxraw;
 		movedata.c1stickyraw = -movedata.c1stickyraw;
+	}
+
+	// Chaos "Take a break" (pd.player_freeze): kill the movement stick. Same
+	// scope rules as Gormless above (local player, not scripted autowalk).
+	// Mouse look (freelookdx/dy below) is left alone on purpose.
+	if (g_ChaosPlayerFreeze && !g_Vars.currentplayer->isremote
+			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
+		movedata.c1stickxsafe = 0;
+		movedata.c1stickysafe = 0;
+		movedata.c1stickxraw = 0;
+		movedata.c1stickyraw = 0;
 	}
 #endif
 

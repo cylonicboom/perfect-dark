@@ -1963,9 +1963,28 @@ void chr0f0220ac(struct chrdata *chr)
 	propRegisterRooms(chr->prop);
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Freeze!" (pd.chr_freeze, docs/PORT_CHAOS.md): while set, every
+// non-player chr's anim playback pauses (gate below) and NPC firing is
+// suppressed (chrTickShoot, chraction.c).
+s32 g_ChaosChrFreeze = 0;
+#endif
+
 void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
 {
 	struct model *model = chr->model;
+
+#ifndef PLATFORM_N64
+	// Chaos "Freeze!" (pd.chr_freeze): pause every non-player chr's animation
+	// playback. Only the anim ADVANCE is skipped — the model still renders at
+	// its current frame and the rest of chrTick (render prep, matrices) runs,
+	// so this is a statue effect, not a despawn. Movement stops with it (chr
+	// locomotion is anim-root-motion driven); firing is suppressed separately
+	// in chrTickShoot.
+	if (g_ChaosChrFreeze && chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
+		return;
+	}
+#endif
 
 	if (g_Vars.tickmode == TICKMODE_CUTSCENE) {
 		if (chr->prop->type == PROPTYPE_PLAYER) {

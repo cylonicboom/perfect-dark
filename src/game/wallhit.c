@@ -209,10 +209,22 @@ void wallhitsFreeByProp(struct prop *prop, s8 layer)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Paintball" (pd.paintball, docs/PORT_CHAOS.md): force paintball
+// visuals for everyone regardless of the per-player Combat Sim option.
+s32 g_ChaosPaintball = 0;
+#endif
+
 bool chrIsUsingPaintball(struct chrdata *chr)
 {
 	s32 prevplayernum = g_Vars.currentplayernum;
 	bool paintball;
+
+#ifndef PLATFORM_N64
+	if (g_ChaosPaintball) {
+		return true;
+	}
+#endif
 
 	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
 		setCurrentPlayerNum(playermgrGetPlayerNumByProp(chr->prop));

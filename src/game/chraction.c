@@ -73,6 +73,12 @@
 // unarmed strike in chrDamage is lethal + launches the victim. Defined here
 // (not in the pd helper block below) because chrDamage reads it first.
 s32 g_ChaosOnePunch = 0;
+// Chaos "Paintball" (pd.damage_scale): multiplies every chrDamage amount.
+// 1.0 = off. Applied in chrDamage before the net broadcast.
+f32 g_ChaosDamageScale = 1.0f;
+// Chaos "No drops" (pd.no_drops): dead chrs keep their weapons in hand
+// instead of dropping them (gate in chrBeginDeath's drop-items block).
+s32 g_ChaosNoDrops = 0;
 #endif
 
 s32 g_RecentQuipsPlayed[5];
@@ -3410,7 +3416,13 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 	}
 
 	// Drop items
-	if (race == RACE_HUMAN || race == RACE_SKEDAR) {
+	if ((race == RACE_HUMAN || race == RACE_SKEDAR)
+#ifndef PLATFORM_N64
+			// Chaos "No drops": skip the whole drop — held weapons stay
+			// parented to the corpse and free with it.
+			&& !g_ChaosNoDrops
+#endif
+			) {
 #ifndef PLATFORM_N64
 		// "Wire owns the lifetime" (PORT_NET_PROP_LIFECYCLE): on a net client,
 		// a synced chr's corpse drop must NOT put the LOCAL copies on the
@@ -4477,6 +4489,13 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		if (chr->model) {
 			chrYeetFromPos(chr, &aprop->pos, 250.0f);
 		}
+	}
+
+	// Chaos "Paintball" damage scale (pd.damage_scale): scale ALL chr/player
+	// damage. Applied before the SVC_CHR_DAMAGE broadcast so net clients
+	// replay the same scaled hit.
+	if (g_ChaosDamageScale >= 0.0f && g_ChaosDamageScale != 1.0f) {
+		damage *= g_ChaosDamageScale;
 	}
 
 	if (g_NetMode == NETMODE_SERVER) {
@@ -9101,6 +9120,155 @@ s32 chraiLuaShiny(s32 mode)
 	return 1;
 }
 
+// pd.chr_give_weapon(chrnum, weaponnum): replace a chr's held weapons with
+// the given one (right hand). NPCs only — a player's inventory is managed
+// through give_weapon/take_weapon. The old hand props are marked DELETING
+// (the netmsg chr-state weapons-held apply pattern) so they vanish rather
+// than drop.
+s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+	s32 h;
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || chr->model == NULL) {
+		return 0;
+	}
+	if (chr->prop->type != PROPTYPE_CHR) {
+		return 0;
+	}
+
+	for (h = 0; h < 2; h++) {
+		struct prop *wp = chr->weapons_held[h];
+
+		if (wp && wp->obj) {
+			wp->obj->hidden |= OBJHFLAG_DELETING;
+			chr->weapons_held[h] = NULL;
+		}
+	}
+
+	return chrGiveWeapon(chr, playermgrGetModelOfWeapon(weaponnum), weaponnum, 0) != NULL;
+}
+
+// pd.player_health(): current health fraction (0..1), the same scale
+// player_set_health writes.
+f32 chraiLuaPlayerHealth(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0.0f;
+	}
+	return g_Vars.currentplayer->bondhealth;
+}
+
+// pd.player_damage(amount): hurt the local player through the real damage
+// path (shield first, damage flash/sound, death) — ~1.0 is roughly one
+// gunshot. Attacker is NULL (environment), so a death reads as a suicide.
+s32 chraiLuaPlayerDamage(f32 amount)
+{
+	struct chrdata *pchr = apLuaPlayerChr();
+	struct coord vec = {0, 0, 1};
+
+	if (pchr == NULL || amount <= 0.0f) {
+		return 0;
+	}
+	chrDamageByMisc(pchr, amount, &vec, NULL, NULL);
+	return 1;
+}
+
+// pd.weapon_jam(on): trigger pulls dry-fire (bondgun.c reroute).
+extern s32 g_ChaosWeaponJam;
+s32 chraiLuaWeaponJam(s32 on)
+{
+	g_ChaosWeaponJam = on ? 1 : 0;
+	return 1;
+}
+
+// pd.player_freeze(on): root the local player in place (bondmove.c).
+extern s32 g_ChaosPlayerFreeze;
+s32 chraiLuaPlayerFreeze(s32 on)
+{
+	g_ChaosPlayerFreeze = on ? 1 : 0;
+	return 1;
+}
+
+// pd.chr_freeze(on): statue every non-player chr (chr.c anim gate +
+// chrTickShoot fire gate).
+s32 chraiLuaChrFreeze(s32 on)
+{
+	extern s32 g_ChaosChrFreeze;
+
+	g_ChaosChrFreeze = on ? 1 : 0;
+	return 1;
+}
+
+// pd.no_drops(on): dead chrs keep their weapons (chrBeginDeath gate).
+s32 chraiLuaNoDrops(s32 on)
+{
+	g_ChaosNoDrops = on ? 1 : 0;
+	return 1;
+}
+
+// pd.paintball(on): force paintball visuals for everyone (wallhit.c).
+extern s32 g_ChaosPaintball;
+s32 chraiLuaPaintball(s32 on)
+{
+	g_ChaosPaintball = on ? 1 : 0;
+	return 1;
+}
+
+// pd.damage_scale(frac): scale all chr/player damage (1.0 = off).
+s32 chraiLuaDamageScale(f32 frac)
+{
+	if (frac < 0.0f) frac = 0.0f;
+	if (frac > 10.0f) frac = 10.0f;
+	g_ChaosDamageScale = frac;
+	return 1;
+}
+
+// pd.zoom_scale(mult): multiply every weapon's aim-zoom FOV (game_0b0fd0.c);
+// > 1 zooms OUT. 1.0 = off.
+extern f32 g_ChaosZoomMult;
+s32 chraiLuaZoomScale(f32 mult)
+{
+	if (mult < 0.1f) mult = 0.1f;
+	if (mult > 16.0f) mult = 16.0f;
+	g_ChaosZoomMult = mult;
+	return 1;
+}
+
+// pd.gun_sound(weaponnum): every gun's fire sound becomes this weapon's
+// primary shoot sound (resolved once here; gsetGetSingleShootSound applies
+// it at every consumer). pd.gun_sound() turns it off.
+extern s32 g_ChaosGunSfxOverride;
+s32 chraiLuaGunSound(s32 weaponnum)
+{
+	struct gset gset = {0};
+
+	if (weaponnum <= 0) {
+		g_ChaosGunSfxOverride = 0;
+		return 1;
+	}
+
+	gset.weaponnum = weaponnum;
+	gset.weaponfunc = FUNC_PRIMARY;
+	g_ChaosGunSfxOverride = 0; // resolve against the REAL table, not the override
+	g_ChaosGunSfxOverride = (s32)gsetGetSingleShootSound(&gset);
+	return g_ChaosGunSfxOverride != 0;
+}
+
+// pd.mute(on) / pd.play_file(path): port audio layer (port/src/audio.c).
+extern void audioSetMuted(s32 on);
+extern s32 audioPlayExternal(const char *path);
+s32 chraiLuaMute(s32 on)
+{
+	audioSetMuted(on ? 1 : 0);
+	return 1;
+}
+
+s32 chraiLuaPlayFile(const char *path)
+{
+	return audioPlayExternal(path);
+}
+
 // pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB
 // multiplier (0..255 per channel = 0..1x) — the KotH hill-highlight effect
 // applied stage-wide. Dirties all rooms so the reshade re-runs; rooms
@@ -11629,6 +11797,16 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 			&& chr->lastdamagetick60 != 0
 			&& ((u32)g_Vars.lvframe60 - (u32)chr->lastdamagetick60) < (u32)TICKS(18)) {
 		return;
+	}
+
+	// Chaos "Freeze!" (pd.chr_freeze): frozen chrs don't shoot. Pairs with the
+	// anim-advance gate in chr0f0220ec (chr.c) — statues don't pull triggers.
+	{
+		extern s32 g_ChaosChrFreeze;
+
+		if (g_ChaosChrFreeze && chrprop && chrprop->type != PROPTYPE_PLAYER) {
+			return;
+		}
 	}
 #endif
 

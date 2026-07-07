@@ -223,6 +223,9 @@ s32 g_BgunGeMuzzleFlashes = false;
 // Chaos "backfire": local player's shots leave 180 degrees behind them (set
 // via pd.backfire; applied at the end of bgunCalculatePlayerShotSpread).
 s32 g_ChaosBackfire = 0;
+// Chaos "Weapon jam" (pd.weapon_jam): trigger pulls dry-fire instead of
+// shooting; see the HANDSTATE_ATTACKEMPTY reroute in bgunTickInc.
+s32 g_ChaosWeaponJam = 0;
 
 // Route a first-person gun sound through the 3D positional channel when the
 // firing player is remote. In netplay, every player's bgunTick runs on every
@@ -1392,6 +1395,20 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 			}
 		} else {
 			// Clip has ammo
+#ifndef PLATFORM_N64
+			// Chaos "Weapon jam" (pd.weapon_jam): trigger pulls route to the
+			// empty-clip state instead of ATTACK — the dry-fire click plays,
+			// no shot happens, no ammo is spent. Local player only (remote
+			// pawns' mirrored guns must keep firing for real).
+			if (g_ChaosWeaponJam && !g_Vars.currentplayer->isremote
+					&& hand->triggeron && info->weaponnum != WEAPON_NONE) {
+				hand->unk0cc8_01 = false;
+
+				if (bgunSetState(handnum, HANDSTATE_ATTACKEMPTY)) {
+					return lvupdate;
+				}
+			}
+#endif
 			if (hand->triggeron || (hand->activatesecondary && hand->gset.weaponfunc == FUNC_SECONDARY)) {
 				if (info->weaponnum != WEAPON_NONE) {
 					g_Vars.currentplayer->doautoselect = false;

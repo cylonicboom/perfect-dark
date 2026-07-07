@@ -1121,6 +1121,104 @@ static int l_pd_shiny(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_give_weapon(chrnum, weaponnum) -> bool. Replace an NPC's held
+ * weapons with this one (right hand). */
+static int l_pd_chr_give_weapon(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 weaponnum = (s32)luaL_checkinteger(L, 2);
+	lua_pushboolean(L, chraiLuaChrGiveWeapon(chrnum, weaponnum) != 0);
+	return 1;
+}
+
+/* pd.player_health() -> number. Current health fraction (0..1), the scale
+ * player_set_health writes. */
+static int l_pd_player_health(lua_State *L)
+{
+	lua_pushnumber(L, chraiLuaPlayerHealth());
+	return 1;
+}
+
+/* pd.player_damage(amount) -> bool. Hurt the local player through the real
+ * damage path; ~1.0 is roughly one gunshot. */
+static int l_pd_player_damage(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerDamage((f32)luaL_checknumber(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.weapon_jam(on) -> bool. Trigger pulls dry-fire: click, no shot, no ammo. */
+static int l_pd_weapon_jam(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaWeaponJam(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.player_freeze(on) -> bool. Root the local player in place. */
+static int l_pd_player_freeze(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerFreeze(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.chr_freeze(on) -> bool. Pause every non-player chr's animation + firing. */
+static int l_pd_chr_freeze(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaChrFreeze(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.no_drops(on) -> bool. Dead chrs keep their weapons in hand. */
+static int l_pd_no_drops(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaNoDrops(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.paintball(on) -> bool. Force paintball visuals for everyone. */
+static int l_pd_paintball(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPaintball(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.damage_scale(frac) -> bool. Scale all chr/player damage (1 = normal). */
+static int l_pd_damage_scale(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaDamageScale((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
+/* pd.zoom_scale(mult) -> bool. Scale weapon aim-zoom FOV; >1 zooms OUT. */
+static int l_pd_zoom_scale(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaZoomScale((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
+/* pd.gun_sound(weaponnum) -> bool. Every gun fires with this weapon's shoot
+ * sound; pd.gun_sound() restores. */
+static int l_pd_gun_sound(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGunSound((s32)luaL_optinteger(L, 1, 0)) != 0);
+	return 1;
+}
+
+/* pd.mute(on) -> bool. Master audio mute (SFX + music). */
+static int l_pd_mute(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaMute(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.play_file(path) -> bool. Play an external WAV (e.g.
+ * scripts/sounds/chaos/ring.wav) through the device stream. */
+static int l_pd_play_file(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayFile(luaL_checkstring(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
  * channel). pd.room_tint() with no args turns the tint off. */
 static int l_pd_room_tint(lua_State *L)
@@ -1433,6 +1531,19 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_teleport_to_chr); lua_setfield(L, -2, "teleport_to_chr");
 	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
 	lua_pushcfunction(L, l_pd_shiny);         lua_setfield(L, -2, "shiny");
+	lua_pushcfunction(L, l_pd_chr_give_weapon); lua_setfield(L, -2, "chr_give_weapon");
+	lua_pushcfunction(L, l_pd_player_health); lua_setfield(L, -2, "player_health");
+	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
+	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
+	lua_pushcfunction(L, l_pd_player_freeze); lua_setfield(L, -2, "player_freeze");
+	lua_pushcfunction(L, l_pd_chr_freeze);    lua_setfield(L, -2, "chr_freeze");
+	lua_pushcfunction(L, l_pd_no_drops);      lua_setfield(L, -2, "no_drops");
+	lua_pushcfunction(L, l_pd_paintball);     lua_setfield(L, -2, "paintball");
+	lua_pushcfunction(L, l_pd_damage_scale);  lua_setfield(L, -2, "damage_scale");
+	lua_pushcfunction(L, l_pd_zoom_scale);    lua_setfield(L, -2, "zoom_scale");
+	lua_pushcfunction(L, l_pd_gun_sound);     lua_setfield(L, -2, "gun_sound");
+	lua_pushcfunction(L, l_pd_mute);          lua_setfield(L, -2, "mute");
+	lua_pushcfunction(L, l_pd_play_file);     lua_setfield(L, -2, "play_file");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");

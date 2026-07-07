@@ -496,6 +496,18 @@ chaos.effects = {
   monsoon      = { label="Monsoon",           w=4, dur=30,
                    start=function() pd.weather(1, 2); st.weather_set = true end,
                    stop=function() pd.weather(0); st.weather_set = false end },
+  woof_gas     = { label="WOOF GAS",          w=4, dur=30,
+                   -- the Investigation nerve gas, anywhere: green env wash on
+                   -- fog stages, coughing + hiss + damage every ~4s. The green
+                   -- screen tint guarantees the look on stages with no fog env.
+                   start=function()
+                     pd.gas(true)
+                     pd.screen_tint(120, 220, 110)
+                   end,
+                   stop=function()
+                     pd.gas(false)
+                     pd.screen_tint()
+                   end },
   blizzard     = { label="Blizzard",          w=4, dur=30,
                    start=function() pd.weather(2, 2); st.weather_set = true end,
                    stop=function() pd.weather(0); st.weather_set = false end },
@@ -763,6 +775,7 @@ pd.on("stage", function()
   if pd.chr_speed then pd.chr_speed(1) end
   if pd.screen_tint then pd.screen_tint() end
   if pd.upside_down then pd.upside_down(false) end
+  if pd.gas then pd.gas(false) end
   if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
   st.scaled_g = nil
   st.scaled_a = nil

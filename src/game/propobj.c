@@ -21777,6 +21777,61 @@ void gasStopAudio(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Woof Gas" (pd.gas, docs/PORT_CHAOS.md): run the Investigation nerve
+// gas anywhere. Vanilla gas ramps for 30s before damage starts, so the chaos
+// start pre-loads the timer past both the cough (600) and damage (1800)
+// thresholds. The green screen wash is an env TRANSITION — vanilla's target is
+// "the next g_FogEnvironments row", which is only meaningful on the stages
+// authored for gas — so we synthesize a green variant of the CURRENT stage's
+// fog env instead. Stages with no fog env at all (g_EnvOrigFogEnvironment
+// NULL) skip the env wash entirely (gasTick's guard below); the Lua effect
+// layers a green screen tint so the look still lands.
+static struct fogenvironment g_ChaosGasEnvTo;
+static s32 g_ChaosGasEnvValid = false;
+extern struct fogenvironment *g_EnvOrigFogEnvironment;
+extern struct fogenvironment *g_EnvTransitionFrom;
+extern struct fogenvironment *g_EnvTransitionTo;
+
+void gasChaosSet(s32 on)
+{
+	if (on) {
+		if (!g_Vars.currentplayer || !g_Vars.currentplayer->prop) {
+			return;
+		}
+		gasReleaseFromPos(&g_Vars.currentplayer->prop->pos);
+		g_GasEnableDamage = true;
+		g_GasReleaseTimerMax240 = 3600;
+
+		if (g_GasReleaseTimer240 < 1800) {
+			g_GasReleaseTimer240 = 1800; // cough + damage from the first tick
+		}
+
+		if (g_EnvOrigFogEnvironment) {
+			g_ChaosGasEnvTo = *g_EnvOrigFogEnvironment;
+			g_ChaosGasEnvTo.sky_r = 0x30;
+			g_ChaosGasEnvTo.sky_g = 0x98;
+			g_ChaosGasEnvTo.sky_b = 0x38;
+			g_EnvTransitionFrom = g_EnvOrigFogEnvironment;
+			g_EnvTransitionTo = &g_ChaosGasEnvTo;
+			g_ChaosGasEnvValid = true;
+		} else {
+			g_ChaosGasEnvValid = false;
+		}
+	} else {
+		g_GasReleasing = false;
+		g_GasReleaseTimer240 = 0;
+		g_GasSoundTimer240 = 0;
+		gasStopAudio();
+
+		if (g_ChaosGasEnvValid && g_EnvOrigFogEnvironment) {
+			envApplyFogEnvironment(g_EnvOrigFogEnvironment); // restore the stage env
+		}
+		g_ChaosGasEnvValid = false;
+	}
+}
+#endif
+
 bool gasIsActive(void)
 {
 	return g_GasReleaseTimer240 > 0;
@@ -21796,6 +21851,12 @@ void gasTick(void)
 	}
 
 	if (g_GasReleaseTimer240 > 0 && !g_PlayerInvincible) {
+#ifndef PLATFORM_N64
+		// Chaos gas can run on stages that never set the env transition
+		// pointers (no fog env) — envApplyTransitionFrac would deref NULL.
+		// Vanilla gas stages always have them set, so this is a no-op there.
+		if (g_EnvTransitionFrom && g_EnvTransitionTo)
+#endif
 		envApplyTransitionFrac(g_GasReleaseTimer240 / g_GasReleaseTimerMax240);
 
 		if (g_GasEnableDamage) {

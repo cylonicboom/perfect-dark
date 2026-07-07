@@ -346,6 +346,9 @@ void gasReleaseFromPos(struct coord *pos);
 void gasStopAudio(void);
 bool gasIsActive(void);
 void gasTick(void);
+#ifndef PLATFORM_N64
+void gasChaosSet(s32 on); /* chaos "Woof Gas": nerve gas on any stage, pre-ramped past the damage threshold */
+#endif
 Gfx *countdownTimerRender(Gfx *gdl);
 void projectilesDebug(void);
 void alarmTick(void);

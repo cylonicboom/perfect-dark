@@ -9361,6 +9361,17 @@ s32 chraiLuaWeather(s32 type, s32 intensity)
 	return weatherChaosSet(type, intensity);
 }
 
+// pd.gas(on): the Investigation nerve gas anywhere — green env wash (fog
+// stages), coughing, positional hiss, damage every ~3.75s (gasTick).
+s32 chraiLuaGas(s32 on)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	gasChaosSet(on ? 1 : 0);
+	return 1;
+}
+
 // pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB
 // multiplier (0..255 per channel = 0..1x) — the KotH hill-highlight effect
 // applied stage-wide. Dirties all rooms so the reshade re-runs; rooms

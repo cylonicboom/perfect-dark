@@ -9183,6 +9183,15 @@ s32 chraiLuaWeaponJam(s32 on)
 	return 1;
 }
 
+// pd.pinball(on): fired physics projectiles become grenade-secondary
+// Proximity Pinballs (bondgun.c launch conversion).
+extern s32 g_ChaosPinball;
+s32 chraiLuaPinball(s32 on)
+{
+	g_ChaosPinball = on ? 1 : 0;
+	return 1;
+}
+
 // pd.player_freeze(on): root the local player in place (bondmove.c).
 extern s32 g_ChaosPlayerFreeze;
 s32 chraiLuaPlayerFreeze(s32 on)

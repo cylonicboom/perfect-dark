@@ -226,6 +226,11 @@ s32 g_ChaosBackfire = 0;
 // Chaos "Weapon jam" (pd.weapon_jam): trigger pulls dry-fire instead of
 // shooting; see the HANDSTATE_ATTACKEMPTY reroute in bgunTickInc.
 s32 g_ChaosWeaponJam = 0;
+// Chaos "Pinball rounds" (pd.pinball): fired physics projectiles (rockets,
+// grenade rounds) are converted at launch into the grenade secondary's
+// Proximity Pinball — ballistic, bouncy, proximity-armed. See the conversion
+// in bgunCreateFiredProjectile.
+s32 g_ChaosPinball = 0;
 
 // Route a first-person gun sound through the 3D positional channel when the
 // firing player is remote. In netplay, every player's bgunTick runs on every
@@ -5392,6 +5397,34 @@ void bgunCreateFiredProjectile(s32 handnum)
 						weapon->base.projectile->pickuptimer240 = TICKS(240);
 						weapon->base.projectile->unk08c = funcdef->reflectangle;
 						weapon->base.projectile->unk098 = funcdef->unk50 * 1.6666666f;
+
+#ifndef PLATFORM_N64
+						// Chaos "Pinball rounds": rebrand the projectile as a
+						// grenade-secondary Proximity Pinball. Thrust flags are
+						// stripped so it flies ballistic on its launch velocity
+						// and bounces on the thrown-weapon physics
+						// (PROJECTILEFLAG_00000002 + the 0.1 reflect damping,
+						// the bgunCreateThrownProjectile setup); weaponTick's
+						// proximity branch then arms it (timer240 counts to 1 ->
+						// weaponRegisterProxy) and detonates it when ANY player
+						// wanders close — the shooter included, which is the
+						// pinball's whole personality. Fly-by-wire (Slayer) is
+						// excluded so the rocket-cam keeps a rocket to fly, and
+						// bolts/knives are not explosives.
+						if (g_ChaosPinball && !g_Vars.currentplayer->isremote
+								&& (funcdef->base.base.flags & FUNCFLAG_FLYBYWIRE) == 0
+								&& (weapon->weaponnum == WEAPON_ROCKET
+									|| weapon->weaponnum == WEAPON_HOMINGROCKET
+									|| weapon->weaponnum == WEAPON_GRENADEROUND)) {
+							weapon->weaponnum = WEAPON_GRENADE;
+							weapon->gunfunc = FUNC_SECONDARY;
+							weapon->base.projectile->flags &= ~(PROJECTILEFLAG_POWERED | PROJECTILEFLAG_LIGHTWEIGHT);
+							weapon->base.projectile->flags |= PROJECTILEFLAG_00000002;
+							weapon->base.projectile->targetprop = NULL;
+							weapon->base.projectile->unk08c = 0.1f;
+							weapon->timer240 = TICKS(120); // proxy arm countdown
+						}
+#endif
 
 						if (funcdef->soundnum > 0) {
 							psCreate(NULL, weapon->base.prop, funcdef->soundnum, -1, -1, 0, 0, PSTYPE_NONE, 0, -1.0f, 0, -1, -1.0f, -1.0f, -1.0f);

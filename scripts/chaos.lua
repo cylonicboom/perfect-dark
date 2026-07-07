@@ -496,6 +496,12 @@ chaos.effects = {
   monsoon      = { label="Monsoon",           w=4, dur=30,
                    start=function() pd.weather(1, 2); st.weather_set = true end,
                    stop=function() pd.weather(0); st.weather_set = false end },
+  pinball_wizard = { label="Pinball wizard",  w=4, dur=25,
+                   -- rockets/grenade rounds launch as grenade-secondary
+                   -- Proximity Pinballs: ballistic, bouncy, and they detonate
+                   -- when ANYONE gets close — the shooter very much included
+                   start=function() pd.pinball(true) end,
+                   stop=function() pd.pinball(false) end },
   -- composite batch: pure-Lua combos over the existing hook surface
   nap_time     = { label="Nap time",          w=4, dur=0, start=function()
                      local n = 0
@@ -898,6 +904,7 @@ pd.on("stage", function()
   if pd.upside_down then pd.upside_down(false) end
   if pd.gas then pd.gas(false) end
   if pd.t_pose then pd.t_pose(false) end
+  if pd.pinball then pd.pinball(false) end
   if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
   st.scaled_g = nil
   st.scaled_a = nil

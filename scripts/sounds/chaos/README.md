@@ -1,7 +1,8 @@
 # Chaos external sounds
 
-Drop WAV files here for effects that play external audio (pd.play_file).
+Drop WAV or MP3 files here for effects that play external audio
+(pd.play_file — format is detected by content, not extension).
 
-- `ring.wav` — used by the "Ring ring!" effect (the Discord call ringtone).
-  Any WAV works (SDL loads + converts it); the effect errors harmlessly if
-  the file is missing. Not shipped with the repo (copyrighted audio).
+- `ring.wav` or `ring.mp3` — used by the "Ring ring!" effect (the Discord
+  call ringtone). The effect errors harmlessly if neither file exists.
+  Not shipped with the repo (copyrighted audio).

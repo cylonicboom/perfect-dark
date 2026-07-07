@@ -7,6 +7,10 @@
 #include "config.h"
 #include "audio.h"
 #include "system.h"
+#ifndef DEDICATED_SERVER
+// decoder implementation lives in port/external/minimp3.c
+#include "external/minimp3.h"
+#endif
 
 // Forward-decl only: avoid pulling net/net.h -> types.h, which redefines
 // `bool` and would clash with SDL's <stdbool.h>.
@@ -42,15 +46,92 @@ void audioSetMuted(s32 on)
 #endif
 }
 
+#ifndef DEDICATED_SERVER
+// Whole-file MP3 decode via the bundled minimp3 (same decoder mixer.c uses
+// for the game's own MP3 assets). Returns malloc'd (SDL_malloc) s16 PCM +
+// its source spec. Capped so a runaway file can't eat unbounded memory
+// (~64MB PCM; external one-shots are ring-tone sized).
+static s32 audioLoadMp3(const char *path, Uint8 **outdata, int *outlen, SDL_AudioSpec *outspec)
+{
+	size_t fsize = 0;
+	Uint8 *fdata = (Uint8 *)SDL_LoadFile(path, &fsize);
+	mp3dec_t dec;
+	mp3dec_frame_info_t info;
+	mp3d_sample_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+	s16 *buf = NULL;
+	size_t cap = 0, len = 0, pos = 0; // len in s16 samples
+	const size_t maxsamples = 32u * 1024u * 1024u;
+	int hz = 0, channels = 0;
+
+	if (!fdata || fsize == 0) {
+		SDL_free(fdata);
+		return 0;
+	}
+
+	mp3dec_init(&dec);
+
+	while (pos < fsize && len < maxsamples) {
+		const int samples = mp3dec_decode_frame(&dec, fdata + pos, (int)(fsize - pos), pcm, &info);
+
+		if (info.frame_bytes <= 0) {
+			break; // no more recognisable frames
+		}
+		pos += (size_t)info.frame_bytes;
+
+		if (samples > 0) {
+			const size_t add = (size_t)samples * (size_t)info.channels;
+
+			if (hz == 0) {
+				hz = info.hz;
+				channels = info.channels;
+			}
+
+			if (len + add > cap) {
+				size_t newcap = cap ? cap * 2 : 65536;
+				s16 *newbuf;
+				while (newcap < len + add) {
+					newcap *= 2;
+				}
+				newbuf = (s16 *)SDL_realloc(buf, newcap * sizeof(s16));
+				if (!newbuf) {
+					break;
+				}
+				buf = newbuf;
+				cap = newcap;
+			}
+
+			SDL_memcpy(buf + len, pcm, add * sizeof(s16));
+			len += add;
+		}
+	}
+
+	SDL_free(fdata);
+
+	if (!buf || len == 0 || hz == 0) {
+		SDL_free(buf);
+		return 0;
+	}
+
+	SDL_zero(*outspec);
+	outspec->format = SDL_AUDIO_S16;
+	outspec->channels = channels;
+	outspec->freq = hz;
+	*outdata = (Uint8 *)buf;
+	*outlen = (int)(len * sizeof(s16));
+	return 1;
+}
+#endif
+
 s32 audioPlayExternal(const char *path)
 {
 #ifdef DEDICATED_SERVER
 	return 0;
 #else
-	SDL_AudioSpec wavspec;
+	SDL_AudioSpec srcspec;
 	SDL_AudioSpec dstspec;
-	Uint8 *wavdata = NULL;
+	Uint8 *srcdata = NULL;
 	Uint32 wavlen = 0;
+	int srclen = 0;
 	Uint8 *conv = NULL;
 	int convlen = 0;
 
@@ -58,8 +139,12 @@ s32 audioPlayExternal(const char *path)
 		return 0;
 	}
 
-	if (!SDL_LoadWAV(path, &wavspec, &wavdata, &wavlen)) {
-		sysLogPrintf(LOG_WARNING, "audio: can't load '%s': %s", path, SDL_GetError());
+	// Try WAV first, then MP3 — by content, not extension, so either format
+	// works whatever the file is called.
+	if (SDL_LoadWAV(path, &srcspec, &srcdata, &wavlen)) {
+		srclen = (int)wavlen;
+	} else if (!audioLoadMp3(path, &srcdata, &srclen, &srcspec)) {
+		sysLogPrintf(LOG_WARNING, "audio: can't load '%s' as WAV or MP3: %s", path, SDL_GetError());
 		return 0;
 	}
 
@@ -68,13 +153,13 @@ s32 audioPlayExternal(const char *path)
 	dstspec.channels = 2;
 	dstspec.freq = 22020; // must match the device stream opened in audioInit
 
-	if (!SDL_ConvertAudioSamples(&wavspec, wavdata, (int)wavlen, &dstspec, &conv, &convlen)) {
+	if (!SDL_ConvertAudioSamples(&srcspec, srcdata, srclen, &dstspec, &conv, &convlen)) {
 		sysLogPrintf(LOG_WARNING, "audio: can't convert '%s': %s", path, SDL_GetError());
-		SDL_free(wavdata);
+		SDL_free(srcdata);
 		return 0;
 	}
 
-	SDL_free(wavdata);
+	SDL_free(srcdata);
 
 	if (extSound) {
 		SDL_free(extSound);

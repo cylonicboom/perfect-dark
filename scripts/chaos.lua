@@ -422,10 +422,11 @@ chaos.effects = {
                    start=function() pd.mute(true) end,
                    stop=function() pd.mute(false) end },
   ring_ring    = { label="Ring ring!",        w=4, dur=0, start=function()
-                     -- ships without the sound; drop a WAV at this path
+                     -- ships without the sound; drop a WAV or MP3 at this path
                      -- (e.g. the Discord call ringtone) to complete the bit
-                     if not pd.play_file("scripts/sounds/chaos/ring.wav") then
-                       error("scripts/sounds/chaos/ring.wav missing")
+                     if not (pd.play_file("scripts/sounds/chaos/ring.wav")
+                         or pd.play_file("scripts/sounds/chaos/ring.mp3")) then
+                       error("scripts/sounds/chaos/ring.wav|mp3 missing")
                      end
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
   negative_zoom = { label="Negative zoom",    w=4, dur=25,

@@ -1112,6 +1112,15 @@ static int l_pd_grayscale(lua_State *L)
 	return 1;
 }
 
+/* pd.shiny(mode) -> bool. 0 off / 1 fake-chrome screen-space UVs on every 3D
+ * surface / 2 the same plus a gold tint (Midas mode). Cosmetic only. */
+static int l_pd_shiny(lua_State *L)
+{
+	s32 mode = (s32)luaL_optinteger(L, 1, 0);
+	lua_pushboolean(L, chraiLuaShiny(mode) != 0);
+	return 1;
+}
+
 /* pd.room_tint(r, g, b) -> bool. Tint every room's lighting (0..255 per
  * channel). pd.room_tint() with no args turns the tint off. */
 static int l_pd_room_tint(lua_State *L)
@@ -1423,6 +1432,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_strip_ammo);    lua_setfield(L, -2, "strip_ammo");
 	lua_pushcfunction(L, l_pd_teleport_to_chr); lua_setfield(L, -2, "teleport_to_chr");
 	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
+	lua_pushcfunction(L, l_pd_shiny);         lua_setfield(L, -2, "shiny");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");

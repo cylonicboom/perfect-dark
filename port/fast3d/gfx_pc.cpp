@@ -264,6 +264,16 @@ int gfx_flattex_mode = 0;
 // gfx_start_frame (the game itself never emits G_SETGRAYSCALE_EXT, so there
 // is no mid-frame contention).
 int gfx_force_grayscale = 0;
+// Chaos forced-shiny mode (docs/PORT_CHAOS.md): 0 = off; 1 = every 3D vertex's
+// texture coords are replaced with a screen-space projection (PS1-style fake
+// chrome — the texture is glued to the screen so it slides over surfaces as
+// the view moves, which reads as "everything is reflective"); 2 = the same
+// plus a gold tint via the grayscale shader path (luminance * gold). 2D
+// texrects (HUD/text) don't pass through gfx_sp_vertex and are unaffected;
+// menu geometry marked G_NOMIRROR_EXT is exempted like the mirror flip.
+// bg.c gates dlcache off while this is active (cached rooms replay recorded
+// UVs, so they would stay matte while everything else shines).
+int gfx_shiny_mode = 0;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
@@ -1505,6 +1515,18 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             d->color.r = vcn->r;
             d->color.g = vcn->g;
             d->color.b = vcn->b;
+        }
+
+        // Chaos forced-shiny: override the texture coords with a screen-space
+        // projection of the clip-space position (see gfx_shiny_mode). The
+        // (n+1)/4 mapping matches the G_TEXTURE_GEN sphere-map convention above
+        // so the sampled window is the same half-texture range env maps use.
+        // Skip G_NOMIRROR_EXT geometry (menu/HUD borders drawn as 3D tris).
+        if (gfx_shiny_mode && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT) && w != 0.0f) {
+            const float sx = clampf(x / w, -1.0f, 1.0f);
+            const float sy = clampf(y / w, -1.0f, 1.0f);
+            U = (int32_t)((sx + 1.0f) / 4.0f * rsp.texture_scaling_factor.s);
+            V = (int32_t)((sy + 1.0f) / 4.0f * rsp.texture_scaling_factor.t);
         }
 
         d->u = U;
@@ -3600,14 +3622,28 @@ extern "C" void gfx_start_frame(void) {
         flattex_applied = gfx_flattex_mode;
         gfx_texture_cache_clear();
     }
-    if (gfx_force_grayscale != grayscale_applied) {
-        grayscale_applied = gfx_force_grayscale;
-        rdp.grayscale = gfx_force_grayscale != 0;
-        rdp.grayscale_color.r = 255;
-        rdp.grayscale_color.g = 255;
-        rdp.grayscale_color.b = 255;
-        rdp.grayscale_color.a = 255; // full lerp to luminance
-        dlcacheInvalidateAll();
+    // The grayscale shader path serves two chaos modes: plain forced grayscale
+    // (film noir, neutral colour) and gold-shiny (gfx_shiny_mode == 2 —
+    // luminance * gold reads as metal once the shiny UV warp is on). Gold wins
+    // when both are somehow active; turning either off re-applies the other.
+    {
+        const int grayscale_want = (gfx_shiny_mode == 2) ? 2 : (gfx_force_grayscale ? 1 : 0);
+        if (grayscale_want != grayscale_applied) {
+            grayscale_applied = grayscale_want;
+            rdp.grayscale = grayscale_want != 0;
+            if (grayscale_want == 2) {
+                // gold: bright yellow-orange metal tint
+                rdp.grayscale_color.r = 255;
+                rdp.grayscale_color.g = 196;
+                rdp.grayscale_color.b = 64;
+            } else {
+                rdp.grayscale_color.r = 255;
+                rdp.grayscale_color.g = 255;
+                rdp.grayscale_color.b = 255;
+            }
+            rdp.grayscale_color.a = 255; // full lerp to luminance
+            dlcacheInvalidateAll();
+        }
     }
 
     gfx_wapi->handle_events();

@@ -9085,6 +9085,22 @@ s32 chraiLuaGrayscale(s32 on)
 	return 1;
 }
 
+// Renderer chaos global (gfx_pc.cpp, C++ int == s32 like the two above).
+extern s32 gfx_shiny_mode;
+
+// pd.shiny(mode): 0 = off, 1 = every 3D surface gets fake-chrome screen-space
+// UVs ("everything is reflective"), 2 = the same plus a gold tint via the
+// grayscale shader (Midas mode). HUD texrects and menu geometry are exempt
+// renderer-side; bg.c gates dlcache off while active. Cosmetic only,
+// net/save-safe.
+s32 chraiLuaShiny(s32 mode)
+{
+	if (mode < 0) mode = 0;
+	if (mode > 2) mode = 2;
+	gfx_shiny_mode = mode;
+	return 1;
+}
+
 // pd.room_tint(r,g,b) / pd.room_tint(): tint every room's lighting by an RGB
 // multiplier (0..255 per channel = 0..1x) — the KotH hill-highlight effect
 // applied stage-wide. Dirties all rooms so the reshade re-runs; rooms

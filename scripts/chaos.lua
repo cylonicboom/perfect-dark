@@ -70,7 +70,7 @@ local GUNS = { W.FALCON2, W.MAGSEC, W.MAULER, W.PHOENIX, W.MAGNUM, W.CMP150,
 local BODY = { MINISKEDAR=0x7b }
 local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHARS=11,
   ENEMYSHIELDS=12, JOSHIELD=13, SUPERSHIELD=14, TEAMHEADS=16, ELVIS=17,
-  ENEMYROCKETS=18, MARQUIS=20, WIREFRAME=46, MIRROR=47, TONAL=48 }
+  ENEMYROCKETS=18, MARQUIS=20, GOLDENEYE=45, WIREFRAME=46, MIRROR=47, TONAL=48 }
 
 local function cheat_effect(id, secs)
   return {
@@ -121,6 +121,10 @@ chaos.effects = {
   marquis      = setmetatable({ label="Marquis mode",  w=3 }, {__index=cheat_effect(CHEAT.MARQUIS, 30)}),
   enemyrockets = setmetatable({ label="Enemy rockets!", w=3 }, {__index=cheat_effect(CHEAT.ENEMYROCKETS, 30)}),
   enemyshields = setmetatable({ label="Shielded enemies", w=4 }, {__index=cheat_effect(CHEAT.ENEMYSHIELDS, 30)}),
+  -- CHEAT_GOLDENEYE = the "GoldenEye Style" master: all 12 classic behaviours
+  -- at once (snap lean, lower-and-raise reloads, GE arc HUD + damage flash,
+  -- classic crosshair, no dual-wield, i-frames, ...). docs/PORT_GOLDENEYE.md.
+  goldeneye    = setmetatable({ label="GoldenEye mode", w=5 }, {__index=cheat_effect(CHEAT.GOLDENEYE, 45)}),
   -- player state
   godmode      = { label="Invincible!",       w=4, dur=10,
                    start=function() pd.invincible(true) end,
@@ -299,6 +303,12 @@ chaos.effects = {
   noir         = { label="Film noir",          w=5, dur=30,
                    start=function() pd.grayscale(true) end,
                    stop=function() pd.grayscale(false) end },
+  shiny        = { label="So shiny!",          w=5, dur=25,
+                   start=function() pd.shiny(1) end,
+                   stop=function() pd.shiny(0) end },
+  midas        = { label="The Midas touch",    w=4, dur=25,
+                   start=function() pd.shiny(2) end,
+                   stop=function() pd.shiny(0) end },
   paint_red    = { label="Paint the town red", w=6, dur=30,
                    start=function() pd.room_tint(255, 48, 48) end,
                    stop=function() pd.room_tint() end },
@@ -569,6 +579,7 @@ pd.on("stage", function()
   -- reload (unlike the cheat bank) — reset them explicitly
   if pd.flattex then pd.flattex(0) end
   if pd.grayscale then pd.grayscale(false) end
+  if pd.shiny then pd.shiny(0) end
   if pd.room_tint then pd.room_tint() end
   if pd.ammo_swap then pd.ammo_swap() end
   if pd.backfire then pd.backfire(false) end

@@ -170,6 +170,9 @@ extern unsigned char g_SndTonalInversion;
 extern int gfx_wireframe_wire_color_enabled;
 extern f32 gfx_wireframe_wire_color[3];
 extern f32 gfx_wireframe_line_width;
+// Chaos forced-shiny mode (gfx_pc.cpp, C++ int == s32 — the 1-byte bool
+// gotcha above does not apply). Read here to gate dlcache off while active.
+extern s32 gfx_shiny_mode;
 s32 g_WireframeAnimSpeed = 0; // /wireframe vomit|trip: 0=off, else hue degrees/frame (vomit 4, trip 1)
 #endif
 s32 g_BgMostAttemptedDrawSlots = 0;
@@ -4208,7 +4211,11 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		// cached path - the user disables it implicitly by toggling wireframe).
 		// Gating here rather than mutating g_DlCacheEnabled means turning
 		// wireframe back off restores the user's real dlcache setting.
-		if (g_DlCacheEnabled && !gfx_wireframe_mode && (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
+		// Chaos shiny mode also forces it off: the fake-chrome UV warp runs at
+		// CPU vertex processing, which cached rooms (GPU replay of recorded
+		// verts) never re-run - rooms would stay matte while props shine.
+		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode
+				&& (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer
 			// keys the cache by block->gdl, peeked from the gSPDisplayList between
 			// the two markers. Dyntex rooms are excluded (their textures change).

@@ -27,6 +27,9 @@
 #include "lib/anim.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#endif
 
 #ifdef PLATFORM_N64
 #define SHAKE_TIME 6
@@ -369,6 +372,19 @@ bool explosionCreate(struct prop *sourceprop, struct coord *exppos, RoomNum *exp
 			exp->age = 0;
 			exp->makescorch = makescorch;
 			exp->owner = playernum;
+
+#ifndef PLATFORM_N64
+			// Diag: every explosion's owner at creation (server). Cross-reference
+			// with hdmg/simkill lines to see whether a misattributed kill came
+			// from an explosion carrying the wrong owner or from a direct-damage
+			// path — the fork in the "AFK player credited" hunt.
+			if (g_NetMode == NETMODE_SERVER && g_Vars.normmplayerisrunning) {
+				netDiagLogf("expcreate", "owner=%d type=%d cur=%d src_sid=%u pos=(%.0f,%.0f,%.0f)",
+						playernum, (s32)type, (s32)g_Vars.currentplayernum,
+						sourceprop ? (u32)sourceprop->syncid : 0u,
+						exppos->x, exppos->y, exppos->z);
+			}
+#endif
 
 			if (type != EXPLOSIONTYPE_BULLETHOLE && type != EXPLOSIONTYPE_PHOENIX) {
 				propSetDangerous(expprop);

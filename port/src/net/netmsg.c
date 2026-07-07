@@ -932,6 +932,19 @@ u32 netmsgClcHitRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	// A dead pawn cannot fire hitscan. Pre-fix clients echo OTHER players'
+	// locally-simulated gunfire as their own CLC_HITs (see func0f0341dc's
+	// isremote gate) — this server-side backstop stops a stale client from
+	// double-applying damage and stealing kill credit at least while its pawn
+	// is dead (the reported "AFK player with dozens of eliminations" state).
+	// Cost: a legitimate hit claim arriving within ~RTT after the shooter's
+	// death is dropped — rare, and many games void post-death hitscan anyway.
+	if (srccl->player->isdead) {
+		netDiagLogf("clchit_dead", "cl=%u pnum=%d tgtsid=%u dmg=%.1f",
+				srccl->id, srccl->playernum, (u32)target_syncid, damage);
+		return src->error;
+	}
+
 	// Reject non-positive damage (mirrors netmsgClcPropHitRead) and clamp the
 	// magnitude to a sane backstop so a single packet can't push an absurd
 	// finite value into the chr damage / health math. NOTE: hit detection is

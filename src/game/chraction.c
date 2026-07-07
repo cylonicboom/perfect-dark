@@ -4237,7 +4237,17 @@ void func0f0341dc(struct chrdata *chr, f32 damage, struct coord *vector, struct 
 		// Report the hit to the server. It runs chrDamage there and broadcasts
 		// SVC_CHR_DAMAGE back to all clients. Only send if the target has a
 		// syncid — unsynced props (e.g. local-only debris) have none.
-		if (chr->prop && chr->prop->syncid) {
+		//
+		// ONLY for the LOCAL player's own gunfire. The client also simulates
+		// REMOTE players' guns locally (bgunTick runs for remote pawns to drive
+		// visuals/positional audio), and that simulation's shots land here too —
+		// reporting those echoed every other player's hits to the server as OUR
+		// hits: the victim took the damage twice, and whenever the echo landed
+		// the killing blow the kill was credited to this client (the "AFK player
+		// racking up eliminations" bug — an idle client's machine echoing the
+		// host's shots). Same guard netClientReportPropHit has always had.
+		if (chr->prop && chr->prop->syncid
+				&& g_Vars.currentplayer && !g_Vars.currentplayer->isremote) {
 			netbufStartWrite(&g_NetMsgRel);
 			netmsgClcHitWrite(&g_NetMsgRel, chr, damage, vector, gset, (s16)hitpart, (s16)side, arg10);
 			netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
@@ -4736,6 +4746,26 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			aplayernum = playermgrGetPlayerNumByProp(aprop);
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// Diag: every server-side damage event attributed to a HUMAN attacker,
+	// with the damage MECHANISM (weapon / explosion flag / attacker prop type
+	// / attacker liveness). A kill credited to an idle player will show up
+	// here as an hdmg line naming the path that carried their prop as aprop —
+	// the missing fact in the "AFK player racking up eliminations" reports.
+	if (g_NetMode == NETMODE_SERVER && g_Vars.normmplayerisrunning
+			&& aplayernum >= 0 && aplayernum < PLAYERCOUNT()) {
+		const s32 apn = (aprop && aprop->type == PROPTYPE_PLAYER)
+				? playermgrGetPlayerNumByProp(aprop) : -1;
+		const bool apnok = apn >= 0 && apn < PLAYERCOUNT() && g_Vars.players[apn];
+		netDiagLogf("hdmg", "a=%d cur=%d v=%d dmg=%.2f wpn=%d exp=%d atype=%d aremote=%d adead=%d",
+				aplayernum, (s32)g_Vars.currentplayernum, mpPlayerGetIndex(chr),
+				damage, gset ? (s32)gset->weaponnum : -1, explosion ? 1 : 0,
+				aprop ? (s32)aprop->type : -1,
+				apnok ? (s32)g_Vars.players[apn]->isremote : -1,
+				apnok ? (s32)g_Vars.players[apn]->isdead : -1);
+	}
+#endif
 
 	// If using the shotgun, scale the damage based on distance
 	if (aprop && aprop->type == PROPTYPE_CHR && gset->weaponnum == WEAPON_SHOTGUN) {

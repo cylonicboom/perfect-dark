@@ -5054,6 +5054,8 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 					chr->lastattacker = (aprop ? aprop->chr : NULL);
 
 #ifndef PLATFORM_N64
+					chr->lastattackerstamp60 = aprop ? (s32)g_Vars.lvframe60 : 0;
+
 					// Classic options, split per behaviour:
 					//
 					// "GoldenEye HUD" stamps the damage flash (rendered
@@ -5253,6 +5255,9 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 
 				chr->damage += damage;
 				chr->lastattacker = (aprop ? aprop->chr : NULL);
+#ifndef PLATFORM_N64
+				chr->lastattackerstamp60 = aprop ? (s32)g_Vars.lvframe60 : 0;
+#endif
 				chr->chrflags |= CHRCFLAG_JUST_INJURED;
 #ifndef PLATFORM_N64
 				luaEmitDamage((s32)chr->chrnum, aplayernum, (s32)damage);

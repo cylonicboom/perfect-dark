@@ -1361,6 +1361,13 @@ struct chrdata {
 	// chrDamage. Port-only; the N64 build is byte-identical.
 	s32 lastdamagetick60;
 
+	// lvframe60 stamp of the last lastattacker assignment (0 = never).
+	// Consumed by the MPOPTION_LASTATTACKERKILL recovery in mpstatsRecordDeath
+	// so an env/fall/suicide death only credits a RECENT damager — without the
+	// window, a player who tickled a chr minutes ago inherited every later
+	// environment death of that chr. Port-only.
+	s32 lastattackerstamp60;
+
 	// Client-side POSE interpolation buffer for a network-replicated chr (Combat
 	// Sim bots now; campaign NPCs once online co-op lands — same model: server
 	// runs the AI, replicates state, client interpolates). Populated from

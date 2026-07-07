@@ -64,9 +64,12 @@ static inline u32 netbufReadHidden(struct netbuf *buf)
 {
 	u32 hidden = netbufReadU32(buf);
 
-	// swap owner player numbers to match server
+	// swap owner player numbers to match server. 0xf is the "no owner"
+	// sentinel (see objGetOwnerPlayerNum) — pass it through untouched instead
+	// of remapping it via g_NetClients[15].playernum (an empty slot's playernum
+	// would alias the ownerless prop onto a real combatant).
 	const u8 ownerclid = (hidden & 0xf0000000) >> 28;
-	if (ownerclid < NET_MAX_CLIENTS) {
+	if (ownerclid != 0xf && ownerclid < NET_MAX_CLIENTS) {
 		const u8 ownerplayernum = g_NetClients[ownerclid].playernum;
 		hidden = (hidden & 0x0fffffff) | (ownerplayernum << 28);
 	}

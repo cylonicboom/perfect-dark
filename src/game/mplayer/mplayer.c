@@ -4324,7 +4324,13 @@ s32 func0f18d0e8(s32 arg0)
 {
 	s32 i;
 
-	if (arg0 < 4) {
+	// Slot -> packed index. The boundary between player slots and bot slots is
+	// MAX_PLAYERS (see MPCHR/func0f18d074), which is 4 on N64 but 16 on the
+	// port — the original literal 4 mis-mapped every bot (slot 16 read
+	// g_BotConfigsArray[12]) and any human in slots 4-15, corrupting Pop-a-Cap
+	// scoring and Judge-bot target ranking. MAX_PLAYERS == 4 on the N64 build,
+	// so this is byte-identical there.
+	if (arg0 < MAX_PLAYERS) {
 		for (i = 0; i < g_MpNumChrs; i++) {
 			if (g_MpAllChrConfigPtrs[i] == &g_PlayerConfigsArray[arg0].base) {
 				return i;
@@ -4332,7 +4338,7 @@ s32 func0f18d0e8(s32 arg0)
 		}
 	} else {
 		for (i = 0; i < g_MpNumChrs; i++) {
-			if (g_MpAllChrConfigPtrs[i] == &g_BotConfigsArray[arg0 - 4].base) {
+			if (g_MpAllChrConfigPtrs[i] == &g_BotConfigsArray[arg0 - MAX_PLAYERS].base) {
 				return i;
 			}
 		}

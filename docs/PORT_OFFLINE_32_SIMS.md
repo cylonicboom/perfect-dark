@@ -143,6 +143,41 @@ index it can now be ≥32, so both branches gained a `(u32)ownerplayernum < 32U`
 guard to avoid the UB shift (a sim-owned mine never matches the player-only
 detonator mask anyway).
 
+### Round 2 hardening (2026-07-07) — residual misattribution holes
+
+Kill-misattribution reports persisted after the mirror fix. A full re-audit of
+every attribution path confirmed the mirror covers the high-frequency creation
+paths, and closed the remaining holes:
+
+- **No-owner sentinel restored** (`objGetOwnerPlayerNum`): vanilla writes owner
+  `-1` (packs to nibble `0xf`) for "no owner" — e.g. the crusher-object
+  `objDamage(..., -1)` sites — and relied on `mpGetChrFromPlayerIndex(15)`
+  returning NULL with ≤12 combatants. The port allows 16+ combatants, so packed
+  index 15 became a REAL entry and every ownerless blast was credited to
+  whoever sat there. The getter now returns `-1` for nibble `0xf` (port-only)
+  and the setter records an explicit no-owner as mirror `-2` (distinct from
+  `-1` = "mirror unset"). A genuine combatant-15 owner still resolves via the
+  mirror. `netbufReadHidden` passes the `0xf` nibble through instead of
+  remapping it via the (empty) `g_NetClients[15]`.
+- **Recycled-slot stale nibble** (`objInit`): a pooled weapon/hat obj slot kept
+  its previous life's owner nibble while the fresh prop's mirror reset to `-1`,
+  so the getter fell back to a stale TRUNCATED nibble. `objInit` now resets the
+  owner to no-owner — **Combat Sim only** (`normmplayerisrunning`): the solo
+  campaign relies on the owner-0 default (G5 Building's pre-placed remote
+  mines detonate for Bond because their owner reads 0).
+- **`func0f18d0e8` stale 4-player boundary** (`mplayer.c`): the slot→packed
+  inverse of `func0f18d074` hardcoded the N64 `4` where the port's boundary is
+  `MAX_PLAYERS` (16) — every bot mis-mapped (slot 16 read
+  `g_BotConfigsArray[12]`), corrupting Pop-a-Cap scoring and Judge-bot target
+  ranking. Now uses `MAX_PLAYERS` (byte-identical on N64 where it is 4).
+- **Last Attacker Attribution recency window** (`mpstats.c` +
+  `chr->lastattackerstamp60`, port-only chrdata field, init in `chrInit`):
+  `chr->lastattacker` never expires, so with `MPOPTION_LASTATTACKERKILL`
+  enabled a player who damaged a chr once inherited every later env/fall/
+  suicide death of that chr — indefinitely. The recovery now requires the last
+  hit to be within ~10s (`TICKS(600)`); the `killattrib` diag line logs the
+  age.
+
 ## Limits / notes
 
 - **Memory**: 32 bot bodies/chrs live in MEMPOOL_STAGE; the 16MB default

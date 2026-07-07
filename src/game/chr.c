@@ -1124,6 +1124,10 @@ void chrInit(struct prop *prop, u8 *ailist)
 	// damaged" sentinel and the very first hit lands.
 	chr->lastdamagetick60 = 0;
 
+	// Clear the lastattacker recency stamp (recycled-chrslot rule: every
+	// port-appended field must be re-initialised here).
+	chr->lastattackerstamp60 = 0;
+
 	// Clear the netplay pose-snapshot ring. chrInit initialises fields one by
 	// one (no memset), and chr slots are recycled stage-pool memory, so the
 	// port-appended netsnap/netsnaphead otherwise inherit whatever the pool
@@ -4913,6 +4917,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 		if (g_NetMode == NETMODE_CLIENT && !ismelee) {
 			chrFlinchBody(chr);
 			chr->lastattacker = g_Vars.currentplayer->prop->chr;
+			chr->lastattackerstamp60 = (s32)g_Vars.lvframe60;
 		}
 #endif
 

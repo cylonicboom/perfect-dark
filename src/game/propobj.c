@@ -2120,6 +2120,22 @@ struct prop *objInit(struct defaultobj *obj, struct modeldef *modeldef, struct p
 		obj->prop = prop;
 		obj->damage = 0;
 		obj->projectile = NULL;
+#ifndef PLATFORM_N64
+		// Combat Sim only: reset kill-attribution ownership for the (possibly
+		// recycled) obj slot. A pooled weapon/hat slot keeps its previous life's
+		// owner nibble, and the fresh prop's mirror is -1, so objGetOwnerPlayerNum
+		// would fall back to a stale TRUNCATED nibble (sim index 16+ wraps onto
+		// human slots 0-3 — the AFK-player phantom-kill bug), and a never-owned
+		// object read as "player 0". Nibble 0xf = "no owner" (see the getter);
+		// every legitimate creation/pickup/damage path sets the real owner after
+		// objInit returns. Solo/co-op keep the vanilla nibble untouched — the
+		// campaign relies on the owner-0 default (e.g. G5 Building's pre-placed
+		// remote mines detonate for Bond because their owner reads 0).
+		if (g_Vars.normmplayerisrunning) {
+			obj->hidden |= 0xf0000000;
+			prop->ownerplayernum = -1;
+		}
+#endif
 		obj->shadecol[0] = 0;
 		obj->shadecol[1] = 0;
 		obj->shadecol[2] = 0;
@@ -15122,7 +15138,10 @@ void objSetOwnerPlayerNum(struct defaultobj *obj, s32 playernum)
 
 #ifndef PLATFORM_N64
 	if (obj->prop) {
-		obj->prop->ownerplayernum = (s16)playernum;
+		// -2 records an EXPLICIT "no owner" write (vanilla callers pass -1,
+		// which packs to nibble 0xf); -1 stays the "mirror unset" sentinel
+		// consumed by the getter's nibble fallback.
+		obj->prop->ownerplayernum = (playernum < 0) ? -2 : (s16)playernum;
 	}
 #endif
 }
@@ -15130,12 +15149,30 @@ void objSetOwnerPlayerNum(struct defaultobj *obj, s32 playernum)
 /**
  * Resolve the owning combatant index, preferring the untruncated prop value when
  * it has been set (see objSetOwnerPlayerNum). Falls back to the legacy nibble.
+ *
+ * Port: nibble 0xf is vanilla's "no owner" (an objDamage(-1) write). On N64 it
+ * resolved to NULL naturally (mpGetChrFromPlayerIndex(15) with <=12 combatants),
+ * but the port allows 16+ combatants, so combatant index 15 is a REAL entry in
+ * g_MpAllChrPtrs and every ownerless explosion was suddenly credited to whoever
+ * sat at packed index 15. Return -1 for both the explicit no-owner mirror and
+ * the 0xf nibble so the consumers' mpGetChrFromPlayerIndex(-1) == NULL guards
+ * restore the vanilla "no credit" behaviour. A genuine combatant-15 owner is
+ * still returned correctly via the mirror (set at creation/pickup/damage).
  */
 s32 objGetOwnerPlayerNum(struct defaultobj *obj)
 {
 #ifndef PLATFORM_N64
-	if (obj->prop && obj->prop->ownerplayernum >= 0) {
-		return obj->prop->ownerplayernum;
+	if (obj->prop) {
+		if (obj->prop->ownerplayernum >= 0) {
+			return obj->prop->ownerplayernum;
+		}
+		if (obj->prop->ownerplayernum == -2) {
+			return -1;
+		}
+	}
+
+	if ((obj->hidden & 0xf0000000) == 0xf0000000) {
+		return -1;
 	}
 #endif
 

@@ -272,6 +272,13 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 		struct chrdata *vchr = g_MpAllChrPtrs[vplayernum];
 		struct chrdata *atk = vchr->lastattacker;
 		s32 recovered = -1;
+		// Recency window: only a damager from the last ~10 seconds counts as the
+		// "push". lastattacker itself never expires, so without this a player who
+		// hit the victim once minutes ago inherited every later env/fall/suicide
+		// death of that victim — the phantom "AFK player racking up kills" report.
+		const s32 atkage = (vchr->lastattackerstamp60 > 0)
+				? (s32)g_Vars.lvframe60 - vchr->lastattackerstamp60 : -1;
+		const bool atkrecent = atkage >= 0 && atkage <= TICKS(600);
 		if (atk && atk->prop && atk != vchr) {
 			if (atk->prop->type == PROPTYPE_PLAYER) {
 				recovered = playermgrGetPlayerNumByProp(atk->prop);
@@ -279,15 +286,15 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 				recovered = mpPlayerGetIndex(atk);
 			}
 		}
-		netDiagLogf("killattrib", "a_in=%d v=%d cur=%d latk=%d recovered=%d opt=%d",
+		netDiagLogf("killattrib", "a_in=%d v=%d cur=%d latk=%d recovered=%d age=%d opt=%d",
 				aplayernum, vplayernum, (s32)g_Vars.currentplayernum,
-				(atk && atk->prop) ? mpPlayerGetIndex(atk) : -1, recovered,
+				(atk && atk->prop) ? mpPlayerGetIndex(atk) : -1, recovered, atkage,
 				(g_MpSetup.options & MPOPTION_LASTATTACKERKILL) ? 1 : 0);
 		// "Last Attacker Attribution" (Combat Sim More Options) — only credit the
 		// recent attacker when the host enabled it, so pushes / knockback / suicide
 		// plays reward the attacker. Off = vanilla (these read as suicides).
 		if ((g_MpSetup.options & MPOPTION_LASTATTACKERKILL)
-				&& recovered >= 0 && recovered != vplayernum) {
+				&& recovered >= 0 && recovered != vplayernum && atkrecent) {
 			aplayernum = recovered;
 		}
 	}

@@ -6894,7 +6894,7 @@ s32 netConsoleCommand(const char *line)
 		extern f32 gfx_rt_sun_dir[3], gfx_rt_sky[3];
 		extern int gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows, gfx_rt_torch;
 		extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
-		extern f32 gfx_rt_torch_intensity, gfx_rt_torch_range;
+		extern f32 gfx_rt_light_cull, gfx_rt_torch_intensity, gfx_rt_torch_range;
 
 		char sub[16];
 		const char *val = arg;
@@ -6976,7 +6976,8 @@ s32 netConsoleCommand(const char *line)
 		} else if (strcmp(sub, "aoint") == 0 || strcmp(sub, "aorad") == 0 || strcmp(sub, "shint") == 0
 				|| strcmp(sub, "shlen") == 0 || strcmp(sub, "ssrint") == 0 || strcmp(sub, "giint") == 0
 				|| strcmp(sub, "giscale") == 0 || strcmp(sub, "ambient") == 0 || strcmp(sub, "lightint") == 0
-				|| strcmp(sub, "lightrad") == 0 || strcmp(sub, "torchint") == 0 || strcmp(sub, "torchrange") == 0) {
+				|| strcmp(sub, "lightrad") == 0 || strcmp(sub, "lightcull") == 0
+				|| strcmp(sub, "torchint") == 0 || strcmp(sub, "torchrange") == 0) {
 			f32 f = (f32)atof(val);
 			if (strcmp(sub, "aoint") == 0) gfx_rt_ao_intensity = f;
 			else if (strcmp(sub, "aorad") == 0) gfx_rt_ao_radius = f;
@@ -6987,6 +6988,7 @@ s32 netConsoleCommand(const char *line)
 			else if (strcmp(sub, "ambient") == 0) gfx_rt_dark_ambient = f;
 			else if (strcmp(sub, "lightint") == 0) gfx_rt_light_intensity = f;
 			else if (strcmp(sub, "lightrad") == 0) gfx_rt_light_radius = f;
+			else if (strcmp(sub, "lightcull") == 0) gfx_rt_light_cull = f;
 			else if (strcmp(sub, "torchint") == 0) gfx_rt_torch_intensity = f;
 			else if (strcmp(sub, "torchrange") == 0) gfx_rt_torch_range = f;
 			else gfx_rt_gi_scale = f;
@@ -7002,9 +7004,10 @@ s32 netConsoleCommand(const char *line)
 					gfx_rt_gi_intensity, gfx_rt_gi_scale, gfx_rt_debug,
 					gfx_rt_sun_dir[0], gfx_rt_sun_dir[1], gfx_rt_sun_dir[2],
 					gfx_rt_sky[0], gfx_rt_sky[1], gfx_rt_sky[2]);
-			sysLogPrintf(LOG_CHAT, "rt: dark=%d(amb %.2f) lights=%d(int %.2f rad %.0f shad %d) torch=%d(%.2f r%.0f)",
+			sysLogPrintf(LOG_CHAT, "rt: dark=%d(amb %.2f) lights=%d(int %.2f rad %.0f cull %.0f shad %d) torch=%d(%.2f r%.0f)",
 					gfx_rt_dark, gfx_rt_dark_ambient,
-					gfx_rt_lights, gfx_rt_light_intensity, gfx_rt_light_radius, gfx_rt_light_shadows,
+					gfx_rt_lights, gfx_rt_light_intensity, gfx_rt_light_radius, gfx_rt_light_cull,
+					gfx_rt_light_shadows,
 					gfx_rt_torch, gfx_rt_torch_intensity, gfx_rt_torch_range);
 		} else {
 			bool on;
@@ -7059,7 +7062,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /rt quality 0..2 | sun X Y Z | status     budgets / light dir / full state");
 		sysLogPrintf(LOG_CHAT, "  /rt dark [on|off] | ambient F             blacken the world, keep F base brightness");
 		sysLogPrintf(LOG_CHAT, "  /rt lights|torch [on|off]                 relight from map (glare) lights / camera torch");
-		sysLogPrintf(LOG_CHAT, "  /rt lightint|lightrad|torchint|torchrange F  dynamic-light tuning (/rt lightshadows too)");
+		sysLogPrintf(LOG_CHAT, "  /rt lightint|lightrad|lightcull|torchint|torchrange F  dynamic-light tuning (/rt lightshadows too)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

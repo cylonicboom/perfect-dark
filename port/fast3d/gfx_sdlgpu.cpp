@@ -2473,8 +2473,8 @@ static char *rt_build_fs_source(int pass) {
     // the light pass's second block (RtGpuLights, pushed on fragment slot 1)
     static const char *const lights_ubo =
         "layout(std140, set = 3, binding = 1) uniform RtLightsUni {\n"
-        "    vec4 uLightPosRad[24];\n" // 24 == RT_MAX_LIGHTS
-        "    vec4 uLightCol[24];\n"
+        "    vec4 uLightPosRad[32];\n" // 32 == RT_MAX_LIGHTS
+        "    vec4 uLightCol[32];\n"
         "};\n";
     const size_t cap = strlen(ubo) + strlen(lights_ubo) + strlen(RT_GLSL_HELPERS) +
                        strlen(rt_pass_bodies[pass]) + 1024;

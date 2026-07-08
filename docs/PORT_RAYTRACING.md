@@ -100,7 +100,10 @@ gfx_opengl.cpp/gfx_rt.cpp but still links net.c's `/rt`) links.
    player's camera, world pos = light bbox average + room pos, colour = the
    4/4/4/4 nibbles, intensity = brightnessmult/32, skipping "off" and
    shot-out (`!healthy`) lights — carried in the per-player `rtcamera`
-   (`RT_MAX_LIGHTS` = 24), transformed to view space CPU-side, and evaluated
+   (`RT_MAX_LIGHTS` = 32; the harvest reach is `radius + Video.RT.LightCull`
+   from the CAMERA, decoupled from the falloff radius because a fixture can
+   light a visible surface from far beyond its own radius — a light down a
+   long corridor), transformed to view space CPU-side, and evaluated
    per pixel with distance/N·L attenuation plus a per-light screen-space
    shadow march (quality-scaled steps). The torch is a view-axis spotlight
    evaluated in the same pass.
@@ -209,6 +212,7 @@ Differences from GL, all deliberate:
 /rt ambient <f>                   dark mode's remaining base brightness
 /rt lights|lightshadows [on|off]  map-light harvest / per-light shadow rays
 /rt lightint|lightrad <f>         map-light gain / falloff radius (world units)
+/rt lightcull <f>                 harvest reach beyond the radius (default 3000)
 /rt torch [on|off]                camera-mounted test spotlight
 /rt torchint|torchrange <f>       torch tuning
 /rt status
@@ -273,9 +277,10 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
   looks natural, but pre-baked dark corners stay dim even under a light.
 - Light harvesting only sees LOADED rooms (light data streams with room
   gfx), so distant lights pop with room streaming; the harvest is per-camera
-  nearest-24, so a scene with more candidates drops the farthest. Lights are
-  point sources at the fixture bbox centre — long fluorescent tubes light
-  from their midpoint.
+  nearest-32 within `radius + lightcull`, so a scene with more candidates
+  drops the farthest — if a far light still pops in a light-dense area,
+  raise `/rt lightcull` and/or the cap. Lights are point sources at the
+  fixture bbox centre — long fluorescent tubes light from their midpoint.
 - The per-light shadow rays are screen-space like everything else: an
   occluder outside the frame won't cast, and light through a wall that's
   offscreen can leak.

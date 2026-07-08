@@ -281,6 +281,7 @@ int gfx_rt_lights = 1;              // harvested only while RT runs; costs nothi
 int gfx_rt_light_shadows = 1;
 float gfx_rt_light_intensity = 1.0f;
 float gfx_rt_light_radius = 700.0f; // PD world units (~7 m)
+float gfx_rt_light_cull = 3000.0f;  // harvest reach past the radius (~30 m)
 int gfx_rt_torch = 0;
 float gfx_rt_torch_intensity = 1.4f;
 float gfx_rt_torch_range = 1400.0f;

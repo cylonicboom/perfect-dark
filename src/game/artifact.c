@@ -817,7 +817,12 @@ s32 rtCollectLights(const f32 *campos, rtlight *out, s32 max)
 	s32 i;
 	s32 j;
 	s32 c;
-	const f32 range = gfx_rt_light_radius * 1.25f; // slightly past the falloff
+	// Collection reach: falloff radius + cull distance. The distance test is
+	// camera-to-FIXTURE, but a fixture can light a surface the camera sees
+	// from up to (radius + view distance) away — a light down a long corridor
+	// — so the reach must extend well past the radius itself or far lights
+	// pop out of existence while their pools should still be visible.
+	const f32 range = gfx_rt_light_radius + gfx_rt_light_cull;
 	const f32 range2 = range * range;
 
 	if (max > RT_MAX_LIGHTS) {

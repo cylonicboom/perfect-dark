@@ -18,8 +18,10 @@ extern "C" {
 // Dynamic light source for the /rt dark relight mode: harvested from the
 // map's room lights (the same data the glare/lens-flare artifacts draw from)
 // by rtCollectLights below. World-space; the renderer transforms to view
-// space per player.
-#define RT_MAX_LIGHTS 24
+// space per player. NOTE: the shader-side array sizes are LITERALS in both
+// backend preludes (gfx_rt.cpp kFSCommon, gfx_sdlgpu.cpp lights_ubo) — keep
+// them in sync when changing this.
+#define RT_MAX_LIGHTS 32
 typedef struct rtlight {
 	float pos[3];    // world position (light bbox average + room pos)
 	float radius;    // falloff radius, world units
@@ -101,6 +103,10 @@ extern int gfx_rt_lights;             // harvest + render map (glare) lights
 extern int gfx_rt_light_shadows;      // per-light screen-space shadow rays
 extern float gfx_rt_light_intensity;  // global gain on map lights
 extern float gfx_rt_light_radius;     // falloff radius per light, world units
+extern float gfx_rt_light_cull;       // harvest range beyond the radius: a
+                                      // light is collected within radius +
+                                      // cull of the CAMERA, so fixtures far
+                                      // from you still light surfaces you see
 extern int gfx_rt_torch;              // camera-mounted test spotlight
 extern float gfx_rt_torch_intensity;
 extern float gfx_rt_torch_range;      // world units

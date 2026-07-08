@@ -233,8 +233,8 @@ static const char* kFSCommon =
     // dark/relight mode: dynamic lights (view-space, premultiplied colours),
     // the camera torch, and the composite darkening controls
     "uniform sampler2D uLight;\n"
-    "uniform vec4 uLightPosRad[24];\n" // 24 == RT_MAX_LIGHTS
-    "uniform vec4 uLightCol[24];\n"
+    "uniform vec4 uLightPosRad[32];\n" // 32 == RT_MAX_LIGHTS
+    "uniform vec4 uLightCol[32];\n"
     "uniform int uLightCount;\n"
     "uniform int uLightShadows;\n"
     "uniform int uLightSteps;\n"

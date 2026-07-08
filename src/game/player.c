@@ -5383,6 +5383,13 @@ Gfx *playerRenderHud(Gfx *gdl)
 				cam->lightcount = rtCollectLights(g_Vars.currentplayer->cam_pos.f, cam->lights, RT_MAX_LIGHTS);
 			}
 
+			// Skylight: ambient tint + GI sky derived from the stage's live
+			// sky colour (day/sunset/night rules; artifact.c)
+			cam->skylight_ok = 0;
+			if (gfx_rt_skylight) {
+				rtComputeSkyLight(cam->skylight, &cam->skylight_ok);
+			}
+
 			gDPRtResolveEXT(gdl++, cam);
 		}
 	}

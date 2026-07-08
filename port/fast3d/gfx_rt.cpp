@@ -243,7 +243,9 @@ static const char* kFSCommon =
     "uniform float uTorchRange;\n"
     "uniform int uDark;\n"
     "uniform float uDarkAmbient;\n"
-    "uniform int uLightsOn;\n";
+    "uniform int uLightsOn;\n"
+    "uniform float uLightMax;\n"   // per-light brightness ceiling (hue-preserving)
+    "uniform vec3 uAmbientCol;\n"; // skylight tint for the dark ambient
 
 // ---------------------------------------------------------------------------
 // shader building
@@ -716,7 +718,15 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glUniform1i(rtU(pr, "uSteps"), kQuality[q].gi_steps);
         glUniform1i(rtU(pr, "uBounces"), bounces);
         glUniform1f(rtU(pr, "uGIRadius"), gfx_rt_ao_radius * 20.0f);
-        glUniform3fv(rtU(pr, "uSky"), 1, gfx_rt_sky);
+        if (gfx_rt_skylight && cam->skylight_ok) {
+            // sky-derived GI miss radiance (day/sunset/night)
+            const float sk[3] = { cam->skylight[0] * gfx_rt_skylight_gain,
+                                  cam->skylight[1] * gfx_rt_skylight_gain,
+                                  cam->skylight[2] * gfx_rt_skylight_gain };
+            glUniform3fv(rtU(pr, "uSky"), 1, sk);
+        } else {
+            glUniform3fv(rtU(pr, "uSky"), 1, gfx_rt_sky);
+        }
         rtDraw();
 
         // temporal: cur + history[read] -> history[write]
@@ -810,6 +820,7 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glUniform1i(rtU(pr, "uTorch"), gfx_rt_torch);
         glUniform1f(rtU(pr, "uTorchInt"), gfx_rt_torch_intensity);
         glUniform1f(rtU(pr, "uTorchRange"), gfx_rt_torch_range);
+        glUniform1f(rtU(pr, "uLightMax"), gfx_rt_light_max > 0.05f ? gfx_rt_light_max : 0.05f);
         rtDraw();
     }
 
@@ -839,6 +850,12 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
             glUniform1f(rtU(pr, "uShInt"), gfx_rt_shadow_intensity);
             glUniform1i(rtU(pr, "uDark"), dark_on ? 1 : 0);
             glUniform1f(rtU(pr, "uDarkAmbient"), gfx_rt_dark_ambient);
+            if (gfx_rt_skylight && cam->skylight_ok) {
+                glUniform3fv(rtU(pr, "uAmbientCol"), 1, cam->skylight);
+            } else {
+                const float white[3] = { 1.0f, 1.0f, 1.0f };
+                glUniform3fv(rtU(pr, "uAmbientCol"), 1, white);
+            }
             rtDraw();
             glDisable(GL_BLEND);
         }

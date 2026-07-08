@@ -44,6 +44,12 @@ typedef struct rtcamera {
 	int valid;         // 0 = worldtoscreenmtx was NULL; renderer skips
 	int lightcount;    // entries filled in lights[] (0 = no map lights)
 	rtlight lights[RT_MAX_LIGHTS];
+	// Skylight: global light derived from the stage's live sky colour
+	// (rtComputeSkyLight): warm skies keep their own hue (sunset), bright
+	// cool skies map to warm-white sunlight (day), dark cool skies to dim
+	// moon-blue (night). Tints the dark-mode ambient + the GI sky term.
+	float skylight[3]; // hue x intensity, 0..~1 per channel
+	int skylight_ok;   // 0 = black sky (indoor stage) — renderer stays neutral
 } rtcamera;
 
 // Game-side collector (artifact.c, port-only): fills out[] with the nearest
@@ -51,6 +57,12 @@ typedef struct rtcamera {
 // campos (float[3] world), sorted nearest-first. Returns the count (<= max,
 // max clamped to RT_MAX_LIGHTS). Only loaded rooms carry light data.
 int rtCollectLights(const float* campos, rtlight* out, int max);
+
+// Game-side skylight derivation (artifact.c, port-only): maps the stage's
+// live sky colour (envGetCurrent) to a light colour per the rules on the
+// rtcamera.skylight field. Writes hue*intensity into out[3]; *ok = 0 for a
+// black sky (indoor stage).
+void rtComputeSkyLight(float out[3], int* ok);
 
 // Debug view modes (gfx_rt_debug)
 enum {
@@ -107,6 +119,12 @@ extern float gfx_rt_light_cull;       // harvest range beyond the radius: a
                                       // light is collected within radius +
                                       // cull of the CAMERA, so fixtures far
                                       // from you still light surfaces you see
+extern float gfx_rt_light_max;        // per-light brightness cap (hue-
+                                      // preserving) so close-range lights in
+                                      // small rooms don't blow out to white
+extern int gfx_rt_skylight;           // derive ambient tint + GI sky from the
+                                      // stage's sky colour (day/sunset/night)
+extern float gfx_rt_skylight_gain;    // skylight -> GI miss-radiance scale
 extern int gfx_rt_torch;              // camera-mounted test spotlight
 extern float gfx_rt_torch_intensity;
 extern float gfx_rt_torch_range;      // world units

@@ -891,4 +891,70 @@ s32 rtCollectLights(const f32 *campos, rtlight *out, s32 max)
 	return count;
 }
 
+/**
+ * Raytracing suite: map the stage's LIVE sky colour (envGetCurrent — follows
+ * environment transitions) to a global "skylight" per the dark-mode rules:
+ *  - warm sky (r >= b, sunset/dawn): the sky's own rich hue;
+ *  - cool BRIGHT sky (blue day): warm-white sunlight (a sunny day's light is
+ *    warm even though the sky is blue);
+ *  - cool DARK sky (night): dim moon-blue, mostly the sky's own hue.
+ * out = hue * intensity (day ~1.0 down to night ~0.35). *ok = 0 for a black
+ * sky (indoor stage) so the renderer keeps its neutral ambient.
+ */
+void rtComputeSkyLight(f32 out[3], s32 *ok)
+{
+	struct environment *env = envGetCurrent();
+	f32 r = env->sky_r * (1.0f / 255.0f);
+	f32 g = env->sky_g * (1.0f / 255.0f);
+	f32 b = env->sky_b * (1.0f / 255.0f);
+	f32 lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+	f32 pk = r > g ? r : g;
+	f32 inten;
+
+	if (b > pk) {
+		pk = b;
+	}
+
+	out[0] = out[1] = out[2] = 1.0f;
+	*ok = 0;
+
+	if (pk < 0.02f) {
+		return; // black sky: indoor stage
+	}
+
+	// normalized hue (peak channel = 1)
+	out[0] = r / pk;
+	out[1] = g / pk;
+	out[2] = b / pk;
+
+	if (r >= b) {
+		// warm sky: keep its hue, intensity tracks how bright the sky is
+		inten = 0.45f + 0.55f * lum;
+	} else {
+		// cool sky: blend from moon-blue (dark) toward warm-white (bright)
+		f32 day = (lum - 0.10f) / 0.35f;
+
+		if (day < 0.0f) {
+			day = 0.0f;
+		}
+
+		if (day > 1.0f) {
+			day = 1.0f;
+		}
+
+		day = day * day * (3.0f - 2.0f * day); // smoothstep
+
+		out[0] = out[0] + (1.00f - out[0]) * day;
+		out[1] = out[1] + (0.94f - out[1]) * day;
+		out[2] = out[2] + (0.84f - out[2]) * day;
+		inten = 0.35f + 0.65f * day;
+	}
+
+	out[0] *= inten;
+	out[1] *= inten;
+	out[2] *= inten;
+	*ok = 1;
+}
+
 #endif // PLATFORM_N64
+

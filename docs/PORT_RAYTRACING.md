@@ -31,7 +31,15 @@ toggled live with `/rt` and persisted via `Video.RT.*` in `pd.ini`:
   camera-mounted **test torch** (`/rt torch`) — a view-axis spotlight that
   needs no shadow rays by construction (along the eye ray the depth buffer IS
   the first hit). The lights also work *without* dark mode as additive
-  highlights.
+  highlights. Per-light output is clamped by a **hue-preserving brightness
+  cap** (`/rt lightmax`, default 1.0) so a big `lightrad` doesn't blow small
+  rooms out to pure white — close-range surfaces saturate toward the light's
+  COLOUR instead. And the **skylight** (`/rt skylight`, default on) derives a
+  global tint from the stage's live sky colour: warm skies (sunset/dawn) wash
+  their own rich hue, bright blue skies read as a sunny day (warm-white),
+  dark blue skies as night (dim moon-blue) — applied to the dark-mode ambient
+  floor and the GI sky term (`/rt skygain`). Black sky (indoor stages) =
+  neutral, no change.
 - **Debug views** — `/rt debug depth|normals|ao|shadow|gi|ssr|light` replaces
   the scene with the named buffer; this is the diagnosis tool for everything
   below.
@@ -213,6 +221,9 @@ Differences from GL, all deliberate:
 /rt lights|lightshadows [on|off]  map-light harvest / per-light shadow rays
 /rt lightint|lightrad <f>         map-light gain / falloff radius (world units)
 /rt lightcull <f>                 harvest reach beyond the radius (default 3000)
+/rt lightmax <f>                  per-light brightness cap, hue-preserving (1.0)
+/rt skylight [on|off]             sky-colour ambient tint + GI sky (default on)
+/rt skygain <f>                   skylight -> GI miss-radiance scale (0.3)
 /rt torch [on|off]                camera-mounted test spotlight
 /rt torchint|torchrange <f>       torch tuning
 /rt status

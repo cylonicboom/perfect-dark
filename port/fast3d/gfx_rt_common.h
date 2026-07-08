@@ -393,7 +393,10 @@ static const char* const RT_FS_LIGHT_BODY =
     "                if (sz > 0.0 && rz - sz > 1.5 && rz - sz < 4.0 + t * 0.12) { vis = 0.0; break; }\n"
     "            }\n"
     "        }\n"
-    "        acc += uLightCol[i].rgb * (contrib * vis);\n"
+    "        vec3 lc = uLightCol[i].rgb * (contrib * vis);\n"
+    "        float pk = max(lc.r, max(lc.g, lc.b));\n"
+    "        if (pk > uLightMax) lc *= uLightMax / pk;\n" // hue-preserving cap
+    "        acc += lc;\n"
     "    }\n"
     "    if (uTorch != 0) {\n"
     "        float d = length(P);\n"
@@ -403,21 +406,26 @@ static const char* const RT_FS_LIGHT_BODY =
     "        float cone = smoothstep(0.80, 0.93, ca);\n"
     "        float att = clamp(1.0 - d / uTorchRange, 0.0, 1.0);\n"
     "        att *= att;\n"
-    "        acc += vec3(1.0, 0.97, 0.9) * (ndl * att * cone * uTorchInt);\n"
+    "        vec3 tc = vec3(1.0, 0.97, 0.9) * (ndl * att * cone * uTorchInt);\n"
+    "        float tp = max(tc.r, max(tc.g, tc.b));\n"
+    "        if (tp > uLightMax) tc *= uLightMax / tp;\n"
+    "        acc += tc;\n"
     "    }\n"
     "    oCol = vec4(acc, 1.0);\n"
     "}\n";
 
-// multiplicative composite: dst *= AO * shadow * dark-ambient
-// (blend dst_new = src * dst)
+// multiplicative composite: dst *= AO * shadow * dark-ambient. The dark
+// ambient is a COLOUR (uAmbientCol = skylight hue x intensity, or white):
+// night stages wash moon-blue, sunsets wash warm.
 static const char* const RT_FS_COMP_MUL_BODY =
     "void main() {\n"
     "    vec2 aosh = texture(uAO, vUV).rg;\n"
     "    float m = 1.0;\n"
     "    if (uAOOn != 0) m *= mix(1.0, aosh.r * aosh.r, uAOInt);\n"
     "    if (uShadowOn != 0) m *= 1.0 - uShInt * (1.0 - aosh.g);\n"
-    "    if (uDark != 0) m *= uDarkAmbient;\n"
-    "    oCol = vec4(vec3(m), 1.0);\n"
+    "    vec3 m3 = vec3(m);\n"
+    "    if (uDark != 0) m3 *= uDarkAmbient * uAmbientCol;\n"
+    "    oCol = vec4(m3, 1.0);\n"
     "}\n";
 
 // additive composite: dst += GI * albedo + SSR + lights * albedo

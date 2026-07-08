@@ -834,7 +834,7 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glUniform1i(rtU(pr, "uTorch"), gfx_rt_torch);
         glUniform1f(rtU(pr, "uTorchInt"), gfx_rt_torch_intensity);
         glUniform1f(rtU(pr, "uTorchRange"), gfx_rt_torch_range);
-        glUniform1f(rtU(pr, "uLightMax"), gfx_rt_light_max > 0.05f ? gfx_rt_light_max : 0.05f);
+        glUniform1f(rtU(pr, "uLightMax"), gfx_rt_light_max > 0.005f ? gfx_rt_light_max : 0.005f);
         rtDraw();
     }
 

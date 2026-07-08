@@ -2857,7 +2857,7 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
     uni.dark = dark_on ? 1 : 0;
     uni.dark_ambient = gfx_rt_dark_ambient;
     uni.lights_on = lights_run ? 1 : 0;
-    uni.light_max = gfx_rt_light_max > 0.05f ? gfx_rt_light_max : 0.05f;
+    uni.light_max = gfx_rt_light_max > 0.005f ? gfx_rt_light_max : 0.005f;
     uni.relight = gfx_rt_relight_amount;
     // skylight: ambient tint (hue x intensity) + GI sky override
     uni.ambient_col[0] = uni.ambient_col[1] = uni.ambient_col[2] = 1.0f;

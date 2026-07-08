@@ -276,18 +276,19 @@ float gfx_rt_sun_dir[3] = { 0.35f, 0.85f, 0.40f }; // world-space, toward light
 float gfx_rt_sky[3] = { 0.18f, 0.20f, 0.26f };     // miss radiance for GI rays
 // dark / relight mode (docs/PORT_RAYTRACING.md "Dark mode")
 int gfx_rt_dark = 0;
-float gfx_rt_dark_ambient = 0.08f;
+float gfx_rt_dark_ambient = 0.50f;
 int gfx_rt_lights = 1;              // harvested only while RT runs; costs nothing otherwise
 int gfx_rt_light_shadows = 1;
-float gfx_rt_light_intensity = 1.0f;
-float gfx_rt_light_radius = 700.0f; // PD world units (~7 m)
+float gfx_rt_light_intensity = 0.5f;
+float gfx_rt_light_radius = 500.0f; // PD world units (~5 m)
 float gfx_rt_light_cull = 3000.0f;  // harvest reach past the radius (~30 m)
-float gfx_rt_light_max = 1.0f;      // per-light brightness ceiling
+float gfx_rt_light_max = 0.05f;     // per-light brightness ceiling (raw; the
+                                    // menu shows this ×20, so 0.05 reads as 1.0)
 int gfx_rt_skylight = 1;            // sky-derived ambient tint + GI sky
-float gfx_rt_skylight_gain = 0.3f;  // skylight -> GI miss radiance
+float gfx_rt_skylight_gain = 1.0f;  // skylight -> GI miss radiance
 int gfx_rt_bounces = 0;             // GI/PT bounce override (0 = preset)
 int gfx_rt_autosun = 1;             // stage-sun-driven shadow direction
-float gfx_rt_relight = 0.0f;        // in dark mode, lerp PD's baked per-vertex
+float gfx_rt_relight = 0.05f;       // in dark mode, lerp PD's baked per-vertex
                                     // room lighting toward white by this amount
                                     // (0 = keep baked shading — the moody
                                     // default; 1 = pure albedo, RT owns all

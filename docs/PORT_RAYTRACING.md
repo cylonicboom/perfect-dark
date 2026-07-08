@@ -238,7 +238,8 @@ design — the console command is the precise interface. Handlers +
 /rt lights|lightshadows [on|off]  map-light harvest / per-light shadow rays
 /rt lightint|lightrad <f>         map-light gain / falloff radius (world units)
 /rt lightcull <f>                 harvest reach beyond the radius (default 3000)
-/rt lightmax <f>                  per-light brightness cap, hue-preserving (1.0)
+/rt lightmax <f>                  per-light brightness cap, hue-preserving, RAW
+                                  (default 0.05; the menu shows this ×20 = 1.0)
 /rt skylight [on|off]             sky-colour ambient tint + GI sky (default on)
 /rt skygain <f>                   skylight -> GI miss-radiance scale (0.3)
 /rt bounces <n>                   GI/PT bounce override 1..8, 0 = quality preset

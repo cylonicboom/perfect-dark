@@ -1068,7 +1068,7 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterFloat("Video.RT.LightIntensity", &gfx_rt_light_intensity, 0.f, 8.f);
 	configRegisterFloat("Video.RT.LightRadius", &gfx_rt_light_radius, 50.f, 5000.f);
 	configRegisterFloat("Video.RT.LightCull", &gfx_rt_light_cull, 0.f, 20000.f);
-	configRegisterFloat("Video.RT.LightMax", &gfx_rt_light_max, 0.05f, 8.f);
+	configRegisterFloat("Video.RT.LightMax", &gfx_rt_light_max, 0.005f, 8.f);
 	configRegisterInt("Video.RT.Skylight", &gfx_rt_skylight, 0, 1);
 	configRegisterFloat("Video.RT.SkylightGain", &gfx_rt_skylight_gain, 0.f, 4.f);
 	configRegisterInt("Video.RT.Bounces", &gfx_rt_bounces, 0, 8);

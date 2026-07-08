@@ -2724,20 +2724,18 @@ static MenuItemHandlerResult menuhandlerRtLightRadius(s32 operation, struct menu
 
 static MenuItemHandlerResult menuhandlerRtLightMax(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	// brightness cap 0.05..2.0 in 0.05 steps (slider value 1..40); the low end
-	// is where it matters (user runs ~0.07 for a moody floor)
+	// The raw cap is tiny (~0.05 is the useful moody value), so the slider is
+	// rescaled ×20 for granular, intuitive control: displayed 1.0 == raw 0.05.
+	// Each step = 0.1 displayed = 0.005 raw; range 0..6.0 displayed (raw 0..0.30).
 	switch (operation) {
 	case MENUOP_GETSLIDER:
-		data->slider.value = (s32)(gfx_rt_light_max / 0.05f + 0.5f);
+		data->slider.value = (s32)(gfx_rt_light_max * 200.0f + 0.5f); // raw/0.005
 		break;
 	case MENUOP_SET:
-		gfx_rt_light_max = (f32)data->slider.value * 0.05f;
-		if (gfx_rt_light_max < 0.05f) {
-			gfx_rt_light_max = 0.05f;
-		}
+		gfx_rt_light_max = (f32)data->slider.value * 0.005f;
 		break;
 	case MENUOP_GETSLIDERLABEL:
-		sprintf(data->slider.label, "%.2f", (f32)data->slider.value * 0.05f);
+		sprintf(data->slider.label, "%.1f", (f32)data->slider.value * 0.1f);
 	}
 
 	return 0;
@@ -2969,7 +2967,7 @@ struct menuitem g_ExtendedRTMenuItems[] = {
 		0,
 		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
 		(uintptr_t)"Brightness Cap\n",
-		40,
+		60,
 		menuhandlerRtLightMax,
 	},
 	{

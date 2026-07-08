@@ -140,6 +140,9 @@ extern int gfx_rt_bounces;            // GI/PT bounce override, 0 = quality
 extern int gfx_rt_autosun;            // sun-shadow direction from the stage's
                                       // lens-flare sun when it has one
                                       // (manual /rt sun used otherwise)
+extern int gfx_rt_fullbright;         // in dark mode, render the world at pure
+                                      // albedo (bypass PD's baked per-room
+                                      // vertex lighting) so RT owns lighting
 extern int gfx_rt_torch;              // camera-mounted test spotlight
 extern float gfx_rt_torch_intensity;
 extern float gfx_rt_torch_range;      // world units

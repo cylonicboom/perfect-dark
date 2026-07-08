@@ -287,6 +287,15 @@ int gfx_rt_skylight = 1;            // sky-derived ambient tint + GI sky
 float gfx_rt_skylight_gain = 0.3f;  // skylight -> GI miss radiance
 int gfx_rt_bounces = 0;             // GI/PT bounce override (0 = preset)
 int gfx_rt_autosun = 1;             // stage-sun-driven shadow direction
+int gfx_rt_fullbright = 1;          // in dark mode, render the world at pure
+                                    // albedo (neutralize PD's baked per-vertex
+                                    // room lighting) so RT owns illumination
+// Per-frame resolved flag (1-byte, the gfx_wireframe_mode pattern — avoids the
+// game-side bool==s32 hazard when read from bg.c's dlcache gate): fullbright is
+// active only while RT + dark mode are on. Set in gfx_run, read in
+// gfx_sp_vertex (whiten baked vertex shade) and bg.c (force the live vertex
+// path so cached rooms honour it too).
+unsigned char gfx_rt_fullbright_active = 0;
 int gfx_rt_torch = 0;
 float gfx_rt_torch_intensity = 1.4f;
 float gfx_rt_torch_range = 1400.0f;
@@ -1565,6 +1574,17 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
                 U = (int32_t)(dotx * rsp.texture_scaling_factor.s);
                 V = (int32_t)(doty * rsp.texture_scaling_factor.t);
             }
+        } else if (gfx_rt_fullbright_active) {
+            // RT dark mode: force the baked room-light vertex shade to white so
+            // the combiner (TEXEL * SHADE) yields pure albedo — the framebuffer
+            // capture then feeds RT relighting instead of PD's per-room baked
+            // lighting. Alpha (d->color.a, set below) is untouched, so
+            // transparency/SHADE_ALPHA still work. Only this non-G_LIGHTING
+            // path (rooms, static geometry) is whitened; dynamically-lit models
+            // keep their shading.
+            d->color.r = 255;
+            d->color.g = 255;
+            d->color.b = 255;
         } else {
             d->color.r = vcn->r;
             d->color.g = vcn->g;
@@ -3811,6 +3831,11 @@ extern "C" void gfx_run(Gfx* commands) {
     gfx_sp_reset();
 
     gfx_hdr_dazzle = 0.0f; // defensive: never let a dazzle bracket leak across frames
+
+    // RT dark-mode fullbright: neutralize PD's baked room lighting so RT owns
+    // illumination. Resolved once per frame; read per-vertex in gfx_sp_vertex
+    // and by bg.c's dlcache gate.
+    gfx_rt_fullbright_active = (gfx_rt_enabled && gfx_rt_fullbright && gfx_rt_dark) ? 1 : 0;
 
     g_DlCacheFrameSegments = 0;
     g_DlCacheFrameTris = 0;

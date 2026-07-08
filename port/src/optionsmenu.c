@@ -2606,6 +2606,7 @@ struct menudialogdef g_ExtendedClassicMenuDialog = {
 extern int gfx_rt_enabled, gfx_rt_ao, gfx_rt_shadows, gfx_rt_ssr, gfx_rt_gi;
 extern int gfx_rt_quality, gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows;
 extern int gfx_rt_torch, gfx_rt_skylight, gfx_rt_autosun, gfx_rt_bounces;
+extern int gfx_rt_fullbright;
 extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
 extern f32 gfx_rt_light_max, gfx_rt_skylight_gain;
 
@@ -2896,6 +2897,14 @@ struct menuitem g_ExtendedRTMenuItems[] = {
 		MENUITEMFLAG_LITERAL_TEXT,
 		(uintptr_t)"Dark Mode\n",
 		(uintptr_t)&gfx_rt_dark,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Relight Walls/Floors\n",
+		(uintptr_t)&gfx_rt_fullbright,
 		menuhandlerRtCheckbox,
 	},
 	{

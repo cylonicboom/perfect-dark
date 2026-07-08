@@ -157,6 +157,11 @@ bool g_BgNoDrawSlotLimit = false;
 // Declared as a 1-byte type and assigned a normalized 0/1 (cheatIsActive
 // returns the raw bitmask, e.g. 0x4000, whose low byte is 0).
 extern unsigned char gfx_wireframe_mode;
+// RT dark-mode fullbright (1 byte, the gfx_wireframe_mode pattern): when set,
+// the world renders at pure albedo (baked vertex shade whitened in
+// gfx_sp_vertex). Cached rooms replay GPU-recorded verts and never re-run that
+// CPU path, so — like shiny mode — dlcache is gated off while it's active.
+extern unsigned char gfx_rt_fullbright_active;
 // (1 byte). Set each frame in bgTickPortals from CHEAT_MIRROR so the GL backend
 // flips the whole 3D scene left-right (horizontal reflection). Same 1-byte vs
 // game-side `bool`==s32 gotcha as gfx_wireframe_mode above.
@@ -4219,6 +4224,7 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		// CPU vertex processing, which cached rooms (GPU replay of recorded
 		// verts) never re-run - rooms would stay matte while props shine.
 		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode && !gfx_upsidedown_mode
+				&& !gfx_rt_fullbright_active
 				&& (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer
 			// keys the cache by block->gdl, peeked from the gSPDisplayList between

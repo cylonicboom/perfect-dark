@@ -245,7 +245,8 @@ static const char* kFSCommon =
     "uniform float uDarkAmbient;\n"
     "uniform int uLightsOn;\n"
     "uniform float uLightMax;\n"   // per-light brightness ceiling (hue-preserving)
-    "uniform vec3 uAmbientCol;\n"; // skylight tint for the dark ambient
+    "uniform vec3 uAmbientCol;\n"  // skylight tint for the dark ambient
+    "uniform float uRelight;\n";   // 0..1 wall relight (fades GI/SSR as it rises)
 
 // ---------------------------------------------------------------------------
 // shader building
@@ -887,6 +888,7 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
             glUniform1f(rtU(pr, "uSSRInt"), gfx_rt_ssr_intensity);
             glUniform1i(rtU(pr, "uDark"), dark_on ? 1 : 0);
             glUniform1f(rtU(pr, "uDarkAmbient"), gfx_rt_dark_ambient);
+            glUniform1f(rtU(pr, "uRelight"), gfx_rt_relight_amount);
             rtDraw();
             glDisable(GL_BLEND);
         }

@@ -2606,9 +2606,8 @@ struct menudialogdef g_ExtendedClassicMenuDialog = {
 extern int gfx_rt_enabled, gfx_rt_ao, gfx_rt_shadows, gfx_rt_ssr, gfx_rt_gi;
 extern int gfx_rt_quality, gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows;
 extern int gfx_rt_torch, gfx_rt_skylight, gfx_rt_autosun, gfx_rt_bounces;
-extern int gfx_rt_fullbright;
 extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
-extern f32 gfx_rt_light_max, gfx_rt_skylight_gain;
+extern f32 gfx_rt_light_max, gfx_rt_skylight_gain, gfx_rt_relight;
 
 static MenuItemHandlerResult menuhandlerRtCheckbox(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -2747,6 +2746,24 @@ static MenuItemHandlerResult menuhandlerRtLightMax(s32 operation, struct menuite
 static MenuItemHandlerResult menuhandlerRtSkyGain(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	return rtFloatSlider(data, operation, &gfx_rt_skylight_gain, 0.0f, 0.25f, "");
+}
+
+static MenuItemHandlerResult menuhandlerRtRelight(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// 0..100% in 5% steps; 0 keeps PD's baked room lighting (moody), higher
+	// lifts walls/floors toward pure albedo so RT owns more of the lighting
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (s32)(gfx_rt_relight * 20.0f + 0.5f);
+		break;
+	case MENUOP_SET:
+		gfx_rt_relight = (f32)data->slider.value * 0.05f;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d%%", (s32)data->slider.value * 5);
+	}
+
+	return 0;
 }
 
 static MenuItemHandlerResult menuhandlerRtBounces(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -2900,12 +2917,12 @@ struct menuitem g_ExtendedRTMenuItems[] = {
 		menuhandlerRtCheckbox,
 	},
 	{
-		MENUITEMTYPE_CHECKBOX,
+		MENUITEMTYPE_SLIDER,
 		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Relight Walls/Floors\n",
-		(uintptr_t)&gfx_rt_fullbright,
-		menuhandlerRtCheckbox,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Relight Walls\n",
+		20,
+		menuhandlerRtRelight,
 	},
 	{
 		MENUITEMTYPE_SLIDER,

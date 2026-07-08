@@ -302,19 +302,24 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
   the viewport-rect Y-orientation handling is runtime-unverified.
 - Scene colour is used as both albedo and radiance in GI/PT (standard
   screen-space hack) — emissive-looking surfaces over-contribute.
-- Dark mode's "albedo" is the baked scene (albedo × baked lighting) UNLESS
-  `/rt fullbright` (default on) is active: PD bakes room lighting into
-  per-vertex colours, so without fullbright a wall baked dark in its room
-  stays dim even under an RT light ("lit by room only"). Fullbright forces
-  the baked vertex shade to white in `gfx_sp_vertex` (the non-`G_LIGHTING`
-  path — rooms/static geometry; dynamically-lit models keep their shading),
-  so the framebuffer capture is pure texture albedo and RT owns all the
-  illumination. It engages only with RT + dark mode both on; it gates dlcache
-  off (cached rooms replay GPU-recorded verts and never re-run the CPU
-  whiten, the shiny-mode precedent). Trade-off: it whitens ALL baked-colour
-  geometry (tinted glass, coloured fog volumes, some effects lose their
-  vertex tint) and the base is brighter, so dark ambient usually wants
-  lowering. `/rt fullbright off` reverts to baked-shade albedo.
+- Dark mode's "albedo" is the baked scene (albedo × baked lighting): PD bakes
+  room lighting into per-vertex colours, so a wall baked dark in its room
+  stays dim even under an RT light ("lit by room only"). **Relight** (`/rt
+  relight`, 0..1, **default 0**) lerps that baked vertex shade toward white in
+  `gfx_sp_vertex` (the non-`G_LIGHTING` path — rooms/static geometry;
+  dynamically-lit models keep theirs), so at higher values the capture
+  approaches pure texture albedo and RT owns more of the illumination.
+  **It is graded on purpose**: full relight (1.0) removes the baked depth and
+  makes the map read flat/fullbright, and — since GI/SSR sample the captured
+  scene as radiance — bright unlit albedo makes GI wash the darkening back
+  out. So the composite fades GI/SSR down as relight rises (the `uRelight`
+  term), and a partial value (~0.3–0.6) is the sweet spot: walls respond to
+  RT lights while keeping some baked shading. Relight > 0 gates dlcache off
+  (cached rooms replay GPU-recorded verts and never re-run the CPU lerp, the
+  shiny-mode precedent) and whitens ALL baked-colour geometry (tinted glass,
+  coloured volumes lose their vertex tint), so the base is brighter — lower
+  the dark ambient to compensate. `/rt relight 0` = the original moody
+  baked-shade look.
 - Light harvesting is INDEPENDENT of room streaming: the per-room light
   index (`g_Rooms[].numlights/lightindex`, the dlights.c idiom) and
   `g_BgLightsFileData` are both stage-resident, so lights exist — with live

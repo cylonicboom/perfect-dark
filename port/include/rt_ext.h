@@ -140,9 +140,12 @@ extern int gfx_rt_bounces;            // GI/PT bounce override, 0 = quality
 extern int gfx_rt_autosun;            // sun-shadow direction from the stage's
                                       // lens-flare sun when it has one
                                       // (manual /rt sun used otherwise)
-extern int gfx_rt_fullbright;         // in dark mode, render the world at pure
-                                      // albedo (bypass PD's baked per-room
-                                      // vertex lighting) so RT owns lighting
+extern float gfx_rt_relight;          // 0..1: in dark mode, lerp PD's baked
+                                      // per-room vertex lighting toward white
+                                      // so RT (partly) owns lighting. 0 = keep
+                                      // baked shading (moody); 1 = pure albedo
+extern float gfx_rt_relight_amount;   // per-frame resolved relight (0 unless
+                                      // RT + dark are both on); renderer-read
 extern int gfx_rt_torch;              // camera-mounted test spotlight
 extern float gfx_rt_torch_intensity;
 extern float gfx_rt_torch_range;      // world units

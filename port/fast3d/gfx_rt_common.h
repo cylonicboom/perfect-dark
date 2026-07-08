@@ -20,7 +20,7 @@
  * dark/relight set: uLightPosRad[RT_MAX_LIGHTS] (vec4, view-space xyz +
  * radius), uLightCol[RT_MAX_LIGHTS] (vec4, premultiplied rgb), uLightCount,
  * uLightShadows, uLightSteps, uTorch (int), uTorchInt, uTorchRange, uDark
- * (int), uDarkAmbient, uLightsOn (int).
+ * (int), uDarkAmbient, uLightsOn (int), uRelight (float, 0..1 wall relight).
  * Samplers per pass: prepass uDepth; aoshadow uNorm; trace uNorm+uColor;
  * temporal uNorm+uCur+uHist; blur uNorm+uSrc; ssr uNorm+uColor; light uNorm;
  * comp_mul uAO; comp_add uColor+uGI+uSSR+uLight; debug uNorm+uAO+uGI+uSSR+
@@ -436,7 +436,11 @@ static const char* const RT_FS_COMP_MUL_BODY =
 static const char* const RT_FS_COMP_ADD_BODY =
     "void main() {\n"
     "    vec3 add = vec3(0.0);\n"
-    "    float darkscale = (uDark != 0) ? min(uDarkAmbient * 2.0, 1.0) : 1.0;\n"
+    // In dark mode GI/SSR sample the captured scene as radiance. When relight
+    // lifts the world toward unlit albedo (bright), unattenuated GI gathers
+    // that brightness and washes the darkening back out, so fade GI/SSR down
+    // as relight rises.
+    "    float darkscale = (uDark != 0) ? min(uDarkAmbient * 2.0, 1.0) * (1.0 - 0.6 * uRelight) : 1.0;\n"
     "    if (uGIOn != 0) {\n"
     "        vec3 albedo = texture(uColor, vUV).rgb;\n"
     "        add += texture(uGI, vUV).rgb * albedo * uGIInt * darkscale;\n"

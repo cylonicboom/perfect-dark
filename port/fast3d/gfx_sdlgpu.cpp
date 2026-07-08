@@ -2373,7 +2373,7 @@ struct RtGpuUni {
     int32_t light_count, light_shadows, light_steps, torch;
     float torch_int, torch_range, dark_ambient; int32_t dark;
     int32_t lights_on; float light_max; int32_t pad0, pad1;
-    float ambient_col[3]; float pad2; // vec3 (16-aligned) + tail pad
+    float ambient_col[3]; float relight; // vec3 (16-aligned) + relight (0..1)
 };
 
 // std140 mirror of the light pass's second block (set=3, binding=1):
@@ -2470,7 +2470,7 @@ static char *rt_build_fs_source(int pass) {
         "    int uLightCount; int uLightShadows; int uLightSteps; int uTorch;\n"
         "    float uTorchInt; float uTorchRange; float uDarkAmbient; int uDark;\n"
         "    int uLightsOn; float uLightMax; int uPad0; int uPad1;\n"
-        "    vec3 uAmbientCol; float uPad2;\n"
+        "    vec3 uAmbientCol; float uRelight;\n"
         "};\n";
     // the light pass's second block (RtGpuLights, pushed on fragment slot 1)
     static const char *const lights_ubo =
@@ -2858,6 +2858,7 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
     uni.dark_ambient = gfx_rt_dark_ambient;
     uni.lights_on = lights_run ? 1 : 0;
     uni.light_max = gfx_rt_light_max > 0.05f ? gfx_rt_light_max : 0.05f;
+    uni.relight = gfx_rt_relight_amount;
     // skylight: ambient tint (hue x intensity) + GI sky override
     uni.ambient_col[0] = uni.ambient_col[1] = uni.ambient_col[2] = 1.0f;
     if (gfx_rt_skylight && cam->skylight_ok) {

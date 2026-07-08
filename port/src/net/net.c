@@ -6893,7 +6893,8 @@ s32 netConsoleCommand(const char *line)
 		extern f32 gfx_rt_ssr_intensity, gfx_rt_gi_intensity, gfx_rt_gi_scale;
 		extern f32 gfx_rt_sun_dir[3], gfx_rt_sky[3];
 		extern int gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows, gfx_rt_torch, gfx_rt_skylight;
-		extern int gfx_rt_bounces, gfx_rt_autosun, gfx_rt_fullbright;
+		extern int gfx_rt_bounces, gfx_rt_autosun;
+		extern f32 gfx_rt_relight;
 		extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
 		extern f32 gfx_rt_light_cull, gfx_rt_light_max, gfx_rt_skylight_gain;
 		extern f32 gfx_rt_torch_intensity, gfx_rt_torch_range;
@@ -6917,7 +6918,7 @@ s32 netConsoleCommand(const char *line)
 		if (strcmp(sub, "ao") == 0 || strcmp(sub, "shadows") == 0 || strcmp(sub, "ssr") == 0
 				|| strcmp(sub, "dark") == 0 || strcmp(sub, "torch") == 0 || strcmp(sub, "lights") == 0
 				|| strcmp(sub, "lightshadows") == 0 || strcmp(sub, "skylight") == 0
-				|| strcmp(sub, "autosun") == 0 || strcmp(sub, "fullbright") == 0) {
+				|| strcmp(sub, "autosun") == 0) {
 			int *fx = &gfx_rt_ao;
 			if (strcmp(sub, "shadows") == 0) fx = &gfx_rt_shadows;
 			else if (strcmp(sub, "ssr") == 0) fx = &gfx_rt_ssr;
@@ -6927,7 +6928,6 @@ s32 netConsoleCommand(const char *line)
 			else if (strcmp(sub, "lightshadows") == 0) fx = &gfx_rt_light_shadows;
 			else if (strcmp(sub, "skylight") == 0) fx = &gfx_rt_skylight;
 			else if (strcmp(sub, "autosun") == 0) fx = &gfx_rt_autosun;
-			else if (strcmp(sub, "fullbright") == 0) fx = &gfx_rt_fullbright;
 			if (!val[0]) {
 				*fx = !*fx;
 			} else {
@@ -6992,7 +6992,7 @@ s32 netConsoleCommand(const char *line)
 				|| strcmp(sub, "shlen") == 0 || strcmp(sub, "ssrint") == 0 || strcmp(sub, "giint") == 0
 				|| strcmp(sub, "giscale") == 0 || strcmp(sub, "ambient") == 0 || strcmp(sub, "lightint") == 0
 				|| strcmp(sub, "lightrad") == 0 || strcmp(sub, "lightcull") == 0 || strcmp(sub, "lightmax") == 0
-				|| strcmp(sub, "skygain") == 0
+				|| strcmp(sub, "skygain") == 0 || strcmp(sub, "relight") == 0
 				|| strcmp(sub, "torchint") == 0 || strcmp(sub, "torchrange") == 0) {
 			f32 f = (f32)atof(val);
 			if (strcmp(sub, "aoint") == 0) gfx_rt_ao_intensity = f;
@@ -7007,6 +7007,7 @@ s32 netConsoleCommand(const char *line)
 			else if (strcmp(sub, "lightcull") == 0) gfx_rt_light_cull = f;
 			else if (strcmp(sub, "lightmax") == 0) gfx_rt_light_max = f;
 			else if (strcmp(sub, "skygain") == 0) gfx_rt_skylight_gain = f;
+			else if (strcmp(sub, "relight") == 0) gfx_rt_relight = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
 			else if (strcmp(sub, "torchint") == 0) gfx_rt_torch_intensity = f;
 			else if (strcmp(sub, "torchrange") == 0) gfx_rt_torch_range = f;
 			else gfx_rt_gi_scale = f;
@@ -7027,8 +7028,8 @@ s32 netConsoleCommand(const char *line)
 					gfx_rt_lights, gfx_rt_light_intensity, gfx_rt_light_radius, gfx_rt_light_cull,
 					gfx_rt_light_max, gfx_rt_light_shadows,
 					gfx_rt_torch, gfx_rt_torch_intensity, gfx_rt_torch_range);
-			sysLogPrintf(LOG_CHAT, "rt: skylight=%d (gain %.2f) bounces=%d (0=auto) autosun=%d fullbright=%d (albedo relight in dark mode)",
-					gfx_rt_skylight, gfx_rt_skylight_gain, gfx_rt_bounces, gfx_rt_autosun, gfx_rt_fullbright);
+			sysLogPrintf(LOG_CHAT, "rt: skylight=%d (gain %.2f) bounces=%d (0=auto) autosun=%d relight=%.2f (0=baked shade, 1=albedo)",
+					gfx_rt_skylight, gfx_rt_skylight_gain, gfx_rt_bounces, gfx_rt_autosun, gfx_rt_relight);
 		} else {
 			bool on;
 			if (!sub[0]) {
@@ -7086,7 +7087,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /rt skylight [on|off] | skygain F         sky-colour ambient tint + GI sky (day/sunset/night)");
 		sysLogPrintf(LOG_CHAT, "  /rt bounces N                             GI/PT bounce override, 0 = quality preset");
 		sysLogPrintf(LOG_CHAT, "  /rt autosun [on|off]                      sun shadows track the stage's lens-flare sun");
-		sysLogPrintf(LOG_CHAT, "  /rt fullbright [on|off]                   dark mode: relight albedo, bypass baked room light");
+		sysLogPrintf(LOG_CHAT, "  /rt relight F                             dark mode: 0 keep baked room light .. 1 full albedo relight");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

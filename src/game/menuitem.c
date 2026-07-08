@@ -633,7 +633,15 @@ Gfx *menuitemListRender(Gfx *gdl, struct menurendercontext *context)
 						context->item->handler(MENUOP_GETLISTITEMCHECKBOX, context->item, &spb8);
 
 						if (spb8.list.unk04 != 255) {
+#ifndef PLATFORM_N64
+							// Port: the list radio/checkbox fill was a hardcoded
+							// red; route it through the scheme accent so it follows
+							// the menu colour scheme's secondary colour (like the
+							// sliders/bars do). Alpha 0x7f preserved from the original.
+							gdl = menugfxDrawCheckbox(gdl, left, context->y + s4 + 1, 6, spb8.list.unk04, colour, menuSchemeColour(0xff) | 0x7f);
+#else
 							gdl = menugfxDrawCheckbox(gdl, left, context->y + s4 + 1, 6, spb8.list.unk04, colour, 0xff00007f);
+#endif
 						}
 					}
 
@@ -2887,7 +2895,13 @@ Gfx *menuitemCheckboxRender(Gfx *gdl, struct menurendercontext *context)
 	s32 y;
 	u8 data[3];
 	bool checked = false;
+#ifndef PLATFORM_N64
+	// Port: checkbox fill follows the scheme accent (secondary colour) instead
+	// of the hardcoded red; alpha 0xaf preserved from the original 0xff002faf.
+	u32 fillcolour = menuSchemeColour(0xff) | 0xaf;
+#else
 	u32 fillcolour = 0xff002faf;
+#endif
 	struct font *font2 = g_FontHandelGothicSm;
 	struct fontchar *font1 = g_CharsHandelGothicSm;
 
@@ -2983,7 +2997,11 @@ Gfx *menuitemCheckboxRender(Gfx *gdl, struct menurendercontext *context)
 				g_MenuWave2Colours[context->dialog->type].item_disabled,
 				g_MenuWave1Colours[context->dialog->type].item_disabled);
 
+#ifndef PLATFORM_N64
+		fillcolour = menuSchemeColour(0x7f) | 0xaf; // dim scheme accent (disabled)
+#else
 		fillcolour = 0x7f002faf;
+#endif
 	}
 
 #if VERSION == VERSION_JPN_FINAL

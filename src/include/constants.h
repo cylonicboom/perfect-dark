@@ -1758,7 +1758,7 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 // docs/PORT_MENU_COLOUR_SCHEMES.md). Index the appended rows in
 // g_MenuColours / g_MenuWave1Colours / g_MenuWave2Colours.
 #define MENUDIALOGTYPE_AMBER   6
-#define MENUDIALOGTYPE_AQUA    7 // teal base + purple highlight (scheme "Aqua")
+#define MENUDIALOGTYPE_REDVOX57 7 // teal base + purple highlight (scheme "Redvox57")
 #endif
 
 #define MENUITEMFLAG_NEWCOLUMN               0x00000001

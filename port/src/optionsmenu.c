@@ -1318,11 +1318,11 @@ static MenuItemHandlerResult menuhandlerMenuColourScheme(s32 operation, struct m
 		"Shinku",   // red
 		"Complete", // green
 		"Missing",  // white
-		"Aqua"      // teal + purple highlight
+		"Redvox57"  // teal + purple highlight
 	};
 	// Dropdown index -> g_MenuColourScheme value. Scheme 4 (Amber) is the
 	// hardcode-only Recipe-2 demo, so it's skipped here (see menu.c /
-	// docs/PORT_MENU_COLOUR_SCHEMES.md); Aqua is scheme 5.
+	// docs/PORT_MENU_COLOUR_SCHEMES.md); Redvox57 is scheme 5.
 	static const u8 vals[] = { 0, 1, 2, 3, 5 };
 	s32 i;
 

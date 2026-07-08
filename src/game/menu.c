@@ -104,7 +104,7 @@ const struct menucolourpalette g_MenuColours[] = {
 	{ 0xaaaaaaff, 0xaaaaaa7f, 0xaaaaaaff, 0xffffffff, 0xffffff9f, 0xffffffff, 0xffffffff, 0xffffffff, 0xff8888ff, 0xffffffff, 0x00000000, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 #ifndef PLATFORM_N64
 	{ 0xbf69007f, 0x502c007f, 0xff8c007f, 0xffff00ff, 0x2f1a007f, 0x6f3d007f, 0xffa050ff, 0x7f4600ff, 0xffff00ff, 0xffb870ff, 0x442500ff, 0x332000ff, 0xffff00ff, 0xffffffff, 0xffa0447f }, // 6 MENUDIALOGTYPE_AMBER (port custom scheme)
-	{ 0x02ac8a7f, 0x00493a7f, 0x7c02f57f, 0xffffffff, 0x002c239f, 0x016b557f, 0x02f5c4ff, 0x017a62ff, 0xffffffff, 0x8ffff0ff, 0x004234ff, 0x002e25ff, 0xa64dffff, 0xffffffff, 0x7c02f57f }, // 7 MENUDIALOGTYPE_AQUA (teal base + purple highlight)
+	{ 0x02ac8a7f, 0x00493a7f, 0x7c02f57f, 0xffffffff, 0x002c239f, 0x016b557f, 0x02f5c4ff, 0x017a62ff, 0xffffffff, 0x8ffff0ff, 0x004234ff, 0x002e25ff, 0xa64dffff, 0xffffffff, 0x7c02f57f }, // 7 MENUDIALOGTYPE_REDVOX57 (teal + purple; JPN)
 #endif
 };
 #else
@@ -117,7 +117,7 @@ const struct menucolourpalette g_MenuColours[] = {
 	{ 0xaaaaaaff, 0xaaaaaa7f, 0xaaaaaaff, 0xffffffff, 0xffffff2f, 0xffffffff, 0xffffffff, 0xffffffff, 0xff8888ff, 0xffffffff, 0x00000000, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 #ifndef PLATFORM_N64
 	{ 0xbf69007f, 0x502c007f, 0xff8c007f, 0xffff00ff, 0x2f1a007f, 0x6f3d007f, 0xffa050ff, 0x7f4600ff, 0xffff00ff, 0xffb870ff, 0x442500ff, 0x332000ff, 0xffff00ff, 0xffffffff, 0xffa0447f }, // 6 MENUDIALOGTYPE_AMBER (port custom scheme)
-	{ 0x02ac8a7f, 0x00493a7f, 0x7c02f57f, 0xffffffff, 0x002c237f, 0x016b557f, 0x02f5c4ff, 0x017a62ff, 0xffffffff, 0x8ffff0ff, 0x004234ff, 0x002e25ff, 0xa64dffff, 0xffffffff, 0x7c02f57f }, // 7 MENUDIALOGTYPE_AQUA (teal base + purple highlight)
+	{ 0x02ac8a7f, 0x00493a7f, 0x7c02f57f, 0xffffffff, 0x002c237f, 0x016b557f, 0x02f5c4ff, 0x017a62ff, 0xffffffff, 0x8ffff0ff, 0x004234ff, 0x002e25ff, 0xa64dffff, 0xffffffff, 0x7c02f57f }, // 7 MENUDIALOGTYPE_REDVOX57 (teal base + purple highlight)
 #endif
 };
 #endif
@@ -131,7 +131,7 @@ const struct menucolourpalette g_MenuWave1Colours[] = {
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 #ifndef PLATFORM_N64
 	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x006f6faf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }, // 6 AMBER (port; = blue wave row)
-	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x005f5aaf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }, // 7 AQUA (teal-tinted wave)
+	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x005f5aaf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }, // 7 REDVOX57 (teal-tinted wave)
 #endif
 };
 
@@ -144,7 +144,7 @@ const struct menucolourpalette g_MenuWave2Colours[] = {
 	{ 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffff7f, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffff5f, 0xffffffff, 0xffffff7f, 0xffffffff },
 #ifndef PLATFORM_N64
 	{ 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x006f6faf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }, // 6 AMBER (port; = blue wave row)
-	{ 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x005f5aaf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }, // 7 AQUA (teal-tinted wave)
+	{ 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x005f5aaf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }, // 7 REDVOX57 (teal-tinted wave)
 #endif
 };
 
@@ -184,7 +184,7 @@ s32 menuApplyColourScheme(s32 type)
 		MENUDIALOGTYPE_SUCCESS, // 2 Complete (green)
 		MENUDIALOGTYPE_4,       // 3 Missing (white)
 		MENUDIALOGTYPE_AMBER,   // 4 Amber (port custom row; hardcode-only - Recipe 2)
-		MENUDIALOGTYPE_AQUA,    // 5 Aqua (teal base + purple highlight; selectable)
+		MENUDIALOGTYPE_REDVOX57, // 5 Redvox57 (teal base + purple highlight; selectable)
 	};
 	s32 scheme = menuActiveColourScheme();
 
@@ -216,7 +216,7 @@ u32 menuSchemeColour(u32 intensity)
 		return (intensity << 24) | (intensity << 16) | (intensity << 8);
 	case 4: // Amber (R + ~9/16 G) - matches the MENUDIALOGTYPE_AMBER palette row
 		return (intensity << 24) | (((intensity * 9) >> 4) << 16);
-	case 5: // Aqua highlight = purple #7c02f5 (R ~1/2, B full) - menus + bars
+	case 5: // Redvox57 highlight = purple #7c02f5 (R ~1/2, B full) - menus + bars
 		return ((intensity >> 1) << 24) | (intensity << 8);
 	default: // Perfect (blue)
 		return intensity << 8;

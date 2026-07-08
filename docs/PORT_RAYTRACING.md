@@ -215,7 +215,7 @@ Differences from GL, all deliberate:
 
 ## Controls
 
-**Menu:** Extended Options → Experiments → **Raytracing (Experimental)** — a
+**Menu:** Extended Options → Experiments → **Raytracing (WIP)** — a
 warning-headed page with the master toggle, quality/GI dropdowns, per-effect
 checkboxes (AO, reflections, sun shadows, auto-sun, dark mode, map lights,
 light shadows, torch, skylight) and the common tuning sliders (dark ambient,

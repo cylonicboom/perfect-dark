@@ -1,5 +1,10 @@
 /**
- * Chaos "retro" post filter (pd.pixelate; docs/PORT_CHAOS.md).
+ * Chaos "retro" post filter (pd.pixelate / pd.crt / pd.lens / pd.screen_fx;
+ * docs/PORT_CHAOS.md). One fullscreen pass hosting the whole video-fx family:
+ * pixelation + colour crush (grey-N / RGB332 / invert / Game Boy / thermal),
+ * CRT (scanlines, aperture grille, curvature, vignette), fisheye lens warp,
+ * VHS (chroma shift + line jitter + noise), underwater wobble. The fragment
+ * BODY is shared with the SDL_GPU backend via gfx_retro_common.h.
  *
  * Runs once per frame from gfx_run's tail (after the final gfx_flush, so the
  * whole frame — world, viewmodel, HUD — is in the framebuffer) via the
@@ -28,6 +33,7 @@
 
 #include "glad/glad.h"
 #include "gfx_retro.h"
+#include "gfx_retro_common.h" // shared fragment body (both backends)
 
 extern "C" void sysLogPrintf(int level, const char* fmt, ...);
 #define RETRO_LOG_ERROR (2 | (1 << 7)) // LOG_ERROR | LOGFLAG_SHOWMSG
@@ -42,6 +48,8 @@ static GLuint s_vao = 0, s_vbo = 0;
 static GLuint s_cap_tex = 0, s_cap_fbo = 0;
 static int s_capw = 0, s_caph = 0;
 static GLint s_loc_grid = -1, s_loc_mode = -1, s_loc_levels = -1;
+static GLint s_loc_fx = -1, s_loc_warp = -1, s_loc_aspect = -1, s_loc_time = -1;
+static unsigned int s_frames = 0; // drives uTime (the animated fx)
 
 // GL state save/restore — everything the pass touches
 struct RetroGLState {
@@ -108,26 +116,19 @@ static const char* kVS =
     "    gl_Position = vec4(aPos, 0.0, 1.0);\n"
     "}\n";
 
+// prelude (uniform declarations) + the shared body from gfx_retro_common.h
 static const char* kFS =
     "IN vec2 vUV;\n"
     "OUT vec4 oCol;\n"
     "uniform sampler2D uColor;\n"
-    "uniform vec2 uGrid;\n"    // pixelation grid (e.g. 160 x 120)
-    "uniform int uMode;\n"     // 0 = keep colours, 1 = greyscale levels, 2 = RGB 3-3-2
-    "uniform float uLevels;\n" // greyscale level count for uMode 1
-    "void main() {\n"
-    "    vec2 uv = (floor(vUV * uGrid) + 0.5) / uGrid;\n"
-    "    vec3 c = texture(uColor, uv).rgb;\n"
-    "    if (uMode == 1) {\n"
-    "        float l = dot(c, vec3(0.299, 0.587, 0.114));\n"
-    "        l = floor(min(l, 0.9999) * uLevels) / (uLevels - 1.0);\n"
-    "        c = vec3(l);\n"
-    "    } else if (uMode == 2) {\n"
-    "        vec3 q = vec3(8.0, 8.0, 4.0);\n"
-    "        c = floor(min(c, vec3(0.9999)) * q) / (q - vec3(1.0));\n"
-    "    }\n"
-    "    oCol = vec4(c, 1.0);\n"
-    "}\n";
+    "uniform vec2 uGrid;\n"
+    "uniform float uLevels;\n"
+    "uniform int uMode;\n"
+    "uniform int uFx;\n"
+    "uniform float uWarp;\n"
+    "uniform float uAspect;\n"
+    "uniform float uTime;\n"
+    RETRO_GLSL_BODY;
 
 static GLuint retroCompile(GLenum type, const char* version, const char* body) {
     char* src = (char*)malloc(strlen(body) + 256);
@@ -184,6 +185,10 @@ static bool retroInit(const char* glsl_version) {
     s_loc_grid = glGetUniformLocation(s_prog, "uGrid");
     s_loc_mode = glGetUniformLocation(s_prog, "uMode");
     s_loc_levels = glGetUniformLocation(s_prog, "uLevels");
+    s_loc_fx = glGetUniformLocation(s_prog, "uFx");
+    s_loc_warp = glGetUniformLocation(s_prog, "uWarp");
+    s_loc_aspect = glGetUniformLocation(s_prog, "uAspect");
+    s_loc_time = glGetUniformLocation(s_prog, "uTime");
 
     // fullscreen triangle
     static const float verts[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
@@ -231,8 +236,8 @@ static bool retroEnsureCapture(int fbw, int fbh) {
 // ---------------------------------------------------------------------------
 // the filter
 
-void gfx_retro_filter(int pixw, int pixh, int colors, unsigned int fbo, int fbw, int fbh,
-                      const char* glsl_version) {
+void gfx_retro_filter(int pixw, int pixh, int cmode, int clevels, int fx, float warp,
+                      unsigned int fbo, int fbw, int fbh, const char* glsl_version) {
     if (s_broken || fbw <= 0 || fbh <= 0) {
         return;
     }
@@ -266,15 +271,8 @@ void gfx_retro_filter(int pixw, int pixh, int colors, unsigned int fbo, int fbw,
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, fbw, fbh);
     }
 
-    // draw it back pixelated + colour-crushed, over the full framebuffer
-    int mode = 0;
-    float levels = 0.0f;
-    if (colors >= 256) {
-        mode = 2;
-    } else if (colors >= 2) {
-        mode = 1;
-        levels = colors > 64 ? 64.0f : (float)colors;
-    }
+    // draw it back filtered, over the full framebuffer
+    s_frames++;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, fbw, fbh);
@@ -285,8 +283,12 @@ void gfx_retro_filter(int pixw, int pixh, int colors, unsigned int fbo, int fbw,
     glDisable(GL_CULL_FACE);
     glUseProgram(s_prog);
     if (s_loc_grid >= 0) glUniform2f(s_loc_grid, (float)pixw, (float)pixh);
-    if (s_loc_mode >= 0) glUniform1i(s_loc_mode, mode);
-    if (s_loc_levels >= 0) glUniform1f(s_loc_levels, levels);
+    if (s_loc_mode >= 0) glUniform1i(s_loc_mode, cmode);
+    if (s_loc_levels >= 0) glUniform1f(s_loc_levels, (float)clevels);
+    if (s_loc_fx >= 0) glUniform1i(s_loc_fx, fx);
+    if (s_loc_warp >= 0) glUniform1f(s_loc_warp, warp);
+    if (s_loc_aspect >= 0) glUniform1f(s_loc_aspect, (float)fbw / (float)fbh);
+    if (s_loc_time >= 0) glUniform1f(s_loc_time, (float)(s_frames % 216000u) / 60.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_cap_tex);
     if (s_vao) {

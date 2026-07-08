@@ -107,12 +107,14 @@ struct GfxRenderingAPI {
 	// checks before calling.
 	void (*rt_resolve)(const void* cam, int vx, int vy, int vw, int vh);
 
-	// Chaos retro filter (pd.pixelate; docs/PORT_CHAOS.md): pixelate the
-	// finished frame to a pixw x pixh grid and crush colours (0 = keep,
-	// 2..64 = N-level greyscale, >= 256 = RGB 3-3-2). Runs in place on the
-	// framebuffer currently being drawn to, from gfx_run's tail. Implemented
-	// by GL and SDL_GPU; NULL allowed — the dispatcher checks before calling.
-	void (*retro_filter)(int pixw, int pixh, int colors);
+	// Chaos retro/post filter (pd.pixelate / pd.crt / pd.lens / pd.screen_fx;
+	// docs/PORT_CHAOS.md): filter the finished frame in place — pixelate to a
+	// pixw x pixh grid, apply colour mode cmode (0 keep, 1 grey-clevels,
+	// 2 RGB332, 3 invert, 4 Game Boy, 5 thermal), fx bits (scanlines/grille/
+	// curvature/vignette/VHS/wobble) and a fisheye warp. Shader body shared
+	// via gfx_retro_common.h. Runs from gfx_run's tail. Implemented by GL and
+	// SDL_GPU; NULL allowed — the dispatcher checks before calling.
+	void (*retro_filter)(int pixw, int pixh, int cmode, int clevels, int fx, float warp);
 };
 
 #endif

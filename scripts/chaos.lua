@@ -461,8 +461,8 @@ chaos.effects = {
                    end,
                    start=function() end },
   sepia        = { label="1964 mode",         w=4, dur=30,
-                   start=function() pd.screen_tint(230, 190, 130) end,
-                   stop=function() pd.screen_tint() end },
+                   start=function() pd.screen_tint(230, 190, 130); pd.audio_radio(true) end,
+                   stop=function() pd.screen_tint(); pd.audio_radio(false) end },
   terminal     = { label="Terminal green",    w=4, dur=30,
                    start=function() pd.screen_tint(110, 255, 130) end,
                    stop=function() pd.screen_tint() end },
@@ -474,6 +474,41 @@ chaos.effects = {
   bit16        = { label="16-bit era",        w=3, dur=30,
                    start=function() pd.pixelate(256, 192, 256); pd.audio_crush(2, 10) end,
                    stop=function() pd.pixelate(); pd.audio_crush() end },
+  gameboy      = { label="Handheld mode",     w=3, dur=30,
+                   start=function() pd.pixelate(160, 144, 1001); pd.audio_crush(4, 8) end,
+                   stop=function() pd.pixelate(); pd.audio_crush() end },
+  -- post-filter looks (pd.crt/lens/screen_fx bits compose if two land at once)
+  crt          = { label="Tube TV",           w=4, dur=30,
+                   start=function() pd.crt(true) end,
+                   stop=function() pd.crt(false) end },
+  vhs          = { label="Camcorder",         w=4, dur=25,
+                   start=function() pd.screen_fx(16, true) end,
+                   stop=function() pd.screen_fx(16, false) end },
+  peephole     = { label="Peephole",          w=3, dur=20,
+                   start=function() pd.lens(1.4) end,
+                   stop=function() pd.lens() end },
+  underwater   = { label="Submerged",         w=3, dur=25,
+                   start=function() pd.screen_fx(32, true); pd.audio_reverb(0.35) end,
+                   stop=function() pd.screen_fx(32, false); pd.audio_reverb() end },
+  negative     = { label="Film negative",     w=3, dur=20,
+                   start=function() pd.pixelate(0, 0, 1000) end,
+                   stop=function() pd.pixelate() end },
+  thermal      = { label="Heat vision",       w=3, dur=20,
+                   start=function() pd.pixelate(0, 0, 1002) end,
+                   stop=function() pd.pixelate() end },
+  -- audio-chain toys
+  cathedral    = { label="Cathedral acoustics", w=4, dur=30,
+                   start=function() pd.audio_reverb(0.8) end,
+                   stop=function() pd.audio_reverb() end },
+  reversed     = { label="!desreveR",         w=3, dur=20,
+                   start=function() pd.audio_reverse(true) end,
+                   stop=function() pd.audio_reverse(false) end },
+  helium       = { label="Helium leak",       w=3, dur=20,
+                   start=function() pd.audio_pitch(1.5) end,
+                   stop=function() pd.audio_pitch() end },
+  demon        = { label="Demonic presence",  w=2, dur=20,
+                   start=function() pd.audio_pitch(0.65); pd.audio_reverb(0.5) end,
+                   stop=function() pd.audio_pitch(); pd.audio_reverb() end },
   australia    = { label="Australia mode",    w=3, dur=20,
                    start=function() pd.upside_down(true) end,
                    stop=function() pd.upside_down(false) end },
@@ -910,7 +945,13 @@ pd.on("stage", function()
   if pd.chr_speed then pd.chr_speed(1) end
   if pd.screen_tint then pd.screen_tint() end
   if pd.pixelate then pd.pixelate() end
+  if pd.screen_fx then pd.screen_fx(63, false) end
+  if pd.lens then pd.lens() end
   if pd.audio_crush then pd.audio_crush() end
+  if pd.audio_radio then pd.audio_radio(false) end
+  if pd.audio_reverb then pd.audio_reverb() end
+  if pd.audio_reverse then pd.audio_reverse(false) end
+  if pd.audio_pitch then pd.audio_pitch() end
   if pd.upside_down then pd.upside_down(false) end
   if pd.gas then pd.gas(false) end
   if pd.t_pose then pd.t_pose(false) end

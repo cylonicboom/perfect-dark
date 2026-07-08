@@ -1695,15 +1695,16 @@ static void gfx_opengl_rt_resolve(const void* cam, int vx, int vy, int vw, int v
                    (int)(fb.msaa_level > 1 ? fb.msaa_level : 1), fb.invert_y, gl_glsl_version_str);
 }
 
-// Chaos retro filter (pd.pixelate; docs/PORT_CHAOS.md). gfx_retro.cpp does the
-// work and saves/restores every piece of GL state it touches. Same desktop-GL
+// Chaos retro/post filter (docs/PORT_CHAOS.md). gfx_retro.cpp does the work
+// and saves/restores every piece of GL state it touches. Same desktop-GL
 // gate as the RT resolve: the capture path needs FBOs + blits.
-static void gfx_opengl_retro_filter(int pixw, int pixh, int colors) {
+static void gfx_opengl_retro_filter(int pixw, int pixh, int cmode, int clevels, int fx, float warp) {
     if (gl_es || gl_glsl_version < 130 || !gfx_framebuffers_enabled) {
         return;
     }
     const Framebuffer& fb = framebuffers[current_framebuffer];
-    gfx_retro_filter(pixw, pixh, colors, fb.fbo, (int)fb.width, (int)fb.height, gl_glsl_version_str);
+    gfx_retro_filter(pixw, pixh, cmode, clevels, fx, warp, fb.fbo, (int)fb.width, (int)fb.height,
+                     gl_glsl_version_str);
 }
 
 struct GfxRenderingAPI gfx_opengl_api = {

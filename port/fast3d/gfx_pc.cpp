@@ -335,13 +335,18 @@ bool gfx_upsidedown_mode = false;
 // Chaos screen tint (pd.screen_tint): 0x00RRGGBB, 0 = off. Rides the
 // grayscale shader path (luminance * tint) like the Midas gold mode.
 int gfx_screen_tint = 0;
-// Chaos retro filter (pd.pixelate): pixelate the finished frame to a
-// pixel_w x pixel_h grid, optionally crushing colours (0 = keep, 2..64 =
-// N-level greyscale, >= 256 = RGB 3-3-2). w == 0 disables. Dispatched at
-// gfx_run's tail through the nullable retro_filter rapi entry (GL + SDL_GPU).
+// Chaos retro/post filter (pd.pixelate / pd.crt / pd.lens / pd.screen_fx):
+// pixelate the finished frame to a pixel_w x pixel_h grid, apply a colour
+// mode (0 keep, 2..64 grey levels, >= 256 RGB332, 1000 invert, 1001 Game
+// Boy, 1002 thermal), fx bits (1 scanlines, 2 grille, 4 CRT curve,
+// 8 vignette, 16 VHS, 32 wobble) and a fisheye warp. All zero = pass off.
+// Dispatched at gfx_run's tail through the nullable retro_filter rapi entry
+// (GL + SDL_GPU; shader body shared in gfx_retro_common.h).
 int gfx_retro_pixel_w = 0;
 int gfx_retro_pixel_h = 0;
 int gfx_retro_colors = 0;
+int gfx_retro_fx = 0;
+float gfx_retro_warp = 0.0f;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
@@ -3884,11 +3889,27 @@ extern "C" void gfx_run(Gfx* commands) {
     gfx_run_dl(commands);
     gfx_flush();
 
-    // Chaos retro filter (pd.pixelate; docs/PORT_CHAOS.md): pixelate +
-    // colour-crush the finished frame (world + viewmodel + HUD) in place,
-    // before the MSAA resolve / present path picks it up.
-    if (gfx_retro_pixel_w > 0 && gfx_retro_pixel_h > 0 && gfx_rapi->retro_filter != nullptr) {
-        gfx_rapi->retro_filter(gfx_retro_pixel_w, gfx_retro_pixel_h, gfx_retro_colors);
+    // Chaos retro/post filter (docs/PORT_CHAOS.md): filter the finished
+    // frame (world + viewmodel + HUD) in place, before the MSAA resolve /
+    // present path picks it up. The colour-code -> shader-mode mapping
+    // lives here so both backends stay in sync.
+    if ((gfx_retro_pixel_w > 0 || gfx_retro_colors != 0 || gfx_retro_fx != 0 || gfx_retro_warp != 0.0f) &&
+        gfx_rapi->retro_filter != nullptr) {
+        int cmode = 0, clevels = 0;
+        if (gfx_retro_colors == 1000) {
+            cmode = 3; // invert
+        } else if (gfx_retro_colors == 1001) {
+            cmode = 4; // Game Boy DMG greens
+        } else if (gfx_retro_colors == 1002) {
+            cmode = 5; // thermal palette
+        } else if (gfx_retro_colors >= 256) {
+            cmode = 2; // RGB 3-3-2
+        } else if (gfx_retro_colors >= 2) {
+            cmode = 1; // N-level greyscale
+            clevels = gfx_retro_colors > 64 ? 64 : gfx_retro_colors;
+        }
+        gfx_rapi->retro_filter(gfx_retro_pixel_w, gfx_retro_pixel_h, cmode, clevels,
+                               gfx_retro_fx, gfx_retro_warp);
     }
 
     gfxFramebuffer = 0;

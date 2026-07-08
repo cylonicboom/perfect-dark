@@ -338,8 +338,14 @@ s32 chraiLuaGormless(s32 on);                 /* invert movement + look axes */
 s32 chraiLuaSpawnBike(void);                  /* half-size hoverbike at the player (solo) */
 s32 chraiLuaSfxShuffle(s32 on);               /* every SFX plays as a random other SFX */
 s32 chraiLuaInstrumentShuffle(s32 on);        /* MIDI program changes pick random instruments */
-s32 chraiLuaPixelate(s32 w, s32 h, s32 colors); /* pixelate the frame to w x h; colours 4 = grey-4, 256 = RGB332; 0,0 = off */
+s32 chraiLuaPixelate(s32 w, s32 h, s32 colors); /* pixelate to w x h; colours 4=grey4, 256=RGB332, 1000=invert, 1001=gameboy, 1002=thermal */
+s32 chraiLuaScreenFx(s32 bits, s32 on);       /* post-fx bits: 1 scanlines, 2 grille, 4 curve, 8 vignette, 16 VHS, 32 wobble */
+s32 chraiLuaLens(f32 k);                      /* fisheye lens warp; 0 = off */
 s32 chraiLuaAudioCrush(s32 step, s32 bits);   /* sample-hold every Nth frame at `bits` depth; 1,16 = off */
+s32 chraiLuaAudioRadio(s32 on);               /* AM-radio bandpass + overdrive */
+s32 chraiLuaAudioReverb(f32 wet);             /* cathedral reverb, wet 0..1; 0 = off */
+s32 chraiLuaAudioReverse(s32 on);             /* audio plays backwards in ~0.74s granules */
+s32 chraiLuaAudioPitch(f32 rate);             /* constant-tempo pitch shift; 1 = off */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

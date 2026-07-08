@@ -9363,22 +9363,47 @@ s32 chraiLuaUpsideDown(s32 on)
 
 // pd.pixelate(w, h, colours): chunk the rendered frame down to a w x h pixel
 // grid via the retro post filter (gfx_retro.cpp on GL, the gfx_sdlgpu.cpp
-// retro section on Vulkan/D3D12), optionally crushing colours (2..64 =
-// N-level greyscale, 256 = RGB 3-3-2). w <= 0 = off.
+// retro section on Vulkan/D3D12), optionally applying a colour mode (2..64 =
+// N-level greyscale, 256 = RGB 3-3-2, 1000 = invert, 1001 = Game Boy greens,
+// 1002 = thermal palette). w = 0 with a colour set = colour mode at full
+// resolution; everything <= 0 = off.
 extern s32 gfx_retro_pixel_w;
 extern s32 gfx_retro_pixel_h;
 extern s32 gfx_retro_colors;
 s32 chraiLuaPixelate(s32 w, s32 h, s32 colors)
 {
-	if (w <= 0 || h <= 0) {
+	if (w > 0 && h > 0) {
+		gfx_retro_pixel_w = w < 8 ? 8 : w > 1024 ? 1024 : w;
+		gfx_retro_pixel_h = h < 8 ? 8 : h > 1024 ? 1024 : h;
+	} else {
 		gfx_retro_pixel_w = 0;
 		gfx_retro_pixel_h = 0;
-		gfx_retro_colors = 0;
-		return 1;
 	}
-	gfx_retro_pixel_w = w < 8 ? 8 : w > 1024 ? 1024 : w;
-	gfx_retro_pixel_h = h < 8 ? 8 : h > 1024 ? 1024 : h;
 	gfx_retro_colors = colors < 0 ? 0 : colors;
+	return 1;
+}
+
+// pd.screen_fx(bits, on): set/clear retro post-filter effect bits (1 =
+// scanlines, 2 = RGB grille, 4 = CRT curvature, 8 = vignette, 16 = VHS,
+// 32 = underwater wobble). Bits compose, so simultaneous effects stack.
+extern s32 gfx_retro_fx;
+s32 chraiLuaScreenFx(s32 bits, s32 on)
+{
+	bits &= 0x3f;
+	if (on) {
+		gfx_retro_fx |= bits;
+	} else {
+		gfx_retro_fx &= ~bits;
+	}
+	return 1;
+}
+
+// pd.lens(k): fisheye lens warp on the rendered frame — centre magnified,
+// corners pinned. 0 = off; negative = pincushion (clamped shy of the pole).
+extern f32 gfx_retro_warp;
+s32 chraiLuaLens(f32 k)
+{
+	gfx_retro_warp = k < -0.8f ? -0.8f : k > 4.0f ? 4.0f : k;
 	return 1;
 }
 
@@ -9388,6 +9413,38 @@ extern void audioSetCrush(s32 step, s32 bits);
 s32 chraiLuaAudioCrush(s32 step, s32 bits)
 {
 	audioSetCrush(step, bits);
+	return 1;
+}
+
+// pd.audio_radio(on): AM-radio voicing (bandpass + overdrive) on all audio.
+extern void audioSetRadio(s32 on);
+s32 chraiLuaAudioRadio(s32 on)
+{
+	audioSetRadio(on ? 1 : 0);
+	return 1;
+}
+
+// pd.audio_reverb(wet): cathedral reverb wash, wet 0..1; 0/no args = off.
+extern void audioSetReverb(f32 wet);
+s32 chraiLuaAudioReverb(f32 wet)
+{
+	audioSetReverb(wet);
+	return 1;
+}
+
+// pd.audio_reverse(on): everything plays backwards in ~0.74s granules.
+extern void audioSetReverse(s32 on);
+s32 chraiLuaAudioReverse(s32 on)
+{
+	audioSetReverse(on ? 1 : 0);
+	return 1;
+}
+
+// pd.audio_pitch(rate): pitch shift at constant tempo; 1 (or no args) = off.
+extern void audioSetPitch(f32 rate);
+s32 chraiLuaAudioPitch(f32 rate)
+{
+	audioSetPitch(rate);
 	return 1;
 }
 

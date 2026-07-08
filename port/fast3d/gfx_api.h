@@ -45,7 +45,9 @@ extern bool gfx_upsidedown_mode;             // chaos: flip the 3D scene top-bot
 extern int gfx_screen_tint;                  // chaos: 0x00RRGGBB luminance tint via the grayscale path; 0 = off
 extern int gfx_retro_pixel_w;                // chaos: pixelation grid width (pd.pixelate); 0 = off
 extern int gfx_retro_pixel_h;                // chaos: pixelation grid height
-extern int gfx_retro_colors;                 // chaos: 0 keep colours, 2..64 grey levels, >= 256 RGB 3-3-2
+extern int gfx_retro_colors;                 // chaos: 0 keep, 2..64 grey, >= 256 RGB332, 1000 invert, 1001 gameboy, 1002 thermal
+extern int gfx_retro_fx;                     // chaos: 1 scanlines, 2 grille, 4 CRT curve, 8 vignette, 16 VHS, 32 wobble
+extern float gfx_retro_warp;                 // chaos: fisheye lens strength (pd.lens); 0 = off
 // HDR dazzle weight 0..1 set by the G_SETDAZZLE_EXT display-list command
 // (flush-aligned): draws issued while non-zero are emissive-boosted toward
 // the HDR peak by the SDL_GPU backend. GL and SDR ignore it.

@@ -3087,11 +3087,17 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
 //    (can't sample fb.color while rendering into it).
 // The draw-back pipeline's sample count must match fb.color (retro_pipe_for).
 
-// std140 mirror of the RetroUni block below (one 16-byte slot)
+#include "gfx_retro_common.h" // shared fragment body (both backends)
+
+// std140 mirror of the RetroUni block below (two 16-byte slots)
 struct RetroGpuUni {
     float grid[2];
     float levels;
     int32_t mode;
+    int32_t fx;
+    float warp;
+    float aspect;
+    float time;
 };
 
 static struct {
@@ -3101,6 +3107,7 @@ static struct {
     SDL_GPUGraphicsPipeline *pipe[4]; // per target sample count: 1/2/4/8x
     SDL_GPUTexture *scene_col;        // gpu.fb_format copy (non-msaa capture)
     int fbw, fbh;
+    uint32_t frame;                   // drives uTime (the animated fx)
 } retro = {};
 
 // lazily build the draw-back pipeline whose sample count matches the fb
@@ -3124,6 +3131,7 @@ static SDL_GPUGraphicsPipeline *retro_pipe_for(uint32_t msaa) {
     return retro.pipe[idx];
 }
 
+// prelude (layouts; UBO member names match the shared body) + shared body
 static const char *const retro_fs_src =
     "#version 450\n"
     "layout(location = 0) in vec2 vUV;\n"
@@ -3131,22 +3139,11 @@ static const char *const retro_fs_src =
     "layout(set = 2, binding = 0) uniform sampler2D uColor;\n"
     "layout(std140, set = 3, binding = 0) uniform RetroUni {\n"
     "    vec2 uGrid; float uLevels; int uMode;\n"
+    "    int uFx; float uWarp; float uAspect; float uTime;\n"
     "};\n"
-    "void main() {\n"
-    "    vec2 uv = (floor(vUV * uGrid) + 0.5) / uGrid;\n"
-    "    vec3 c = texture(uColor, uv).rgb;\n"
-    "    if (uMode == 1) {\n"
-    "        float l = dot(c, vec3(0.299, 0.587, 0.114));\n"
-    "        l = floor(min(l, 0.9999) * uLevels) / (uLevels - 1.0);\n"
-    "        c = vec3(l);\n"
-    "    } else if (uMode == 2) {\n"
-    "        vec3 q = vec3(8.0, 8.0, 4.0);\n"
-    "        c = floor(min(c, vec3(0.9999)) * q) / (q - vec3(1.0));\n"
-    "    }\n"
-    "    oCol = vec4(c, 1.0);\n"
-    "}\n";
+    RETRO_GLSL_BODY;
 
-static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
+static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int cmode, int clevels, int fx, float warp) {
     if (retro.broken || !gpu.render_cb) {
         return;
     }
@@ -3214,17 +3211,17 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
         return;
     }
 
+    retro.frame++;
+
     RetroGpuUni uni;
     uni.grid[0] = (float)pixw;
     uni.grid[1] = (float)pixh;
-    uni.levels = 0.0f;
-    uni.mode = 0;
-    if (colors >= 256) {
-        uni.mode = 2;
-    } else if (colors >= 2) {
-        uni.mode = 1;
-        uni.levels = colors > 64 ? 64.0f : (float)colors;
-    }
+    uni.levels = (float)clevels;
+    uni.mode = cmode;
+    uni.fx = fx;
+    uni.warp = warp;
+    uni.aspect = (float)fb.w / (float)fb.h;
+    uni.time = (float)(retro.frame % 216000u) / 60.0f;
 
     // draw it back pixelated + colour-crushed over the whole framebuffer
     const float rect[4] = { 0.0f, 0.0f, 1.0f, 1.0f };

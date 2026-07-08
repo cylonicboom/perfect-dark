@@ -1276,7 +1276,9 @@ static int l_pd_upside_down(lua_State *L)
 
 /* pd.pixelate(w, h, colours) -> bool. Pixelate the rendered frame down to a
  * w x h grid; colours 4 = 4-level greyscale, 256 = 256-colour RGB 3-3-2,
- * 0/absent = keep colours. pd.pixelate() turns it off. */
+ * 1000 = invert, 1001 = Game Boy greens, 1002 = thermal palette, 0/absent =
+ * keep colours. w = 0 with a colour set = colour mode at full resolution.
+ * pd.pixelate() turns it off. */
 static int l_pd_pixelate(lua_State *L)
 {
 	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
@@ -1290,6 +1292,32 @@ static int l_pd_pixelate(lua_State *L)
 	return 1;
 }
 
+/* pd.screen_fx(bits, on) -> bool. Set/clear post-filter effect bits: 1 =
+ * scanlines, 2 = RGB grille, 4 = CRT curvature, 8 = vignette, 16 = VHS,
+ * 32 = underwater wobble. Bits compose across effects. */
+static int l_pd_screen_fx(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaScreenFx(
+			(s32)luaL_checkinteger(L, 1), lua_toboolean(L, 2)) != 0);
+	return 1;
+}
+
+/* pd.crt(on) -> bool. The full CRT look: curved scanlines + RGB aperture
+ * grille + tube curvature + vignette (screen_fx bits 1|2|4|8). */
+static int l_pd_crt(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaScreenFx(1 | 2 | 4 | 8, lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.lens(k) -> bool. Fisheye lens warp (centre magnified, corners pinned);
+ * k ~ 1.4 = peephole, negative = pincushion, 0/absent = off. */
+static int l_pd_lens(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaLens((f32)luaL_optnumber(L, 1, 0.0)) != 0);
+	return 1;
+}
+
 /* pd.audio_crush(step, bits) -> bool. Crunch all audio: sample-and-hold every
  * `step`th output frame (device rate 22 kHz / step) masked to `bits` bit
  * depth. pd.audio_crush() restores clean audio. */
@@ -1298,6 +1326,38 @@ static int l_pd_audio_crush(lua_State *L)
 	lua_pushboolean(L, chraiLuaAudioCrush(
 			(s32)luaL_optinteger(L, 1, 1),
 			(s32)luaL_optinteger(L, 2, 16)) != 0);
+	return 1;
+}
+
+/* pd.audio_radio(on) -> bool. AM-radio voicing: ~400..2800Hz bandpass +
+ * overdrive on everything. */
+static int l_pd_audio_radio(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAudioRadio(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.audio_reverb(wet) -> bool. Cathedral reverb wash, wet 0..1;
+ * pd.audio_reverb() turns it off. */
+static int l_pd_audio_reverb(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAudioReverb((f32)luaL_optnumber(L, 1, 0.0)) != 0);
+	return 1;
+}
+
+/* pd.audio_reverse(on) -> bool. All audio plays backwards in ~0.74s
+ * granules (with that much latency). */
+static int l_pd_audio_reverse(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAudioReverse(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.audio_pitch(rate) -> bool. Pitch shift at constant tempo: 1.5 =
+ * helium, 0.65 = demon. pd.audio_pitch() restores normal pitch. */
+static int l_pd_audio_pitch(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAudioPitch((f32)luaL_optnumber(L, 1, 1.0)) != 0);
 	return 1;
 }
 
@@ -1701,7 +1761,14 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_sfx_shuffle);   lua_setfield(L, -2, "sfx_shuffle");
 	lua_pushcfunction(L, l_pd_instrument_shuffle); lua_setfield(L, -2, "instrument_shuffle");
 	lua_pushcfunction(L, l_pd_pixelate);      lua_setfield(L, -2, "pixelate");
+	lua_pushcfunction(L, l_pd_screen_fx);     lua_setfield(L, -2, "screen_fx");
+	lua_pushcfunction(L, l_pd_crt);           lua_setfield(L, -2, "crt");
+	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
+	lua_pushcfunction(L, l_pd_audio_radio);   lua_setfield(L, -2, "audio_radio");
+	lua_pushcfunction(L, l_pd_audio_reverb);  lua_setfield(L, -2, "audio_reverb");
+	lua_pushcfunction(L, l_pd_audio_reverse); lua_setfield(L, -2, "audio_reverse");
+	lua_pushcfunction(L, l_pd_audio_pitch);   lua_setfield(L, -2, "audio_pitch");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

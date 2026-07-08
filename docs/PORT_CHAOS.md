@@ -234,12 +234,37 @@ function, called every frame while active (disco's hue cycle).
   back. (The RT suite still requires MSAA off on SDL_GPU — that's a
   *depth* limitation: SDL_GPU has no depth resolve and can't sample
   multisample depth; colour is solved.) Globals `gfx_retro_pixel_w/h`,
-  `gfx_retro_colors` (0 keep / 2..64 grey levels / ≥256 RGB332). Audio is a
-  bitcrush at the `audioEndFrame` push point (the `pd.mute` mutable-copy
-  mechanism): sample-and-hold every `step`th stereo frame (device rate
-  22 kHz ÷ step) masked to `bits` depth, hold phase continuous across
-  buffer pushes; the external one-shot (`pd.play_file`) is mixed first so
-  it crunches too, and mute wins over crush.
+  `gfx_retro_colors` (0 keep / 2..64 grey levels / ≥256 RGB332 / 1000
+  invert / 1001 Game Boy / 1002 thermal). Audio is a bitcrush at the
+  `audioEndFrame` push point (the `pd.mute` mutable-copy mechanism):
+  sample-and-hold every `step`th stereo frame (device rate 22 kHz ÷ step)
+  masked to `bits` depth, hold phase continuous across buffer pushes; the
+  external one-shot (`pd.play_file`) is mixed first so it crunches too,
+  and mute wins over crush.
+- **Post-filter looks** (the same retro pass, fragment body shared between
+  backends in `port/fast3d/gfx_retro_common.h`; `pd.screen_fx(bits, on)`
+  sets/clears composable fx bits — 1 scanlines, 2 RGB aperture grille,
+  4 CRT curvature, 8 vignette, 16 VHS, 32 wobble — and `pd.lens(k)` is a
+  fisheye warp, centre magnified / corners pinned): `crt` ("Tube TV",
+  `pd.crt` = bits 1|2|4|8 — scanlines curve with the tube, grille rides
+  physical pixels via `gl_FragCoord`), `vhs` ("Camcorder" — chroma shift +
+  per-line jitter + a drifting tracking band + noise, animated by a
+  backend-local frame counter passed as `uTime`), `peephole` (lens 1.4),
+  `underwater` ("Submerged" — sine UV wobble + reverb 0.35), `gameboy`
+  ("Handheld mode" — 160×144 + 4 DMG greens + crush), `negative` ("Film
+  negative", full-res invert via `pd.pixelate(0, 0, 1000)` — w=0 means
+  colour-mode-only), `thermal` ("Heat vision", luminance → heat palette).
+- **Audio chain** (all at the `audioEndFrame` push point, order: reverse →
+  pitch → radio → reverb → crush; each independently toggleable, states
+  reset in the stage hook): `pd.audio_radio` (~400–2800 Hz bandpass + hard
+  overdrive — wired into `sepia`/"1964 mode"), `pd.audio_reverb(wet)`
+  (Freeverb-lite: 4 damped combs + 2 allpasses per channel, tunings halved
+  for 22 kHz, R channel spread +12 — `cathedral` at 0.8), `pd.audio_reverse`
+  (granular time reversal: fill one ~0.74 s chunk while playing the
+  previous one backwards — `reversed` "!desreveR"), `pd.audio_pitch(rate)`
+  (granular constant-tempo pitch shift: recent-input ring read at `rate`,
+  grain-jump with a 64-frame crossfade on drift — `helium` 1.5 and `demon`
+  0.65 + reverb).
 
 Adding an effect = one table entry in `chaos.effects` + `/lua reload`.
 

@@ -219,7 +219,8 @@ Differences from GL, all deliberate:
 warning-headed page with the master toggle, quality/GI dropdowns, per-effect
 checkboxes (AO, reflections, sun shadows, auto-sun, dark mode, map lights,
 light shadows, torch, skylight) and the common tuning sliders (dark ambient,
-light intensity/radius/brightness-cap, GI bounces, skylight strength). Enabling
+light intensity/radius/brightness-cap, torch brightness, GI bounces, skylight
+strength). Enabling
 any effect flips the master on, like the console. The sliders are coarse by
 design — the console command is the precise interface. Handlers +
 `g_ExtendedRTMenuDialog` in `port/src/optionsmenu.c`.

@@ -2619,7 +2619,7 @@ extern int gfx_rt_enabled, gfx_rt_ao, gfx_rt_shadows, gfx_rt_ssr, gfx_rt_gi;
 extern int gfx_rt_quality, gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows;
 extern int gfx_rt_torch, gfx_rt_skylight, gfx_rt_autosun, gfx_rt_bounces;
 extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
-extern f32 gfx_rt_light_max, gfx_rt_skylight_gain, gfx_rt_relight;
+extern f32 gfx_rt_light_max, gfx_rt_skylight_gain, gfx_rt_relight, gfx_rt_torch_intensity;
 
 static MenuItemHandlerResult menuhandlerRtCheckbox(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -2756,6 +2756,12 @@ static MenuItemHandlerResult menuhandlerRtLightMax(s32 operation, struct menuite
 static MenuItemHandlerResult menuhandlerRtSkyGain(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	return rtFloatSlider(data, operation, &gfx_rt_skylight_gain, 0.0f, 0.25f, "");
+}
+
+static MenuItemHandlerResult menuhandlerRtTorchInt(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// 0..4.0 in 0.1 steps (slider max 40); default 1.4
+	return rtFloatSlider(data, operation, &gfx_rt_torch_intensity, 0.0f, 0.1f, "");
 }
 
 static MenuItemHandlerResult menuhandlerRtRelight(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -2989,6 +2995,14 @@ struct menuitem g_ExtendedRTMenuItems[] = {
 		(uintptr_t)"Camera Torch\n",
 		(uintptr_t)&gfx_rt_torch,
 		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Torch Brightness\n",
+		40,
+		menuhandlerRtTorchInt,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

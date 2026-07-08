@@ -9362,8 +9362,9 @@ s32 chraiLuaUpsideDown(s32 on)
 }
 
 // pd.pixelate(w, h, colours): chunk the rendered frame down to a w x h pixel
-// grid via the retro post filter (gfx_retro.cpp, GL backend only), optionally
-// crushing colours (2..64 = N-level greyscale, 256 = RGB 3-3-2). w <= 0 = off.
+// grid via the retro post filter (gfx_retro.cpp on GL, the gfx_sdlgpu.cpp
+// retro section on Vulkan/D3D12), optionally crushing colours (2..64 =
+// N-level greyscale, 256 = RGB 3-3-2). w <= 0 = off.
 extern s32 gfx_retro_pixel_w;
 extern s32 gfx_retro_pixel_h;
 extern s32 gfx_retro_colors;

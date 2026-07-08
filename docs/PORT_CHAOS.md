@@ -217,9 +217,15 @@ function, called every frame while active (disco's hue cycle).
   framebuffer colour (MSAA-resolving blit, or `glCopyTexSubImage2D` for the
   default framebuffer), then one fullscreen shader that snaps UVs to the
   grid (`GL_NEAREST` — each block is one point-sampled source pixel) and
-  quantizes colours. **OpenGL renderer only** — the SDL_GPU rapi entry is
-  NULL, so on Vulkan/D3D12 the video half is silently absent (the wireframe
-  precedent); audio still crunches. Globals `gfx_retro_pixel_w/h`,
+  quantizes colours. Implemented on **both backends**: GL in
+  `gfx_retro.cpp`; SDL_GPU (Vulkan/D3D12) in `gfx_sdlgpu.cpp`'s retro
+  section — one same-format copy of `fb.color` + one fullscreen pipeline
+  (the RT fullscreen VS with rect (0,0,1,1) is identity in image space, so
+  the single round-trip doesn't flip), GLSL450 through the glslang/
+  SPIRV-Cross pipeline, and the `rt_resolve` hand-back idiom (`st.pass`/
+  `st.bound_pipeline` cleared + `vs_dirty`/`fs_dirty` re-set). Like the RT
+  resolve, the SDL_GPU path **requires MSAA off** (logs once and no-ops on
+  a multisample fb). Globals `gfx_retro_pixel_w/h`,
   `gfx_retro_colors` (0 keep / 2..64 grey levels / ≥256 RGB332). Audio is a
   bitcrush at the `audioEndFrame` push point (the `pd.mute` mutable-copy
   mechanism): sample-and-hold every `step`th stereo frame (device rate

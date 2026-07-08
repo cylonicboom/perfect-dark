@@ -1276,7 +1276,7 @@ static int l_pd_upside_down(lua_State *L)
 
 /* pd.pixelate(w, h, colours) -> bool. Pixelate the rendered frame down to a
  * w x h grid; colours 4 = 4-level greyscale, 256 = 256-colour RGB 3-3-2,
- * 0/absent = keep colours. pd.pixelate() turns it off. GL renderer only. */
+ * 0/absent = keep colours. pd.pixelate() turns it off. */
 static int l_pd_pixelate(lua_State *L)
 {
 	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {

@@ -18,7 +18,8 @@
  *
  * All GL state touched here is saved with glGet* on entry and restored on
  * exit, so the immediate-mode renderer's cached state stays truthful.
- * GL backend only — the SDL_GPU rapi table carries NULL for retro_filter.
+ * This file is the GL implementation; the SDL_GPU backend (Vulkan/D3D12) has
+ * its own twin in gfx_sdlgpu.cpp's retro section.
  */
 
 #include <stdio.h>

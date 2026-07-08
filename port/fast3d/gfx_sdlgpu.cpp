@@ -3059,6 +3059,164 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
     st.fs_dirty = true;
 }
 
+// ---------------------------------------------------------------------------
+// Chaos retro filter (pd.pixelate; docs/PORT_CHAOS.md) — the SDL_GPU twin of
+// gfx_retro.cpp's GL pass, riding the RT section's helpers: one same-format
+// colour copy of fb.color, then one fullscreen pipeline (the RT fullscreen VS
+// with rect (0,0,1,1) — identity in image space, so the single round-trip
+// doesn't flip) that snaps UVs to the pixw x pixh grid (nearest sampler) and
+// quantizes colours. Same constraint as the RT resolve: MSAA framebuffers
+// are unsupported (no multisample colour capture here) — logs once, no-ops.
+
+// std140 mirror of the RetroUni block below (one 16-byte slot)
+struct RetroGpuUni {
+    float grid[2];
+    float levels;
+    int32_t mode;
+};
+
+static struct {
+    bool broken, inited, msaa_warned;
+    SDL_GPUShader *vs, *fs;
+    SDL_GPUGraphicsPipeline *pipe;
+    SDL_GPUTexture *scene_col; // gpu.fb_format copy of the fb colour
+    int fbw, fbh;
+} retro = {};
+
+static const char *const retro_fs_src =
+    "#version 450\n"
+    "layout(location = 0) in vec2 vUV;\n"
+    "layout(location = 0) out vec4 oCol;\n"
+    "layout(set = 2, binding = 0) uniform sampler2D uColor;\n"
+    "layout(std140, set = 3, binding = 0) uniform RetroUni {\n"
+    "    vec2 uGrid; float uLevels; int uMode;\n"
+    "};\n"
+    "void main() {\n"
+    "    vec2 uv = (floor(vUV * uGrid) + 0.5) / uGrid;\n"
+    "    vec3 c = texture(uColor, uv).rgb;\n"
+    "    if (uMode == 1) {\n"
+    "        float l = dot(c, vec3(0.299, 0.587, 0.114));\n"
+    "        l = floor(min(l, 0.9999) * uLevels) / (uLevels - 1.0);\n"
+    "        c = vec3(l);\n"
+    "    } else if (uMode == 2) {\n"
+    "        vec3 q = vec3(8.0, 8.0, 4.0);\n"
+    "        c = floor(min(c, vec3(0.9999)) * q) / (q - vec3(1.0));\n"
+    "    }\n"
+    "    oCol = vec4(c, 1.0);\n"
+    "}\n";
+
+static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
+    if (retro.broken || !gpu.render_cb) {
+        return;
+    }
+    GpuFb &fb = fbs[st.cur_fb];
+    if (!fb.color) {
+        return;
+    }
+    if (fb.msaa > 1) {
+        if (!retro.msaa_warned) {
+            retro.msaa_warned = true;
+            sysLogPrintf(LOG_WARNING, "SDL_GPU retro: pixelate needs MSAA off on this backend "
+                                      "(no multisample colour capture here) — set Video.MSAA=1");
+        }
+        return;
+    }
+
+    end_pass();
+
+    if (!retro.inited) {
+        retro.inited = true;
+        if (!gfx_sdlgpu_shader_compile_fixed(gpu.device, rt_vs_src, retro_fs_src,
+                                             1 /* vs ubos */, 1 /* samplers */, 1 /* fs ubos */,
+                                             &retro.vs, &retro.fs)) {
+            sysLogPrintf(LOG_ERROR, "SDL_GPU retro: shader failed — pixelate disabled");
+            retro.broken = true;
+            return;
+        }
+        retro.pipe = rt_make_pipeline(retro.vs, retro.fs, gpu.fb_format, 0);
+        if (!retro.pipe) {
+            sysLogPrintf(LOG_ERROR, "SDL_GPU retro: pipeline failed (%s) — pixelate disabled", SDL_GetError());
+            retro.broken = true;
+            return;
+        }
+    }
+
+    if (retro.fbw != (int)fb.w || retro.fbh != (int)fb.h || !retro.scene_col) {
+        rt_release_tex(&retro.scene_col);
+        retro.scene_col = rt_make_tex(gpu.fb_format, (int)fb.w, (int)fb.h);
+        if (!retro.scene_col) {
+            sysLogPrintf(LOG_ERROR, "SDL_GPU retro: capture texture failed: %s", SDL_GetError());
+            retro.broken = true;
+            return;
+        }
+        retro.fbw = (int)fb.w;
+        retro.fbh = (int)fb.h;
+    }
+
+    // capture the finished frame's colour (same size + format, exact copy)
+    {
+        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(gpu.render_cb);
+        SDL_GPUTextureLocation csrc, cdst;
+        SDL_zero(csrc);
+        SDL_zero(cdst);
+        csrc.texture = fb.color;
+        cdst.texture = retro.scene_col;
+        SDL_CopyGPUTextureToTexture(cp, &csrc, &cdst, fb.w, fb.h, 1, false);
+        SDL_EndGPUCopyPass(cp);
+    }
+
+    RetroGpuUni uni;
+    uni.grid[0] = (float)pixw;
+    uni.grid[1] = (float)pixh;
+    uni.levels = 0.0f;
+    uni.mode = 0;
+    if (colors >= 256) {
+        uni.mode = 2;
+    } else if (colors >= 2) {
+        uni.mode = 1;
+        uni.levels = colors > 64 ? 64.0f : (float)colors;
+    }
+
+    // draw it back pixelated + colour-crushed over the whole framebuffer
+    const float rect[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    SDL_PushGPUVertexUniformData(gpu.render_cb, 0, rect, sizeof(rect));
+    SDL_PushGPUFragmentUniformData(gpu.render_cb, 0, &uni, sizeof(uni));
+
+    {
+        SDL_GPUColorTargetInfo ct;
+        SDL_zero(ct);
+        ct.texture = fb.color;
+        ct.load_op = SDL_GPU_LOADOP_LOAD;
+        ct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, NULL);
+        SDL_BindGPUGraphicsPipeline(p, retro.pipe);
+
+        SDL_GPUViewport vp;
+        vp.x = 0.0f;
+        vp.y = 0.0f;
+        vp.w = (float)fb.w;
+        vp.h = (float)fb.h;
+        vp.min_depth = 0.0f;
+        vp.max_depth = 1.0f;
+        SDL_SetGPUViewport(p, &vp);
+
+        SDL_GPUTextureSamplerBinding bind;
+        bind.texture = retro.scene_col;
+        bind.sampler = sampler_get(0); // all-nearest, clamp
+        SDL_BindGPUFragmentSamplers(p, 0, &bind, 1);
+
+        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(p);
+    }
+
+    // hand the frame back to the immediate path (the rt_resolve idiom): our
+    // pass is closed and our uniform pushes clobbered the cb's slots
+    st.pass = NULL;
+    st.bound_pipeline = NULL;
+    st.vs_dirty = true;
+    st.fs_dirty = true;
+}
+
 struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_get_name,
     gfx_sdlgpu_get_max_texture_size,
@@ -3112,8 +3270,8 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_cache_bind_palette,
     gfx_sdlgpu_set_palette_enable,
     gfx_sdlgpu_set_shade_routing,
-    gfx_sdlgpu_rt_resolve, // screen-space raytracing suite (docs/PORT_RAYTRACING.md)
-    nullptr,               // retro_filter — chaos pixelate is GL-only for now (docs/PORT_CHAOS.md)
+    gfx_sdlgpu_rt_resolve,   // screen-space raytracing suite (docs/PORT_RAYTRACING.md)
+    gfx_sdlgpu_retro_filter, // chaos pixelate (docs/PORT_CHAOS.md)
 };
 
 #endif // USE_SDLGPU

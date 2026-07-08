@@ -338,7 +338,7 @@ int gfx_screen_tint = 0;
 // Chaos retro filter (pd.pixelate): pixelate the finished frame to a
 // pixel_w x pixel_h grid, optionally crushing colours (0 = keep, 2..64 =
 // N-level greyscale, >= 256 = RGB 3-3-2). w == 0 disables. Dispatched at
-// gfx_run's tail through the nullable retro_filter rapi entry (GL only).
+// gfx_run's tail through the nullable retro_filter rapi entry (GL + SDL_GPU).
 int gfx_retro_pixel_w = 0;
 int gfx_retro_pixel_h = 0;
 int gfx_retro_colors = 0;

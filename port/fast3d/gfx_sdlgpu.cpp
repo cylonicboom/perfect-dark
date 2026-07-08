@@ -2504,9 +2504,13 @@ static char *rt_build_fs_source(int pass) {
     return src;
 }
 
-// blend: 0 = none, 1 = multiplicative (dst_new = src * dst), 2 = additive
-static SDL_GPUGraphicsPipeline *rt_make_pipeline(SDL_GPUShader *vs, SDL_GPUShader *fs,
-                                                 SDL_GPUTextureFormat fmt, int blend) {
+// blend: 0 = none, 1 = multiplicative (dst_new = src * dst), 2 = additive.
+// sc must match the render target's sample count (the retro filter draws
+// back into the game fb, which can be multisample; the RT passes all target
+// single-sample textures).
+static SDL_GPUGraphicsPipeline *rt_make_pipeline_ms(SDL_GPUShader *vs, SDL_GPUShader *fs,
+                                                    SDL_GPUTextureFormat fmt, int blend,
+                                                    SDL_GPUSampleCount sc) {
     SDL_GPUGraphicsPipelineCreateInfo ci;
     SDL_zero(ci);
     ci.vertex_shader = vs;
@@ -2515,7 +2519,7 @@ static SDL_GPUGraphicsPipeline *rt_make_pipeline(SDL_GPUShader *vs, SDL_GPUShade
     ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     ci.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-    ci.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    ci.multisample_state.sample_count = sc;
 
     SDL_GPUColorTargetDescription ctd;
     SDL_zero(ctd);
@@ -2539,6 +2543,11 @@ static SDL_GPUGraphicsPipeline *rt_make_pipeline(SDL_GPUShader *vs, SDL_GPUShade
     ci.target_info.color_target_descriptions = &ctd;
     ci.target_info.num_color_targets = 1;
     return SDL_CreateGPUGraphicsPipeline(gpu.device, &ci);
+}
+
+static SDL_GPUGraphicsPipeline *rt_make_pipeline(SDL_GPUShader *vs, SDL_GPUShader *fs,
+                                                 SDL_GPUTextureFormat fmt, int blend) {
+    return rt_make_pipeline_ms(vs, fs, fmt, blend, SDL_GPU_SAMPLECOUNT_1);
 }
 
 static bool rt_init(void) {
@@ -2734,8 +2743,9 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
         if (!rt.msaa_warned) {
             rt.msaa_warned = true;
             sysLogPrintf(LOG_WARNING,
-                         "SDL_GPU RT: raytracing needs MSAA off on this backend (multisample depth "
-                         "can't be sampled or resolved) — set Video.MSAA=1");
+                         "SDL_GPU RT: raytracing needs MSAA off on this backend — colour resolves "
+                         "(fb_readable_color), but SDL_GPU has no depth resolve path and multisample "
+                         "depth can't be sampled — set Video.MSAA=1");
         }
         return;
     }
@@ -3061,12 +3071,21 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
 
 // ---------------------------------------------------------------------------
 // Chaos retro filter (pd.pixelate; docs/PORT_CHAOS.md) — the SDL_GPU twin of
-// gfx_retro.cpp's GL pass, riding the RT section's helpers: one same-format
-// colour copy of fb.color, then one fullscreen pipeline (the RT fullscreen VS
-// with rect (0,0,1,1) — identity in image space, so the single round-trip
-// doesn't flip) that snaps UVs to the pixw x pixh grid (nearest sampler) and
-// quantizes colours. Same constraint as the RT resolve: MSAA framebuffers
-// are unsupported (no multisample colour capture here) — logs once, no-ops.
+// gfx_retro.cpp's GL pass, riding the RT section's helpers: capture the frame
+// colour, then one fullscreen pipeline (the RT fullscreen VS with rect
+// (0,0,1,1) — identity in image space, so the single round-trip doesn't flip)
+// that snaps UVs to the pixw x pixh grid (nearest sampler) and quantizes
+// colours.
+//
+// Capture — THE pattern for any future post pass that reads the frame back:
+//  - msaa fb: fb_readable_color() records an empty RESOLVE_AND_STORE render
+//    pass into the fb's own single-sample fb.resolve texture. fb.resolve is
+//    a different texture than the render target, so it can be sampled while
+//    drawing back into fb.color — no copy needed. (Depth has no SDL_GPU
+//    resolve path, which is why the RT suite still requires MSAA off.)
+//  - non-msaa fb: one same-format texture copy into a retro-owned capture
+//    (can't sample fb.color while rendering into it).
+// The draw-back pipeline's sample count must match fb.color (retro_pipe_for).
 
 // std140 mirror of the RetroUni block below (one 16-byte slot)
 struct RetroGpuUni {
@@ -3076,12 +3095,34 @@ struct RetroGpuUni {
 };
 
 static struct {
-    bool broken, inited, msaa_warned;
+    bool broken, inited;
+    bool nores_warned;
     SDL_GPUShader *vs, *fs;
-    SDL_GPUGraphicsPipeline *pipe;
-    SDL_GPUTexture *scene_col; // gpu.fb_format copy of the fb colour
+    SDL_GPUGraphicsPipeline *pipe[4]; // per target sample count: 1/2/4/8x
+    SDL_GPUTexture *scene_col;        // gpu.fb_format copy (non-msaa capture)
     int fbw, fbh;
 } retro = {};
+
+// lazily build the draw-back pipeline whose sample count matches the fb
+static SDL_GPUGraphicsPipeline *retro_pipe_for(uint32_t msaa) {
+    int idx;
+    SDL_GPUSampleCount sc;
+    switch (msaa) {
+        case 2:  idx = 1; sc = SDL_GPU_SAMPLECOUNT_2; break;
+        case 4:  idx = 2; sc = SDL_GPU_SAMPLECOUNT_4; break;
+        case 8:  idx = 3; sc = SDL_GPU_SAMPLECOUNT_8; break;
+        default: idx = 0; sc = SDL_GPU_SAMPLECOUNT_1; break;
+    }
+    if (!retro.pipe[idx]) {
+        retro.pipe[idx] = rt_make_pipeline_ms(retro.vs, retro.fs, gpu.fb_format, 0, sc);
+        if (!retro.pipe[idx]) {
+            sysLogPrintf(LOG_ERROR, "SDL_GPU retro: %ux pipeline failed (%s) — pixelate disabled", msaa,
+                         SDL_GetError());
+            retro.broken = true;
+        }
+    }
+    return retro.pipe[idx];
+}
 
 static const char *const retro_fs_src =
     "#version 450\n"
@@ -3113,11 +3154,11 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
     if (!fb.color) {
         return;
     }
-    if (fb.msaa > 1) {
-        if (!retro.msaa_warned) {
-            retro.msaa_warned = true;
-            sysLogPrintf(LOG_WARNING, "SDL_GPU retro: pixelate needs MSAA off on this backend "
-                                      "(no multisample colour capture here) — set Video.MSAA=1");
+    if (fb.msaa > 1 && !fb.resolve) {
+        // resolve target failed at fb creation; nothing to capture through
+        if (!retro.nores_warned) {
+            retro.nores_warned = true;
+            sysLogPrintf(LOG_WARNING, "SDL_GPU retro: msaa fb has no resolve target — pixelate skipped");
         }
         return;
     }
@@ -3133,28 +3174,30 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
             retro.broken = true;
             return;
         }
-        retro.pipe = rt_make_pipeline(retro.vs, retro.fs, gpu.fb_format, 0);
-        if (!retro.pipe) {
-            sysLogPrintf(LOG_ERROR, "SDL_GPU retro: pipeline failed (%s) — pixelate disabled", SDL_GetError());
-            retro.broken = true;
-            return;
-        }
     }
 
-    if (retro.fbw != (int)fb.w || retro.fbh != (int)fb.h || !retro.scene_col) {
-        rt_release_tex(&retro.scene_col);
-        retro.scene_col = rt_make_tex(gpu.fb_format, (int)fb.w, (int)fb.h);
-        if (!retro.scene_col) {
-            sysLogPrintf(LOG_ERROR, "SDL_GPU retro: capture texture failed: %s", SDL_GetError());
-            retro.broken = true;
+    // capture the finished frame's colour
+    SDL_GPUTexture *src;
+    if (fb.msaa > 1) {
+        // resolve-pass capture: RESOLVE_AND_STORE into fb.resolve (a separate
+        // single-sample texture, safe to sample while drawing back)
+        src = fb_readable_color(fb, gpu.render_cb);
+        if (!src || src == fb.color) {
             return;
         }
-        retro.fbw = (int)fb.w;
-        retro.fbh = (int)fb.h;
-    }
-
-    // capture the finished frame's colour (same size + format, exact copy)
-    {
+    } else {
+        // same-format copy (can't sample fb.color while rendering into it)
+        if (retro.fbw != (int)fb.w || retro.fbh != (int)fb.h || !retro.scene_col) {
+            rt_release_tex(&retro.scene_col);
+            retro.scene_col = rt_make_tex(gpu.fb_format, (int)fb.w, (int)fb.h);
+            if (!retro.scene_col) {
+                sysLogPrintf(LOG_ERROR, "SDL_GPU retro: capture texture failed: %s", SDL_GetError());
+                retro.broken = true;
+                return;
+            }
+            retro.fbw = (int)fb.w;
+            retro.fbh = (int)fb.h;
+        }
         SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(gpu.render_cb);
         SDL_GPUTextureLocation csrc, cdst;
         SDL_zero(csrc);
@@ -3163,6 +3206,12 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
         cdst.texture = retro.scene_col;
         SDL_CopyGPUTextureToTexture(cp, &csrc, &cdst, fb.w, fb.h, 1, false);
         SDL_EndGPUCopyPass(cp);
+        src = retro.scene_col;
+    }
+
+    SDL_GPUGraphicsPipeline *pipe = retro_pipe_for(fb.msaa);
+    if (!pipe) {
+        return;
     }
 
     RetroGpuUni uni;
@@ -3189,7 +3238,7 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
         ct.load_op = SDL_GPU_LOADOP_LOAD;
         ct.store_op = SDL_GPU_STOREOP_STORE;
         SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, NULL);
-        SDL_BindGPUGraphicsPipeline(p, retro.pipe);
+        SDL_BindGPUGraphicsPipeline(p, pipe);
 
         SDL_GPUViewport vp;
         vp.x = 0.0f;
@@ -3201,7 +3250,7 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int colors) {
         SDL_SetGPUViewport(p, &vp);
 
         SDL_GPUTextureSamplerBinding bind;
-        bind.texture = retro.scene_col;
+        bind.texture = src;
         bind.sampler = sampler_get(0); // all-nearest, clamp
         SDL_BindGPUFragmentSamplers(p, 0, &bind, 1);
 

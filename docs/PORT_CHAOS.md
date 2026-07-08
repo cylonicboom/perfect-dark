@@ -223,9 +223,17 @@ function, called every frame while active (disco's hue cycle).
   (the RT fullscreen VS with rect (0,0,1,1) is identity in image space, so
   the single round-trip doesn't flip), GLSL450 through the glslang/
   SPIRV-Cross pipeline, and the `rt_resolve` hand-back idiom (`st.pass`/
-  `st.bound_pipeline` cleared + `vs_dirty`/`fs_dirty` re-set). Like the RT
-  resolve, the SDL_GPU path **requires MSAA off** (logs once and no-ops on
-  a multisample fb). Globals `gfx_retro_pixel_w/h`,
+  `st.bound_pipeline` cleared + `vs_dirty`/`fs_dirty` re-set). **MSAA is
+  supported on both backends**: GL's capture blit resolves implicitly; on
+  SDL_GPU a multisample fb captures via `fb_readable_color()` (an empty
+  `RESOLVE_AND_STORE` render pass into the fb's own single-sample
+  `fb.resolve` texture — sampleable while drawing back, so no copy) and
+  the draw-back pipeline is built per target sample count
+  (`retro_pipe_for`, `rt_make_pipeline_ms`). `fb_readable_color` is THE
+  capture pattern for any future SDL_GPU post pass that reads the frame
+  back. (The RT suite still requires MSAA off on SDL_GPU — that's a
+  *depth* limitation: SDL_GPU has no depth resolve and can't sample
+  multisample depth; colour is solved.) Globals `gfx_retro_pixel_w/h`,
   `gfx_retro_colors` (0 keep / 2..64 grey levels / ≥256 RGB332). Audio is a
   bitcrush at the `audioEndFrame` push point (the `pd.mute` mutable-copy
   mechanism): sample-and-hold every `step`th stereo frame (device rate

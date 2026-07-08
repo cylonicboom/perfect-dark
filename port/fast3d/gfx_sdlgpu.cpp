@@ -2373,6 +2373,7 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_cache_bind_palette,
     gfx_sdlgpu_set_palette_enable,
     gfx_sdlgpu_set_shade_routing,
+    nullptr, // rt_resolve — raytracing suite is GL-only (docs/PORT_RAYTRACING.md)
 };
 
 #endif // USE_SDLGPU

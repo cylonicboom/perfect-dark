@@ -30,6 +30,7 @@
 #include "gfx_window_manager_api.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
+#include "rt_ext.h"
 
 extern "C" {
 #include "ext_tex.h"
@@ -252,6 +253,27 @@ float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 bool gfx_wireframe_mode = false;
+
+// Screen-space raytracing suite controls (docs/PORT_RAYTRACING.md). Defined
+// here — not in gfx_rt.cpp — so they exist on every build, including the
+// dedicated server (which drops gfx_opengl.cpp/gfx_rt.cpp but still links
+// net.c's /rt console command). Declared in port/include/rt_ext.h.
+int gfx_rt_enabled = 0;
+int gfx_rt_ao = 1;
+int gfx_rt_shadows = 0; // screen-space sun shadows: stylized, off by default
+int gfx_rt_ssr = 1;
+int gfx_rt_gi = RT_GI_SSGI;
+int gfx_rt_debug = RT_DEBUG_OFF;
+int gfx_rt_quality = 1;
+float gfx_rt_ao_intensity = 0.7f;
+float gfx_rt_ao_radius = 45.0f;       // PD world units (~100/metre)
+float gfx_rt_shadow_intensity = 0.5f;
+float gfx_rt_shadow_length = 120.0f;
+float gfx_rt_ssr_intensity = 0.6f;
+float gfx_rt_gi_intensity = 1.0f;
+float gfx_rt_gi_scale = 0.5f;
+float gfx_rt_sun_dir[3] = { 0.35f, 0.85f, 0.40f }; // world-space, toward light
+float gfx_rt_sky[3] = { 0.18f, 0.20f, 0.26f };     // miss radiance for GI rays
 bool gfx_mirror_mode = false;
 // Chaos flat-texture mode (docs/PORT_CHAOS.md): 0 = off; 1 = white out texel
 // RGB (the combiner multiplies TEXEL*SHADE, so this leaves pure vertex
@@ -3412,6 +3434,19 @@ static void gfx_run_dl(Gfx* cmd) {
                 // while the weight is set (glares / overexposure flash)
                 gfx_flush();
                 gfx_hdr_dazzle = (float)(cmd->words.w1 & 0xff) / 255.0f;
+                break;
+            case G_RTRESOLVE_EXT:
+                // Screen-space raytracing resolve (docs/PORT_RAYTRACING.md):
+                // world + props are drawn, depth still intact. w1 = the
+                // emitting player's rtcamera*. The backend saves/restores raw
+                // GL state itself; force the cached viewport/scissor to
+                // reapply on the next draw regardless.
+                if (gfx_rt_enabled && gfx_rapi->rt_resolve && cmd->words.w1 != 0) {
+                    gfx_flush();
+                    gfx_rapi->rt_resolve((const void*)cmd->words.w1, rdp.viewport.x,
+                                         rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
+                    rdp.viewport_or_scissor_changed = true;
+                }
                 break;
             case G_LOADBLOCK:
                 gfx_dp_load_block(C1(24, 3), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));

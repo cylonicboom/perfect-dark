@@ -17,6 +17,7 @@ extern s32 g_NetDedicatedMode;
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
 #include "../fast3d/gfx_sdlgpu.h"
+#include "rt_ext.h"
 
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
@@ -1038,4 +1039,26 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterString("Video.DlCacheCull", vidDlCacheCull, sizeof(vidDlCacheCull));
 	configRegisterString("Video.DlCacheFrontFaceGL", vidDlCacheFrontGL, sizeof(vidDlCacheFrontGL));
 	configRegisterString("Video.DlCacheFrontFaceGPU", vidDlCacheFrontGpu, sizeof(vidDlCacheFrontGpu));
+
+	// Screen-space raytracing suite (docs/PORT_RAYTRACING.md; live control via
+	// the /rt console command). GL backend only; default off.
+	configRegisterInt("Video.RT.Enabled", &gfx_rt_enabled, 0, 1);
+	configRegisterInt("Video.RT.AO", &gfx_rt_ao, 0, 1);
+	configRegisterInt("Video.RT.Shadows", &gfx_rt_shadows, 0, 1);
+	configRegisterInt("Video.RT.SSR", &gfx_rt_ssr, 0, 1);
+	configRegisterInt("Video.RT.GI", &gfx_rt_gi, 0, 2);
+	configRegisterInt("Video.RT.Quality", &gfx_rt_quality, 0, 2);
+	configRegisterFloat("Video.RT.AOIntensity", &gfx_rt_ao_intensity, 0.f, 1.f);
+	configRegisterFloat("Video.RT.AORadius", &gfx_rt_ao_radius, 1.f, 1000.f);
+	configRegisterFloat("Video.RT.ShadowIntensity", &gfx_rt_shadow_intensity, 0.f, 1.f);
+	configRegisterFloat("Video.RT.ShadowLength", &gfx_rt_shadow_length, 1.f, 2000.f);
+	configRegisterFloat("Video.RT.SSRIntensity", &gfx_rt_ssr_intensity, 0.f, 1.f);
+	configRegisterFloat("Video.RT.GIIntensity", &gfx_rt_gi_intensity, 0.f, 4.f);
+	configRegisterFloat("Video.RT.GIScale", &gfx_rt_gi_scale, 0.25f, 1.f);
+	configRegisterFloat("Video.RT.SunX", &gfx_rt_sun_dir[0], -1.f, 1.f);
+	configRegisterFloat("Video.RT.SunY", &gfx_rt_sun_dir[1], -1.f, 1.f);
+	configRegisterFloat("Video.RT.SunZ", &gfx_rt_sun_dir[2], -1.f, 1.f);
+	configRegisterFloat("Video.RT.SkyR", &gfx_rt_sky[0], 0.f, 4.f);
+	configRegisterFloat("Video.RT.SkyG", &gfx_rt_sky[1], 0.f, 4.f);
+	configRegisterFloat("Video.RT.SkyB", &gfx_rt_sky[2], 0.f, 4.f);
 }

@@ -6872,6 +6872,128 @@ s32 netConsoleCommand(const char *line)
 			}
 			sysLogPrintf(LOG_CHAT, "DLCACHE: %s", on ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "rt") == 0 || strcmp(cmd, "raytrace") == 0) {
+		// /rt [on|off]                     master toggle (screen-space raytracing suite)
+		// /rt ao|shadows|ssr [on|off]      per-effect toggles
+		// /rt gi [off|ssgi|pt]             GI mode (pt = multi-bounce path trace)
+		// /rt quality <0..2>               sample/step budget preset
+		// /rt debug [off|depth|normals|ao|shadow|gi|ssr]  buffer visualizer
+		// /rt sun X Y Z                    world-space direction toward the light
+		// /rt sky R G B                    GI miss radiance
+		// /rt aoint|aorad|shint|shlen|ssrint|giint|giscale <f>  tuning scalars
+		// /rt status                       print the whole state
+		// Persist by editing the Video.RT.* keys in pd.ini (registered in
+		// video.c). GL backend only — SDL_GPU ignores the resolve. See
+		// docs/PORT_RAYTRACING.md. Routed here like /wireframe.
+		extern int gfx_rt_enabled, gfx_rt_ao, gfx_rt_shadows, gfx_rt_ssr;
+		extern int gfx_rt_gi, gfx_rt_debug, gfx_rt_quality;
+		extern f32 gfx_rt_ao_intensity, gfx_rt_ao_radius;
+		extern f32 gfx_rt_shadow_intensity, gfx_rt_shadow_length;
+		extern f32 gfx_rt_ssr_intensity, gfx_rt_gi_intensity, gfx_rt_gi_scale;
+		extern f32 gfx_rt_sun_dir[3], gfx_rt_sky[3];
+
+		char sub[16];
+		const char *val = arg;
+		s32 si = 0;
+		while (*val == ' ') {
+			val++;
+		}
+		while (val[si] && val[si] != ' ' && si < (s32)sizeof(sub) - 1) {
+			sub[si] = val[si];
+			si++;
+		}
+		sub[si] = '\0';
+		val += si;
+		while (*val == ' ') {
+			val++;
+		}
+
+		if (strcmp(sub, "ao") == 0 || strcmp(sub, "shadows") == 0 || strcmp(sub, "ssr") == 0) {
+			int *fx = (sub[0] == 'a') ? &gfx_rt_ao : (sub[1] == 'h' ? &gfx_rt_shadows : &gfx_rt_ssr);
+			if (!val[0]) {
+				*fx = !*fx;
+			} else {
+				*fx = !(strcmp(val, "0") == 0 || strcmp(val, "off") == 0);
+			}
+			gfx_rt_enabled = 1;
+			sysLogPrintf(LOG_CHAT, "rt %s %s", sub, *fx ? "ON" : "OFF");
+		} else if (strcmp(sub, "gi") == 0 || strcmp(sub, "pt") == 0) {
+			if (strcmp(sub, "pt") == 0) {
+				gfx_rt_gi = 2;
+			} else if (!val[0]) {
+				gfx_rt_gi = (gfx_rt_gi + 1) % 3;
+			} else if (strcmp(val, "pt") == 0 || strcmp(val, "2") == 0) {
+				gfx_rt_gi = 2;
+			} else if (strcmp(val, "ssgi") == 0 || strcmp(val, "1") == 0 || strcmp(val, "on") == 0) {
+				gfx_rt_gi = 1;
+			} else {
+				gfx_rt_gi = 0;
+			}
+			gfx_rt_enabled = 1;
+			sysLogPrintf(LOG_CHAT, "rt gi mode=%s",
+					gfx_rt_gi == 2 ? "pathtrace" : (gfx_rt_gi == 1 ? "ssgi" : "off"));
+		} else if (strcmp(sub, "quality") == 0) {
+			gfx_rt_quality = atoi(val);
+			if (gfx_rt_quality < 0) gfx_rt_quality = 0;
+			if (gfx_rt_quality > 2) gfx_rt_quality = 2;
+			sysLogPrintf(LOG_CHAT, "rt quality=%d", gfx_rt_quality);
+		} else if (strcmp(sub, "debug") == 0) {
+			static const char *modes[] = { "off", "depth", "normals", "ao", "shadow", "gi", "ssr" };
+			s32 m = 0;
+			s32 i;
+			for (i = 0; i < 7; i++) {
+				if (strcmp(val, modes[i]) == 0) {
+					m = i;
+				}
+			}
+			if (val[0] >= '0' && val[0] <= '6' && !val[1]) {
+				m = val[0] - '0';
+			}
+			gfx_rt_debug = m;
+			if (m) gfx_rt_enabled = 1;
+			sysLogPrintf(LOG_CHAT, "rt debug=%s", modes[gfx_rt_debug]);
+		} else if (strcmp(sub, "sun") == 0 || strcmp(sub, "sky") == 0) {
+			f32 *v = (sub[1] == 'u') ? gfx_rt_sun_dir : gfx_rt_sky;
+			f32 x, y, z;
+			if (sscanf(val, "%f %f %f", &x, &y, &z) == 3) {
+				v[0] = x; v[1] = y; v[2] = z;
+				sysLogPrintf(LOG_CHAT, "rt %s=(%.2f %.2f %.2f)", sub, x, y, z);
+			} else {
+				sysLogPrintf(LOG_CHAT, "usage: /rt %s X Y Z", sub);
+			}
+		} else if (strcmp(sub, "aoint") == 0 || strcmp(sub, "aorad") == 0 || strcmp(sub, "shint") == 0
+				|| strcmp(sub, "shlen") == 0 || strcmp(sub, "ssrint") == 0 || strcmp(sub, "giint") == 0
+				|| strcmp(sub, "giscale") == 0) {
+			f32 f = (f32)atof(val);
+			if (strcmp(sub, "aoint") == 0) gfx_rt_ao_intensity = f;
+			else if (strcmp(sub, "aorad") == 0) gfx_rt_ao_radius = f;
+			else if (strcmp(sub, "shint") == 0) gfx_rt_shadow_intensity = f;
+			else if (strcmp(sub, "shlen") == 0) gfx_rt_shadow_length = f;
+			else if (strcmp(sub, "ssrint") == 0) gfx_rt_ssr_intensity = f;
+			else if (strcmp(sub, "giint") == 0) gfx_rt_gi_intensity = f;
+			else gfx_rt_gi_scale = f;
+			sysLogPrintf(LOG_CHAT, "rt %s=%.2f", sub, f);
+		} else if (strcmp(sub, "status") == 0) {
+			sysLogPrintf(LOG_CHAT, "rt: %s q=%d ao=%d(%.2f r%.0f) shadows=%d(%.2f l%.0f) ssr=%d(%.2f)",
+					gfx_rt_enabled ? "ON" : "OFF", gfx_rt_quality,
+					gfx_rt_ao, gfx_rt_ao_intensity, gfx_rt_ao_radius,
+					gfx_rt_shadows, gfx_rt_shadow_intensity, gfx_rt_shadow_length,
+					gfx_rt_ssr, gfx_rt_ssr_intensity);
+			sysLogPrintf(LOG_CHAT, "rt: gi=%s(%.2f scale %.2f) debug=%d sun=(%.2f %.2f %.2f) sky=(%.2f %.2f %.2f)",
+					gfx_rt_gi == 2 ? "pathtrace" : (gfx_rt_gi == 1 ? "ssgi" : "off"),
+					gfx_rt_gi_intensity, gfx_rt_gi_scale, gfx_rt_debug,
+					gfx_rt_sun_dir[0], gfx_rt_sun_dir[1], gfx_rt_sun_dir[2],
+					gfx_rt_sky[0], gfx_rt_sky[1], gfx_rt_sky[2]);
+		} else {
+			bool on;
+			if (!sub[0]) {
+				on = !gfx_rt_enabled;
+			} else {
+				on = !(strcmp(sub, "0") == 0 || strcmp(sub, "off") == 0);
+			}
+			gfx_rt_enabled = on ? 1 : 0;
+			sysLogPrintf(LOG_CHAT, "rt %s (GL backend only; /rt status for detail)", on ? "ON" : "OFF");
+		}
 	} else if (strcmp(cmd, "gpu") == 0 || strcmp(cmd, "renderer") == 0) {
 		// /gpu — show the active rendering backend; for SDL_GPU also the
 		// driver (vulkan/direct3d12/metal), shader format, msaa, vsync and
@@ -6909,6 +7031,10 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /dlcache palette [on|off]        GPU vertex-shade off = baked shade (debug black/no-flash walls)");
 		sysLogPrintf(LOG_CHAT, "  /texcache [N]                    texture-cache size cap (raise to fix dlcache black textures)");
 		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
+		sysLogPrintf(LOG_CHAT, "  /rt [on|off]                     screen-space raytracing suite (GL only)");
+		sysLogPrintf(LOG_CHAT, "  /rt ao|shadows|ssr|gi|pt         toggle AO / sun shadows / reflections / GI / path trace");
+		sysLogPrintf(LOG_CHAT, "  /rt debug depth|normals|ao|shadow|gi|ssr  visualize an RT buffer (off = composite)");
+		sysLogPrintf(LOG_CHAT, "  /rt quality 0..2 | sun X Y Z | status     budgets / light dir / full state");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

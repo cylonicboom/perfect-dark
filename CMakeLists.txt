@@ -536,6 +536,7 @@ if(DEDICATED_SERVER)
   list(REMOVE_ITEM SRC
     "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdl.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_opengl.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_rt.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/glad/glad.c"
     "${CMAKE_SOURCE_DIR}/port/src/input.c"
   )

@@ -78,6 +78,7 @@
 #include "net/demo.h"
 #include "net/netmsg.h"
 #include "mpsetups.h"
+#include "rt_ext.h"
 #endif
 
 s32 g_DefaultWeapons[2];
@@ -5347,6 +5348,39 @@ Gfx *playerRenderShield(Gfx *gdl)
 
 Gfx *playerRenderHud(Gfx *gdl)
 {
+#ifndef PLATFORM_N64
+	// Raytracing suite resolve point (docs/PORT_RAYTRACING.md): the world and
+	// props are rendered and the depth buffer is still intact here (bgunRender
+	// clears depth further down), so this is where the renderer captures the
+	// scene and runs its AO/shadow/GI/SSR passes. The viewmodel and 2D HUD
+	// draw afterwards, composited on top untouched.
+	if (gfx_rt_enabled) {
+		static rtcamera rtcams[4];
+		Mtxf *wts = g_Vars.currentplayer->worldtoscreenmtx;
+
+		if (wts && g_Vars.currentplayernum >= 0 && g_Vars.currentplayernum < 4) {
+			rtcamera *cam = &rtcams[g_Vars.currentplayernum];
+			struct zrange zr;
+			const f32 *src = &wts->m[0][0];
+			s32 i;
+
+			for (i = 0; i < 16; i++) {
+				cam->viewmtx[i] = src[i];
+			}
+
+			cam->fovy = viGetFovY();
+			cam->aspect = viGetAspect();
+			viGetZRange(&zr);
+			cam->znear = zr.near;
+			cam->zfar = zr.far;
+			cam->playernum = g_Vars.currentplayernum;
+			cam->valid = 1;
+
+			gDPRtResolveEXT(gdl++, cam);
+		}
+	}
+#endif
+
 	if (g_Vars.currentplayer->cameramode == CAMERAMODE_THIRDPERSON) {
 		gdl = boltbeamsRender(gdl);
 		gdl = bgRenderArtifacts(gdl);

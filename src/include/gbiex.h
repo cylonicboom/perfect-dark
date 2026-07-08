@@ -221,6 +221,13 @@
 // texture number so the renderer can substitute a PNG from data/ext_tex.
 #define G_LOADTLUT2                  0x49
 #define G_SETTEXINFO_EXT             0x4a
+// Port-only screen-space raytracing resolve point (docs/PORT_RAYTRACING.md).
+// Emitted at the top of playerRenderHud (world + props rendered, depth buffer
+// still intact — bgunRender clears depth right after). w1 = pointer to the
+// player's rtcamera snapshot (port/include/rt_ext.h). The renderer flushes,
+// then runs the AO/shadow/GI/SSR post passes over the current framebuffer.
+// No-op on backends without support (SDL_GPU) and when gfx_rt_enabled == 0.
+#define G_RTRESOLVE_EXT              0x4b
 
 /* G_EXTRAGEOMETRYMODE flags */
 
@@ -364,6 +371,15 @@
                                                         \
     _g->words.w0 = _SHIFTL(G_SETDAZZLE_EXT, 24, 8);     \
     _g->words.w1 = (u32)(w255) & 0xff;                  \
+}
+
+// Raytracing resolve point; cam = rtcamera* (see G_RTRESOLVE_EXT above)
+#define gDPRtResolveEXT(pkt, cam)                       \
+{                                                       \
+    Gfx *_g = (Gfx *)(pkt);                             \
+                                                        \
+    _g->words.w0 = _SHIFTL(G_RTRESOLVE_EXT, 24, 8);     \
+    _g->words.w1 = (uintptr_t)(cam);                    \
 }
 
 #define gSPSetExtraGeometryModeEXT(pkt, word) gSPExtraGeometryModeEXT((pkt), 0, word)

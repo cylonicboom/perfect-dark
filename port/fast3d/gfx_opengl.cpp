@@ -19,6 +19,7 @@
 #include "gfx_cc.h"
 #include "gfx_rendering_api.h"
 #include "gfx_pc.h"
+#include "gfx_rt.h"
 
 using namespace std;
 
@@ -1677,6 +1678,22 @@ static void gfx_opengl_set_anisotropy_level(int level) {
 	current_anisotropy_level = level;
 }
 
+// Screen-space raytracing resolve (docs/PORT_RAYTRACING.md). gfx_rt.cpp does
+// the work and saves/restores every piece of GL state it touches, so nothing
+// the immediate-mode path has cached goes stale. Desktop GL 3.0+ only: the
+// pipeline needs FBOs, depth captures and RGBA16F render targets.
+static void gfx_opengl_rt_resolve(const void* cam, int vx, int vy, int vw, int vh) {
+    if (gl_es || gl_glsl_version < 130 || !gfx_framebuffers_enabled) {
+        return;
+    }
+    const Framebuffer& fb = framebuffers[current_framebuffer];
+    // fb 0 is the default backbuffer: its fbo field stays 0 (= the default
+    // framebuffer binding) and its dims are refreshed every frame by gfx_run's
+    // update_framebuffer_parameters(0, ...) call.
+    gfx_rt_resolve((const rtcamera*)cam, vx, vy, vw, vh, fb.fbo, (int)fb.width, (int)fb.height,
+                   (int)(fb.msaa_level > 1 ? fb.msaa_level : 1), fb.invert_y, gl_glsl_version_str);
+}
+
 struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_get_name,
     gfx_opengl_get_max_texture_size,
@@ -1729,5 +1746,6 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_cache_upload_palette,
     gfx_opengl_cache_bind_palette,
     gfx_opengl_set_palette_enable,
-    gfx_opengl_set_shade_routing
+    gfx_opengl_set_shade_routing,
+    gfx_opengl_rt_resolve
 };

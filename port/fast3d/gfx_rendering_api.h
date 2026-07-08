@@ -97,6 +97,14 @@ struct GfxRenderingAPI {
 	// Per-combiner shade routing, 3 bits per input slot: bits0-1 rgb type
 	// (0 baked / 1 SHADE rgb / 2 SHADE_ALPHA broadcast), bit2 = alpha is SHADE.
 	void (*set_shade_routing)(int packed);
+
+	// --- Screen-space raytracing suite (port-only; docs/PORT_RAYTRACING.md) ---
+	// Run the RT post passes (AO / shadows / GI / SSR) over the framebuffer
+	// currently being drawn to. cam = const rtcamera* (rt_ext.h); vx/vy/vw/vh =
+	// the emitting player's viewport in framebuffer coords. The backend must
+	// leave all API state it touches restored on return. NULL when the backend
+	// has no implementation (SDL_GPU) — the dispatcher checks before calling.
+	void (*rt_resolve)(const void* cam, int vx, int vy, int vw, int vh);
 };
 
 #endif

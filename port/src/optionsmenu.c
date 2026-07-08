@@ -2596,6 +2596,400 @@ struct menudialogdef g_ExtendedClassicMenuDialog = {
 	NULL,
 };
 
+// ---------------------------------------------------------------------------
+// Extended Options > Experiments > Raytracing (docs/PORT_RAYTRACING.md).
+// Screen-space RT suite: master toggle + per-effect toggles + tuning sliders.
+// The globals live in gfx_pc.cpp (rt_ext.h); externed here like net.c's /rt.
+// The console command /rt is the full/precise interface — these are the
+// common knobs. Sliders are coarse by design; use /rt for exact values.
+
+extern int gfx_rt_enabled, gfx_rt_ao, gfx_rt_shadows, gfx_rt_ssr, gfx_rt_gi;
+extern int gfx_rt_quality, gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows;
+extern int gfx_rt_torch, gfx_rt_skylight, gfx_rt_autosun, gfx_rt_bounces;
+extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
+extern f32 gfx_rt_light_max, gfx_rt_skylight_gain;
+
+static MenuItemHandlerResult menuhandlerRtCheckbox(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// param2 holds a pointer to the int toggle global (LITERAL_TEXT label in
+	// param3 via a paired item is not used — the label is set per menu row).
+	int *flag = (int *)item->param3;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return *flag != 0;
+	case MENUOP_SET:
+		*flag = data->checkbox.value;
+		// enabling any effect implies the master switch, like the /rt command
+		if (data->checkbox.value && flag != &gfx_rt_enabled) {
+			gfx_rt_enabled = 1;
+		}
+		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerRtQuality(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *opts[] = { "Low", "Medium", "High" };
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		gfx_rt_quality = data->dropdown.value;
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = gfx_rt_quality < 0 ? 0 : (gfx_rt_quality > 2 ? 2 : gfx_rt_quality);
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerRtGI(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *opts[] = { "Off", "Screen-space GI", "Path Tracing" };
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		gfx_rt_gi = data->dropdown.value;
+		if (data->dropdown.value) {
+			gfx_rt_enabled = 1;
+		}
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = gfx_rt_gi < 0 ? 0 : (gfx_rt_gi > 2 ? 2 : gfx_rt_gi);
+	}
+
+	return 0;
+}
+
+// Float-slider helper: param3 = step count (slider max); the value maps to
+// *target via `min + value * step`. GETSLIDERLABEL must stay <= 15 chars.
+static MenuItemHandlerResult rtFloatSlider(union handlerdata *data, s32 operation, f32 *target, f32 mn, f32 step,
+                                           const char *unit)
+{
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (s32)((*target - mn) / step + 0.5f);
+		break;
+	case MENUOP_SET:
+		*target = mn + (f32)data->slider.value * step;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%.2f%s", mn + (f32)data->slider.value * step, unit);
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerRtAmbient(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	return rtFloatSlider(data, operation, &gfx_rt_dark_ambient, 0.0f, 0.05f, "");
+}
+
+static MenuItemHandlerResult menuhandlerRtLightInt(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	return rtFloatSlider(data, operation, &gfx_rt_light_intensity, 0.0f, 0.25f, "");
+}
+
+static MenuItemHandlerResult menuhandlerRtLightRadius(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// 0..5000 world units in 100-unit steps
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (s32)(gfx_rt_light_radius / 100.0f + 0.5f);
+		break;
+	case MENUOP_SET:
+		gfx_rt_light_radius = (f32)data->slider.value * 100.0f;
+		if (gfx_rt_light_radius < 50.0f) {
+			gfx_rt_light_radius = 50.0f;
+		}
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d", (s32)data->slider.value * 100);
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerRtLightMax(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// brightness cap 0.05..2.0 in 0.05 steps (slider value 1..40); the low end
+	// is where it matters (user runs ~0.07 for a moody floor)
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = (s32)(gfx_rt_light_max / 0.05f + 0.5f);
+		break;
+	case MENUOP_SET:
+		gfx_rt_light_max = (f32)data->slider.value * 0.05f;
+		if (gfx_rt_light_max < 0.05f) {
+			gfx_rt_light_max = 0.05f;
+		}
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%.2f", (f32)data->slider.value * 0.05f);
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerRtSkyGain(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	return rtFloatSlider(data, operation, &gfx_rt_skylight_gain, 0.0f, 0.25f, "");
+}
+
+static MenuItemHandlerResult menuhandlerRtBounces(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// 0 = quality preset, 1..8 override
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = gfx_rt_bounces;
+		break;
+	case MENUOP_SET:
+		gfx_rt_bounces = data->slider.value;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		if (data->slider.value == 0) {
+			sprintf(data->slider.label, "Auto");
+		} else {
+			sprintf(data->slider.label, "%d", (s32)data->slider.value);
+		}
+	}
+
+	return 0;
+}
+
+struct menuitem g_ExtendedRTMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"SUPER EXPERIMENTAL: screen-space raytracing.\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Expect it to look underwhelming and quirky.\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"OpenGL or SDL GPU (Vulkan); MSAA off on Vulkan.\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Enable Raytracing\n",
+		(uintptr_t)&gfx_rt_enabled,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Quality\n",
+		0,
+		menuhandlerRtQuality,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Ambient Occlusion\n",
+		(uintptr_t)&gfx_rt_ao,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Reflections\n",
+		(uintptr_t)&gfx_rt_ssr,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Sun Shadows\n",
+		(uintptr_t)&gfx_rt_shadows,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Auto Sun (from stage sun)\n",
+		(uintptr_t)&gfx_rt_autosun,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Global Illumination\n",
+		0,
+		menuhandlerRtGI,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"GI Bounces\n",
+		8,
+		menuhandlerRtBounces,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Dark Mode (relight from map lights)\n",
+		(uintptr_t)&gfx_rt_dark,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Dark Ambient\n",
+		20,
+		menuhandlerRtAmbient,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Map Lights\n",
+		(uintptr_t)&gfx_rt_lights,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Light Shadows\n",
+		(uintptr_t)&gfx_rt_light_shadows,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Light Intensity\n",
+		32,
+		menuhandlerRtLightInt,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Light Radius\n",
+		50,
+		menuhandlerRtLightRadius,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Light Brightness Cap\n",
+		40,
+		menuhandlerRtLightMax,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Camera Torch\n",
+		(uintptr_t)&gfx_rt_torch,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Skylight (from sky/fog colour)\n",
+		(uintptr_t)&gfx_rt_skylight,
+		menuhandlerRtCheckbox,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE,
+		(uintptr_t)"Skylight Strength\n",
+		16,
+		menuhandlerRtSkyGain,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedRTMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Raytracing (Experimental)",
+	g_ExtendedRTMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
 // Extended Options > Experiments: the port-added cheats relocated out of the
 // original Cheats > Gameplay menu (they stay cheats under the hood — only
 // the menu moved), plus the Classic Options sub-menu. (The "Unlock All
@@ -2640,6 +3034,14 @@ struct menuitem g_ExtendedExperimentsMenuItems[] = {
 		(uintptr_t)"Classic Options\n",
 		0,
 		(void *)&g_ExtendedClassicMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Raytracing (Experimental)\n",
+		0,
+		(void *)&g_ExtendedRTMenuDialog,
 	},
 	{
 		MENUITEMTYPE_DROPDOWN,

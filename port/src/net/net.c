@@ -6893,6 +6893,7 @@ s32 netConsoleCommand(const char *line)
 		extern f32 gfx_rt_ssr_intensity, gfx_rt_gi_intensity, gfx_rt_gi_scale;
 		extern f32 gfx_rt_sun_dir[3], gfx_rt_sky[3];
 		extern int gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows, gfx_rt_torch, gfx_rt_skylight;
+		extern int gfx_rt_bounces;
 		extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
 		extern f32 gfx_rt_light_cull, gfx_rt_light_max, gfx_rt_skylight_gain;
 		extern f32 gfx_rt_torch_intensity, gfx_rt_torch_range;
@@ -6951,6 +6952,15 @@ s32 netConsoleCommand(const char *line)
 			if (gfx_rt_quality < 0) gfx_rt_quality = 0;
 			if (gfx_rt_quality > 2) gfx_rt_quality = 2;
 			sysLogPrintf(LOG_CHAT, "rt quality=%d", gfx_rt_quality);
+		} else if (strcmp(sub, "bounces") == 0) {
+			gfx_rt_bounces = atoi(val);
+			if (gfx_rt_bounces < 0) gfx_rt_bounces = 0;
+			if (gfx_rt_bounces > 8) gfx_rt_bounces = 8;
+			if (gfx_rt_bounces) {
+				sysLogPrintf(LOG_CHAT, "rt bounces=%d (override; 0 = preset)", gfx_rt_bounces);
+			} else {
+				sysLogPrintf(LOG_CHAT, "rt bounces=auto (quality preset: ssgi 1, pt 2-3)");
+			}
 		} else if (strcmp(sub, "debug") == 0) {
 			static const char *modes[] = { "off", "depth", "normals", "ao", "shadow", "gi", "ssr", "light" };
 			s32 m = 0;
@@ -7014,8 +7024,8 @@ s32 netConsoleCommand(const char *line)
 					gfx_rt_lights, gfx_rt_light_intensity, gfx_rt_light_radius, gfx_rt_light_cull,
 					gfx_rt_light_max, gfx_rt_light_shadows,
 					gfx_rt_torch, gfx_rt_torch_intensity, gfx_rt_torch_range);
-			sysLogPrintf(LOG_CHAT, "rt: skylight=%d (gain %.2f; sky colour -> ambient tint + GI sky)",
-					gfx_rt_skylight, gfx_rt_skylight_gain);
+			sysLogPrintf(LOG_CHAT, "rt: skylight=%d (gain %.2f; sky colour -> ambient tint + GI sky) bounces=%d (0=auto)",
+					gfx_rt_skylight, gfx_rt_skylight_gain, gfx_rt_bounces);
 		} else {
 			bool on;
 			if (!sub[0]) {
@@ -7071,6 +7081,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /rt lights|torch [on|off]                 relight from map (glare) lights / camera torch");
 		sysLogPrintf(LOG_CHAT, "  /rt lightint|lightrad|lightcull|lightmax|torchint|torchrange F  dynamic-light tuning (/rt lightshadows too)");
 		sysLogPrintf(LOG_CHAT, "  /rt skylight [on|off] | skygain F         sky-colour ambient tint + GI sky (day/sunset/night)");
+		sysLogPrintf(LOG_CHAT, "  /rt bounces N                             GI/PT bounce override, 0 = quality preset");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

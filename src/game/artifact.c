@@ -804,8 +804,8 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
  * world pos = light bbox average + room pos, colour = the 4/4/4/4 nibbles,
  * intensity folds brightnessmult (32 = nominal 1.0, the glare idiom above).
  * Only "on" + healthy lights count — shooting a light out extinguishes its
- * illumination like it extinguishes its glare. Only loaded rooms carry light
- * data, so distant lights (un)stream with their rooms. Output is sorted
+ * illumination like it extinguishes its glare. Light data is stage-resident
+ * (independent of room gfx streaming), so nothing pops in. Output is sorted
  * nearest-first and capped, so when a scene has more candidates than max the
  * closest ones win. Called per player per frame from playerRenderHud.
  */
@@ -829,21 +829,26 @@ s32 rtCollectLights(const f32 *campos, rtlight *out, s32 max)
 		max = RT_MAX_LIGHTS;
 	}
 
+	if (g_BgLightsFileData == NULL) {
+		return 0; // stage without light data
+	}
+
 	for (roomnum = 1; roomnum < g_Vars.roomcount; roomnum++) {
 		struct light *roomlights;
 		s32 numlights;
 
-		if (g_Rooms[roomnum].gfxdata == NULL || !g_Rooms[roomnum].loaded240) {
+		// The persistent room table (g_Rooms[].numlights/lightindex — the
+		// dlights.c idiom) and g_BgLightsFileData are both STAGE-resident,
+		// so the harvest is fully independent of room gfx streaming: lights
+		// exist (with live shot-out state) even for rooms that were never
+		// loaded — no pop-in around corners.
+		numlights = g_Rooms[roomnum].numlights;
+
+		if (numlights <= 0) {
 			continue;
 		}
 
-		numlights = g_Rooms[roomnum].gfxdata->numlights;
-
-		if (numlights == 0) {
-			continue;
-		}
-
-		roomlights = (struct light *)&g_BgLightsFileData[g_Rooms[roomnum].gfxdata->lightsindex * 0x22];
+		roomlights = (struct light *)&g_BgLightsFileData[g_Rooms[roomnum].lightindex * 0x22];
 
 		for (i = 0; i < numlights; i++) {
 			struct light *light = &roomlights[i];

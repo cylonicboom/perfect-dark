@@ -21,7 +21,7 @@ extern "C" {
 // space per player. NOTE: the shader-side array sizes are LITERALS in both
 // backend preludes (gfx_rt.cpp kFSCommon, gfx_sdlgpu.cpp lights_ubo) — keep
 // them in sync when changing this.
-#define RT_MAX_LIGHTS 32
+#define RT_MAX_LIGHTS 64
 typedef struct rtlight {
 	float pos[3];    // world position (light bbox average + room pos)
 	float radius;    // falloff radius, world units
@@ -125,6 +125,8 @@ extern float gfx_rt_light_max;        // per-light brightness cap (hue-
 extern int gfx_rt_skylight;           // derive ambient tint + GI sky from the
                                       // stage's sky colour (day/sunset/night)
 extern float gfx_rt_skylight_gain;    // skylight -> GI miss-radiance scale
+extern int gfx_rt_bounces;            // GI/PT bounce override, 0 = quality
+                                      // preset (SSGI 1 / PT 2-3); 1..8
 extern int gfx_rt_torch;              // camera-mounted test spotlight
 extern float gfx_rt_torch_intensity;
 extern float gfx_rt_torch_range;      // world units

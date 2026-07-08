@@ -233,8 +233,8 @@ static const char* kFSCommon =
     // dark/relight mode: dynamic lights (view-space, premultiplied colours),
     // the camera torch, and the composite darkening controls
     "uniform sampler2D uLight;\n"
-    "uniform vec4 uLightPosRad[32];\n" // 32 == RT_MAX_LIGHTS
-    "uniform vec4 uLightCol[32];\n"
+    "uniform vec4 uLightPosRad[64];\n" // 64 == RT_MAX_LIGHTS
+    "uniform vec4 uLightCol[64];\n"
     "uniform int uLightCount;\n"
     "uniform int uLightShadows;\n"
     "uniform int uLightSteps;\n"
@@ -708,7 +708,10 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
 
         const int mode = (gi_mode == RT_GI_OFF) ? RT_GI_SSGI : gi_mode;
         const int rays = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_rays : kQuality[q].gi_rays;
-        const int bounces = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_bounces : 1;
+        int bounces = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_bounces : 1;
+        if (gfx_rt_bounces > 0) { // user override (works in ssgi mode too)
+            bounces = gfx_rt_bounces > 8 ? 8 : gfx_rt_bounces;
+        }
 
         glBindFramebuffer(GL_FRAMEBUFFER, s_gitrace_fbo);
         glViewport(givx, givy, givw, givh);

@@ -2475,8 +2475,8 @@ static char *rt_build_fs_source(int pass) {
     // the light pass's second block (RtGpuLights, pushed on fragment slot 1)
     static const char *const lights_ubo =
         "layout(std140, set = 3, binding = 1) uniform RtLightsUni {\n"
-        "    vec4 uLightPosRad[32];\n" // 32 == RT_MAX_LIGHTS
-        "    vec4 uLightCol[32];\n"
+        "    vec4 uLightPosRad[64];\n" // 64 == RT_MAX_LIGHTS
+        "    vec4 uLightCol[64];\n"
         "};\n";
     const size_t cap = strlen(ubo) + strlen(lights_ubo) + strlen(RT_GLSL_HELPERS) +
                        strlen(rt_pass_bodies[pass]) + 1024;
@@ -2930,6 +2930,9 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
         const int mode = (gi_mode == RT_GI_OFF) ? RT_GI_SSGI : gi_mode;
         uni.rays = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_rays : kQuality[q].gi_rays;
         uni.bounces = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_bounces : 1;
+        if (gfx_rt_bounces > 0) { // user override (works in ssgi mode too)
+            uni.bounces = gfx_rt_bounces > 8 ? 8 : gfx_rt_bounces;
+        }
         uni.steps = kQuality[q].gi_steps;
         uni.blend = (mode == RT_GI_PATHTRACE) ? 0.93f : 0.85f;
 

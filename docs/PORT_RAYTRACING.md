@@ -108,7 +108,7 @@ gfx_opengl.cpp/gfx_rt.cpp but still links net.c's `/rt`) links.
    player's camera, world pos = light bbox average + room pos, colour = the
    4/4/4/4 nibbles, intensity = brightnessmult/32, skipping "off" and
    shot-out (`!healthy`) lights — carried in the per-player `rtcamera`
-   (`RT_MAX_LIGHTS` = 32; the harvest reach is `radius + Video.RT.LightCull`
+   (`RT_MAX_LIGHTS` = 64; the harvest reach is `radius + Video.RT.LightCull`
    from the CAMERA, decoupled from the falloff radius because a fixture can
    light a visible surface from far beyond its own radius — a light down a
    long corridor), transformed to view space CPU-side, and evaluated
@@ -224,6 +224,7 @@ Differences from GL, all deliberate:
 /rt lightmax <f>                  per-light brightness cap, hue-preserving (1.0)
 /rt skylight [on|off]             sky-colour ambient tint + GI sky (default on)
 /rt skygain <f>                   skylight -> GI miss-radiance scale (0.3)
+/rt bounces <n>                   GI/PT bounce override 1..8, 0 = quality preset
 /rt torch [on|off]                camera-mounted test spotlight
 /rt torchint|torchrange <f>       torch tuning
 /rt status
@@ -286,12 +287,14 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
 - Dark mode's "albedo" is the baked scene (albedo × baked lighting), so a
   torch reveals the original shading, not flat unlit texture colour — usually
   looks natural, but pre-baked dark corners stay dim even under a light.
-- Light harvesting only sees LOADED rooms (light data streams with room
-  gfx), so distant lights pop with room streaming; the harvest is per-camera
-  nearest-32 within `radius + lightcull`, so a scene with more candidates
-  drops the farthest — if a far light still pops in a light-dense area,
-  raise `/rt lightcull` and/or the cap. Lights are point sources at the
-  fixture bbox centre — long fluorescent tubes light from their midpoint.
+- Light harvesting is INDEPENDENT of room streaming: the per-room light
+  index (`g_Rooms[].numlights/lightindex`, the dlights.c idiom) and
+  `g_BgLightsFileData` are both stage-resident, so lights exist — with live
+  shot-out state — even for rooms never loaded. The harvest is per-camera
+  nearest-64 within `radius + lightcull`; a scene with more candidates drops
+  the farthest (raise `/rt lightcull` and/or `RT_MAX_LIGHTS` if that ever
+  shows). Lights are point sources at the fixture bbox centre — long
+  fluorescent tubes light from their midpoint.
 - The per-light shadow rays are screen-space like everything else: an
   occluder outside the frame won't cast, and light through a wall that's
   offscreen can leak.

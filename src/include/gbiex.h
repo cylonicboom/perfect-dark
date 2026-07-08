@@ -226,7 +226,8 @@
 // still intact — bgunRender clears depth right after). w1 = pointer to the
 // player's rtcamera snapshot (port/include/rt_ext.h). The renderer flushes,
 // then runs the AO/shadow/GI/SSR post passes over the current framebuffer.
-// No-op on backends without support (SDL_GPU) and when gfx_rt_enabled == 0.
+// Implemented by both backends (GL + SDL_GPU); no-op when gfx_rt_enabled == 0
+// (and on SDL_GPU when the framebuffer is MSAA — depth not resolvable there).
 #define G_RTRESOLVE_EXT              0x4b
 
 /* G_EXTRAGEOMETRYMODE flags */

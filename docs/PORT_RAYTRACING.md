@@ -1,7 +1,9 @@
 # Port Raytracing Suite (screen-space AO / shadows / GI / SSR / path tracing)
 
-**Status: compile-verified only — not yet runtime-tested. Run the checklist at
-the bottom before trusting any of it.** GL backend only; SDL_GPU ignores it.
+**Status: GL backend runtime-CONFIRMED (2026-07-08, full checklist passed).
+SDL_GPU backend (Vulkan / D3D12) implemented, compile-verified only — run the
+checklist on it before trusting it.** SDL_GPU additionally requires MSAA off
+(see the SDL_GPU section).
 
 ## What this is
 
@@ -98,17 +100,71 @@ at target build; failure logs and self-disables the suite). Any shader build
 failure also logs + self-disables (`s_broken`), so a broken driver costs one
 log line, not a hang.
 
+### The shared shader layer (`gfx_rt_common.h`)
+
+The pass ALGORITHMS — every fragment `main()` plus the reconstruction/hash
+helpers, the quality table and the CPU matrix helpers — live in
+`port/fast3d/gfx_rt_common.h`, included by BOTH backend implementations. The
+bodies deliberately contain **no declarations**: each backend prepends its own
+prelude declaring `vUV`/`oCol`, the samplers and the uniform names the bodies
+reference (the header's top comment lists them). GL declares them as loose
+GLSL-130 uniforms (unused ones optimize out; same-type samplers sharing a
+texture unit is legal); SDL_GPU declares per-pass `set=2` samplers and one
+std140 UBO whose MEMBERS carry the same bare names. Fix a pass's algorithm in
+the header and both backends get it; add a uniform and you must touch both
+preludes (GL: kFSCommon + the rtLink sampler table; SDL_GPU: the UBO string +
+`RtGpuUni` mirror + `rt_pass_samplers`).
+
+### The SDL_GPU implementation (Vulkan / D3D12; gfx_sdlgpu.cpp RT section)
+
+Same passes, recompiled as GLSL450 through the same glslang(/SPIRV-Cross)
+pipeline as the combiner + HDR present shaders — so it runs wherever the
+backend does (Vulkan and D3D12; Metal untested like everything there).
+Differences from GL, all deliberate:
+
+- **Depth is sampled directly** from the framebuffer depth texture — fb depth
+  now carries `SAMPLER` usage (added in `update_framebuffer_parameters` when
+  `gpu.depth_samplable`, a new init-time capability check on the chosen depth
+  format). No depth copy exists at all.
+- **Scene colour** is captured with one same-format
+  `SDL_CopyGPUTextureToTexture` copy pass on the render CB.
+- **MSAA framebuffers are unsupported**: SDL_GPU can neither sample nor
+  resolve multisample depth (`SDL_GPUDepthStencilTargetInfo` has no resolve).
+  The resolve warns once ("set Video.MSAA=1") and no-ops. GL keeps its MSAA
+  support (the capture blit resolves there).
+- **Depth linearization is unchanged**: gfx_pc's 0..1-clip remap is
+  `z01 = (z+w)/2`, so the shared `lin()` (`d*2-1` → GL NDC) still holds.
+- **`uYSign` is -1** (the GL default's inverse): fb0 is stored top-down
+  (top-left texture origin). `--gpu-invert-y` flips it back — that's the
+  runtime lever if `/rt debug normals` shows vertically-mirrored lighting.
+  The viewport rect converts GL bottom-left → top-left with the fb height,
+  same as `apply_viewport`.
+- The fullscreen triangle is `gl_VertexIndex`-generated (the present-VS
+  pattern, no vertex buffer); the uv rect rides a tiny `set=1` VS UBO.
+- Pipelines are created eagerly at first resolve (formats are fixed by then:
+  FP16 / RGBA8 / `gpu.fb_format` — the composite pipelines key on fb_format,
+  so **HDR's FP16 fb0 is handled by construction**). The 9 shader pairs
+  compile once at first use (not in the disk shader cache; ~one-time hitch).
+- After the passes: `st.pass`/`st.bound_pipeline` reset and
+  `st.vs_dirty`/`st.fs_dirty` forced true — **the RT uniform pushes clobber
+  the command buffer's push-uniform slots**, and the immediate path must
+  re-push its own blocks. Forgetting this = psychedelic geometry.
+- RT textures are cleared once at creation so blur edge-taps / history reads
+  outside the viewport rect never see garbage (GL leaves them undefined and
+  got away with it; SDL_GPU is explicit).
+
 ## Files
 
 | File | Change |
 |---|---|
 | `src/include/gbiex.h` | `G_RTRESOLVE_EXT 0x4b` + `gDPRtResolveEXT` (next free EXT opcode: 0x4c) |
 | `port/include/rt_ext.h` | NEW — `rtcamera` struct + all `gfx_rt_*` control globals (shared C header) |
-| `port/fast3d/gfx_rt.h/.cpp` | NEW — the whole GL pipeline (shaders, targets, temporal history, state save/restore) |
+| `port/fast3d/gfx_rt_common.h` | NEW — SHARED pass bodies + GLSL helpers + quality table + matrix helpers (both backends) |
+| `port/fast3d/gfx_rt.h/.cpp` | NEW — the GL pipeline (preludes, targets, temporal history, state save/restore) |
 | `port/fast3d/gfx_rendering_api.h` | `rt_resolve` rapi entry (nullable) |
 | `port/fast3d/gfx_pc.cpp` | control-global definitions + dispatch case |
 | `port/fast3d/gfx_opengl.cpp` | capability gate + fb-info wrapper, rapi entry |
-| `port/fast3d/gfx_sdlgpu.cpp` | explicit `nullptr` rapi entry |
+| `port/fast3d/gfx_sdlgpu.cpp` | full SDL_GPU implementation (RT section: GLSL450 preludes, UBO, pipelines, passes) + samplable fb depth |
 | `src/game/player.c` | camera snapshot + marker emit at top of `playerRenderHud` |
 | `port/src/video.c` | `Video.RT.*` config keys |
 | `port/src/net/net.c` | `/rt` console command (+ `/help` lines) |
@@ -164,18 +220,22 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
 
 ## Honest limits
 
-- **Compile-verified only.** Zero frames rendered yet.
+- **GL backend runtime-confirmed (2026-07-08, full checklist). SDL_GPU
+  implementation compile-verified only** — the checklist below has never run
+  on Vulkan/D3D12; the depth convention and uYSign derivations are reasoned,
+  not observed (`--gpu-invert-y` and `/rt debug` are the levers if wrong).
+- SDL_GPU requires MSAA off (no way to sample or resolve multisample depth);
+  Metal is untested like the rest of that backend.
 - Screen-space by construction: light/reflections from offscreen or occluded
   geometry don't exist; SSR shows backfaces of nothing (confidence fades hide
   most of it); PT bounces terminate at the screen edge and fall back to the
   `sky` term. Disocclusion during fast motion = one-frame GI noise.
 - The viewmodel is excluded (captures pre-gun depth) — the gun neither casts
   nor receives any of the effects.
-- GL backend only (SDL_GPU has no implementation; GL ES and GLSL < 130 are
-  gated off). HDR output path untested with the additive composite.
+- GL ES and GLSL < 130 are gated off. HDR (SDL_GPU) composites in the FP16
+  buffer by construction but is runtime-untested with the additive pass.
 - Split-screen: per-viewport passes + per-player history are implemented, but
-  the viewport-rect Y-orientation across the two fb orientations is
-  runtime-unverified.
+  the viewport-rect Y-orientation handling is runtime-unverified.
 - Scene colour is used as both albedo and radiance in GI/PT (standard
   screen-space hack) — emissive-looking surfaces over-contribute.
 
@@ -192,6 +252,12 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
    the camera should not smear (reprojection) beyond a frame of noise.
 6. `/rt ssr on` near shiny floors at grazing angle.
 7. `/rt shadows on`, `/rt sun` pointed sensibly on an outdoor stage.
-8. MSAA on + RT on (edges should stay antialiased), supersampling on
+8. MSAA on + RT on (GL: edges should stay antialiased; SDL_GPU: expect the
+   one-time "set Video.MSAA=1" warning and no effects), supersampling on
    (Video internal scale ≠ window), and a 2P split-screen sanity pass.
 9. Perf: `/fps` with quality 0/1/2 at native res.
+10. SDL_GPU specifics: run 1-7 on `--renderer sdlgpu` (Vulkan), then
+    `--gpu-driver direct3d12`; verify `/gpu` still prints sane state after
+    `/rt on`; if normals/shadows are vertically mirrored, retry with
+    `--gpu-invert-y` and report — that pins the uYSign derivation. Also HDR
+    on + `/rt gi ssgi` (FP16 composite path).

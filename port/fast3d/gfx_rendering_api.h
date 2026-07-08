@@ -101,9 +101,10 @@ struct GfxRenderingAPI {
 	// --- Screen-space raytracing suite (port-only; docs/PORT_RAYTRACING.md) ---
 	// Run the RT post passes (AO / shadows / GI / SSR) over the framebuffer
 	// currently being drawn to. cam = const rtcamera* (rt_ext.h); vx/vy/vw/vh =
-	// the emitting player's viewport in framebuffer coords. The backend must
-	// leave all API state it touches restored on return. NULL when the backend
-	// has no implementation (SDL_GPU) — the dispatcher checks before calling.
+	// the emitting player's viewport in framebuffer coords (GL bottom-left).
+	// The backend must leave all API/tracked state it touches consistent on
+	// return. Implemented by GL and SDL_GPU; NULL allowed — the dispatcher
+	// checks before calling.
 	void (*rt_resolve)(const void* cam, int vx, int vy, int vw, int vh);
 };
 

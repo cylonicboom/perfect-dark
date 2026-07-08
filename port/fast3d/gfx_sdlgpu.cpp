@@ -55,6 +55,8 @@
 #include "gfx_sdl.h"
 #include "gfx_sdlgpu.h"
 #include "gfx_sdlgpu_shader.h"
+#include "rt_ext.h"        // raytracing suite controls + rtcamera (docs/PORT_RAYTRACING.md)
+#include "gfx_rt_common.h" // shared RT pass bodies, quality table, matrix helpers
 
 using namespace std;
 
@@ -126,6 +128,7 @@ static struct {
     MipmapFilteringMode mipmap_mode;
     int anisotropy;
     SDL_GPUTextureFormat depth_format;
+    bool depth_samplable; // depth format supports DEPTH_STENCIL_TARGET|SAMPLER (RT suite)
 
     // per-frame command buffers (null outside start_frame..end_frame)
     SDL_GPUCommandBuffer *upload_cb;
@@ -1445,6 +1448,13 @@ static void gfx_sdlgpu_init(void) {
         }
     }
 
+    // Raytracing suite: the RT passes sample the framebuffer depth directly,
+    // so non-msaa fb depth textures gain SAMPLER usage when the format
+    // supports the combination (docs/PORT_RAYTRACING.md).
+    gpu.depth_samplable = SDL_GPUTextureSupportsFormat(
+        gpu.device, gpu.depth_format, SDL_GPU_TEXTURETYPE_2D,
+        SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+
     // per-frame streamed vertex storage, triple-buffered
     for (int i = 0; i < GFX_SDLGPU_VTX_RING; i++) {
         SDL_GPUBufferCreateInfo bci;
@@ -1772,7 +1782,10 @@ static void gfx_sdlgpu_update_framebuffer_parameters(int fb_id, uint32_t width, 
 
     if (has_depth_buffer) {
         tci.format = gpu.depth_format;
-        tci.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        // non-msaa depth doubles as the RT suite's depth input (msaa depth
+        // can be neither sampled nor resolved in SDL_GPU)
+        tci.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
+                    ((msaa <= 1 && gpu.depth_samplable) ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
         tci.sample_count = msaa_to_enum(msaa);
         fb.depth = SDL_CreateGPUTexture(gpu.device, &tci);
         if (!fb.depth) {
@@ -2320,6 +2333,632 @@ static void gfx_sdlgpu_cache_bind_palette(uint32_t id, int count) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Screen-space raytracing suite (port-only; docs/PORT_RAYTRACING.md)
+//
+// SDL_GPU implementation of the rt_resolve rapi hook — the same pass
+// algorithms as the GL backend (shared bodies in gfx_rt_common.h), compiled
+// as GLSL450 through the same glslang/SPIRV-Cross pipeline as the combiner
+// and HDR present shaders, so it works on Vulkan and D3D12 (and best-effort
+// Metal) alike. Differences from the GL implementation:
+//  - depth is sampled DIRECTLY from the framebuffer depth texture (created
+//    with SAMPLER usage when gpu.depth_samplable) — no depth copy exists;
+//  - scene colour is captured with one same-format texture-to-texture copy;
+//  - all pass parameters ride one std140 UBO (set=3) whose MEMBERS carry the
+//    exact bare names the shared bodies reference;
+//  - the fullscreen triangle is gl_VertexIndex-generated (no vertex buffer),
+//    with the viewport uv rect in a tiny VS UBO (set=1);
+//  - MSAA framebuffers are unsupported: SDL_GPU can neither sample nor
+//    resolve multisample depth — the resolve logs once and no-ops;
+//  - uYSign is -1: fb0 is stored top-down (top-left texture origin), the
+//    vertical inverse of the GL default. --gpu-invert-y flips it back.
+// Depth linearization is unchanged: gfx_pc's 0..1-clip remap is
+// z01 = (z+w)/2, so the shared lin() (d*2-1 -> GL ndc) still holds.
+
+// std140 mirror of the RtUni block emitted by rt_build_fs_source below.
+// vec3+float pairs share one 16-byte slot; the two vec2s share another.
+struct RtGpuUni {
+    float cur_to_prev[16];
+    float proj[4];
+    float rect[4];
+    float sun[3]; float ysign;
+    float sky[3]; float blend;
+    float texel[2]; float dir[2];
+    float ao_radius, shadow_len, gi_radius, max_dist;
+    float ao_int, sh_int, gi_int, ssr_int;
+    int32_t frame, ao_on, shadow_on, gi_on;
+    int32_t ssr_on, mode, ao_samples, shadow_steps;
+    int32_t rays, steps, bounces, ssr_steps;
+};
+
+enum {
+    RTP_PREPASS, RTP_AOSHADOW, RTP_TRACE, RTP_TEMPORAL,
+    RTP_BLUR, RTP_SSR, RTP_COMP_MUL, RTP_COMP_ADD, RTP_DEBUG,
+    RTP_COUNT
+};
+
+static struct {
+    bool broken, inited;
+    bool msaa_warned, depth_warned;
+    SDL_GPUShader *vs[RTP_COUNT]; // compile_fixed creates one VS per pair
+    SDL_GPUShader *fs[RTP_COUNT];
+    SDL_GPUGraphicsPipeline *pipe[RTP_COUNT];
+    SDL_GPUGraphicsPipeline *pipe_blur16; // blur variant targeting the FP16 GI textures
+    int fbw, fbh, giw, gih;
+    float giscale;
+    uint32_t frame;
+    SDL_GPUTexture *scene_col;                             // gpu.fb_format copy of the fb colour
+    SDL_GPUTexture *norm_tex;                              // RGBA16F: view normal + linear depth
+    SDL_GPUTexture *ao_tex, *aotmp_tex;                    // RGBA8: r = AO, g = shadow
+    SDL_GPUTexture *ssr_tex;                               // RGBA8: reflection colour + confidence
+    SDL_GPUTexture *gitrace_tex, *gitmp_tex, *gifinal_tex; // RGBA16F at giscale
+    SDL_GPUTexture *hist_tex[RT_MAX_PLAYERS][2];           // per-player temporal ping-pong
+    int hist_idx[RT_MAX_PLAYERS];
+    bool prev_valid[RT_MAX_PLAYERS];
+    float prev_view[RT_MAX_PLAYERS][16];
+    float prev_fovy[RT_MAX_PLAYERS], prev_aspect[RT_MAX_PLAYERS];
+    float prev_znear[RT_MAX_PLAYERS], prev_zfar[RT_MAX_PLAYERS];
+} rt = {};
+
+// per-pass fragment sampler lists; array order = contiguous set=2 bindings =
+// the order rt_run_pass binds textures in
+static const struct {
+    const char *names[4];
+    int count;
+} rt_pass_samplers[RTP_COUNT] = {
+    { { "uDepth" }, 1 },                      // prepass
+    { { "uNorm" }, 1 },                       // aoshadow
+    { { "uNorm", "uColor" }, 2 },             // trace
+    { { "uNorm", "uCur", "uHist" }, 3 },      // temporal
+    { { "uNorm", "uSrc" }, 2 },               // blur
+    { { "uNorm", "uColor" }, 2 },             // ssr
+    { { "uAO" }, 1 },                         // comp_mul
+    { { "uColor", "uGI", "uSSR" }, 3 },       // comp_add
+    { { "uNorm", "uAO", "uGI", "uSSR" }, 4 }, // debug
+};
+
+static const char *const rt_pass_bodies[RTP_COUNT] = {
+    RT_FS_PREPASS_BODY, RT_FS_AOSHADOW_BODY, RT_FS_TRACE_BODY, RT_FS_TEMPORAL_BODY,
+    RT_FS_BLUR_BODY, RT_FS_SSR_BODY, RT_FS_COMP_MUL_BODY, RT_FS_COMP_ADD_BODY, RT_FS_DEBUG_BODY,
+};
+
+// Fullscreen triangle from gl_VertexIndex (the present-VS pattern). The uv
+// mapping accounts for the top-left texture origin: ndc.y = +1 (top of the
+// viewport) must sample the rect's v-MIN row.
+static const char *const rt_vs_src =
+    "#version 450\n"
+    "layout(location = 0) out vec2 vUV;\n"
+    "layout(std140, set = 1, binding = 0) uniform RtVs { vec4 uVsRect; };\n"
+    "void main() {\n"
+    "    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
+    "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+    "    vUV = vec2(mix(uVsRect.x, uVsRect.z, p.x), mix(uVsRect.w, uVsRect.y, p.y));\n"
+    "}\n";
+
+// assemble a pass's GLSL450 fragment source: layouts + samplers + the shared
+// UBO (member names = the bare names the shared bodies reference) + helpers
+// + body. Caller frees.
+static char *rt_build_fs_source(int pass) {
+    static const char *const ubo =
+        "layout(std140, set = 3, binding = 0) uniform RtUni {\n"
+        "    mat4 uCurToPrev;\n"
+        "    vec4 uProj;\n"
+        "    vec4 uRect;\n"
+        "    vec3 uSun; float uYSign;\n"
+        "    vec3 uSky; float uBlend;\n"
+        "    vec2 uTexel; vec2 uDir;\n"
+        "    float uAORadius; float uShadowLen; float uGIRadius; float uMaxDist;\n"
+        "    float uAOInt; float uShInt; float uGIInt; float uSSRInt;\n"
+        "    int uFrame; int uAOOn; int uShadowOn; int uGIOn;\n"
+        "    int uSSROn; int uMode; int uAOSamples; int uShadowSteps;\n"
+        "    int uRays; int uSteps; int uBounces; int uSSRSteps;\n"
+        "};\n";
+    const size_t cap = strlen(ubo) + strlen(RT_GLSL_HELPERS) + strlen(rt_pass_bodies[pass]) + 1024;
+    char *src = (char *)malloc(cap);
+    if (!src) {
+        return NULL;
+    }
+    char *p = src;
+    p += sprintf(p, "#version 450\n"
+                    "layout(location = 0) in vec2 vUV;\n"
+                    "layout(location = 0) out vec4 oCol;\n");
+    for (int i = 0; i < rt_pass_samplers[pass].count; i++) {
+        p += sprintf(p, "layout(set = 2, binding = %d) uniform sampler2D %s;\n", i,
+                     rt_pass_samplers[pass].names[i]);
+    }
+    strcpy(p, ubo);
+    p += strlen(ubo);
+    strcpy(p, RT_GLSL_HELPERS);
+    p += strlen(RT_GLSL_HELPERS);
+    strcpy(p, rt_pass_bodies[pass]);
+    return src;
+}
+
+// blend: 0 = none, 1 = multiplicative (dst_new = src * dst), 2 = additive
+static SDL_GPUGraphicsPipeline *rt_make_pipeline(SDL_GPUShader *vs, SDL_GPUShader *fs,
+                                                 SDL_GPUTextureFormat fmt, int blend) {
+    SDL_GPUGraphicsPipelineCreateInfo ci;
+    SDL_zero(ci);
+    ci.vertex_shader = vs;
+    ci.fragment_shader = fs;
+    ci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    ci.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    ci.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+    SDL_GPUColorTargetDescription ctd;
+    SDL_zero(ctd);
+    ctd.format = fmt;
+    if (blend != 0) {
+        ctd.blend_state.enable_blend = true;
+        ctd.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ctd.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        if (blend == 1) {
+            ctd.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_DST_COLOR;
+            ctd.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+            ctd.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_DST_ALPHA;
+            ctd.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+        } else {
+            ctd.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            ctd.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            ctd.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            ctd.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        }
+    }
+    ci.target_info.color_target_descriptions = &ctd;
+    ci.target_info.num_color_targets = 1;
+    return SDL_CreateGPUGraphicsPipeline(gpu.device, &ci);
+}
+
+static bool rt_init(void) {
+    const SDL_GPUTextureFormat fmt16 = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    const SDL_GPUTextureFormat fmt8 = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+    if (!SDL_GPUTextureSupportsFormat(gpu.device, fmt16, SDL_GPU_TEXTURETYPE_2D,
+                                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+        sysLogPrintf(LOG_ERROR, "SDL_GPU RT: FP16 render targets unsupported — raytracing disabled");
+        return false;
+    }
+
+    for (int i = 0; i < RTP_COUNT; i++) {
+        char *fs_src = rt_build_fs_source(i);
+        if (!fs_src) {
+            return false;
+        }
+        const bool ok = gfx_sdlgpu_shader_compile_fixed(gpu.device, rt_vs_src, fs_src,
+                                                        1 /* vs ubos */, rt_pass_samplers[i].count,
+                                                        1 /* fs ubos */, &rt.vs[i], &rt.fs[i]);
+        free(fs_src);
+        if (!ok) {
+            sysLogPrintf(LOG_ERROR, "SDL_GPU RT: pass %d shader failed — raytracing disabled", i);
+            return false;
+        }
+    }
+
+    rt.pipe[RTP_PREPASS] = rt_make_pipeline(rt.vs[RTP_PREPASS], rt.fs[RTP_PREPASS], fmt16, 0);
+    rt.pipe[RTP_AOSHADOW] = rt_make_pipeline(rt.vs[RTP_AOSHADOW], rt.fs[RTP_AOSHADOW], fmt8, 0);
+    rt.pipe[RTP_TRACE] = rt_make_pipeline(rt.vs[RTP_TRACE], rt.fs[RTP_TRACE], fmt16, 0);
+    rt.pipe[RTP_TEMPORAL] = rt_make_pipeline(rt.vs[RTP_TEMPORAL], rt.fs[RTP_TEMPORAL], fmt16, 0);
+    rt.pipe[RTP_BLUR] = rt_make_pipeline(rt.vs[RTP_BLUR], rt.fs[RTP_BLUR], fmt8, 0);
+    rt.pipe_blur16 = rt_make_pipeline(rt.vs[RTP_BLUR], rt.fs[RTP_BLUR], fmt16, 0);
+    rt.pipe[RTP_SSR] = rt_make_pipeline(rt.vs[RTP_SSR], rt.fs[RTP_SSR], fmt8, 0);
+    rt.pipe[RTP_COMP_MUL] = rt_make_pipeline(rt.vs[RTP_COMP_MUL], rt.fs[RTP_COMP_MUL], gpu.fb_format, 1);
+    rt.pipe[RTP_COMP_ADD] = rt_make_pipeline(rt.vs[RTP_COMP_ADD], rt.fs[RTP_COMP_ADD], gpu.fb_format, 2);
+    rt.pipe[RTP_DEBUG] = rt_make_pipeline(rt.vs[RTP_DEBUG], rt.fs[RTP_DEBUG], gpu.fb_format, 0);
+
+    for (int i = 0; i < RTP_COUNT; i++) {
+        if (!rt.pipe[i]) {
+            sysLogPrintf(LOG_ERROR, "SDL_GPU RT: pipeline %d failed (%s) — raytracing disabled", i, SDL_GetError());
+            return false;
+        }
+    }
+    if (!rt.pipe_blur16) {
+        sysLogPrintf(LOG_ERROR, "SDL_GPU RT: fp16 blur pipeline failed — raytracing disabled");
+        return false;
+    }
+
+    sysLogPrintf(LOG_NOTE, "SDL_GPU RT: raytracing suite initialized (%s)", gfx_sdlgpu_shader_format_name());
+    return true;
+}
+
+// COLOR_TARGET|SAMPLER texture, cleared once at creation so blur edge-taps
+// and history reads outside the viewport rect never see garbage
+static SDL_GPUTexture *rt_make_tex(SDL_GPUTextureFormat fmt, int w, int h) {
+    SDL_GPUTextureCreateInfo tci;
+    SDL_zero(tci);
+    tci.type = SDL_GPU_TEXTURETYPE_2D;
+    tci.format = fmt;
+    tci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    tci.width = (Uint32)w;
+    tci.height = (Uint32)h;
+    tci.layer_count_or_depth = 1;
+    tci.num_levels = 1;
+    tci.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture *t = SDL_CreateGPUTexture(gpu.device, &tci);
+    if (t && gpu.render_cb) {
+        SDL_GPUColorTargetInfo ct;
+        SDL_zero(ct);
+        ct.texture = t;
+        ct.load_op = SDL_GPU_LOADOP_CLEAR;
+        ct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, NULL);
+        SDL_EndGPURenderPass(p);
+    }
+    return t;
+}
+
+static void rt_release_tex(SDL_GPUTexture **t) {
+    if (*t) {
+        dead_textures.push_back(*t);
+        *t = NULL;
+    }
+}
+
+static bool rt_build_targets(int fbw, int fbh, float giscale) {
+    rt_release_tex(&rt.scene_col);
+    rt_release_tex(&rt.norm_tex);
+    rt_release_tex(&rt.ao_tex);
+    rt_release_tex(&rt.aotmp_tex);
+    rt_release_tex(&rt.ssr_tex);
+    rt_release_tex(&rt.gitrace_tex);
+    rt_release_tex(&rt.gitmp_tex);
+    rt_release_tex(&rt.gifinal_tex);
+    for (int p = 0; p < RT_MAX_PLAYERS; p++) {
+        rt_release_tex(&rt.hist_tex[p][0]);
+        rt_release_tex(&rt.hist_tex[p][1]);
+        rt.prev_valid[p] = false;
+    }
+
+    const SDL_GPUTextureFormat fmt16 = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    const SDL_GPUTextureFormat fmt8 = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+    rt.giw = (int)(fbw * giscale);
+    rt.gih = (int)(fbh * giscale);
+    if (rt.giw < 1) rt.giw = 1;
+    if (rt.gih < 1) rt.gih = 1;
+
+    rt.scene_col = rt_make_tex(gpu.fb_format, fbw, fbh);
+    rt.norm_tex = rt_make_tex(fmt16, fbw, fbh);
+    rt.ao_tex = rt_make_tex(fmt8, fbw, fbh);
+    rt.aotmp_tex = rt_make_tex(fmt8, fbw, fbh);
+    rt.ssr_tex = rt_make_tex(fmt8, fbw, fbh);
+    rt.gitrace_tex = rt_make_tex(fmt16, rt.giw, rt.gih);
+    rt.gitmp_tex = rt_make_tex(fmt16, rt.giw, rt.gih);
+    rt.gifinal_tex = rt_make_tex(fmt16, rt.giw, rt.gih);
+
+    if (!rt.scene_col || !rt.norm_tex || !rt.ao_tex || !rt.aotmp_tex || !rt.ssr_tex || !rt.gitrace_tex ||
+        !rt.gitmp_tex || !rt.gifinal_tex) {
+        sysLogPrintf(LOG_ERROR, "SDL_GPU RT: render target creation failed: %s", SDL_GetError());
+        return false;
+    }
+
+    rt.fbw = fbw;
+    rt.fbh = fbh;
+    rt.giscale = giscale;
+    return true;
+}
+
+static bool rt_ensure_history(int player) {
+    if (rt.hist_tex[player][0]) {
+        return true;
+    }
+    const SDL_GPUTextureFormat fmt16 = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    rt.hist_tex[player][0] = rt_make_tex(fmt16, rt.giw, rt.gih); // cleared: a=0 -> "no history"
+    rt.hist_tex[player][1] = rt_make_tex(fmt16, rt.giw, rt.gih);
+    rt.hist_idx[player] = 0;
+    return rt.hist_tex[player][0] && rt.hist_tex[player][1];
+}
+
+// one fullscreen pass: LOAD/STORE render pass on target, viewport = the
+// (top-left) rect, per-pass UBO push, bind inputs in rt_pass_samplers order
+static void rt_run_pass(SDL_GPUGraphicsPipeline *pipe, SDL_GPUTexture *target, int vx_tl, int vy_tl, int vw, int vh,
+                        SDL_GPUTexture *const texs[], const uint32_t skeys[], int ntex, const RtGpuUni *uni) {
+    SDL_GPUColorTargetInfo ct;
+    SDL_zero(ct);
+    ct.texture = target;
+    ct.load_op = SDL_GPU_LOADOP_LOAD;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, NULL);
+    SDL_BindGPUGraphicsPipeline(p, pipe);
+
+    SDL_GPUViewport vp;
+    vp.x = (float)vx_tl;
+    vp.y = (float)vy_tl;
+    vp.w = (float)vw;
+    vp.h = (float)vh;
+    vp.min_depth = 0.0f;
+    vp.max_depth = 1.0f;
+    SDL_SetGPUViewport(p, &vp);
+
+    SDL_GPUTextureSamplerBinding binds[4];
+    for (int i = 0; i < ntex; i++) {
+        binds[i].texture = texs[i];
+        binds[i].sampler = sampler_get(skeys[i]);
+    }
+    SDL_BindGPUFragmentSamplers(p, 0, binds, (Uint32)ntex);
+
+    SDL_PushGPUFragmentUniformData(gpu.render_cb, 0, uni, sizeof(*uni));
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+}
+
+static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int vh) {
+    const rtcamera *cam = (const rtcamera *)camv;
+    if (rt.broken || !cam || !cam->valid || !gpu.render_cb) {
+        return;
+    }
+    if (cam->playernum < 0 || cam->playernum >= RT_MAX_PLAYERS) {
+        return;
+    }
+    GpuFb &fb = fbs[st.cur_fb];
+    if (!fb.color || !fb.depth) {
+        return;
+    }
+    if (fb.msaa > 1) {
+        if (!rt.msaa_warned) {
+            rt.msaa_warned = true;
+            sysLogPrintf(LOG_WARNING,
+                         "SDL_GPU RT: raytracing needs MSAA off on this backend (multisample depth "
+                         "can't be sampled or resolved) — set Video.MSAA=1");
+        }
+        return;
+    }
+    if (!gpu.depth_samplable) {
+        if (!rt.depth_warned) {
+            rt.depth_warned = true;
+            sysLogPrintf(LOG_WARNING, "SDL_GPU RT: depth format not samplable on this driver — raytracing disabled");
+        }
+        return;
+    }
+
+    const bool ao_on = gfx_rt_ao != 0;
+    const bool sh_on = gfx_rt_shadows != 0;
+    const bool ssr_on = gfx_rt_ssr != 0;
+    const int gi_mode = (gfx_rt_gi < 0) ? 0 : (gfx_rt_gi > 2 ? 2 : gfx_rt_gi);
+    const int dbg = (gfx_rt_debug > 0 && gfx_rt_debug < RT_DEBUG_MAX) ? gfx_rt_debug : 0;
+    if (!ao_on && !sh_on && !ssr_on && gi_mode == RT_GI_OFF && dbg == 0) {
+        return;
+    }
+
+    end_pass();
+
+    if (!rt.inited) {
+        rt.inited = true;
+        if (!rt_init()) {
+            rt.broken = true;
+            gfx_rt_enabled = 0;
+            return;
+        }
+    }
+
+    float giscale = gfx_rt_gi_scale;
+    if (giscale < 0.25f) giscale = 0.25f;
+    if (giscale > 1.0f) giscale = 1.0f;
+    if (rt.fbw != (int)fb.w || rt.fbh != (int)fb.h || rt.giscale != giscale) {
+        if (!rt_build_targets((int)fb.w, (int)fb.h, giscale)) {
+            rt.broken = true;
+            gfx_rt_enabled = 0;
+            return;
+        }
+    }
+
+    const int fbw = (int)fb.w, fbh = (int)fb.h;
+    if (vw <= 0 || vh <= 0) {
+        vx = 0; vy = 0; vw = fbw; vh = fbh;
+    }
+    // clamp the (GL bottom-left) rect into the framebuffer
+    if (vx < 0) { vw += vx; vx = 0; }
+    if (vy < 0) { vh += vy; vy = 0; }
+    if (vx + vw > fbw) vw = fbw - vx;
+    if (vy + vh > fbh) vh = fbh - vy;
+    if (vw <= 0 || vh <= 0) {
+        return;
+    }
+    const int vy_tl = fbh - vy - vh; // -> top-left, the backend's uniform orientation
+
+    // capture scene colour (same size + format, exact copy)
+    {
+        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(gpu.render_cb);
+        SDL_GPUTextureLocation csrc, cdst;
+        SDL_zero(csrc);
+        SDL_zero(cdst);
+        csrc.texture = fb.color;
+        cdst.texture = rt.scene_col;
+        SDL_CopyGPUTextureToTexture(cp, &csrc, &cdst, (Uint32)fbw, (Uint32)fbh, 1, false);
+        SDL_EndGPUCopyPass(cp);
+    }
+
+    rt.frame++;
+    const int pl = cam->playernum;
+    const int q = (gfx_rt_quality < 0) ? 0 : (gfx_rt_quality > 2 ? 2 : gfx_rt_quality);
+
+    RtGpuUni uni;
+    memset(&uni, 0, sizeof(uni));
+    uni.rect[0] = (float)vx / fbw;
+    uni.rect[1] = (float)vy_tl / fbh;
+    uni.rect[2] = (float)(vx + vw) / fbw;
+    uni.rect[3] = (float)(vy_tl + vh) / fbh;
+    const float thfy = tanf(cam->fovy * (float)(3.14159265358979 / 180.0) * 0.5f);
+    uni.proj[0] = thfy * cam->aspect;
+    uni.proj[1] = thfy;
+    uni.proj[2] = cam->znear > 0.1f ? cam->znear : 0.1f;
+    uni.proj[3] = cam->zfar > uni.proj[2] + 1.0f ? cam->zfar : uni.proj[2] + 1.0f;
+    uni.ysign = gpu.invert_y ? 1.0f : -1.0f; // top-down storage; --gpu-invert-y flips
+    uni.texel[0] = 1.0f / fbw;
+    uni.texel[1] = 1.0f / fbh;
+    uni.frame = (int32_t)(rt.frame & 0xffff);
+    uni.ao_radius = gfx_rt_ao_radius;
+    uni.shadow_len = gfx_rt_shadow_length;
+    uni.gi_radius = gfx_rt_ao_radius * 20.0f;
+    uni.max_dist = uni.proj[3] * 0.35f;
+    uni.ao_int = gfx_rt_ao_intensity;
+    uni.sh_int = gfx_rt_shadow_intensity;
+    uni.gi_int = gfx_rt_gi_intensity;
+    uni.ssr_int = gfx_rt_ssr_intensity;
+    uni.ao_on = (ao_on || dbg == RT_DEBUG_AO) ? 1 : 0;
+    uni.shadow_on = (sh_on || dbg == RT_DEBUG_SHADOW) ? 1 : 0;
+    uni.gi_on = gi_mode != RT_GI_OFF ? 1 : 0;
+    uni.ssr_on = ssr_on ? 1 : 0;
+    uni.mode = dbg;
+    uni.ao_samples = kQuality[q].ao_samples;
+    uni.shadow_steps = kQuality[q].shadow_steps;
+    uni.ssr_steps = kQuality[q].ssr_steps;
+    uni.sky[0] = gfx_rt_sky[0];
+    uni.sky[1] = gfx_rt_sky[1];
+    uni.sky[2] = gfx_rt_sky[2];
+
+    // sun: world -> view (rotation only), normalized
+    {
+        float sw[3] = { gfx_rt_sun_dir[0], gfx_rt_sun_dir[1], gfx_rt_sun_dir[2] };
+        float sl = sqrtf(sw[0] * sw[0] + sw[1] * sw[1] + sw[2] * sw[2]);
+        if (sl < 0.0001f) { sw[0] = 0.0f; sw[1] = 1.0f; sw[2] = 0.0f; sl = 1.0f; }
+        sw[0] /= sl; sw[1] /= sl; sw[2] /= sl;
+        const float *m = cam->viewmtx;
+        uni.sun[0] = m[0] * sw[0] + m[4] * sw[1] + m[8] * sw[2];
+        uni.sun[1] = m[1] * sw[0] + m[5] * sw[1] + m[9] * sw[2];
+        uni.sun[2] = m[2] * sw[0] + m[6] * sw[1] + m[10] * sw[2];
+    }
+
+    // the VS rect push persists on the command buffer for all RT passes
+    SDL_PushGPUVertexUniformData(gpu.render_cb, 0, uni.rect, sizeof(uni.rect));
+
+    const uint32_t NEAREST = 0;           // all-nearest, clamp
+    const uint32_t LINEAR = SK_FB_LINEAR; // linear, clamp
+
+    // prepass: depth -> normals + linear depth
+    {
+        SDL_GPUTexture *t[1] = { fb.depth };
+        const uint32_t k[1] = { NEAREST };
+        rt_run_pass(rt.pipe[RTP_PREPASS], rt.norm_tex, vx, vy_tl, vw, vh, t, k, 1, &uni);
+    }
+
+    // AO + shadow trace, then separable bilateral blur
+    if (uni.ao_on || uni.shadow_on) {
+        {
+            SDL_GPUTexture *t[1] = { rt.norm_tex };
+            const uint32_t k[1] = { NEAREST };
+            rt_run_pass(rt.pipe[RTP_AOSHADOW], rt.ao_tex, vx, vy_tl, vw, vh, t, k, 1, &uni);
+        }
+        uni.dir[0] = 1.0f / fbw;
+        uni.dir[1] = 0.0f;
+        {
+            SDL_GPUTexture *t[2] = { rt.norm_tex, rt.ao_tex };
+            const uint32_t k[2] = { NEAREST, LINEAR };
+            rt_run_pass(rt.pipe[RTP_BLUR], rt.aotmp_tex, vx, vy_tl, vw, vh, t, k, 2, &uni);
+        }
+        uni.dir[0] = 0.0f;
+        uni.dir[1] = 1.0f / fbh;
+        {
+            SDL_GPUTexture *t[2] = { rt.norm_tex, rt.aotmp_tex };
+            const uint32_t k[2] = { NEAREST, LINEAR };
+            rt_run_pass(rt.pipe[RTP_BLUR], rt.ao_tex, vx, vy_tl, vw, vh, t, k, 2, &uni);
+        }
+    }
+
+    // GI / path trace at reduced res + temporal accumulation + blur
+    const bool gi_run = gi_mode != RT_GI_OFF || dbg == RT_DEBUG_GI;
+    if (gi_run && rt_ensure_history(pl)) {
+        const int gvx = (int)(vx * rt.giscale);
+        const int gvy_tl = (int)(vy_tl * rt.giscale);
+        int gvw = (int)(vw * rt.giscale);
+        int gvh = (int)(vh * rt.giscale);
+        if (gvw < 1) gvw = 1;
+        if (gvh < 1) gvh = 1;
+
+        const int mode = (gi_mode == RT_GI_OFF) ? RT_GI_SSGI : gi_mode;
+        uni.rays = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_rays : kQuality[q].gi_rays;
+        uni.bounces = (mode == RT_GI_PATHTRACE) ? kQuality[q].pt_bounces : 1;
+        uni.steps = kQuality[q].gi_steps;
+        uni.blend = (mode == RT_GI_PATHTRACE) ? 0.93f : 0.85f;
+
+        {
+            SDL_GPUTexture *t[2] = { rt.norm_tex, rt.scene_col };
+            const uint32_t k[2] = { NEAREST, LINEAR };
+            rt_run_pass(rt.pipe[RTP_TRACE], rt.gitrace_tex, gvx, gvy_tl, gvw, gvh, t, k, 2, &uni);
+        }
+
+        // temporal: cur + history[read] -> history[write]
+        if (rt.prev_valid[pl]) {
+            float inv_cur[16], vprev_invcur[16], pprev[16];
+            mtxRigidInverse(inv_cur, cam->viewmtx);
+            mtxMul(vprev_invcur, rt.prev_view[pl], inv_cur);
+            mtxPerspective(pprev, rt.prev_fovy[pl], rt.prev_aspect[pl], rt.prev_znear[pl], rt.prev_zfar[pl]);
+            mtxMul(uni.cur_to_prev, pprev, vprev_invcur);
+        } else {
+            memset(uni.cur_to_prev, 0, sizeof(uni.cur_to_prev)); // w always 0 -> history rejected
+        }
+
+        const int hread = rt.hist_idx[pl];
+        const int hwrite = 1 - hread;
+        {
+            SDL_GPUTexture *t[3] = { rt.norm_tex, rt.gitrace_tex, rt.hist_tex[pl][hread] };
+            const uint32_t k[3] = { NEAREST, LINEAR, LINEAR };
+            rt_run_pass(rt.pipe[RTP_TEMPORAL], rt.hist_tex[pl][hwrite], gvx, gvy_tl, gvw, gvh, t, k, 3, &uni);
+        }
+        rt.hist_idx[pl] = hwrite;
+
+        // blur H/V into gifinal (history itself stays sharp for reprojection)
+        uni.dir[0] = 1.0f / rt.giw;
+        uni.dir[1] = 0.0f;
+        {
+            SDL_GPUTexture *t[2] = { rt.norm_tex, rt.hist_tex[pl][hwrite] };
+            const uint32_t k[2] = { NEAREST, LINEAR };
+            rt_run_pass(rt.pipe_blur16, rt.gitmp_tex, gvx, gvy_tl, gvw, gvh, t, k, 2, &uni);
+        }
+        uni.dir[0] = 0.0f;
+        uni.dir[1] = 1.0f / rt.gih;
+        {
+            SDL_GPUTexture *t[2] = { rt.norm_tex, rt.gitmp_tex };
+            const uint32_t k[2] = { NEAREST, LINEAR };
+            rt_run_pass(rt.pipe_blur16, rt.gifinal_tex, gvx, gvy_tl, gvw, gvh, t, k, 2, &uni);
+        }
+    }
+
+    // save this frame's camera for next frame's reprojection
+    memcpy(rt.prev_view[pl], cam->viewmtx, sizeof(rt.prev_view[pl]));
+    rt.prev_fovy[pl] = cam->fovy;
+    rt.prev_aspect[pl] = cam->aspect;
+    rt.prev_znear[pl] = uni.proj[2];
+    rt.prev_zfar[pl] = uni.proj[3];
+    rt.prev_valid[pl] = true;
+
+    // SSR
+    if (ssr_on || dbg == RT_DEBUG_SSR) {
+        SDL_GPUTexture *t[2] = { rt.norm_tex, rt.scene_col };
+        const uint32_t k[2] = { NEAREST, LINEAR };
+        rt_run_pass(rt.pipe[RTP_SSR], rt.ssr_tex, vx, vy_tl, vw, vh, t, k, 2, &uni);
+    }
+
+    // composite back over the framebuffer colour (no depth attached)
+    if (dbg != 0) {
+        SDL_GPUTexture *t[4] = { rt.norm_tex, rt.ao_tex, rt.gifinal_tex, rt.ssr_tex };
+        const uint32_t k[4] = { NEAREST, LINEAR, LINEAR, LINEAR };
+        rt_run_pass(rt.pipe[RTP_DEBUG], fb.color, vx, vy_tl, vw, vh, t, k, 4, &uni);
+    } else {
+        if (ao_on || sh_on) {
+            SDL_GPUTexture *t[1] = { rt.ao_tex };
+            const uint32_t k[1] = { LINEAR };
+            // uAOOn/uShadowOn carry the real toggles here (no dbg override)
+            uni.ao_on = ao_on ? 1 : 0;
+            uni.shadow_on = sh_on ? 1 : 0;
+            rt_run_pass(rt.pipe[RTP_COMP_MUL], fb.color, vx, vy_tl, vw, vh, t, k, 1, &uni);
+        }
+        if (gi_mode != RT_GI_OFF || ssr_on) {
+            SDL_GPUTexture *t[3] = { rt.scene_col, rt.gifinal_tex, rt.ssr_tex };
+            const uint32_t k[3] = { LINEAR, LINEAR, LINEAR };
+            rt_run_pass(rt.pipe[RTP_COMP_ADD], fb.color, vx, vy_tl, vw, vh, t, k, 3, &uni);
+        }
+    }
+
+    // hand the frame back to the immediate path: our passes are closed and our
+    // uniform pushes clobbered the command buffer's vertex/fragment slots
+    st.pass = NULL;
+    st.bound_pipeline = NULL;
+    st.vs_dirty = true;
+    st.fs_dirty = true;
+}
+
 struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_get_name,
     gfx_sdlgpu_get_max_texture_size,
@@ -2373,7 +3012,7 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_cache_bind_palette,
     gfx_sdlgpu_set_palette_enable,
     gfx_sdlgpu_set_shade_routing,
-    nullptr, // rt_resolve — raytracing suite is GL-only (docs/PORT_RAYTRACING.md)
+    gfx_sdlgpu_rt_resolve, // screen-space raytracing suite (docs/PORT_RAYTRACING.md)
 };
 
 #endif // USE_SDLGPU

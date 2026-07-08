@@ -6883,8 +6883,9 @@ s32 netConsoleCommand(const char *line)
 		// /rt aoint|aorad|shint|shlen|ssrint|giint|giscale <f>  tuning scalars
 		// /rt status                       print the whole state
 		// Persist by editing the Video.RT.* keys in pd.ini (registered in
-		// video.c). GL backend only — SDL_GPU ignores the resolve. See
-		// docs/PORT_RAYTRACING.md. Routed here like /wireframe.
+		// video.c). Works on both backends (GL + SDL_GPU Vulkan/D3D12); on
+		// SDL_GPU it needs MSAA off (multisample depth can't be sampled).
+		// See docs/PORT_RAYTRACING.md. Routed here like /wireframe.
 		extern int gfx_rt_enabled, gfx_rt_ao, gfx_rt_shadows, gfx_rt_ssr;
 		extern int gfx_rt_gi, gfx_rt_debug, gfx_rt_quality;
 		extern f32 gfx_rt_ao_intensity, gfx_rt_ao_radius;
@@ -6992,7 +6993,7 @@ s32 netConsoleCommand(const char *line)
 				on = !(strcmp(sub, "0") == 0 || strcmp(sub, "off") == 0);
 			}
 			gfx_rt_enabled = on ? 1 : 0;
-			sysLogPrintf(LOG_CHAT, "rt %s (GL backend only; /rt status for detail)", on ? "ON" : "OFF");
+			sysLogPrintf(LOG_CHAT, "rt %s (/rt status for detail; SDL_GPU needs MSAA off)", on ? "ON" : "OFF");
 		}
 	} else if (strcmp(cmd, "gpu") == 0 || strcmp(cmd, "renderer") == 0) {
 		// /gpu — show the active rendering backend; for SDL_GPU also the
@@ -7031,7 +7032,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /dlcache palette [on|off]        GPU vertex-shade off = baked shade (debug black/no-flash walls)");
 		sysLogPrintf(LOG_CHAT, "  /texcache [N]                    texture-cache size cap (raise to fix dlcache black textures)");
 		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
-		sysLogPrintf(LOG_CHAT, "  /rt [on|off]                     screen-space raytracing suite (GL only)");
+		sysLogPrintf(LOG_CHAT, "  /rt [on|off]                     screen-space raytracing suite (SDL_GPU: MSAA off)");
 		sysLogPrintf(LOG_CHAT, "  /rt ao|shadows|ssr|gi|pt         toggle AO / sun shadows / reflections / GI / path trace");
 		sysLogPrintf(LOG_CHAT, "  /rt debug depth|normals|ao|shadow|gi|ssr  visualize an RT buffer (off = composite)");
 		sysLogPrintf(LOG_CHAT, "  /rt quality 0..2 | sun X Y Z | status     budgets / light dir / full state");

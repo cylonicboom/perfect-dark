@@ -1754,10 +1754,11 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define MENUDIALOGTYPE_4       4
 #define MENUDIALOGTYPE_WHITE   5
 #ifndef PLATFORM_N64
-// Port-only custom menu-scheme palette row (the Recipe-2 reference in
-// docs/PORT_MENU_COLOUR_SCHEMES.md). Indexes the appended row 6 in
+// Port-only custom menu-scheme palette rows (the Recipe-2 reference in
+// docs/PORT_MENU_COLOUR_SCHEMES.md). Index the appended rows in
 // g_MenuColours / g_MenuWave1Colours / g_MenuWave2Colours.
 #define MENUDIALOGTYPE_AMBER   6
+#define MENUDIALOGTYPE_AQUA    7 // teal base + purple highlight (scheme "Aqua")
 #endif
 
 #define MENUITEMFLAG_NEWCOLUMN               0x00000001

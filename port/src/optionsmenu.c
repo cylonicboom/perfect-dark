@@ -1317,8 +1317,14 @@ static MenuItemHandlerResult menuhandlerMenuColourScheme(s32 operation, struct m
 		"Perfect",  // blue (default)
 		"Shinku",   // red
 		"Complete", // green
-		"Missing"   // white
+		"Missing",  // white
+		"Aqua"      // teal + purple highlight
 	};
+	// Dropdown index -> g_MenuColourScheme value. Scheme 4 (Amber) is the
+	// hardcode-only Recipe-2 demo, so it's skipped here (see menu.c /
+	// docs/PORT_MENU_COLOUR_SCHEMES.md); Aqua is scheme 5.
+	static const u8 vals[] = { 0, 1, 2, 3, 5 };
+	s32 i;
 
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
@@ -1327,10 +1333,16 @@ static MenuItemHandlerResult menuhandlerMenuColourScheme(s32 operation, struct m
 	case MENUOP_GETOPTIONTEXT:
 		return (intptr_t)opts[data->dropdown.value];
 	case MENUOP_SET:
-		g_MenuColourScheme = data->dropdown.value;
+		g_MenuColourScheme = vals[data->dropdown.value];
 		break;
 	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = g_MenuColourScheme;
+		data->dropdown.value = 0;
+		for (i = 0; i < (s32)ARRAYCOUNT(vals); i++) {
+			if (vals[i] == g_MenuColourScheme) {
+				data->dropdown.value = i;
+				break;
+			}
+		}
 	}
 
 	return 0;

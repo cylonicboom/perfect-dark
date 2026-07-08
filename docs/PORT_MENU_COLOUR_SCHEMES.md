@@ -22,6 +22,16 @@ byte-identical.
 >   dropdown — it's reachable only via `MENU_HARDCODE_SCHEME=4`, demonstrating a
 >   hardcoded-only scheme. Tune the 15 amber field values to taste.
 >
+> **A worked SELECTABLE custom-hue scheme also ships: "Aqua"** (scheme index
+> 5, palette row `MENUDIALOGTYPE_AQUA` = 7). It is teal base `#02f5c4` + purple
+> highlight `#7c02f5` (the highlight drives `dialog_border2`,
+> `listgroup_headerfg` and the `menuSchemeColour` accent — i.e. menu edges and
+> bars, mirroring how the blue scheme uses a brighter blue there). It's in the
+> Experiments dropdown via a **decoupled index→value map** in
+> `menuhandlerMenuColourScheme` (`{0,1,2,3,5}`) so the hardcode-only Amber
+> (scheme 4) stays hidden while Aqua (5) is selectable. Use it as the template
+> for adding another selectable custom-hue scheme.
+>
 > The sections below explain the architecture and how to add your own.
 
 ---

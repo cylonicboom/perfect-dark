@@ -274,6 +274,16 @@ float gfx_rt_gi_intensity = 1.0f;
 float gfx_rt_gi_scale = 0.5f;
 float gfx_rt_sun_dir[3] = { 0.35f, 0.85f, 0.40f }; // world-space, toward light
 float gfx_rt_sky[3] = { 0.18f, 0.20f, 0.26f };     // miss radiance for GI rays
+// dark / relight mode (docs/PORT_RAYTRACING.md "Dark mode")
+int gfx_rt_dark = 0;
+float gfx_rt_dark_ambient = 0.08f;
+int gfx_rt_lights = 1;              // harvested only while RT runs; costs nothing otherwise
+int gfx_rt_light_shadows = 1;
+float gfx_rt_light_intensity = 1.0f;
+float gfx_rt_light_radius = 700.0f; // PD world units (~7 m)
+int gfx_rt_torch = 0;
+float gfx_rt_torch_intensity = 1.4f;
+float gfx_rt_torch_range = 1400.0f;
 bool gfx_mirror_mode = false;
 // Chaos flat-texture mode (docs/PORT_CHAOS.md): 0 = off; 1 = white out texel
 // RGB (the combiner multiplies TEXEL*SHADE, so this leaves pure vertex

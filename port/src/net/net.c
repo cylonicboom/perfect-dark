@@ -6892,6 +6892,9 @@ s32 netConsoleCommand(const char *line)
 		extern f32 gfx_rt_shadow_intensity, gfx_rt_shadow_length;
 		extern f32 gfx_rt_ssr_intensity, gfx_rt_gi_intensity, gfx_rt_gi_scale;
 		extern f32 gfx_rt_sun_dir[3], gfx_rt_sky[3];
+		extern int gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows, gfx_rt_torch;
+		extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
+		extern f32 gfx_rt_torch_intensity, gfx_rt_torch_range;
 
 		char sub[16];
 		const char *val = arg;
@@ -6909,8 +6912,16 @@ s32 netConsoleCommand(const char *line)
 			val++;
 		}
 
-		if (strcmp(sub, "ao") == 0 || strcmp(sub, "shadows") == 0 || strcmp(sub, "ssr") == 0) {
-			int *fx = (sub[0] == 'a') ? &gfx_rt_ao : (sub[1] == 'h' ? &gfx_rt_shadows : &gfx_rt_ssr);
+		if (strcmp(sub, "ao") == 0 || strcmp(sub, "shadows") == 0 || strcmp(sub, "ssr") == 0
+				|| strcmp(sub, "dark") == 0 || strcmp(sub, "torch") == 0 || strcmp(sub, "lights") == 0
+				|| strcmp(sub, "lightshadows") == 0) {
+			int *fx = &gfx_rt_ao;
+			if (strcmp(sub, "shadows") == 0) fx = &gfx_rt_shadows;
+			else if (strcmp(sub, "ssr") == 0) fx = &gfx_rt_ssr;
+			else if (strcmp(sub, "dark") == 0) fx = &gfx_rt_dark;
+			else if (strcmp(sub, "torch") == 0) fx = &gfx_rt_torch;
+			else if (strcmp(sub, "lights") == 0) fx = &gfx_rt_lights;
+			else if (strcmp(sub, "lightshadows") == 0) fx = &gfx_rt_light_shadows;
 			if (!val[0]) {
 				*fx = !*fx;
 			} else {
@@ -6939,15 +6950,15 @@ s32 netConsoleCommand(const char *line)
 			if (gfx_rt_quality > 2) gfx_rt_quality = 2;
 			sysLogPrintf(LOG_CHAT, "rt quality=%d", gfx_rt_quality);
 		} else if (strcmp(sub, "debug") == 0) {
-			static const char *modes[] = { "off", "depth", "normals", "ao", "shadow", "gi", "ssr" };
+			static const char *modes[] = { "off", "depth", "normals", "ao", "shadow", "gi", "ssr", "light" };
 			s32 m = 0;
 			s32 i;
-			for (i = 0; i < 7; i++) {
+			for (i = 0; i < 8; i++) {
 				if (strcmp(val, modes[i]) == 0) {
 					m = i;
 				}
 			}
-			if (val[0] >= '0' && val[0] <= '6' && !val[1]) {
+			if (val[0] >= '0' && val[0] <= '7' && !val[1]) {
 				m = val[0] - '0';
 			}
 			gfx_rt_debug = m;
@@ -6964,7 +6975,8 @@ s32 netConsoleCommand(const char *line)
 			}
 		} else if (strcmp(sub, "aoint") == 0 || strcmp(sub, "aorad") == 0 || strcmp(sub, "shint") == 0
 				|| strcmp(sub, "shlen") == 0 || strcmp(sub, "ssrint") == 0 || strcmp(sub, "giint") == 0
-				|| strcmp(sub, "giscale") == 0) {
+				|| strcmp(sub, "giscale") == 0 || strcmp(sub, "ambient") == 0 || strcmp(sub, "lightint") == 0
+				|| strcmp(sub, "lightrad") == 0 || strcmp(sub, "torchint") == 0 || strcmp(sub, "torchrange") == 0) {
 			f32 f = (f32)atof(val);
 			if (strcmp(sub, "aoint") == 0) gfx_rt_ao_intensity = f;
 			else if (strcmp(sub, "aorad") == 0) gfx_rt_ao_radius = f;
@@ -6972,6 +6984,11 @@ s32 netConsoleCommand(const char *line)
 			else if (strcmp(sub, "shlen") == 0) gfx_rt_shadow_length = f;
 			else if (strcmp(sub, "ssrint") == 0) gfx_rt_ssr_intensity = f;
 			else if (strcmp(sub, "giint") == 0) gfx_rt_gi_intensity = f;
+			else if (strcmp(sub, "ambient") == 0) gfx_rt_dark_ambient = f;
+			else if (strcmp(sub, "lightint") == 0) gfx_rt_light_intensity = f;
+			else if (strcmp(sub, "lightrad") == 0) gfx_rt_light_radius = f;
+			else if (strcmp(sub, "torchint") == 0) gfx_rt_torch_intensity = f;
+			else if (strcmp(sub, "torchrange") == 0) gfx_rt_torch_range = f;
 			else gfx_rt_gi_scale = f;
 			sysLogPrintf(LOG_CHAT, "rt %s=%.2f", sub, f);
 		} else if (strcmp(sub, "status") == 0) {
@@ -6985,6 +7002,10 @@ s32 netConsoleCommand(const char *line)
 					gfx_rt_gi_intensity, gfx_rt_gi_scale, gfx_rt_debug,
 					gfx_rt_sun_dir[0], gfx_rt_sun_dir[1], gfx_rt_sun_dir[2],
 					gfx_rt_sky[0], gfx_rt_sky[1], gfx_rt_sky[2]);
+			sysLogPrintf(LOG_CHAT, "rt: dark=%d(amb %.2f) lights=%d(int %.2f rad %.0f shad %d) torch=%d(%.2f r%.0f)",
+					gfx_rt_dark, gfx_rt_dark_ambient,
+					gfx_rt_lights, gfx_rt_light_intensity, gfx_rt_light_radius, gfx_rt_light_shadows,
+					gfx_rt_torch, gfx_rt_torch_intensity, gfx_rt_torch_range);
 		} else {
 			bool on;
 			if (!sub[0]) {
@@ -7034,8 +7055,11 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /gpu                             show active renderer (+SDL_GPU driver/format/msaa)");
 		sysLogPrintf(LOG_CHAT, "  /rt [on|off]                     screen-space raytracing suite (SDL_GPU: MSAA off)");
 		sysLogPrintf(LOG_CHAT, "  /rt ao|shadows|ssr|gi|pt         toggle AO / sun shadows / reflections / GI / path trace");
-		sysLogPrintf(LOG_CHAT, "  /rt debug depth|normals|ao|shadow|gi|ssr  visualize an RT buffer (off = composite)");
+		sysLogPrintf(LOG_CHAT, "  /rt debug depth|normals|ao|shadow|gi|ssr|light  visualize an RT buffer (off = composite)");
 		sysLogPrintf(LOG_CHAT, "  /rt quality 0..2 | sun X Y Z | status     budgets / light dir / full state");
+		sysLogPrintf(LOG_CHAT, "  /rt dark [on|off] | ambient F             blacken the world, keep F base brightness");
+		sysLogPrintf(LOG_CHAT, "  /rt lights|torch [on|off]                 relight from map (glare) lights / camera torch");
+		sysLogPrintf(LOG_CHAT, "  /rt lightint|lightrad|torchint|torchrange F  dynamic-light tuning (/rt lightshadows too)");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

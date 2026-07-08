@@ -23,6 +23,7 @@
 #include "game/player.h"
 #include "game/prop.h"
 #include "video.h"
+#include "rt_ext.h"
 #endif
 
 /**
@@ -793,3 +794,96 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
 
 	return gdl;
 }
+
+#ifndef PLATFORM_N64
+
+/**
+ * Raytracing suite (docs/PORT_RAYTRACING.md, "Dark mode"): collect the
+ * nearest lit room lights around campos as dynamic light sources for the
+ * /rt dark relight pass. Reuses the glare pipeline's data model exactly:
+ * world pos = light bbox average + room pos, colour = the 4/4/4/4 nibbles,
+ * intensity folds brightnessmult (32 = nominal 1.0, the glare idiom above).
+ * Only "on" + healthy lights count — shooting a light out extinguishes its
+ * illumination like it extinguishes its glare. Only loaded rooms carry light
+ * data, so distant lights (un)stream with their rooms. Output is sorted
+ * nearest-first and capped, so when a scene has more candidates than max the
+ * closest ones win. Called per player per frame from playerRenderHud.
+ */
+s32 rtCollectLights(const f32 *campos, rtlight *out, s32 max)
+{
+	f32 dists[RT_MAX_LIGHTS];
+	s32 count = 0;
+	s32 roomnum;
+	s32 i;
+	s32 j;
+	s32 c;
+	const f32 range = gfx_rt_light_radius * 1.25f; // slightly past the falloff
+	const f32 range2 = range * range;
+
+	if (max > RT_MAX_LIGHTS) {
+		max = RT_MAX_LIGHTS;
+	}
+
+	for (roomnum = 1; roomnum < g_Vars.roomcount; roomnum++) {
+		struct light *roomlights;
+		s32 numlights;
+
+		if (g_Rooms[roomnum].gfxdata == NULL || !g_Rooms[roomnum].loaded240) {
+			continue;
+		}
+
+		numlights = g_Rooms[roomnum].gfxdata->numlights;
+
+		if (numlights == 0) {
+			continue;
+		}
+
+		roomlights = (struct light *)&g_BgLightsFileData[g_Rooms[roomnum].gfxdata->lightsindex * 0x22];
+
+		for (i = 0; i < numlights; i++) {
+			struct light *light = &roomlights[i];
+			f32 pos[3];
+			f32 d2 = 0.0f;
+			f32 d;
+
+			if (!light->healthy || !light->on) {
+				continue;
+			}
+
+			for (c = 0; c < 3; c++) {
+				pos[c] = (light->bbox[0].s[c] + light->bbox[1].s[c] + light->bbox[2].s[c] + light->bbox[3].s[c]) / 4.0f
+					+ g_BgRooms[roomnum].pos.f[c];
+				d = pos[c] - campos[c];
+				d2 += d * d;
+			}
+
+			if (d2 > range2 || (count == max && d2 >= dists[count - 1])) {
+				continue;
+			}
+
+			// insertion sort by distance, keeping the nearest `max`
+			if (count < max) {
+				count++;
+			}
+
+			for (j = count - 1; j > 0 && dists[j - 1] > d2; j--) {
+				dists[j] = dists[j - 1];
+				out[j] = out[j - 1];
+			}
+
+			dists[j] = d2;
+			out[j].pos[0] = pos[0];
+			out[j].pos[1] = pos[1];
+			out[j].pos[2] = pos[2];
+			out[j].radius = gfx_rt_light_radius;
+			out[j].color[0] = ((light->colour >> 12) & 0xf) / 15.0f;
+			out[j].color[1] = ((light->colour >> 8) & 0xf) / 15.0f;
+			out[j].color[2] = ((light->colour >> 4) & 0xf) / 15.0f;
+			out[j].intensity = light->brightnessmult != 0 ? light->brightnessmult * (1.0f / 32.0f) : 1.0f;
+		}
+	}
+
+	return count;
+}
+
+#endif // PLATFORM_N64

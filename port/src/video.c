@@ -1061,4 +1061,13 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterFloat("Video.RT.SkyR", &gfx_rt_sky[0], 0.f, 4.f);
 	configRegisterFloat("Video.RT.SkyG", &gfx_rt_sky[1], 0.f, 4.f);
 	configRegisterFloat("Video.RT.SkyB", &gfx_rt_sky[2], 0.f, 4.f);
+	configRegisterInt("Video.RT.Dark", &gfx_rt_dark, 0, 1);
+	configRegisterFloat("Video.RT.DarkAmbient", &gfx_rt_dark_ambient, 0.f, 1.f);
+	configRegisterInt("Video.RT.Lights", &gfx_rt_lights, 0, 1);
+	configRegisterInt("Video.RT.LightShadows", &gfx_rt_light_shadows, 0, 1);
+	configRegisterFloat("Video.RT.LightIntensity", &gfx_rt_light_intensity, 0.f, 8.f);
+	configRegisterFloat("Video.RT.LightRadius", &gfx_rt_light_radius, 50.f, 5000.f);
+	configRegisterInt("Video.RT.Torch", &gfx_rt_torch, 0, 1);
+	configRegisterFloat("Video.RT.TorchIntensity", &gfx_rt_torch_intensity, 0.f, 8.f);
+	configRegisterFloat("Video.RT.TorchRange", &gfx_rt_torch_range, 100.f, 10000.f);
 }

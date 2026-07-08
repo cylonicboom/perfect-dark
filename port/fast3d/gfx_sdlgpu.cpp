@@ -2369,11 +2369,22 @@ struct RtGpuUni {
     int32_t frame, ao_on, shadow_on, gi_on;
     int32_t ssr_on, mode, ao_samples, shadow_steps;
     int32_t rays, steps, bounces, ssr_steps;
+    // dark/relight mode (order matches the GLSL block extension)
+    int32_t light_count, light_shadows, light_steps, torch;
+    float torch_int, torch_range, dark_ambient; int32_t dark;
+    int32_t lights_on; int32_t pad[3];
+};
+
+// std140 mirror of the light pass's second block (set=3, binding=1):
+// view-space light positions + falloff radii, premultiplied colours
+struct RtGpuLights {
+    float posrad[RT_MAX_LIGHTS][4];
+    float col[RT_MAX_LIGHTS][4];
 };
 
 enum {
     RTP_PREPASS, RTP_AOSHADOW, RTP_TRACE, RTP_TEMPORAL,
-    RTP_BLUR, RTP_SSR, RTP_COMP_MUL, RTP_COMP_ADD, RTP_DEBUG,
+    RTP_BLUR, RTP_SSR, RTP_LIGHT, RTP_COMP_MUL, RTP_COMP_ADD, RTP_DEBUG,
     RTP_COUNT
 };
 
@@ -2391,6 +2402,7 @@ static struct {
     SDL_GPUTexture *norm_tex;                              // RGBA16F: view normal + linear depth
     SDL_GPUTexture *ao_tex, *aotmp_tex;                    // RGBA8: r = AO, g = shadow
     SDL_GPUTexture *ssr_tex;                               // RGBA8: reflection colour + confidence
+    SDL_GPUTexture *light_tex;                             // RGBA16F: dynamic-light radiance (dark mode)
     SDL_GPUTexture *gitrace_tex, *gitmp_tex, *gifinal_tex; // RGBA16F at giscale
     SDL_GPUTexture *hist_tex[RT_MAX_PLAYERS][2];           // per-player temporal ping-pong
     int hist_idx[RT_MAX_PLAYERS];
@@ -2403,23 +2415,25 @@ static struct {
 // per-pass fragment sampler lists; array order = contiguous set=2 bindings =
 // the order rt_run_pass binds textures in
 static const struct {
-    const char *names[4];
+    const char *names[5];
     int count;
 } rt_pass_samplers[RTP_COUNT] = {
-    { { "uDepth" }, 1 },                      // prepass
-    { { "uNorm" }, 1 },                       // aoshadow
-    { { "uNorm", "uColor" }, 2 },             // trace
-    { { "uNorm", "uCur", "uHist" }, 3 },      // temporal
-    { { "uNorm", "uSrc" }, 2 },               // blur
-    { { "uNorm", "uColor" }, 2 },             // ssr
-    { { "uAO" }, 1 },                         // comp_mul
-    { { "uColor", "uGI", "uSSR" }, 3 },       // comp_add
-    { { "uNorm", "uAO", "uGI", "uSSR" }, 4 }, // debug
+    { { "uDepth" }, 1 },                                // prepass
+    { { "uNorm" }, 1 },                                 // aoshadow
+    { { "uNorm", "uColor" }, 2 },                       // trace
+    { { "uNorm", "uCur", "uHist" }, 3 },                // temporal
+    { { "uNorm", "uSrc" }, 2 },                         // blur
+    { { "uNorm", "uColor" }, 2 },                       // ssr
+    { { "uNorm" }, 1 },                                 // light
+    { { "uAO" }, 1 },                                   // comp_mul
+    { { "uColor", "uGI", "uSSR", "uLight" }, 4 },       // comp_add
+    { { "uNorm", "uAO", "uGI", "uSSR", "uLight" }, 5 }, // debug
 };
 
 static const char *const rt_pass_bodies[RTP_COUNT] = {
     RT_FS_PREPASS_BODY, RT_FS_AOSHADOW_BODY, RT_FS_TRACE_BODY, RT_FS_TEMPORAL_BODY,
-    RT_FS_BLUR_BODY, RT_FS_SSR_BODY, RT_FS_COMP_MUL_BODY, RT_FS_COMP_ADD_BODY, RT_FS_DEBUG_BODY,
+    RT_FS_BLUR_BODY, RT_FS_SSR_BODY, RT_FS_LIGHT_BODY, RT_FS_COMP_MUL_BODY, RT_FS_COMP_ADD_BODY,
+    RT_FS_DEBUG_BODY,
 };
 
 // Fullscreen triangle from gl_VertexIndex (the present-VS pattern). The uv
@@ -2452,8 +2466,18 @@ static char *rt_build_fs_source(int pass) {
         "    int uFrame; int uAOOn; int uShadowOn; int uGIOn;\n"
         "    int uSSROn; int uMode; int uAOSamples; int uShadowSteps;\n"
         "    int uRays; int uSteps; int uBounces; int uSSRSteps;\n"
+        "    int uLightCount; int uLightShadows; int uLightSteps; int uTorch;\n"
+        "    float uTorchInt; float uTorchRange; float uDarkAmbient; int uDark;\n"
+        "    int uLightsOn; int uPad0; int uPad1; int uPad2;\n"
         "};\n";
-    const size_t cap = strlen(ubo) + strlen(RT_GLSL_HELPERS) + strlen(rt_pass_bodies[pass]) + 1024;
+    // the light pass's second block (RtGpuLights, pushed on fragment slot 1)
+    static const char *const lights_ubo =
+        "layout(std140, set = 3, binding = 1) uniform RtLightsUni {\n"
+        "    vec4 uLightPosRad[24];\n" // 24 == RT_MAX_LIGHTS
+        "    vec4 uLightCol[24];\n"
+        "};\n";
+    const size_t cap = strlen(ubo) + strlen(lights_ubo) + strlen(RT_GLSL_HELPERS) +
+                       strlen(rt_pass_bodies[pass]) + 1024;
     char *src = (char *)malloc(cap);
     if (!src) {
         return NULL;
@@ -2468,6 +2492,10 @@ static char *rt_build_fs_source(int pass) {
     }
     strcpy(p, ubo);
     p += strlen(ubo);
+    if (pass == RTP_LIGHT) {
+        strcpy(p, lights_ubo);
+        p += strlen(lights_ubo);
+    }
     strcpy(p, RT_GLSL_HELPERS);
     p += strlen(RT_GLSL_HELPERS);
     strcpy(p, rt_pass_bodies[pass]);
@@ -2526,9 +2554,11 @@ static bool rt_init(void) {
         if (!fs_src) {
             return false;
         }
+        // the light pass declares the second (lights) uniform block
+        const unsigned int fs_ubos = (i == RTP_LIGHT) ? 2 : 1;
         const bool ok = gfx_sdlgpu_shader_compile_fixed(gpu.device, rt_vs_src, fs_src,
                                                         1 /* vs ubos */, rt_pass_samplers[i].count,
-                                                        1 /* fs ubos */, &rt.vs[i], &rt.fs[i]);
+                                                        fs_ubos, &rt.vs[i], &rt.fs[i]);
         free(fs_src);
         if (!ok) {
             sysLogPrintf(LOG_ERROR, "SDL_GPU RT: pass %d shader failed — raytracing disabled", i);
@@ -2543,6 +2573,7 @@ static bool rt_init(void) {
     rt.pipe[RTP_BLUR] = rt_make_pipeline(rt.vs[RTP_BLUR], rt.fs[RTP_BLUR], fmt8, 0);
     rt.pipe_blur16 = rt_make_pipeline(rt.vs[RTP_BLUR], rt.fs[RTP_BLUR], fmt16, 0);
     rt.pipe[RTP_SSR] = rt_make_pipeline(rt.vs[RTP_SSR], rt.fs[RTP_SSR], fmt8, 0);
+    rt.pipe[RTP_LIGHT] = rt_make_pipeline(rt.vs[RTP_LIGHT], rt.fs[RTP_LIGHT], fmt16, 0);
     rt.pipe[RTP_COMP_MUL] = rt_make_pipeline(rt.vs[RTP_COMP_MUL], rt.fs[RTP_COMP_MUL], gpu.fb_format, 1);
     rt.pipe[RTP_COMP_ADD] = rt_make_pipeline(rt.vs[RTP_COMP_ADD], rt.fs[RTP_COMP_ADD], gpu.fb_format, 2);
     rt.pipe[RTP_DEBUG] = rt_make_pipeline(rt.vs[RTP_DEBUG], rt.fs[RTP_DEBUG], gpu.fb_format, 0);
@@ -2601,6 +2632,7 @@ static bool rt_build_targets(int fbw, int fbh, float giscale) {
     rt_release_tex(&rt.ao_tex);
     rt_release_tex(&rt.aotmp_tex);
     rt_release_tex(&rt.ssr_tex);
+    rt_release_tex(&rt.light_tex);
     rt_release_tex(&rt.gitrace_tex);
     rt_release_tex(&rt.gitmp_tex);
     rt_release_tex(&rt.gifinal_tex);
@@ -2623,12 +2655,13 @@ static bool rt_build_targets(int fbw, int fbh, float giscale) {
     rt.ao_tex = rt_make_tex(fmt8, fbw, fbh);
     rt.aotmp_tex = rt_make_tex(fmt8, fbw, fbh);
     rt.ssr_tex = rt_make_tex(fmt8, fbw, fbh);
+    rt.light_tex = rt_make_tex(fmt16, fbw, fbh);
     rt.gitrace_tex = rt_make_tex(fmt16, rt.giw, rt.gih);
     rt.gitmp_tex = rt_make_tex(fmt16, rt.giw, rt.gih);
     rt.gifinal_tex = rt_make_tex(fmt16, rt.giw, rt.gih);
 
-    if (!rt.scene_col || !rt.norm_tex || !rt.ao_tex || !rt.aotmp_tex || !rt.ssr_tex || !rt.gitrace_tex ||
-        !rt.gitmp_tex || !rt.gifinal_tex) {
+    if (!rt.scene_col || !rt.norm_tex || !rt.ao_tex || !rt.aotmp_tex || !rt.ssr_tex || !rt.light_tex ||
+        !rt.gitrace_tex || !rt.gitmp_tex || !rt.gifinal_tex) {
         sysLogPrintf(LOG_ERROR, "SDL_GPU RT: render target creation failed: %s", SDL_GetError());
         return false;
     }
@@ -2671,7 +2704,7 @@ static void rt_run_pass(SDL_GPUGraphicsPipeline *pipe, SDL_GPUTexture *target, i
     vp.max_depth = 1.0f;
     SDL_SetGPUViewport(p, &vp);
 
-    SDL_GPUTextureSamplerBinding binds[4];
+    SDL_GPUTextureSamplerBinding binds[8];
     for (int i = 0; i < ntex; i++) {
         binds[i].texture = texs[i];
         binds[i].sampler = sampler_get(skeys[i]);
@@ -2715,9 +2748,15 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
     const bool ao_on = gfx_rt_ao != 0;
     const bool sh_on = gfx_rt_shadows != 0;
     const bool ssr_on = gfx_rt_ssr != 0;
+    const bool dark_on = gfx_rt_dark != 0;
     const int gi_mode = (gfx_rt_gi < 0) ? 0 : (gfx_rt_gi > 2 ? 2 : gfx_rt_gi);
     const int dbg = (gfx_rt_debug > 0 && gfx_rt_debug < RT_DEBUG_MAX) ? gfx_rt_debug : 0;
-    if (!ao_on && !sh_on && !ssr_on && gi_mode == RT_GI_OFF && dbg == 0) {
+    int nlights = (gfx_rt_lights && cam->lightcount > 0) ? cam->lightcount : 0;
+    if (nlights > RT_MAX_LIGHTS) {
+        nlights = RT_MAX_LIGHTS;
+    }
+    const bool lights_run = nlights > 0 || gfx_rt_torch != 0 || dbg == RT_DEBUG_LIGHT;
+    if (!ao_on && !sh_on && !ssr_on && gi_mode == RT_GI_OFF && dbg == 0 && !dark_on && !lights_run) {
         return;
     }
 
@@ -2807,6 +2846,15 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
     uni.sky[0] = gfx_rt_sky[0];
     uni.sky[1] = gfx_rt_sky[1];
     uni.sky[2] = gfx_rt_sky[2];
+    uni.light_count = nlights;
+    uni.light_shadows = gfx_rt_light_shadows;
+    uni.light_steps = kQuality[q].light_steps;
+    uni.torch = gfx_rt_torch;
+    uni.torch_int = gfx_rt_torch_intensity;
+    uni.torch_range = gfx_rt_torch_range;
+    uni.dark = dark_on ? 1 : 0;
+    uni.dark_ambient = gfx_rt_dark_ambient;
+    uni.lights_on = lights_run ? 1 : 0;
 
     // sun: world -> view (rotation only), normalized
     {
@@ -2930,13 +2978,38 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
         rt_run_pass(rt.pipe[RTP_SSR], rt.ssr_tex, vx, vy_tl, vw, vh, t, k, 2, &uni);
     }
 
+    // dynamic lights + torch (dark/relight mode): map lights transformed
+    // world -> view on the CPU, colours premultiplied; pushed as the light
+    // pass's second uniform block (fragment slot 1)
+    if (lights_run) {
+        static RtGpuLights lbuf; // 1.5 KB; static keeps it off the stack
+        const float *m = cam->viewmtx;
+        for (int i = 0; i < nlights; i++) {
+            const rtlight *l = &cam->lights[i];
+            lbuf.posrad[i][0] = m[0] * l->pos[0] + m[4] * l->pos[1] + m[8] * l->pos[2] + m[12];
+            lbuf.posrad[i][1] = m[1] * l->pos[0] + m[5] * l->pos[1] + m[9] * l->pos[2] + m[13];
+            lbuf.posrad[i][2] = m[2] * l->pos[0] + m[6] * l->pos[1] + m[10] * l->pos[2] + m[14];
+            lbuf.posrad[i][3] = l->radius > 1.0f ? l->radius : 1.0f;
+            const float gain = l->intensity * gfx_rt_light_intensity;
+            lbuf.col[i][0] = l->color[0] * gain;
+            lbuf.col[i][1] = l->color[1] * gain;
+            lbuf.col[i][2] = l->color[2] * gain;
+            lbuf.col[i][3] = 0.0f;
+        }
+        SDL_PushGPUFragmentUniformData(gpu.render_cb, 1, &lbuf, sizeof(lbuf));
+
+        SDL_GPUTexture *t[1] = { rt.norm_tex };
+        const uint32_t k[1] = { NEAREST };
+        rt_run_pass(rt.pipe[RTP_LIGHT], rt.light_tex, vx, vy_tl, vw, vh, t, k, 1, &uni);
+    }
+
     // composite back over the framebuffer colour (no depth attached)
     if (dbg != 0) {
-        SDL_GPUTexture *t[4] = { rt.norm_tex, rt.ao_tex, rt.gifinal_tex, rt.ssr_tex };
-        const uint32_t k[4] = { NEAREST, LINEAR, LINEAR, LINEAR };
-        rt_run_pass(rt.pipe[RTP_DEBUG], fb.color, vx, vy_tl, vw, vh, t, k, 4, &uni);
+        SDL_GPUTexture *t[5] = { rt.norm_tex, rt.ao_tex, rt.gifinal_tex, rt.ssr_tex, rt.light_tex };
+        const uint32_t k[5] = { NEAREST, LINEAR, LINEAR, LINEAR, LINEAR };
+        rt_run_pass(rt.pipe[RTP_DEBUG], fb.color, vx, vy_tl, vw, vh, t, k, 5, &uni);
     } else {
-        if (ao_on || sh_on) {
+        if (ao_on || sh_on || dark_on) {
             SDL_GPUTexture *t[1] = { rt.ao_tex };
             const uint32_t k[1] = { LINEAR };
             // uAOOn/uShadowOn carry the real toggles here (no dbg override)
@@ -2944,10 +3017,10 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
             uni.shadow_on = sh_on ? 1 : 0;
             rt_run_pass(rt.pipe[RTP_COMP_MUL], fb.color, vx, vy_tl, vw, vh, t, k, 1, &uni);
         }
-        if (gi_mode != RT_GI_OFF || ssr_on) {
-            SDL_GPUTexture *t[3] = { rt.scene_col, rt.gifinal_tex, rt.ssr_tex };
-            const uint32_t k[3] = { LINEAR, LINEAR, LINEAR };
-            rt_run_pass(rt.pipe[RTP_COMP_ADD], fb.color, vx, vy_tl, vw, vh, t, k, 3, &uni);
+        if (gi_mode != RT_GI_OFF || ssr_on || lights_run) {
+            SDL_GPUTexture *t[4] = { rt.scene_col, rt.gifinal_tex, rt.ssr_tex, rt.light_tex };
+            const uint32_t k[4] = { LINEAR, LINEAR, LINEAR, LINEAR };
+            rt_run_pass(rt.pipe[RTP_COMP_ADD], fb.color, vx, vy_tl, vw, vh, t, k, 4, &uni);
         }
     }
 

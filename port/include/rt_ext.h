@@ -15,6 +15,18 @@
 extern "C" {
 #endif
 
+// Dynamic light source for the /rt dark relight mode: harvested from the
+// map's room lights (the same data the glare/lens-flare artifacts draw from)
+// by rtCollectLights below. World-space; the renderer transforms to view
+// space per player.
+#define RT_MAX_LIGHTS 24
+typedef struct rtlight {
+	float pos[3];    // world position (light bbox average + room pos)
+	float radius;    // falloff radius, world units
+	float color[3];  // 0..1 rgb (the light's 4/4/4/4 colour nibbles)
+	float intensity; // per-light gain (brightnessmult/32 = nominal 1.0)
+} rtlight;
+
 // Camera snapshot handed from game code to the renderer through the
 // G_RTRESOLVE_EXT display-list command (w1 = pointer to one of these).
 // One static instance per local player slot, refilled every frame in
@@ -28,7 +40,15 @@ typedef struct rtcamera {
 	float zfar;
 	int playernum;     // local player index 0-3 (temporal history slot)
 	int valid;         // 0 = worldtoscreenmtx was NULL; renderer skips
+	int lightcount;    // entries filled in lights[] (0 = no map lights)
+	rtlight lights[RT_MAX_LIGHTS];
 } rtcamera;
+
+// Game-side collector (artifact.c, port-only): fills out[] with the nearest
+// lit ("on" + healthy — shot-out lights don't illuminate) room lights around
+// campos (float[3] world), sorted nearest-first. Returns the count (<= max,
+// max clamped to RT_MAX_LIGHTS). Only loaded rooms carry light data.
+int rtCollectLights(const float* campos, rtlight* out, int max);
 
 // Debug view modes (gfx_rt_debug)
 enum {
@@ -39,6 +59,7 @@ enum {
 	RT_DEBUG_SHADOW,  // 4: raw sun-shadow term
 	RT_DEBUG_GI,      // 5: accumulated GI radiance
 	RT_DEBUG_SSR,     // 6: reflection colour * confidence
+	RT_DEBUG_LIGHT,   // 7: dynamic-light radiance (map lights + torch)
 	RT_DEBUG_MAX
 };
 
@@ -68,6 +89,21 @@ extern float gfx_rt_gi_intensity;     // 0..4 bounce-light gain
 extern float gfx_rt_gi_scale;         // internal res of the GI/PT pass (0.25..1)
 extern float gfx_rt_sun_dir[3];       // world-space direction TOWARD the light
 extern float gfx_rt_sky[3];           // sky/miss radiance for GI/PT rays
+
+// Dark / relight mode ("blacken the world, illuminate from map lights"):
+// the multiplicative composite crushes the scene to dark_ambient, and a
+// per-light raytraced lighting pass (point lights from rtCollectLights, each
+// with its own screen-space shadow march, plus an optional camera torch)
+// re-illuminates additively using the captured scene colour as albedo.
+extern int gfx_rt_dark;               // crush the scene to the ambient floor
+extern float gfx_rt_dark_ambient;     // 0..1 remaining base brightness
+extern int gfx_rt_lights;             // harvest + render map (glare) lights
+extern int gfx_rt_light_shadows;      // per-light screen-space shadow rays
+extern float gfx_rt_light_intensity;  // global gain on map lights
+extern float gfx_rt_light_radius;     // falloff radius per light, world units
+extern int gfx_rt_torch;              // camera-mounted test spotlight
+extern float gfx_rt_torch_intensity;
+extern float gfx_rt_torch_range;      // world units
 
 #ifdef __cplusplus
 }

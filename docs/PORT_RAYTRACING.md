@@ -22,8 +22,19 @@ toggled live with `/rt` and persisted via `Video.RT.*` in `pd.ini`:
   `pt` mode: stochastic multi-bounce **path tracing** (2-3 bounces, 1-3 paths
   per pixel per frame) with temporally accumulated, depth-validated
   reprojection so the noise converges over frames.
-- **Debug views** — `/rt debug depth|normals|ao|shadow|gi|ssr` replaces the
-  scene with the named buffer; this is the diagnosis tool for everything below.
+- **Dark / relight mode** — `/rt dark` crushes the whole scene to a
+  configurable ambient floor (`/rt ambient F`, default 0.08) and re-illuminates
+  it with **dynamic point lights harvested from the map's own light fixtures**
+  (the same room-light data the glare/lens-flare artifacts draw from), each
+  with its own screen-space shadow ray march. Lights honour game state: a
+  shot-out light stops illuminating exactly like it stops glaring. Plus a
+  camera-mounted **test torch** (`/rt torch`) — a view-axis spotlight that
+  needs no shadow rays by construction (along the eye ray the depth buffer IS
+  the first hit). The lights also work *without* dark mode as additive
+  highlights.
+- **Debug views** — `/rt debug depth|normals|ao|shadow|gi|ssr|light` replaces
+  the scene with the named buffer; this is the diagnosis tool for everything
+  below.
 
 Why screen-space: SDL_GPU exposes no hardware ray-tracing pipelines, and the
 world geometry only exists as transient display-list streams (or dlcache GPU
@@ -83,11 +94,24 @@ gfx_opengl.cpp/gfx_rt.cpp but still links net.c's `/rt`) links.
    per-player previous camera; history is validated per-pixel against the
    stored linear depth (8% tolerance) and rejected on disocclusion.
 5. **SSR** trace (full res).
+5b. **Dynamic lights + torch** (when harvested lights exist, the torch is on,
+   or dark mode needs them): map lights are collected game-side by
+   `rtCollectLights` (artifact.c) — nearest lit room lights around the
+   player's camera, world pos = light bbox average + room pos, colour = the
+   4/4/4/4 nibbles, intensity = brightnessmult/32, skipping "off" and
+   shot-out (`!healthy`) lights — carried in the per-player `rtcamera`
+   (`RT_MAX_LIGHTS` = 24), transformed to view space CPU-side, and evaluated
+   per pixel with distance/N·L attenuation plus a per-light screen-space
+   shadow march (quality-scaled steps). The torch is a view-axis spotlight
+   evaluated in the same pass.
 6. **Composite** over the game framebuffer as two blended fullscreen
-   triangles: a multiplicative quad (`dst *= AO²·intensity × shadow`) and an
-   additive quad (`dst += GI·albedo·intensity + SSR·confidence·intensity`).
-   **Blending, not replacement, so per-sample MSAA edge colour survives** —
-   only the debug views overwrite the scene.
+   triangles: a multiplicative quad (`dst *= AO²·intensity × shadow ×
+   dark-ambient`) and an additive quad (`dst += GI·albedo·intensity +
+   SSR·confidence·intensity + light·albedo`). In dark mode the GI/SSR terms
+   are scaled down (they sample the pre-darkened capture) while the
+   dynamic-light term deliberately uses the bright capture as albedo — that's
+   what the lights re-reveal. **Blending, not replacement, so per-sample MSAA
+   edge colour survives** — only the debug views overwrite the scene.
 
 All GL state the passes touch is saved with `glGet*` on entry and restored on
 exit (FBO bindings, viewport/scissor, depth/blend/cull, program, VAO/VBO,
@@ -177,10 +201,16 @@ Differences from GL, all deliberate:
 /rt ao|shadows|ssr [on|off]       per effect (auto-enables master)
 /rt gi [off|ssgi|pt]              GI mode; /rt pt = shortcut to path tracing
 /rt quality 0..2                  sample/step budget preset (default 1)
-/rt debug off|depth|normals|ao|shadow|gi|ssr
+/rt debug off|depth|normals|ao|shadow|gi|ssr|light
 /rt sun X Y Z                     world-space direction TOWARD the light
 /rt sky R G B                     GI miss/sky radiance
 /rt aoint|aorad|shint|shlen|ssrint|giint|giscale <f>
+/rt dark [on|off]                 blacken the world (relight from lights)
+/rt ambient <f>                   dark mode's remaining base brightness
+/rt lights|lightshadows [on|off]  map-light harvest / per-light shadow rays
+/rt lightint|lightrad <f>         map-light gain / falloff radius (world units)
+/rt torch [on|off]                camera-mounted test spotlight
+/rt torchint|torchrange <f>       torch tuning
 /rt status
 ```
 
@@ -238,6 +268,17 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
   the viewport-rect Y-orientation handling is runtime-unverified.
 - Scene colour is used as both albedo and radiance in GI/PT (standard
   screen-space hack) — emissive-looking surfaces over-contribute.
+- Dark mode's "albedo" is the baked scene (albedo × baked lighting), so a
+  torch reveals the original shading, not flat unlit texture colour — usually
+  looks natural, but pre-baked dark corners stay dim even under a light.
+- Light harvesting only sees LOADED rooms (light data streams with room
+  gfx), so distant lights pop with room streaming; the harvest is per-camera
+  nearest-24, so a scene with more candidates drops the farthest. Lights are
+  point sources at the fixture bbox centre — long fluorescent tubes light
+  from their midpoint.
+- The per-light shadow rays are screen-space like everything else: an
+  occluder outside the frame won't cast, and light through a wall that's
+  offscreen can leak.
 
 ## Runtime verification checklist
 
@@ -261,3 +302,8 @@ when enabled → AO + SSR + SSGI on, shadows off, quality 1, GI at half res.
     `/rt on`; if normals/shadows are vertically mirrored, retry with
     `--gpu-invert-y` and report — that pins the uYSign derivation. Also HDR
     on + `/rt gi ssgi` (FP16 composite path).
+11. Dark mode: `/rt dark` in a lit corridor — world goes near-black except
+    pools of light under the fixtures (`/rt debug light` isolates the light
+    buffer). Shoot a light out — its pool must die with the glare. `/rt
+    torch` and sweep the walls; `/rt ambient 0.02` for full horror. Then
+    `/rt lightrad 1200` / `/rt lightint 2` to taste.

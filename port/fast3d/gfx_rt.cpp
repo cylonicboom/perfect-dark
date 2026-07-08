@@ -65,6 +65,7 @@ static GLuint s_norm_fbo = 0, s_norm_tex = 0;
 static GLuint s_ao_fbo = 0, s_ao_tex = 0;
 static GLuint s_aotmp_fbo = 0, s_aotmp_tex = 0;
 static GLuint s_ssr_fbo = 0, s_ssr_tex = 0;
+static GLuint s_light_fbo = 0, s_light_tex = 0; // dynamic-light radiance (dark mode)
 
 // GI-res targets (gfx_rt_gi_scale)
 static GLuint s_gitrace_fbo = 0, s_gitrace_tex = 0;
@@ -89,6 +90,7 @@ enum {
     PROG_TEMPORAL,
     PROG_BLUR,
     PROG_SSR,
+    PROG_LIGHT,     // dynamic lights + torch (dark/relight mode)
     PROG_COMP_MUL,
     PROG_COMP_ADD,
     PROG_DEBUG,
@@ -227,7 +229,21 @@ static const char* kFSCommon =
     "uniform int uRays;\n"
     "uniform int uSteps;\n"
     "uniform int uBounces;\n"
-    "uniform int uSSRSteps;\n";
+    "uniform int uSSRSteps;\n"
+    // dark/relight mode: dynamic lights (view-space, premultiplied colours),
+    // the camera torch, and the composite darkening controls
+    "uniform sampler2D uLight;\n"
+    "uniform vec4 uLightPosRad[24];\n" // 24 == RT_MAX_LIGHTS
+    "uniform vec4 uLightCol[24];\n"
+    "uniform int uLightCount;\n"
+    "uniform int uLightShadows;\n"
+    "uniform int uLightSteps;\n"
+    "uniform int uTorch;\n"
+    "uniform float uTorchInt;\n"
+    "uniform float uTorchRange;\n"
+    "uniform int uDark;\n"
+    "uniform float uDarkAmbient;\n"
+    "uniform int uLightsOn;\n";
 
 // ---------------------------------------------------------------------------
 // shader building
@@ -296,6 +312,7 @@ static GLuint rtLink(const char* version, const char* fs_body) {
         { "uDepth", 5 }, { "uNorm", 3 }, { "uColor", 4 },
         { "uCur", 0 },   { "uHist", 6 }, { "uSrc", 0 },
         { "uAO", 0 },    { "uGI", 1 },   { "uSSR", 2 },
+        { "uLight", 7 },
     };
     for (size_t i = 0; i < sizeof(samplers) / sizeof(samplers[0]); i++) {
         GLint loc = glGetUniformLocation(prog, samplers[i].name);
@@ -337,6 +354,7 @@ static void rtFreeTargets(void) {
     rtDeleteTexFbo(&s_ao_fbo, &s_ao_tex);
     rtDeleteTexFbo(&s_aotmp_fbo, &s_aotmp_tex);
     rtDeleteTexFbo(&s_ssr_fbo, &s_ssr_tex);
+    rtDeleteTexFbo(&s_light_fbo, &s_light_tex);
     rtDeleteTexFbo(&s_gitrace_fbo, &s_gitrace_tex);
     rtDeleteTexFbo(&s_gitmp_fbo, &s_gitmp_tex);
     rtDeleteTexFbo(&s_gifinal_fbo, &s_gifinal_tex);
@@ -396,6 +414,8 @@ static bool rtBuildTargets(int fbw, int fbh, float giscale) {
     s_aotmp_fbo = rtMakeFbo(s_aotmp_tex);
     s_ssr_tex = rtMakeTex(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, fbw, fbh, GL_LINEAR);
     s_ssr_fbo = rtMakeFbo(s_ssr_tex);
+    s_light_tex = rtMakeTex(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, fbw, fbh, GL_LINEAR);
+    s_light_fbo = rtMakeFbo(s_light_tex);
 
     s_gitrace_tex = rtMakeTex(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, s_giw, s_gih, GL_LINEAR);
     s_gitrace_fbo = rtMakeFbo(s_gitrace_tex);
@@ -432,11 +452,12 @@ static bool rtEnsureHistory(int player) {
 
 static bool rtInit(const char* glsl_version) {
     static const char* names[PROG_COUNT] = {
-        "prepass", "aoshadow", "trace", "temporal", "blur", "ssr", "comp_mul", "comp_add", "debug"
+        "prepass", "aoshadow", "trace", "temporal", "blur", "ssr", "light", "comp_mul", "comp_add", "debug"
     };
     const char* bodies[PROG_COUNT] = {
         RT_FS_PREPASS_BODY, RT_FS_AOSHADOW_BODY, RT_FS_TRACE_BODY, RT_FS_TEMPORAL_BODY,
-        RT_FS_BLUR_BODY, RT_FS_SSR_BODY, RT_FS_COMP_MUL_BODY, RT_FS_COMP_ADD_BODY, RT_FS_DEBUG_BODY,
+        RT_FS_BLUR_BODY, RT_FS_SSR_BODY, RT_FS_LIGHT_BODY, RT_FS_COMP_MUL_BODY, RT_FS_COMP_ADD_BODY,
+        RT_FS_DEBUG_BODY,
     };
     for (int i = 0; i < PROG_COUNT; i++) {
         s_prog[i] = rtLink(glsl_version, bodies[i]);
@@ -517,9 +538,15 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
     const bool ao_on = gfx_rt_ao != 0;
     const bool sh_on = gfx_rt_shadows != 0;
     const bool ssr_on = gfx_rt_ssr != 0;
+    const bool dark_on = gfx_rt_dark != 0;
     const int gi_mode = (gfx_rt_gi < 0) ? 0 : (gfx_rt_gi > 2 ? 2 : gfx_rt_gi);
     const int dbg = (gfx_rt_debug > 0 && gfx_rt_debug < RT_DEBUG_MAX) ? gfx_rt_debug : 0;
-    if (!ao_on && !sh_on && !ssr_on && gi_mode == RT_GI_OFF && dbg == 0) {
+    int nlights = (gfx_rt_lights && cam->lightcount > 0) ? cam->lightcount : 0;
+    if (nlights > RT_MAX_LIGHTS) {
+        nlights = RT_MAX_LIGHTS;
+    }
+    const bool lights_run = nlights > 0 || gfx_rt_torch != 0 || dbg == RT_DEBUG_LIGHT;
+    if (!ao_on && !sh_on && !ssr_on && gi_mode == RT_GI_OFF && dbg == 0 && !dark_on && !lights_run) {
         return;
     }
 
@@ -750,6 +777,42 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         rtDraw();
     }
 
+    // 5b. dynamic lights + torch (dark/relight mode): map lights transformed
+    // world -> view on the CPU, colours premultiplied by intensity
+    if (lights_run) {
+        float posrad[RT_MAX_LIGHTS * 4];
+        float lcol[RT_MAX_LIGHTS * 4];
+        const float* m = cam->viewmtx;
+        for (int i = 0; i < nlights; i++) {
+            const rtlight* l = &cam->lights[i];
+            posrad[i * 4 + 0] = m[0] * l->pos[0] + m[4] * l->pos[1] + m[8] * l->pos[2] + m[12];
+            posrad[i * 4 + 1] = m[1] * l->pos[0] + m[5] * l->pos[1] + m[9] * l->pos[2] + m[13];
+            posrad[i * 4 + 2] = m[2] * l->pos[0] + m[6] * l->pos[1] + m[10] * l->pos[2] + m[14];
+            posrad[i * 4 + 3] = l->radius > 1.0f ? l->radius : 1.0f;
+            const float gain = l->intensity * gfx_rt_light_intensity;
+            lcol[i * 4 + 0] = l->color[0] * gain;
+            lcol[i * 4 + 1] = l->color[1] * gain;
+            lcol[i * 4 + 2] = l->color[2] * gain;
+            lcol[i * 4 + 3] = 0.0f;
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, s_light_fbo);
+        glViewport(vx, vy, vw, vh);
+        GLuint pr = s_prog[PROG_LIGHT];
+        rtSetCommon(pr, &fr);
+        glUniform1i(rtU(pr, "uLightCount"), nlights);
+        if (nlights > 0) {
+            glUniform4fv(rtU(pr, "uLightPosRad"), nlights, posrad);
+            glUniform4fv(rtU(pr, "uLightCol"), nlights, lcol);
+        }
+        glUniform1i(rtU(pr, "uLightShadows"), gfx_rt_light_shadows);
+        glUniform1i(rtU(pr, "uLightSteps"), kQuality[q].light_steps);
+        glUniform1i(rtU(pr, "uTorch"), gfx_rt_torch);
+        glUniform1f(rtU(pr, "uTorchInt"), gfx_rt_torch_intensity);
+        glUniform1f(rtU(pr, "uTorchRange"), gfx_rt_torch_range);
+        rtDraw();
+    }
+
     // 6. composite back over the game framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(vx, vy, vw, vh);
@@ -760,10 +823,11 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         rtBindTex(0, s_ao_tex);
         rtBindTex(1, s_gifinal_tex);
         rtBindTex(2, s_ssr_tex);
+        rtBindTex(7, s_light_tex);
         glUniform1i(rtU(pr, "uMode"), dbg);
         rtDraw();
     } else {
-        if (ao_on || sh_on) {
+        if (ao_on || sh_on || dark_on) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_ZERO, GL_SRC_COLOR); // dst *= src
             GLuint pr = s_prog[PROG_COMP_MUL];
@@ -773,20 +837,26 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
             glUniform1i(rtU(pr, "uShadowOn"), sh_on ? 1 : 0);
             glUniform1f(rtU(pr, "uAOInt"), gfx_rt_ao_intensity);
             glUniform1f(rtU(pr, "uShInt"), gfx_rt_shadow_intensity);
+            glUniform1i(rtU(pr, "uDark"), dark_on ? 1 : 0);
+            glUniform1f(rtU(pr, "uDarkAmbient"), gfx_rt_dark_ambient);
             rtDraw();
             glDisable(GL_BLEND);
         }
-        if (gi_mode != RT_GI_OFF || ssr_on) {
+        if (gi_mode != RT_GI_OFF || ssr_on || lights_run) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ONE); // dst += src
             GLuint pr = s_prog[PROG_COMP_ADD];
             rtSetCommon(pr, &fr);
             rtBindTex(1, s_gifinal_tex);
             rtBindTex(2, s_ssr_tex);
+            rtBindTex(7, s_light_tex);
             glUniform1i(rtU(pr, "uGIOn"), gi_mode != RT_GI_OFF ? 1 : 0);
             glUniform1i(rtU(pr, "uSSROn"), ssr_on ? 1 : 0);
+            glUniform1i(rtU(pr, "uLightsOn"), lights_run ? 1 : 0);
             glUniform1f(rtU(pr, "uGIInt"), gfx_rt_gi_intensity);
             glUniform1f(rtU(pr, "uSSRInt"), gfx_rt_ssr_intensity);
+            glUniform1i(rtU(pr, "uDark"), dark_on ? 1 : 0);
+            glUniform1f(rtU(pr, "uDarkAmbient"), gfx_rt_dark_ambient);
             rtDraw();
             glDisable(GL_BLEND);
         }

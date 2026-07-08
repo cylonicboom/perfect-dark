@@ -5376,6 +5376,13 @@ Gfx *playerRenderHud(Gfx *gdl)
 			cam->playernum = g_Vars.currentplayernum;
 			cam->valid = 1;
 
+			// Dark/relight mode light sources: nearest lit room lights
+			// around this player's camera (artifact.c collector)
+			cam->lightcount = 0;
+			if (gfx_rt_lights) {
+				cam->lightcount = rtCollectLights(g_Vars.currentplayer->cam_pos.f, cam->lights, RT_MAX_LIGHTS);
+			}
+
 			gDPRtResolveEXT(gdl++, cam);
 		}
 	}

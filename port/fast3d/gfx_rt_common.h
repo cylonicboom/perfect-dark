@@ -15,11 +15,16 @@
  * zfar), uRect (vec4 viewport uv rect: min.xy, max.zw), uYSign, uTexel
  * (vec2), uFrame (int), uCurToPrev (mat4), uSun/uSky (vec3), uBlend, uDir
  * (vec2), uAORadius, uShadowLen, uGIRadius, uMaxDist, uAOInt, uShInt,
- * uGIInt, uSSRInt, and the int toggles/budgets uAOOn uShadowOn uGIOn uSSROn
- * uMode uAOSamples uShadowSteps uRays uSteps uBounces uSSRSteps.
+ * uGIInt, uSSRInt, the int toggles/budgets uAOOn uShadowOn uGIOn uSSROn
+ * uMode uAOSamples uShadowSteps uRays uSteps uBounces uSSRSteps, and the
+ * dark/relight set: uLightPosRad[RT_MAX_LIGHTS] (vec4, view-space xyz +
+ * radius), uLightCol[RT_MAX_LIGHTS] (vec4, premultiplied rgb), uLightCount,
+ * uLightShadows, uLightSteps, uTorch (int), uTorchInt, uTorchRange, uDark
+ * (int), uDarkAmbient, uLightsOn (int).
  * Samplers per pass: prepass uDepth; aoshadow uNorm; trace uNorm+uColor;
- * temporal uNorm+uCur+uHist; blur uNorm+uSrc; ssr uNorm+uColor; comp_mul
- * uAO; comp_add uColor+uGI+uSSR; debug uNorm+uAO+uGI+uSSR.
+ * temporal uNorm+uCur+uHist; blur uNorm+uSrc; ssr uNorm+uColor; light uNorm;
+ * comp_mul uAO; comp_add uColor+uGI+uSSR+uLight; debug uNorm+uAO+uGI+uSSR+
+ * uLight.
  */
 
 #include <string.h>
@@ -33,10 +38,11 @@
 static const struct {
     int ao_samples, shadow_steps, ssr_steps;
     int gi_rays, gi_steps, pt_rays, pt_bounces;
+    int light_steps; // per-light shadow-ray march (dark/relight mode)
 } kQuality[3] = {
-    {  6, 12, 20, 4,  8, 1, 2 }, // low
-    { 10, 20, 32, 6, 12, 2, 3 }, // medium
-    { 16, 28, 48, 8, 16, 3, 3 }, // high
+    {  6, 12, 20, 4,  8, 1, 2,  8 }, // low
+    { 10, 20, 32, 6, 12, 2, 3, 12 }, // medium
+    { 16, 28, 48, 8, 16, 3, 3, 16 }, // high
 };
 
 // ---------------------------------------------------------------------------
@@ -344,27 +350,95 @@ static const char* const RT_FS_SSR_BODY =
     "    oCol = vec4(col, conf * mix(0.08, 1.0, fres));\n"
     "}\n";
 
-// multiplicative composite: dst *= AO * shadow (blend dst_new = src * dst)
+// Dynamic-light radiance (dark/relight mode): point lights harvested from the
+// map's glare lights, each with its own screen-space shadow march, plus the
+// camera-mounted test torch. Lights arrive in VIEW space (transformed CPU-
+// side), colours premultiplied by intensity. The torch casts no shadow ray on
+// purpose: along the eye ray the depth buffer IS the first hit, so a light at
+// the camera can never be occluded — physically free of shadow acne.
+static const char* const RT_FS_LIGHT_BODY =
+    "void main() {\n"
+    "    vec4 nz = texture(uNorm, vUV);\n"
+    "    if (nz.w <= 0.0) { oCol = vec4(0.0); return; }\n"
+    "    vec3 n = nz.xyz;\n"
+    "    vec3 P = vpos(vUV, nz.w);\n"
+    "    vec2 seed = gl_FragCoord.xy + vec2(float(uFrame) * 13.7, float(uFrame) * 5.3);\n"
+    "    vec3 acc = vec3(0.0);\n"
+    "    for (int i = 0; i < uLightCount; i++) {\n"
+    "        vec3 toL = uLightPosRad[i].xyz - P;\n"
+    "        float rad = uLightPosRad[i].w;\n"
+    "        float d2 = dot(toL, toL);\n"
+    "        if (d2 > rad * rad) continue;\n"
+    "        float d = sqrt(d2);\n"
+    "        vec3 L = toL / max(d, 0.001);\n"
+    "        float ndl = dot(n, L);\n"
+    "        if (ndl <= 0.0) continue;\n"
+    "        float att = 1.0 - d / rad;\n"
+    "        att *= att;\n"
+    "        float contrib = ndl * att;\n"
+    "        if (contrib < 0.004) continue;\n"
+    "        float vis = 1.0;\n"
+    "        if (uLightShadows != 0) {\n"
+    "            float dt = d / float(uLightSteps);\n"
+    "            float t = dt * (0.4 + 0.6 * h12(seed + vec2(float(i) * 7.3, 3.1)));\n"
+    "            for (int s = 0; s < uLightSteps; s++) {\n"
+    "                if (t >= d - 2.0) break;\n" // reached the light
+    "                vec3 S = P + L * t;\n"
+    "                t += dt;\n"
+    "                if (S.z > -uProj.z) break;\n"
+    "                vec2 uv2 = puv(S);\n"
+    "                if (!inrect(uv2)) break;\n"
+    "                float sz = texture(uNorm, uv2).w;\n"
+    "                float rz = -S.z;\n"
+    "                if (sz > 0.0 && rz - sz > 1.5 && rz - sz < 4.0 + t * 0.12) { vis = 0.0; break; }\n"
+    "            }\n"
+    "        }\n"
+    "        acc += uLightCol[i].rgb * (contrib * vis);\n"
+    "    }\n"
+    "    if (uTorch != 0) {\n"
+    "        float d = length(P);\n"
+    "        vec3 L = -P / max(d, 0.001);\n"     // surface -> camera
+    "        float ndl = max(dot(n, L), 0.0);\n"
+    "        float ca = -P.z / max(d, 0.001);\n" // cos(angle to the view axis)
+    "        float cone = smoothstep(0.80, 0.93, ca);\n"
+    "        float att = clamp(1.0 - d / uTorchRange, 0.0, 1.0);\n"
+    "        att *= att;\n"
+    "        acc += vec3(1.0, 0.97, 0.9) * (ndl * att * cone * uTorchInt);\n"
+    "    }\n"
+    "    oCol = vec4(acc, 1.0);\n"
+    "}\n";
+
+// multiplicative composite: dst *= AO * shadow * dark-ambient
+// (blend dst_new = src * dst)
 static const char* const RT_FS_COMP_MUL_BODY =
     "void main() {\n"
     "    vec2 aosh = texture(uAO, vUV).rg;\n"
     "    float m = 1.0;\n"
     "    if (uAOOn != 0) m *= mix(1.0, aosh.r * aosh.r, uAOInt);\n"
     "    if (uShadowOn != 0) m *= 1.0 - uShInt * (1.0 - aosh.g);\n"
+    "    if (uDark != 0) m *= uDarkAmbient;\n"
     "    oCol = vec4(vec3(m), 1.0);\n"
     "}\n";
 
-// additive composite: dst += GI * albedo + SSR (blend ONE, ONE)
+// additive composite: dst += GI * albedo + SSR + lights * albedo
+// (blend ONE, ONE). In dark mode the GI/SSR terms are scaled down: they
+// sample the scene captured BEFORE the darkening, so unscaled they'd glow
+// with the pre-dark world. The dynamic-light term uses the same bright
+// capture as albedo deliberately — that's what the lights re-illuminate.
 static const char* const RT_FS_COMP_ADD_BODY =
     "void main() {\n"
     "    vec3 add = vec3(0.0);\n"
+    "    float darkscale = (uDark != 0) ? min(uDarkAmbient * 2.0, 1.0) : 1.0;\n"
     "    if (uGIOn != 0) {\n"
     "        vec3 albedo = texture(uColor, vUV).rgb;\n"
-    "        add += texture(uGI, vUV).rgb * albedo * uGIInt;\n"
+    "        add += texture(uGI, vUV).rgb * albedo * uGIInt * darkscale;\n"
     "    }\n"
     "    if (uSSROn != 0) {\n"
     "        vec4 ssr = texture(uSSR, vUV);\n"
-    "        add += ssr.rgb * ssr.a * uSSRInt;\n"
+    "        add += ssr.rgb * ssr.a * uSSRInt * darkscale;\n"
+    "    }\n"
+    "    if (uLightsOn != 0) {\n"
+    "        add += texture(uLight, vUV).rgb * texture(uColor, vUV).rgb;\n"
     "    }\n"
     "    // tiny dither to keep the additive gradient from banding on RGB8\n"
     "    add += (h12(gl_FragCoord.xy) - 0.5) / 255.0;\n"
@@ -382,6 +456,7 @@ static const char* const RT_FS_DEBUG_BODY =
     "    else if (uMode == 4) c = vec3(texture(uAO, vUV).g);\n"
     "    else if (uMode == 5) c = texture(uGI, vUV).rgb;\n"
     "    else if (uMode == 6) { vec4 s = texture(uSSR, vUV); c = s.rgb * s.a; }\n"
+    "    else if (uMode == 7) c = texture(uLight, vUV).rgb;\n"
     "    oCol = vec4(c, 1.0);\n"
     "}\n";
 

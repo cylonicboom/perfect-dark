@@ -9361,6 +9361,35 @@ s32 chraiLuaUpsideDown(s32 on)
 	return 1;
 }
 
+// pd.pixelate(w, h, colours): chunk the rendered frame down to a w x h pixel
+// grid via the retro post filter (gfx_retro.cpp, GL backend only), optionally
+// crushing colours (2..64 = N-level greyscale, 256 = RGB 3-3-2). w <= 0 = off.
+extern s32 gfx_retro_pixel_w;
+extern s32 gfx_retro_pixel_h;
+extern s32 gfx_retro_colors;
+s32 chraiLuaPixelate(s32 w, s32 h, s32 colors)
+{
+	if (w <= 0 || h <= 0) {
+		gfx_retro_pixel_w = 0;
+		gfx_retro_pixel_h = 0;
+		gfx_retro_colors = 0;
+		return 1;
+	}
+	gfx_retro_pixel_w = w < 8 ? 8 : w > 1024 ? 1024 : w;
+	gfx_retro_pixel_h = h < 8 ? 8 : h > 1024 ? 1024 : h;
+	gfx_retro_colors = colors < 0 ? 0 : colors;
+	return 1;
+}
+
+// pd.audio_crush(step, bits): sample-and-hold + bit-depth crush on the device
+// stream (audio.c push point, the pd.mute mechanism). 1, 16 (or no args) = off.
+extern void audioSetCrush(s32 step, s32 bits);
+s32 chraiLuaAudioCrush(s32 step, s32 bits)
+{
+	audioSetCrush(step, bits);
+	return 1;
+}
+
 // pd.weather(type, intensity): 0 off / 1 rain / 2 snow, on any stage.
 s32 chraiLuaWeather(s32 type, s32 intensity)
 {

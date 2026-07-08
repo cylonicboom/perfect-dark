@@ -335,6 +335,13 @@ bool gfx_upsidedown_mode = false;
 // Chaos screen tint (pd.screen_tint): 0x00RRGGBB, 0 = off. Rides the
 // grayscale shader path (luminance * tint) like the Midas gold mode.
 int gfx_screen_tint = 0;
+// Chaos retro filter (pd.pixelate): pixelate the finished frame to a
+// pixel_w x pixel_h grid, optionally crushing colours (0 = keep, 2..64 =
+// N-level greyscale, >= 256 = RGB 3-3-2). w == 0 disables. Dispatched at
+// gfx_run's tail through the nullable retro_filter rapi entry (GL only).
+int gfx_retro_pixel_w = 0;
+int gfx_retro_pixel_h = 0;
+int gfx_retro_colors = 0;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
@@ -3876,6 +3883,14 @@ extern "C" void gfx_run(Gfx* commands) {
     rendering_state.scissor = {};
     gfx_run_dl(commands);
     gfx_flush();
+
+    // Chaos retro filter (pd.pixelate; docs/PORT_CHAOS.md): pixelate +
+    // colour-crush the finished frame (world + viewmodel + HUD) in place,
+    // before the MSAA resolve / present path picks it up.
+    if (gfx_retro_pixel_w > 0 && gfx_retro_pixel_h > 0 && gfx_rapi->retro_filter != nullptr) {
+        gfx_rapi->retro_filter(gfx_retro_pixel_w, gfx_retro_pixel_h, gfx_retro_colors);
+    }
+
     gfxFramebuffer = 0;
 
     if (game_renders_to_framebuffer) {

@@ -1274,6 +1274,33 @@ static int l_pd_upside_down(lua_State *L)
 	return 1;
 }
 
+/* pd.pixelate(w, h, colours) -> bool. Pixelate the rendered frame down to a
+ * w x h grid; colours 4 = 4-level greyscale, 256 = 256-colour RGB 3-3-2,
+ * 0/absent = keep colours. pd.pixelate() turns it off. GL renderer only. */
+static int l_pd_pixelate(lua_State *L)
+{
+	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
+		lua_pushboolean(L, chraiLuaPixelate(0, 0, 0) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaPixelate(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_checkinteger(L, 2),
+			(s32)luaL_optinteger(L, 3, 0)) != 0);
+	return 1;
+}
+
+/* pd.audio_crush(step, bits) -> bool. Crunch all audio: sample-and-hold every
+ * `step`th output frame (device rate 22 kHz / step) masked to `bits` bit
+ * depth. pd.audio_crush() restores clean audio. */
+static int l_pd_audio_crush(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAudioCrush(
+			(s32)luaL_optinteger(L, 1, 1),
+			(s32)luaL_optinteger(L, 2, 16)) != 0);
+	return 1;
+}
+
 /* pd.weather(type, intensity) -> bool. 0 = off, 1 = rain, 2 = snow — on any
  * stage (unconfigured stages rain indoors too; that's the joke). */
 static int l_pd_weather(lua_State *L)
@@ -1673,6 +1700,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_spawn_bike);    lua_setfield(L, -2, "spawn_bike");
 	lua_pushcfunction(L, l_pd_sfx_shuffle);   lua_setfield(L, -2, "sfx_shuffle");
 	lua_pushcfunction(L, l_pd_instrument_shuffle); lua_setfield(L, -2, "instrument_shuffle");
+	lua_pushcfunction(L, l_pd_pixelate);      lua_setfield(L, -2, "pixelate");
+	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
 
 	/* archipelago transport (pd.ap_connect/status/send/poll/disconnect) */
 	luaApiRegisterAp(L);

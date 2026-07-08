@@ -537,6 +537,7 @@ if(DEDICATED_SERVER)
     "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_sdl.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_opengl.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_rt.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_retro.cpp"
     "${CMAKE_SOURCE_DIR}/port/fast3d/glad/glad.c"
     "${CMAKE_SOURCE_DIR}/port/src/input.c"
   )

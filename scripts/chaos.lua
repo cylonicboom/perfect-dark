@@ -466,6 +466,14 @@ chaos.effects = {
   terminal     = { label="Terminal green",    w=4, dur=30,
                    start=function() pd.screen_tint(110, 255, 130) end,
                    stop=function() pd.screen_tint() end },
+  -- retro era pair: pixelate the frame + bitcrush the audio (device rate is
+  -- 22kHz, so step 4 ~= 5.5kHz @ 8-bit and step 2 ~= 11kHz @ 10-bit)
+  bit8         = { label="8-bit era",         w=3, dur=30,
+                   start=function() pd.pixelate(160, 120, 4); pd.audio_crush(4, 8) end,
+                   stop=function() pd.pixelate(); pd.audio_crush() end },
+  bit16        = { label="16-bit era",        w=3, dur=30,
+                   start=function() pd.pixelate(256, 192, 256); pd.audio_crush(2, 10) end,
+                   stop=function() pd.pixelate(); pd.audio_crush() end },
   australia    = { label="Australia mode",    w=3, dur=20,
                    start=function() pd.upside_down(true) end,
                    stop=function() pd.upside_down(false) end },
@@ -901,6 +909,8 @@ pd.on("stage", function()
   -- stage's own configured rain)
   if pd.chr_speed then pd.chr_speed(1) end
   if pd.screen_tint then pd.screen_tint() end
+  if pd.pixelate then pd.pixelate() end
+  if pd.audio_crush then pd.audio_crush() end
   if pd.upside_down then pd.upside_down(false) end
   if pd.gas then pd.gas(false) end
   if pd.t_pose then pd.t_pose(false) end

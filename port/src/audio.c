@@ -34,6 +34,15 @@ static u32 extSoundLen = 0;
 static u32 extSoundPos = 0;
 static s16 *mixBuf = NULL;
 static u32 mixBufCap = 0;
+// - bitcrush (pd.audio_crush): sample-and-hold every crushStep'th stereo
+//   frame, masked to crushBits of depth — the classic low-sample-rate +
+//   low-bit-depth crunch. The hold value/phase persist across buffer pushes
+//   so the effective sample rate is continuous. step 1 / bits 16 = off.
+static s32 audioCrushStep = 1;
+static s32 audioCrushBits = 16;
+static s16 audioCrushL = 0;
+static s16 audioCrushR = 0;
+static u32 audioCrushPhase = 0;
 #endif
 
 static s32 bufferSize = 512;
@@ -43,6 +52,18 @@ void audioSetMuted(s32 on)
 {
 #ifndef DEDICATED_SERVER
 	audioMuted = on;
+#endif
+}
+
+void audioSetCrush(s32 step, s32 bits)
+{
+#ifndef DEDICATED_SERVER
+	audioCrushStep = step < 1 ? 1 : step > 64 ? 64 : step;
+	audioCrushBits = bits < 1 ? 1 : bits > 16 ? 16 : bits;
+	audioCrushPhase = 0;
+#else
+	(void)step;
+	(void)bits;
 #endif
 }
 
@@ -249,11 +270,13 @@ void audioEndFrame(void)
 		if (stream && audioGetSamplesBuffered() < queueLimit) {
 			const void *out = nextBuf;
 
-			// Chaos mute / external one-shot: both need a mutable copy of the
-			// outgoing buffer (the mixer owns nextBuf). Push cadence and sizes
-			// are unchanged so the frame pacing that reads the queued-bytes
-			// count stays identical.
-			if (audioMuted || (extSound && extSoundPos < extSoundLen)) {
+			// Chaos mute / external one-shot / bitcrush: all need a mutable
+			// copy of the outgoing buffer (the mixer owns nextBuf). Push
+			// cadence and sizes are unchanged so the frame pacing that reads
+			// the queued-bytes count stays identical.
+			const s32 crushing = audioCrushStep > 1 || audioCrushBits < 16;
+
+			if (audioMuted || crushing || (extSound && extSoundPos < extSoundLen)) {
 				if (mixBufCap < nextSize) {
 					mixBuf = (s16 *)SDL_realloc(mixBuf, nextSize);
 					mixBufCap = mixBuf ? nextSize : 0;
@@ -286,6 +309,27 @@ void audioEndFrame(void)
 						}
 
 						extSoundPos += bytes;
+					}
+
+					// bitcrush last, so the external one-shot gets crunched
+					// too. The mask sign-extends through the int promotion,
+					// so negative samples quantize the same as positive.
+					if (!audioMuted && crushing) {
+						const s16 mask = (s16)(0xffffu << (16 - audioCrushBits));
+						const u32 frames = nextSize / (2 * sizeof(s16));
+						u32 i;
+
+						for (i = 0; i < frames; i++) {
+							if (audioCrushPhase == 0) {
+								audioCrushL = mixBuf[i * 2 + 0] & mask;
+								audioCrushR = mixBuf[i * 2 + 1] & mask;
+							}
+							if (++audioCrushPhase >= (u32)audioCrushStep) {
+								audioCrushPhase = 0;
+							}
+							mixBuf[i * 2 + 0] = audioCrushL;
+							mixBuf[i * 2 + 1] = audioCrushR;
+						}
 					}
 
 					out = mixBuf;

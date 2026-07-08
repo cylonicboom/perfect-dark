@@ -338,6 +338,8 @@ s32 chraiLuaGormless(s32 on);                 /* invert movement + look axes */
 s32 chraiLuaSpawnBike(void);                  /* half-size hoverbike at the player (solo) */
 s32 chraiLuaSfxShuffle(s32 on);               /* every SFX plays as a random other SFX */
 s32 chraiLuaInstrumentShuffle(s32 on);        /* MIDI program changes pick random instruments */
+s32 chraiLuaPixelate(s32 w, s32 h, s32 colors); /* pixelate the frame to w x h; colours 4 = grey-4, 256 = RGB332; 0,0 = off */
+s32 chraiLuaAudioCrush(s32 step, s32 bits);   /* sample-hold every Nth frame at `bits` depth; 1,16 = off */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

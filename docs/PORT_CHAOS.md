@@ -207,6 +207,25 @@ function, called every frame while active (disco's hue cycle).
   hill highlight applied to every room), `toxic` (green tint), `blackout`
   (near-dark blue tint), `disco` (hue-cycling room lighting via the
   per-effect `tick` driver).
+- **Retro era pair** (`pd.pixelate` + `pd.audio_crush`): `bit8` ("8-bit
+  era" — frame pixelated to a 160×120 grid + 4-level greyscale, audio
+  sample-and-held to ~5.5 kHz @ 8-bit) and `bit16` ("16-bit era" — 256×192
+  grid + 256 displayable colours (RGB 3-3-2), audio ~11 kHz @ 10-bit).
+  Video is a post pass over the finished frame (world + viewmodel + HUD) in
+  `port/fast3d/gfx_retro.cpp`, dispatched at `gfx_run`'s tail through the
+  nullable `retro_filter` rapi entry (the `rt_resolve` pattern): capture the
+  framebuffer colour (MSAA-resolving blit, or `glCopyTexSubImage2D` for the
+  default framebuffer), then one fullscreen shader that snaps UVs to the
+  grid (`GL_NEAREST` — each block is one point-sampled source pixel) and
+  quantizes colours. **OpenGL renderer only** — the SDL_GPU rapi entry is
+  NULL, so on Vulkan/D3D12 the video half is silently absent (the wireframe
+  precedent); audio still crunches. Globals `gfx_retro_pixel_w/h`,
+  `gfx_retro_colors` (0 keep / 2..64 grey levels / ≥256 RGB332). Audio is a
+  bitcrush at the `audioEndFrame` push point (the `pd.mute` mutable-copy
+  mechanism): sample-and-hold every `step`th stereo frame (device rate
+  22 kHz ÷ step) masked to `bits` depth, hold phase continuous across
+  buffer pushes; the external one-shot (`pd.play_file`) is mixed first so
+  it crunches too, and mute wins over crush.
 
 Adding an effect = one table entry in `chaos.effects` + `/lua reload`.
 

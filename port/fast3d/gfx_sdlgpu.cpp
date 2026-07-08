@@ -3113,6 +3113,7 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_set_palette_enable,
     gfx_sdlgpu_set_shade_routing,
     gfx_sdlgpu_rt_resolve, // screen-space raytracing suite (docs/PORT_RAYTRACING.md)
+    nullptr,               // retro_filter — chaos pixelate is GL-only for now (docs/PORT_CHAOS.md)
 };
 
 #endif // USE_SDLGPU

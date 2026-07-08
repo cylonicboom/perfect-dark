@@ -38,8 +38,11 @@ toggled live with `/rt` and persisted via `Video.RT.*` in `pd.ini`:
   global tint from the stage's live sky colour: warm skies (sunset/dawn) wash
   their own rich hue, bright blue skies read as a sunny day (warm-white),
   dark blue skies as night (dim moon-blue) — applied to the dark-mode ambient
-  floor and the GI sky term (`/rt skygain`). Black sky (indoor stages) =
-  neutral, no change.
+  floor and the GI sky term (`/rt skygain`). The base colour (`g_Env.sky_*`)
+  is ALSO PD's fog colour (envTick sets the RDP fog colour from the same
+  field), so foggy stages derive from their fog automatically; on cloudy
+  stages the tinted cloud layer is blended in 50/50. Black sky (indoor
+  stages) = neutral, no change.
 - **Debug views** — `/rt debug depth|normals|ao|shadow|gi|ssr|light` replaces
   the scene with the named buffer; this is the diagnosis tool for everything
   below.

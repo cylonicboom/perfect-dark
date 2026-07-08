@@ -897,14 +897,22 @@ s32 rtCollectLights(const f32 *campos, rtlight *out, s32 max)
 }
 
 /**
- * Raytracing suite: map the stage's LIVE sky colour (envGetCurrent — follows
- * environment transitions) to a global "skylight" per the dark-mode rules:
+ * Raytracing suite: map the stage's LIVE environment colour (envGetCurrent —
+ * follows environment transitions) to a global "skylight" per the dark-mode
+ * rules:
  *  - warm sky (r >= b, sunset/dawn): the sky's own rich hue;
  *  - cool BRIGHT sky (blue day): warm-white sunlight (a sunny day's light is
  *    warm even though the sky is blue);
  *  - cool DARK sky (night): dim moon-blue, mostly the sky's own hue.
  * out = hue * intensity (day ~1.0 down to night ~0.35). *ok = 0 for a black
  * sky (indoor stage) so the renderer keeps its neutral ambient.
+ *
+ * The base colour is g_Env.sky_r/g/b, which in PD's environment system is
+ * ALSO the fog colour (envTick sets the RDP fog colour from the same field —
+ * fog fades into the sky clear colour by design), so foggy stages derive
+ * from their fog automatically. On cloudy stages the visible sky is
+ * dominated by the tinted cloud layer, so the cloud colour is blended in
+ * 50/50 when enabled.
  */
 void rtComputeSkyLight(f32 out[3], s32 *ok)
 {
@@ -912,7 +920,7 @@ void rtComputeSkyLight(f32 out[3], s32 *ok)
 	f32 r = env->sky_r * (1.0f / 255.0f);
 	f32 g = env->sky_g * (1.0f / 255.0f);
 	f32 b = env->sky_b * (1.0f / 255.0f);
-	f32 lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+	f32 lum;
 	f32 pk = r > g ? r : g;
 	f32 inten;
 
@@ -924,8 +932,33 @@ void rtComputeSkyLight(f32 out[3], s32 *ok)
 	*ok = 0;
 
 	if (pk < 0.02f) {
-		return; // black sky: indoor stage
+		return; // black sky/fog: indoor stage (clouds ignored on purpose)
 	}
+
+	// cloudy stages: the cloud layer is what you actually see
+	if (env->clouds_enabled) {
+		f32 cr = env->clouds_r * (1.0f / 255.0f);
+		f32 cg = env->clouds_g * (1.0f / 255.0f);
+		f32 cb = env->clouds_b * (1.0f / 255.0f);
+		f32 cpk = cr > cg ? cr : cg;
+
+		if (cb > cpk) {
+			cpk = cb;
+		}
+
+		if (cpk >= 0.02f) { // ignore black/unset cloud colours
+			r = (r + cr) * 0.5f;
+			g = (g + cg) * 0.5f;
+			b = (b + cb) * 0.5f;
+			pk = r > g ? r : g;
+
+			if (b > pk) {
+				pk = b;
+			}
+		}
+	}
+
+	lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
 
 	// normalized hue (peak channel = 1)
 	out[0] = r / pk;

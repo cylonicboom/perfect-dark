@@ -12,9 +12,14 @@ toggled live with `/rt` and persisted via `Video.RT.*` in `pd.ini`:
 
 - **Ambient occlusion** — cosine-hemisphere occlusion rays marched against the
   depth buffer (raymarched AO, not kernel SSAO), bilateral-blurred.
-- **Sun shadows** — a screen-space directional shadow march toward a
-  configurable world-space light (`/rt sun X Y Z`). Stylized (PD has no global
-  sun), so **off by default**.
+- **Sun shadows** — a screen-space directional shadow march toward the sun.
+  On stages with a **lens-flare sun** (Hostage One, Infiltration, Rescue,
+  Escape, Air Base, Crash Site, Skedar Ruins…), the direction tracks the
+  actual sun automatically (`/rt autosun`, default on): `env suns[0].pos` is
+  an absolute world point, so the direction is recomputed per camera per
+  frame (`rtComputeSunDir`, artifact.c). The sun's own RGB also replaces the
+  warm-white daylight hue in the skylight mapping. Sunless stages fall back
+  to the manual `/rt sun X Y Z`. Still **off by default** (stylized indoors).
 - **SSR reflections** — reflected-ray march with binary refinement, fresnel
   weighting and edge/distance confidence fades. Everything is slightly
   reflective at grazing angles (there is no material data to say what's shiny).
@@ -228,6 +233,7 @@ Differences from GL, all deliberate:
 /rt skylight [on|off]             sky-colour ambient tint + GI sky (default on)
 /rt skygain <f>                   skylight -> GI miss-radiance scale (0.3)
 /rt bounces <n>                   GI/PT bounce override 1..8, 0 = quality preset
+/rt autosun [on|off]              shadow dir tracks the stage's lens-flare sun
 /rt torch [on|off]                camera-mounted test spotlight
 /rt torchint|torchrange <f>       torch tuning
 /rt status

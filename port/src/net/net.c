@@ -6893,7 +6893,7 @@ s32 netConsoleCommand(const char *line)
 		extern f32 gfx_rt_ssr_intensity, gfx_rt_gi_intensity, gfx_rt_gi_scale;
 		extern f32 gfx_rt_sun_dir[3], gfx_rt_sky[3];
 		extern int gfx_rt_dark, gfx_rt_lights, gfx_rt_light_shadows, gfx_rt_torch, gfx_rt_skylight;
-		extern int gfx_rt_bounces;
+		extern int gfx_rt_bounces, gfx_rt_autosun;
 		extern f32 gfx_rt_dark_ambient, gfx_rt_light_intensity, gfx_rt_light_radius;
 		extern f32 gfx_rt_light_cull, gfx_rt_light_max, gfx_rt_skylight_gain;
 		extern f32 gfx_rt_torch_intensity, gfx_rt_torch_range;
@@ -6916,7 +6916,8 @@ s32 netConsoleCommand(const char *line)
 
 		if (strcmp(sub, "ao") == 0 || strcmp(sub, "shadows") == 0 || strcmp(sub, "ssr") == 0
 				|| strcmp(sub, "dark") == 0 || strcmp(sub, "torch") == 0 || strcmp(sub, "lights") == 0
-				|| strcmp(sub, "lightshadows") == 0 || strcmp(sub, "skylight") == 0) {
+				|| strcmp(sub, "lightshadows") == 0 || strcmp(sub, "skylight") == 0
+				|| strcmp(sub, "autosun") == 0) {
 			int *fx = &gfx_rt_ao;
 			if (strcmp(sub, "shadows") == 0) fx = &gfx_rt_shadows;
 			else if (strcmp(sub, "ssr") == 0) fx = &gfx_rt_ssr;
@@ -6925,6 +6926,7 @@ s32 netConsoleCommand(const char *line)
 			else if (strcmp(sub, "lights") == 0) fx = &gfx_rt_lights;
 			else if (strcmp(sub, "lightshadows") == 0) fx = &gfx_rt_light_shadows;
 			else if (strcmp(sub, "skylight") == 0) fx = &gfx_rt_skylight;
+			else if (strcmp(sub, "autosun") == 0) fx = &gfx_rt_autosun;
 			if (!val[0]) {
 				*fx = !*fx;
 			} else {
@@ -7024,8 +7026,8 @@ s32 netConsoleCommand(const char *line)
 					gfx_rt_lights, gfx_rt_light_intensity, gfx_rt_light_radius, gfx_rt_light_cull,
 					gfx_rt_light_max, gfx_rt_light_shadows,
 					gfx_rt_torch, gfx_rt_torch_intensity, gfx_rt_torch_range);
-			sysLogPrintf(LOG_CHAT, "rt: skylight=%d (gain %.2f; sky colour -> ambient tint + GI sky) bounces=%d (0=auto)",
-					gfx_rt_skylight, gfx_rt_skylight_gain, gfx_rt_bounces);
+			sysLogPrintf(LOG_CHAT, "rt: skylight=%d (gain %.2f) bounces=%d (0=auto) autosun=%d (stage lens-flare sun drives shadows)",
+					gfx_rt_skylight, gfx_rt_skylight_gain, gfx_rt_bounces, gfx_rt_autosun);
 		} else {
 			bool on;
 			if (!sub[0]) {
@@ -7082,6 +7084,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /rt lightint|lightrad|lightcull|lightmax|torchint|torchrange F  dynamic-light tuning (/rt lightshadows too)");
 		sysLogPrintf(LOG_CHAT, "  /rt skylight [on|off] | skygain F         sky-colour ambient tint + GI sky (day/sunset/night)");
 		sysLogPrintf(LOG_CHAT, "  /rt bounces N                             GI/PT bounce override, 0 = quality preset");
+		sysLogPrintf(LOG_CHAT, "  /rt autosun [on|off]                      sun shadows track the stage's lens-flare sun");
 		sysLogPrintf(LOG_CHAT, "  /fps   [on|off]                  render-time overlay (fps + frame ms)");
 		sysLogPrintf(LOG_CHAT, "  /mem   [on|off]                  memory overlay (per-frame vtx pool)");
 		sysLogPrintf(LOG_CHAT, "  /spec [name|next|prev|off]  follow another player/sim");

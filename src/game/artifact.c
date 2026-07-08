@@ -969,8 +969,30 @@ void rtComputeSkyLight(f32 out[3], s32 *ok)
 		// warm sky: keep its hue, intensity tracks how bright the sky is
 		inten = 0.45f + 0.55f * lum;
 	} else {
-		// cool sky: blend from moon-blue (dark) toward warm-white (bright)
+		// cool sky: blend from moon-blue (dark) toward sunlight (bright).
+		// The daylight hue defaults to warm-white, but when the stage has a
+		// lens-flare sun with a colour, THAT is the sun — use its hue.
+		f32 dayr = 1.00f;
+		f32 dayg = 0.94f;
+		f32 dayb = 0.84f;
 		f32 day = (lum - 0.10f) / 0.35f;
+
+		if (env->numsuns > 0 && env->suns != NULL
+				&& (env->suns[0].red || env->suns[0].green || env->suns[0].blue)) {
+			f32 sp = env->suns[0].red;
+
+			if (env->suns[0].green > sp) {
+				sp = env->suns[0].green;
+			}
+
+			if (env->suns[0].blue > sp) {
+				sp = env->suns[0].blue;
+			}
+
+			dayr = env->suns[0].red / sp;
+			dayg = env->suns[0].green / sp;
+			dayb = env->suns[0].blue / sp;
+		}
 
 		if (day < 0.0f) {
 			day = 0.0f;
@@ -982,15 +1004,59 @@ void rtComputeSkyLight(f32 out[3], s32 *ok)
 
 		day = day * day * (3.0f - 2.0f * day); // smoothstep
 
-		out[0] = out[0] + (1.00f - out[0]) * day;
-		out[1] = out[1] + (0.94f - out[1]) * day;
-		out[2] = out[2] + (0.84f - out[2]) * day;
+		out[0] = out[0] + (dayr - out[0]) * day;
+		out[1] = out[1] + (dayg - out[1]) * day;
+		out[2] = out[2] + (dayb - out[2]) * day;
 		inten = 0.35f + 0.65f * day;
 	}
 
 	out[0] *= inten;
 	out[1] *= inten;
 	out[2] *= inten;
+	*ok = 1;
+}
+
+/**
+ * Raytracing suite: normalized direction from campos TOWARD the stage's
+ * first lens-flare sun (env suns[0] — Hostage One, Air Base, Crash Site
+ * etc.; Skedar Ruins has three, the primary is used). sun->pos is an
+ * absolute world point: the sky renderer transforms it by the full
+ * worldtoscreen matrix and the sun LOS test treats it as a world position,
+ * so the direction is per-camera. Drives the screen-space sun shadows when
+ * gfx_rt_autosun is on.
+ */
+void rtComputeSunDir(const f32 *campos, f32 dir[3], s32 *ok)
+{
+	struct environment *env = envGetCurrent();
+	f32 d;
+	s32 c;
+
+	dir[0] = 0.0f;
+	dir[1] = 1.0f;
+	dir[2] = 0.0f;
+	*ok = 0;
+
+	if (env->numsuns <= 0 || env->suns == NULL) {
+		return;
+	}
+
+	for (c = 0; c < 3; c++) {
+		dir[c] = env->suns[0].pos[c] - campos[c];
+	}
+
+	d = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
+
+	if (d < 1.0f) {
+		dir[0] = 0.0f;
+		dir[1] = 1.0f;
+		dir[2] = 0.0f;
+		return;
+	}
+
+	d = sqrtf(d);
+	dir[0] /= d;
+	dir[1] /= d;
+	dir[2] /= d;
 	*ok = 1;
 }
 

@@ -286,6 +286,7 @@ float gfx_rt_light_max = 1.0f;      // per-light brightness ceiling
 int gfx_rt_skylight = 1;            // sky-derived ambient tint + GI sky
 float gfx_rt_skylight_gain = 0.3f;  // skylight -> GI miss radiance
 int gfx_rt_bounces = 0;             // GI/PT bounce override (0 = preset)
+int gfx_rt_autosun = 1;             // stage-sun-driven shadow direction
 int gfx_rt_torch = 0;
 float gfx_rt_torch_intensity = 1.4f;
 float gfx_rt_torch_range = 1400.0f;

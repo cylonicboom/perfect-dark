@@ -5390,6 +5390,12 @@ Gfx *playerRenderHud(Gfx *gdl)
 				rtComputeSkyLight(cam->skylight, &cam->skylight_ok);
 			}
 
+			// Auto-sun: shadow direction toward the stage's lens-flare sun
+			cam->sun_ok = 0;
+			if (gfx_rt_autosun) {
+				rtComputeSunDir(g_Vars.currentplayer->cam_pos.f, cam->sundir, &cam->sun_ok);
+			}
+
 			gDPRtResolveEXT(gdl++, cam);
 		}
 	}

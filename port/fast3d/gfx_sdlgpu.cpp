@@ -2869,12 +2869,22 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
         uni.sky[2] = cam->skylight[2] * gfx_rt_skylight_gain;
     }
 
-    // sun: world -> view (rotation only), normalized
+    // sun: world -> view (rotation only), normalized. Auto-sun (the stage's
+    // lens-flare sun, per-camera) wins over the manual /rt sun direction.
     {
-        float sw[3] = { gfx_rt_sun_dir[0], gfx_rt_sun_dir[1], gfx_rt_sun_dir[2] };
-        float sl = sqrtf(sw[0] * sw[0] + sw[1] * sw[1] + sw[2] * sw[2]);
-        if (sl < 0.0001f) { sw[0] = 0.0f; sw[1] = 1.0f; sw[2] = 0.0f; sl = 1.0f; }
-        sw[0] /= sl; sw[1] /= sl; sw[2] /= sl;
+        float sw[3];
+        if (gfx_rt_autosun && cam->sun_ok) {
+            sw[0] = cam->sundir[0]; // already normalized game-side
+            sw[1] = cam->sundir[1];
+            sw[2] = cam->sundir[2];
+        } else {
+            sw[0] = gfx_rt_sun_dir[0];
+            sw[1] = gfx_rt_sun_dir[1];
+            sw[2] = gfx_rt_sun_dir[2];
+            float sl = sqrtf(sw[0] * sw[0] + sw[1] * sw[1] + sw[2] * sw[2]);
+            if (sl < 0.0001f) { sw[0] = 0.0f; sw[1] = 1.0f; sw[2] = 0.0f; sl = 1.0f; }
+            sw[0] /= sl; sw[1] /= sl; sw[2] /= sl;
+        }
         const float *m = cam->viewmtx;
         uni.sun[0] = m[0] * sw[0] + m[4] * sw[1] + m[8] * sw[2];
         uni.sun[1] = m[1] * sw[0] + m[5] * sw[1] + m[9] * sw[2];

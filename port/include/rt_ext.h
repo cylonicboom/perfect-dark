@@ -50,6 +50,11 @@ typedef struct rtcamera {
 	// moon-blue (night). Tints the dark-mode ambient + the GI sky term.
 	float skylight[3]; // hue x intensity, 0..~1 per channel
 	int skylight_ok;   // 0 = black sky (indoor stage) — renderer stays neutral
+	// Auto-sun: direction TOWARD the stage's lens-flare sun (env suns[0], an
+	// absolute world point) from this player's camera. Replaces the manual
+	// /rt sun direction for the screen-space sun shadows when present.
+	float sundir[3];   // world-space, normalized
+	int sun_ok;        // 0 = stage has no sun
 } rtcamera;
 
 // Game-side collector (artifact.c, port-only): fills out[] with the nearest
@@ -63,6 +68,11 @@ int rtCollectLights(const float* campos, rtlight* out, int max);
 // rtcamera.skylight field. Writes hue*intensity into out[3]; *ok = 0 for a
 // black sky (indoor stage).
 void rtComputeSkyLight(float out[3], int* ok);
+
+// Game-side sun direction (artifact.c, port-only): normalized direction from
+// campos TOWARD the stage's first lens-flare sun (env suns[0]). *ok = 0 when
+// the stage has no sun.
+void rtComputeSunDir(const float* campos, float dir[3], int* ok);
 
 // Debug view modes (gfx_rt_debug)
 enum {
@@ -127,6 +137,9 @@ extern int gfx_rt_skylight;           // derive ambient tint + GI sky from the
 extern float gfx_rt_skylight_gain;    // skylight -> GI miss-radiance scale
 extern int gfx_rt_bounces;            // GI/PT bounce override, 0 = quality
                                       // preset (SSGI 1 / PT 2-3); 1..8
+extern int gfx_rt_autosun;            // sun-shadow direction from the stage's
+                                      // lens-flare sun when it has one
+                                      // (manual /rt sun used otherwise)
 extern int gfx_rt_torch;              // camera-mounted test spotlight
 extern float gfx_rt_torch_intensity;
 extern float gfx_rt_torch_range;      // world units

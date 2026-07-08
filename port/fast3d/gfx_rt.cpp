@@ -658,11 +658,21 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
     // 3. AO + shadow trace, then separable bilateral blur
     const bool aosh = ao_on || sh_on || dbg == RT_DEBUG_AO || dbg == RT_DEBUG_SHADOW;
     if (aosh) {
-        // sun direction: world -> view (rotation only), normalized
-        float sw[3] = { gfx_rt_sun_dir[0], gfx_rt_sun_dir[1], gfx_rt_sun_dir[2] };
-        float sl = sqrtf(sw[0] * sw[0] + sw[1] * sw[1] + sw[2] * sw[2]);
-        if (sl < 0.0001f) { sw[0] = 0.0f; sw[1] = 1.0f; sw[2] = 0.0f; sl = 1.0f; }
-        sw[0] /= sl; sw[1] /= sl; sw[2] /= sl;
+        // sun direction: world -> view (rotation only), normalized. Auto-sun
+        // (the stage's lens-flare sun, per-camera) wins over the manual dir.
+        float sw[3];
+        if (gfx_rt_autosun && cam->sun_ok) {
+            sw[0] = cam->sundir[0]; // already normalized game-side
+            sw[1] = cam->sundir[1];
+            sw[2] = cam->sundir[2];
+        } else {
+            sw[0] = gfx_rt_sun_dir[0];
+            sw[1] = gfx_rt_sun_dir[1];
+            sw[2] = gfx_rt_sun_dir[2];
+            float sl = sqrtf(sw[0] * sw[0] + sw[1] * sw[1] + sw[2] * sw[2]);
+            if (sl < 0.0001f) { sw[0] = 0.0f; sw[1] = 1.0f; sw[2] = 0.0f; sl = 1.0f; }
+            sw[0] /= sl; sw[1] /= sl; sw[2] /= sl;
+        }
         const float* m = cam->viewmtx;
         float sv[3] = {
             m[0] * sw[0] + m[4] * sw[1] + m[8] * sw[2],

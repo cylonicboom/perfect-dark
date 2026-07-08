@@ -1314,16 +1314,26 @@ static MenuItemHandlerResult menuhandlerCenterHUD(s32 operation, struct menuitem
 static MenuItemHandlerResult menuhandlerMenuColourScheme(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static const char *opts[] = {
-		"Perfect",  // blue (default)
-		"Shinku",   // red
-		"Complete", // green
-		"Missing",  // white
-		"Redvox57"  // teal + purple highlight
+		"Perfect",  // 0 blue (default)
+		"Shinku",   // 1 red
+		"Complete", // 2 green
+		"Missing",  // 3 white
+		"Redvox57", // 5 teal + purple
+		"Sunburst", // 6 gold
+		"Fuchsia",  // 7 magenta
+		"Umber",    // 8 brown
+		"Midnight", // 9 dark navy
+		"Denim",    // 10 steel blue
+		"Frost",    // 11 cyan
+		"Glacier",  // 12 cyan
+		"Matrix",   // 13 black + green
+		"Rose",     // 14 pink
+		"Peach"     // 15 orange
 	};
 	// Dropdown index -> g_MenuColourScheme value. Scheme 4 (Amber) is the
 	// hardcode-only Recipe-2 demo, so it's skipped here (see menu.c /
-	// docs/PORT_MENU_COLOUR_SCHEMES.md); Redvox57 is scheme 5.
-	static const u8 vals[] = { 0, 1, 2, 3, 5 };
+	// docs/PORT_MENU_COLOUR_SCHEMES.md); everything else is 1:1.
+	static const u8 vals[] = { 0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 	s32 i;
 
 	switch (operation) {

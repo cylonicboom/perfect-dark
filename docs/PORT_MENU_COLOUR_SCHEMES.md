@@ -32,6 +32,20 @@ byte-identical.
 > (scheme 4) stays hidden while Redvox57 (5) is selectable. Use it as the
 > template for adding another selectable custom-hue scheme.
 >
+> **Adding a selectable scheme is now a near-one-liner** thanks to the
+> `MENUSCHEMEROW(rb,gb,bb, rh,gh,bh)` macro in `menu.c`: it derives a full
+> 15-field palette row from a **base** colour + a **highlight** colour
+> (mirroring the blue row's structure — base drives the chrome + a *lightened*
+> readable item text; highlight drives `border2`/`listgroup_headerfg` and the
+> accent). To add one: append a `MENUSCHEMEROW(...)` to the `MENUSCHEME_ROWS`
+> list + a `MENUSCHEMEWAVE*` to the wave lists, a `MENUDIALOGTYPE_*` row index,
+> a `schemerows[]` entry, the highlight in `menuSchemeColour`'s `accents[]`
+> table, and the name+value in the dropdown (`optionsmenu.c`) — then bump the
+> `Game.MenuColourScheme` config max. Ten stock schemes ship this way
+> (Sunburst, Fuchsia, Umber, Midnight, Denim, Frost, Glacier, Matrix, Rose,
+> Peach). `menuSchemeColour` is data-driven from `accents[]` (0xRRGGBB scaled
+> by intensity), so the accent always matches the row's highlight.
+>
 > The sections below explain the architecture and how to add your own.
 
 ---

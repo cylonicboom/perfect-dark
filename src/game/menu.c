@@ -94,6 +94,59 @@ struct menudialogdef g_PakRemovedMenuDialog;
 struct menudialogdef g_PakRepairFailedMenuDialog;
 struct menudialogdef g_PakRepairSuccessMenuDialog;
 
+#ifndef PLATFORM_N64
+// Port-only: build a menu colour-scheme palette row from a base colour + a
+// highlight colour (0xRRGGBB channels passed separately), mirroring the blue
+// row's structure so any pair of colours yields a coherent, readable scheme:
+// the base drives the chrome/backgrounds and the LIGHTENED item text (readable
+// even for a black base); the highlight drives the menu edge (border2), the
+// list-header bar text and the accent (menuSchemeColour). Alpha bytes match
+// the blue row. See docs/PORT_MENU_COLOUR_SCHEMES.md. All-literal args, so it
+// folds to a compile-time constant initializer.
+#define MSC_S(c, p) (((u32)(c) * (u32)(p) / 100u) & 0xffu)              // scale (darken)
+#define MSC_L(c, p) (((u32)(c) + (255u - (u32)(c)) * (u32)(p) / 100u) & 0xffu) // lighten toward white
+#define MSC_RGBA(r, g, b, a) (((u32)(r) << 24) | ((u32)(g) << 16) | ((u32)(b) << 8) | (u32)(a))
+#define MENUSCHEMEROW(rb, gb, bb, rh, gh, bh) { \
+	MSC_RGBA(MSC_S(rb, 70), MSC_S(gb, 70), MSC_S(bb, 70), 0x7f), /* border1  base 70% */ \
+	MSC_RGBA(MSC_S(rb, 30), MSC_S(gb, 30), MSC_S(bb, 30), 0x7f), /* titlebg  base 30% */ \
+	MSC_RGBA(rh, gh, bh, 0x7f),                                  /* border2  HIGHLIGHT */ \
+	0xffffffff,                                                 /* titlefg  white */ \
+	MSC_RGBA(MSC_S(rb, 18), MSC_S(gb, 18), MSC_S(bb, 18), 0x9f), /* bodybg   base 18% */ \
+	MSC_RGBA(MSC_S(rb, 43), MSC_S(gb, 43), MSC_S(bb, 43), 0x7f), /* (unused) base 43% */ \
+	MSC_RGBA(MSC_L(rb, 55), MSC_L(gb, 55), MSC_L(bb, 55), 0xff), /* item     base +55% (readable) */ \
+	MSC_RGBA(MSC_S(rb, 50), MSC_S(gb, 50), MSC_S(bb, 50), 0xff), /* disabled base 50% */ \
+	0xffffffff,                                                 /* focused inner white */ \
+	MSC_RGBA(MSC_L(rb, 75), MSC_L(gb, 75), MSC_L(bb, 75), 0xff), /* checkbox base +75% */ \
+	MSC_RGBA(MSC_S(rb, 27), MSC_S(gb, 27), MSC_S(bb, 27), 0xff), /* focused outer base 27% */ \
+	MSC_RGBA(MSC_S(rb, 18), MSC_S(gb, 18), MSC_S(bb, 18), 0xff), /* headerbg base 18% */ \
+	MSC_RGBA(MSC_L(rh, 30), MSC_L(gh, 30), MSC_L(bh, 30), 0xff), /* headerfg HIGHLIGHT +30% (bar text) */ \
+	0xffffffff,                                                 /* (unused) white */ \
+	MSC_RGBA(rh, gh, bh, 0x7f)                                   /* accent   HIGHLIGHT */ \
+}
+// The title-text wave rows are subtle; custom schemes reuse the blue wave.
+#define MENUSCHEMEWAVE1 { 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x006f6faf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }
+#define MENUSCHEMEWAVE2 { 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x006f6faf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }
+// The 10 base/highlight pairs, kept as one list so all four table appends and
+// the menuSchemeColour accents stay in the same order. Rows 8..17.
+#define MENUSCHEME_ROWS \
+	MENUSCHEMEROW(0xf5, 0xe9, 0x02, 0xf5, 0xb0, 0x02), /* 8  Sunburst */ \
+	MENUSCHEMEROW(0xfa, 0x02, 0xd5, 0x7a, 0x00, 0x6c), /* 9  Fuchsia  */ \
+	MENUSCHEMEROW(0x7a, 0x43, 0x00, 0x2b, 0x18, 0x00), /* 10 Umber    */ \
+	MENUSCHEMEROW(0x2e, 0x3c, 0x59, 0x07, 0x11, 0x26), /* 11 Midnight */ \
+	MENUSCHEMEROW(0x39, 0x4b, 0x73, 0x20, 0x2b, 0x47), /* 12 Denim    */ \
+	MENUSCHEMEROW(0xa6, 0xf7, 0xf5, 0xa6, 0xf7, 0xf5), /* 13 Frost    */ \
+	MENUSCHEMEROW(0xa6, 0xf7, 0xf5, 0xa6, 0xf7, 0xf5), /* 14 Glacier  */ \
+	MENUSCHEMEROW(0x00, 0x00, 0x00, 0x13, 0x49, 0x00), /* 15 Matrix   */ \
+	MENUSCHEMEROW(0xff, 0xb4, 0xb4, 0xff, 0x85, 0x85), /* 16 Rose     */ \
+	MENUSCHEMEROW(0xff, 0xba, 0x85, 0xff, 0x92, 0x3e)  /* 17 Peach    */
+#define MENUSCHEME_WAVE1_ROWS \
+	MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, \
+	MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, MENUSCHEMEWAVE1, MENUSCHEMEWAVE1
+#define MENUSCHEME_WAVE2_ROWS \
+	MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, \
+	MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, MENUSCHEMEWAVE2, MENUSCHEMEWAVE2
+#endif
+
 #if VERSION >= VERSION_JPN_FINAL
 const struct menucolourpalette g_MenuColours[] = {
 	{ 0x20202000, 0x20202000, 0x20202000, 0x4f4f4f00, 0x00000000, 0x00000000, 0x4f4f4f00, 0x4f4f4f00, 0x4f4f4f00, 0x4f4f4f00, 0x00000000, 0x00000000, 0x4f4f4f00, 0x00000000, 0x00000000 },
@@ -105,6 +158,7 @@ const struct menucolourpalette g_MenuColours[] = {
 #ifndef PLATFORM_N64
 	{ 0xbf69007f, 0x502c007f, 0xff8c007f, 0xffff00ff, 0x2f1a007f, 0x6f3d007f, 0xffa050ff, 0x7f4600ff, 0xffff00ff, 0xffb870ff, 0x442500ff, 0x332000ff, 0xffff00ff, 0xffffffff, 0xffa0447f }, // 6 MENUDIALOGTYPE_AMBER (port custom scheme)
 	{ 0x02ac8a7f, 0x00493a7f, 0x7c02f57f, 0xffffffff, 0x002c239f, 0x016b557f, 0x02f5c4ff, 0x017a62ff, 0xffffffff, 0x8ffff0ff, 0x004234ff, 0x002e25ff, 0xa64dffff, 0xffffffff, 0x7c02f57f }, // 7 MENUDIALOGTYPE_REDVOX57 (teal + purple; JPN)
+	MENUSCHEME_ROWS, // 8..17 base/highlight custom schemes
 #endif
 };
 #else
@@ -118,6 +172,7 @@ const struct menucolourpalette g_MenuColours[] = {
 #ifndef PLATFORM_N64
 	{ 0xbf69007f, 0x502c007f, 0xff8c007f, 0xffff00ff, 0x2f1a007f, 0x6f3d007f, 0xffa050ff, 0x7f4600ff, 0xffff00ff, 0xffb870ff, 0x442500ff, 0x332000ff, 0xffff00ff, 0xffffffff, 0xffa0447f }, // 6 MENUDIALOGTYPE_AMBER (port custom scheme)
 	{ 0x02ac8a7f, 0x00493a7f, 0x7c02f57f, 0xffffffff, 0x002c237f, 0x016b557f, 0x02f5c4ff, 0x017a62ff, 0xffffffff, 0x8ffff0ff, 0x004234ff, 0x002e25ff, 0xa64dffff, 0xffffffff, 0x7c02f57f }, // 7 MENUDIALOGTYPE_REDVOX57 (teal base + purple highlight)
+	MENUSCHEME_ROWS, // 8..17 base/highlight custom schemes
 #endif
 };
 #endif
@@ -132,6 +187,7 @@ const struct menucolourpalette g_MenuWave1Colours[] = {
 #ifndef PLATFORM_N64
 	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x006f6faf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }, // 6 AMBER (port; = blue wave row)
 	{ 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x005f5aaf, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0xffffff00, 0x00000000 }, // 7 REDVOX57 (teal-tinted wave)
+	MENUSCHEME_WAVE1_ROWS, // 8..17
 #endif
 };
 
@@ -145,6 +201,7 @@ const struct menucolourpalette g_MenuWave2Colours[] = {
 #ifndef PLATFORM_N64
 	{ 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x006f6faf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }, // 6 AMBER (port; = blue wave row)
 	{ 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x005f5aaf, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x44444400, 0x00000000 }, // 7 REDVOX57 (teal-tinted wave)
+	MENUSCHEME_WAVE2_ROWS, // 8..17
 #endif
 };
 
@@ -185,6 +242,16 @@ s32 menuApplyColourScheme(s32 type)
 		MENUDIALOGTYPE_4,       // 3 Missing (white)
 		MENUDIALOGTYPE_AMBER,   // 4 Amber (port custom row; hardcode-only - Recipe 2)
 		MENUDIALOGTYPE_REDVOX57, // 5 Redvox57 (teal base + purple highlight; selectable)
+		MENUDIALOGTYPE_SUNBURST, // 6
+		MENUDIALOGTYPE_FUCHSIA,  // 7
+		MENUDIALOGTYPE_UMBER,    // 8
+		MENUDIALOGTYPE_MIDNIGHT, // 9
+		MENUDIALOGTYPE_DENIM,    // 10
+		MENUDIALOGTYPE_FROST,    // 11
+		MENUDIALOGTYPE_GLACIER,  // 12
+		MENUDIALOGTYPE_MATRIX,   // 13
+		MENUDIALOGTYPE_ROSE,     // 14
+		MENUDIALOGTYPE_PEACH,    // 15
 	};
 	s32 scheme = menuActiveColourScheme();
 
@@ -205,22 +272,42 @@ s32 menuApplyColourScheme(s32 type)
 // the top 3 bytes (0xRRGGBBAA) with the alpha byte left 0 for the caller to OR.
 u32 menuSchemeColour(u32 intensity)
 {
+	// Accent (highlight) colour per scheme, 0xRRGGBB, scaled by `intensity`.
+	// Matches the highlight the palette rows put on border2/headerfg; this
+	// drives the slider marker/line, dropdown tint, list-header bars and the
+	// radio/checkbox fill. Index order must match schemerows[] / the dropdown.
+	static const u32 accents[] = {
+		0x0000ff, // 0 Perfect (blue)
+		0xff0000, // 1 Shinku (red)
+		0x00ff00, // 2 Complete (green)
+		0xffffff, // 3 Missing (white)
+		0xff9000, // 4 Amber
+		0x7c02f5, // 5 Redvox57 (purple)
+		0xf5b002, // 6 Sunburst
+		0x7a006c, // 7 Fuchsia
+		0x2b1800, // 8 Umber
+		0x071126, // 9 Midnight
+		0x202b47, // 10 Denim
+		0xa6f7f5, // 11 Frost
+		0xa6f7f5, // 12 Glacier
+		0x134900, // 13 Matrix
+		0xff8585, // 14 Rose
+		0xff923e, // 15 Peach
+	};
+	s32 scheme = menuActiveColourScheme();
+	u32 rgb;
+
 	intensity &= 0xff;
 
-	switch (menuActiveColourScheme()) {
-	case 1: // Shinku (red)
-		return intensity << 24;
-	case 2: // Complete (green)
-		return intensity << 16;
-	case 3: // Missing (white)
-		return (intensity << 24) | (intensity << 16) | (intensity << 8);
-	case 4: // Amber (R + ~9/16 G) - matches the MENUDIALOGTYPE_AMBER palette row
-		return (intensity << 24) | (((intensity * 9) >> 4) << 16);
-	case 5: // Redvox57 highlight = purple #7c02f5 (R ~1/2, B full) - menus + bars
-		return ((intensity >> 1) << 24) | (intensity << 8);
-	default: // Perfect (blue)
-		return intensity << 8;
+	if (scheme < 0 || scheme >= (s32)ARRAYCOUNT(accents)) {
+		scheme = 0;
 	}
+
+	rgb = accents[scheme];
+
+	return ((((rgb >> 16) & 0xff) * intensity / 255) << 24)
+		| ((((rgb >> 8) & 0xff) * intensity / 255) << 16)
+		| (((rgb & 0xff) * intensity / 255) << 8);
 }
 #endif
 

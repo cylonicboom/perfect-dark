@@ -10,7 +10,7 @@
 --   UDP ingress: same verbs, one datagram each, to 127.0.0.1:<Chaos.EventPort>
 --               (pd.ini [Chaos] EventPort=27110) — the Twitch/YouTube window:
 --               point any chat bot / Streamer.bot / SAMMI action at it.
---   Lua:        chaos.trigger("mirror"), chaos.handle("udp", "vote yeet") — so
+--   Lua:        chaos.trigger("mirror"), chaos.handle("udp", "vote panic") — so
 --               the Archipelago client can map AP traps/deathlink to effects.
 --   Pause menu: Lua Director entries (toggle / trigger now).
 --
@@ -25,6 +25,11 @@
 chaos = chaos or {}
 
 local TICKS = 60 -- pd "tick" event runs at the sim rate
+
+-- CHAOS: <name> toast (weapon-pickup style, bottom-left): seconds fully shown,
+-- then fade out. Rendered by the draw hook with a box sized to hug the text.
+local TOAST_HOLD, TOAST_FADE = 3, 1
+local TOAST_TICKS = (TOAST_HOLD + TOAST_FADE) * TICKS
 
 -- ---------------------------------------------------------------- state ----
 local st = {
@@ -74,7 +79,10 @@ local function persist()
 end
 
 local function announce(text)
-  pd.hud_message("CHAOS: " .. text)
+  -- Weapon-pickup-style toast in the bottom-left. Rendered by the draw hook
+  -- with a box sized to HUG the text (the engine hudmsg box is a full
+  -- line-height tall, leaving a gap below the letters). Held then faded.
+  st.toast = { text = "CHAOS: " .. text, life = TOAST_TICKS }
   pd.log("[chaos] " .. text)
 end
 
@@ -96,6 +104,19 @@ local BODY = { MINISKEDAR=0x7b }
 local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHARS=11,
   ENEMYSHIELDS=12, JOSHIELD=13, SUPERSHIELD=14, TEAMHEADS=16, ELVIS=17,
   ENEMYROCKETS=18, MARQUIS=20, GOLDENEYE=45, WIREFRAME=46, MIRROR=47, TONAL=48 }
+
+-- Non-gameplay stages where Chaos must stay dormant: the Carrington Institute
+-- main-menu hub plus the title / boot / credits menus (src/include/constants.h).
+-- Chaos only fires in real missions / Combat Sim. (STAGE_CITRAINING is the hub
+-- the main menu is drawn over — it has a live player pawn, so the pawn check
+-- alone won't catch it.)
+local MENU_STAGES = {
+  [0x26] = true, -- STAGE_CITRAINING (hub)
+  [0x4e] = true, -- STAGE_TEST_OLD
+  [0x5c] = true, -- STAGE_TITLE
+  [0x5d] = true, -- STAGE_BOOTPAKMENU / STAGE_4MBMENU
+  [0x5e] = true, -- STAGE_CREDITS
+}
 
 local function cheat_effect(id, secs)
   return {
@@ -497,8 +518,6 @@ chaos.effects = {
                      end end },
   panic        = { label="PANIC!",            w=6, dur=0, start=function()
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
-  yeet         = { label="YEET",              w=6, dur=0, start=function()
-                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_yeet(c, 120) end end },
   boom         = { label="Incoming!",         w=5, dur=0, start=function()
                      local c = random_chr(); if c then pd.explosion(c) end end },
   buddy        = { label="Backup arrives",    w=5, dur=0, start=function() pd.spawn_ally() end },
@@ -830,6 +849,77 @@ local function stop_all()
   for name in pairs(st.active) do stop_effect(name) end
 end
 
+-- Full teardown: stop every active effect and reset every C-side global an
+-- effect can leave set (visual filters, input locks, speed/damage/zoom scales,
+-- audio modes) — these live in C and SURVIVE both a stage reload and the Lua
+-- state teardown, so nothing else clears them. Reused by the return-to-menu
+-- path (tick handler) and the stage event.
+local function reset_all_modes()
+  -- Experiment cheats (GoldenEye / Wireframe / Mirror / Evil music) ride the
+  -- ENABLED cheat bank, which SURVIVES a reload (unlike the active bank). Clear
+  -- the ones CHAOS turned on while st.active still records them — never touch a
+  -- user's menu-set experiment.
+  if pd.cheat then
+    if st.active.mirror then pd.cheat(CHEAT.MIRROR, false) end
+    if st.active.tonal     then pd.cheat(CHEAT.TONAL, false) end
+    if st.active.goldeneye then pd.cheat(CHEAT.GOLDENEYE, false) end
+  end
+  -- Run each active effect's own stop() cleanup, then drop bookkeeping and
+  -- re-arm the timer so the first effect isn't instant on the next stage.
+  stop_all()
+  st.active = {}
+  st.duration = {}
+  st.cvotes = {0, 0, 0}
+  st.timer = st.interval * TICKS
+  st.votetimer = st.votetime * TICKS
+  st.misfire_armed = false
+  st.gungame_idx = nil
+  -- Visual modes + ammo swap + input locks etc. — explicit reset (C globals).
+  if pd.flattex then pd.flattex(0) end
+  if pd.grayscale then pd.grayscale(false) end
+  if pd.shiny then pd.shiny(0) end
+  if pd.room_tint then pd.room_tint() end
+  if pd.ammo_swap then pd.ammo_swap() end
+  if pd.backfire then pd.backfire(false) end
+  if pd.aspect_scale then pd.aspect_scale(1) end
+  if pd.fov_scale then pd.fov_scale(1) end
+  if pd.song then pd.song() end
+  if pd.one_punch then pd.one_punch(false) end
+  if pd.gormless then pd.gormless(false) end
+  if pd.sfx_shuffle then pd.sfx_shuffle(false) end
+  if pd.instrument_shuffle then pd.instrument_shuffle(false) end
+  if pd.gun_sound then pd.gun_sound() end
+  if pd.damage_scale then pd.damage_scale(1) end
+  if pd.paintball then pd.paintball(false) end
+  if pd.weapon_jam then pd.weapon_jam(false) end
+  if pd.player_freeze then pd.player_freeze(false) end
+  if pd.chr_freeze then pd.chr_freeze(false) end
+  if pd.no_drops then pd.no_drops(false) end
+  if pd.mute then pd.mute(false) end
+  if pd.zoom_scale then pd.zoom_scale(1) end
+  if pd.chr_speed then pd.chr_speed(1) end
+  if pd.player_speed then pd.player_speed(1) end
+  if pd.screen_tint then pd.screen_tint() end
+  if pd.pixelate then pd.pixelate() end
+  if pd.screen_fx then pd.screen_fx(63, false) end
+  if pd.lens then pd.lens() end
+  if pd.audio_crush then pd.audio_crush() end
+  if pd.audio_radio then pd.audio_radio(false) end
+  if pd.audio_reverb then pd.audio_reverb() end
+  if pd.audio_reverse then pd.audio_reverse(false) end
+  if pd.audio_pitch then pd.audio_pitch() end
+  if pd.upside_down then pd.upside_down(false) end
+  if pd.double_vision then pd.double_vision(false) end
+  if pd.gun_lock then pd.gun_lock(false) end
+  if pd.knife_lock then pd.knife_lock(false) end
+  if pd.gas then pd.gas(false) end
+  if pd.t_pose then pd.t_pose(false) end
+  if pd.pinball then pd.pinball(false) end
+  if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
+  st.scaled_g = nil
+  st.scaled_a = nil
+end
+
 -- chaos.trigger(name, who, dur_override): fire an effect. dur_override (seconds)
 -- forces a specific length for timed effects (the Test menu passes 30) instead
 -- of the global st.effectdur; instant effects ignore it.
@@ -975,12 +1065,37 @@ pd.on("tick", function()
     if not ok then pd.log("[chaos] handler error: " .. tostring(err)) end
   end
 
+  -- Main-menu / hub detection: force-end all chaos and never fire a new effect.
+  -- The "tick" event runs everywhere (menus/title/loading too). We're OUT of
+  -- real gameplay when either: the local player pawn is gone (pd.player_pos nil
+  -- — true in the pawn-less title menu, but STILL VALID during a mid-game pause,
+  -- so a pause is unaffected); OR the current stage is the Carrington Institute
+  -- main-menu hub / a title-menu stage (which DO have a pawn, so the pawn check
+  -- alone misses them). Tear everything down once (latched) so nothing leaks and
+  -- the random drumbeat stays silent in the hub.
+  local have_player = pd.player_pos and (pd.player_pos(0) ~= nil)
+  local in_hub = pd.stage and MENU_STAGES[pd.stage()]
+  if (not have_player) or in_hub then
+    if not st.in_menu then
+      st.in_menu = true
+      reset_all_modes()
+    end
+    return
+  end
+  st.in_menu = false
+
   -- Advance on GAME time, not frames: lvupdate() is the ticks the sim
   -- actually ran this frame — 0 while paused (no pausing out a bad effect),
   -- scaled during slo-mo/boost. Everything below (effect timers, the vote
   -- window, the drumbeat) freezes with the game.
   local dt = pd.lvupdate and pd.lvupdate() or 1
   if dt <= 0 then return end -- paused: freeze everything, timers included
+
+  -- Age the bottom-left CHAOS toast on game time.
+  if st.toast then
+    st.toast.life = st.toast.life - dt
+    if st.toast.life <= 0 then st.toast = nil end
+  end
 
   -- Glass cannons: a fired gun shatters — remove it one tick after the shot
   -- (deferred so we don't change weapons re-entrantly inside the fire event).
@@ -1086,83 +1201,20 @@ pd.on("kill", function(chrnum, killerplayernum)
   end
 end)
 
-pd.on("stage", function()
-  -- Experiment cheats (GoldenEye / Wireframe / Mirror / Evil music) ride the
-  -- ENABLED cheat bank, which SURVIVES a stage reload (the active bank, used by
-  -- every other cheat, does not). So an experiment-cheat effect that was still
-  -- mid-timer would stick after the load. Clear the ones CHAOS had active here,
-  -- before st.active is wiped below — never touch a user's menu-set experiment.
-  if pd.cheat then
-    if st.active.mirror then pd.cheat(CHEAT.MIRROR, false) end
-    if st.active.tonal     then pd.cheat(CHEAT.TONAL, false) end
-    if st.active.goldeneye then pd.cheat(CHEAT.GOLDENEYE, false) end
-  end
-  -- fresh world: drop timed-effect bookkeeping (cheat banks reset with the
-  -- stage; re-arm the timer so the first effect isn't instant)
-  st.active = {}
-  st.duration = {}
-  st.cvotes = {0, 0, 0}
-  st.timer = st.interval * TICKS
-  st.votetimer = st.votetime * TICKS
-  st.misfire_armed = false
-  st.gungame_idx = nil
-  -- the visual modes + ammo swap live in globals that SURVIVE the stage
-  -- reload (unlike the cheat bank) — reset them explicitly
-  if pd.flattex then pd.flattex(0) end
-  if pd.grayscale then pd.grayscale(false) end
-  if pd.shiny then pd.shiny(0) end
-  if pd.room_tint then pd.room_tint() end
-  if pd.ammo_swap then pd.ammo_swap() end
-  if pd.backfire then pd.backfire(false) end
-  if pd.aspect_scale then pd.aspect_scale(1) end
-  if pd.fov_scale then pd.fov_scale(1) end
-  if pd.song then pd.song() end
-  if pd.one_punch then pd.one_punch(false) end
-  if pd.gormless then pd.gormless(false) end
-  if pd.sfx_shuffle then pd.sfx_shuffle(false) end
-  if pd.instrument_shuffle then pd.instrument_shuffle(false) end
-  -- request batch 4 globals
-  if pd.gun_sound then pd.gun_sound() end
-  if pd.damage_scale then pd.damage_scale(1) end
-  if pd.paintball then pd.paintball(false) end
-  if pd.weapon_jam then pd.weapon_jam(false) end
-  if pd.player_freeze then pd.player_freeze(false) end
-  if pd.chr_freeze then pd.chr_freeze(false) end
-  if pd.no_drops then pd.no_drops(false) end
-  if pd.mute then pd.mute(false) end
-  if pd.zoom_scale then pd.zoom_scale(1) end
-  -- freeform batch globals (weather only if WE turned it on — never kill a
-  -- stage's own configured rain)
-  if pd.chr_speed then pd.chr_speed(1) end
-  if pd.player_speed then pd.player_speed(1) end
-  if pd.screen_tint then pd.screen_tint() end
-  if pd.pixelate then pd.pixelate() end
-  if pd.screen_fx then pd.screen_fx(63, false) end
-  if pd.lens then pd.lens() end
-  if pd.audio_crush then pd.audio_crush() end
-  if pd.audio_radio then pd.audio_radio(false) end
-  if pd.audio_reverb then pd.audio_reverb() end
-  if pd.audio_reverse then pd.audio_reverse(false) end
-  if pd.audio_pitch then pd.audio_pitch() end
-  if pd.upside_down then pd.upside_down(false) end
-  if pd.double_vision then pd.double_vision(false) end
-  if pd.gun_lock then pd.gun_lock(false) end
-  if pd.knife_lock then pd.knife_lock(false) end
-  if pd.gas then pd.gas(false) end
-  if pd.t_pose then pd.t_pose(false) end
-  if pd.pinball then pd.pinball(false) end
-  if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
-  st.scaled_g = nil
-  st.scaled_a = nil
-end)
+-- Stage transition: full teardown so no C-side effect leaks into the next
+-- stage. (The engine currently doesn't dispatch a "stage" event, so the real
+-- trigger is the return-to-menu detection in the tick handler above; this stays
+-- wired for the day a stage event is added.)
+pd.on("stage", reset_all_modes)
 
--- ---- HUD: active-effect timer bars + the chat-vote slate (top right) -------
+-- ---- HUD: active-effect timer bars + the chat-vote slate (top left) --------
 -- Item-pickup-style bars: label, then a dark backing box with a filled
 -- fraction that drains as the effect runs out. Below the bars, the 3-effect
 -- vote slate + live counts + a window-countdown bar — the on-screen half of
 -- the Twitch/YouTube voting foundation (chat sends `vote 1|2|3` via the UDP
 -- ingress; this panel is what the streamer's viewers read).
-local HUD_X, HUD_W = 232, 74
+-- Anchored top-left (x=8, the Lua HUD left margin), by the Combat Sim kill count.
+local HUD_X, HUD_W = 8, 74
 local C_TEXT, C_BAR, C_BARBG, C_VOTE = 0xffffffff, 0x40c0ffff, 0x00000090, 0xffe040ff
 
 pd.on("draw", function()
@@ -1201,6 +1253,22 @@ pd.on("draw", function()
     if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
     pd.draw_box(HUD_X, y + 1, HUD_W, 3, C_BARBG)
     pd.draw_box(HUD_X, y + 1, math.max(1, math.floor(HUD_W * frac)), 3, C_VOTE)
+  end
+
+  -- CHAOS: <name> toast, bottom-left, weapon-pickup style. Box HUGS the letters:
+  -- text_size gives the true width; the box height is a tight cap-height (the
+  -- engine hudmsg box is a full line-height tall, which is the gap being fixed).
+  if st.toast then
+    local text = st.toast.text
+    local tw = 60
+    if pd.text_size then tw = (pd.text_size(text)) end
+    -- fade out over the last TOAST_FADE seconds
+    local frac = st.toast.life / (TOAST_FADE * TICKS)
+    if frac > 1 then frac = 1 elseif frac < 0 then frac = 0 end
+    local a = math.floor(255 * frac)
+    local TX, TY, TH = 8, 202, 10  -- bottom-left anchor; TH hugs XS caps
+    pd.draw_box(TX - 2, TY - 1, tw + 4, TH, math.floor(a * 0.75)) -- black box, faded
+    pd.draw_text(TX, TY, text, 0xffffff00 + a)                    -- white text, faded
   end
 end)
 

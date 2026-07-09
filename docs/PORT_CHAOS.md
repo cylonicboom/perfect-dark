@@ -76,7 +76,7 @@ text)`. One command per line/datagram:
 | `seed N` | `math.randomseed(N)` — deterministic effect stream (AP per-slot seeding) |
 | `say <text>` | HUD message passthrough (chat shoutouts) |
 
-Console: `/chaos on`, `/chaos trigger yeet TwitchUser42`. Bare `/chaos` sends
+Console: `/chaos on`, `/chaos trigger panic TwitchUser42`. Bare `/chaos` sends
 `status`. UDP smoke test (after setting `EventPort=27110` under `[Chaos]` in
 `pd.ini`):
 
@@ -90,8 +90,8 @@ arrive over UDP; `trigger` also works while the random drumbeat is off (pure
 
 ## HUD + vote slate (the Twitch/YouTube on-screen foundation)
 
-chaos.lua registers a `pd.on("draw")` overlay in the **top-right corner**
-(x=232, the overlay right column — above the octree/perf overlays):
+chaos.lua registers a `pd.on("draw")` overlay in the **top-left corner** (x=8,
+the Lua HUD left margin, by the Combat Sim kill count):
 
 - **Active-effect timers**: up to 5 rows, each an item-pickup-style bar —
   effect label + a dark backing box with a filled fraction that drains as
@@ -99,9 +99,16 @@ chaos.lua registers a `pd.on("draw")` overlay in the **top-right corner**
 - **Vote slate** (only while `votetime > 0`): "VOTE NEXT:" + the 3 candidate
   effects numbered 1–3 with live vote counts, and a window-countdown bar.
 
+The `CHAOS: <name>` announce is a separate **bottom-left** weapon-pickup-style
+toast (`st.toast`): white text on a dark box sized to hug the text via the
+`pd.text_size` binding (the engine hudmsg box is a full line-height tall,
+leaving a gap below the letters), held then faded. Chaos also stays fully
+dormant in the main-menu hub / title stages (`MENU_STAGES` + `pd.stage()`),
+and a return to the menu force-ends every effect (`reset_all_modes`).
+
 **Vote mode** (`votetime N` > 0) now *replaces* the random drumbeat: each
 window, 3 distinct candidates are drawn (weighted, history-avoided); chat
-votes by slate number (`vote 1`) or candidate name (`vote yeet`) — anything
+votes by slate number (`vote 1`) or candidate name (`vote panic`) — anything
 off-slate is ignored; when the window closes the winner fires (ties and
 zero-vote windows pick a random candidate — chaos must flow) and a fresh
 slate is drawn. A Twitch/YouTube bot only has to forward chat "1"/"2"/"3"
@@ -199,8 +206,7 @@ function, called every frame while active (disco's hue cycle).
   screen sway + a 180-flipped double-vision ghost overlaid on the frame for the
   duration, `pd.double_vision`), `one_hp` (health roulette: 5–60%),
   `quantum_leap` (teleport to a random chr).
-- **World**: `panic` (alert every chr), `yeet` (fling every chr away from the
-  player), `boom` (explosion at a random chr), `airstrike` (explosions at up
+- **World**: `panic` (alert every chr), `boom` (explosion at a random chr), `airstrike` (explosions at up
   to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
   cloak for 20s), `buddy` (spawn ally), `reinforce` ("Supply drop" — a random
   gun dropped at a random chr).
@@ -447,7 +453,7 @@ The contract is deliberately tiny: **one UDP datagram of plain text to
 speak it today:
 
 - **Custom bot** (any language): connect to Twitch IRC / YouTube Live chat
-  API, map `!chaos yeet` → send `trigger yeet <username>`; map channel-point
+  API, map `!chaos panic` → send `trigger panic <username>`; map channel-point
   redemptions → `trigger <effect> <redeemer>`; map bits/superchats → `vote`.
 - **Streamer.bot / SAMMI / Mix It Up**: use their UDP-send action with the
   command string; sub-alert → `trigger boom <subname>`, etc.
@@ -467,7 +473,7 @@ Until then, the UDP bridge is the supported route.
 `scripts/ap/client.lua` can drive chaos directly (same Lua state):
 
 - **Trap items**: in the AP item-received handler, map trap ids →
-  `chaos.trigger("yeet", "AP trap from " .. sender)`.
+  `chaos.trigger("panic", "AP trap from " .. sender)`.
 - **DeathLink**: on a DeathLink bounce, `chaos.trigger("boom")` or a custom
   lethal effect.
 - **Per-seed randomiser**: at connect time call `chaos.set_seed(slot_seed)`
@@ -511,7 +517,7 @@ Until then, the UDP bridge is the supported route.
    no stuck state.
 4. Stage transition mid-effect — cheat resets with the stage, no "wore off"
    ghost announces, first post-load effect waits a full interval.
-5. UDP: set `EventPort=27110`, `nc -u` a `trigger yeet` from the same machine
+5. UDP: set `EventPort=27110`, `nc -u` a `trigger panic` from the same machine
    (works) and from another machine (must NOT work).
 6. Vote mode: `votetime 15` — the 3-candidate slate + countdown bar appear
    top-right; send `vote 1`/`vote 2` datagrams and watch the counts tick up;

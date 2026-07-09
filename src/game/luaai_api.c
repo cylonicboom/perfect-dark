@@ -570,6 +570,29 @@ static int l_pd_player_count(lua_State *L)
 	return 1;
 }
 
+/* pd.stage() -> current stage number (g_Vars.stagenum, e.g. STAGE_CITRAINING
+ * for the Carrington Institute main-menu hub). Lets scripts tell the menu/hub
+ * apart from real gameplay. */
+static int l_pd_stage(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaGetStageNum());
+	return 1;
+}
+
+/* pd.text_size(str) -> width, height in the same font pd.draw_text renders with
+ * (g_FontHandelGothicXs). Lets a script size a background box to hug the text. */
+static int l_pd_text_size(lua_State *L)
+{
+	const char *text = luaL_checkstring(L, 1);
+	s32 h = 0, w = 0;
+	if (g_CharsHandelGothicXs && g_FontHandelGothicXs) {
+		textMeasure(&h, &w, (char *)text, g_CharsHandelGothicXs, g_FontHandelGothicXs, 0);
+	}
+	lua_pushinteger(L, w);
+	lua_pushinteger(L, h);
+	return 2;
+}
+
 /* pd.distance(x1,y1,z1, x2,y2,z2) -> number. Pure helper; convenient for
  * deciding on ranges from chr_pos/player_pos results. */
 static int l_pd_distance(lua_State *L)
@@ -1764,6 +1787,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_health);  lua_setfield(L, -2, "chr_health");
 	lua_pushcfunction(L, l_pd_player_pos);  lua_setfield(L, -2, "player_pos");
 	lua_pushcfunction(L, l_pd_player_count);lua_setfield(L, -2, "player_count");
+	lua_pushcfunction(L, l_pd_stage);       lua_setfield(L, -2, "stage");
+	lua_pushcfunction(L, l_pd_text_size);   lua_setfield(L, -2, "text_size");
 	lua_pushcfunction(L, l_pd_distance);    lua_setfield(L, -2, "distance");
 	/* world mutation (server-side) */
 	lua_pushcfunction(L, l_pd_spawn_at_chr);lua_setfield(L, -2, "spawn_at_chr");

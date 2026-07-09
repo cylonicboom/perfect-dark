@@ -5,8 +5,8 @@
 -- hooks, so new effects are pure Lua — no rebuild.
 --
 -- Control surface (all reach chaos.handle(), in priority order):
---   ~ console:  /chaos on|off|toggle|status|list|interval N|votetime N|
---               trigger <effect>|vote <effect>|say <text>|seed N
+--   ~ console:  /chaos on|off|toggle|status|list|interval N|effectdur N|
+--               votetime N|trigger <effect>|vote <effect>|say <text>|seed N
 --   UDP ingress: same verbs, one datagram each, to 127.0.0.1:<Chaos.EventPort>
 --               (pd.ini [Chaos] EventPort=27110) — the Twitch/YouTube window:
 --               point any chat bot / Streamer.bot / SAMMI action at it.
@@ -29,7 +29,12 @@ local TICKS = 60 -- pd "tick" event runs at the sim rate
 -- ---------------------------------------------------------------- state ----
 local st = {
   enabled  = (pd.persist_get and pd.persist_get("chaos_enabled") == "1") or false,
-  interval = tonumber(pd.persist_get and pd.persist_get("chaos_interval") or "") or 30,
+  -- frequency: seconds between random effects (default one every 20s)
+  interval = tonumber(pd.persist_get and pd.persist_get("chaos_interval") or "") or 20,
+  -- global effect duration: how long every timed effect runs (default 60s).
+  -- Applied in chaos.trigger so all timed effects share one adjustable length;
+  -- instant effects (dur 0) stay instant.
+  effectdur = tonumber(pd.persist_get and pd.persist_get("chaos_effectdur") or "") or 60,
   votetime = tonumber(pd.persist_get and pd.persist_get("chaos_votetime") or "") or 0,
   timer    = 0,          -- ticks until the next random effect
   votetimer = 0,         -- ticks left in the current vote window
@@ -38,12 +43,32 @@ local st = {
   active   = {},         -- name -> ticks remaining (timed effects)
   duration = {},         -- name -> total ticks (for the HUD bars)
   history  = {},         -- last few names, to avoid instant repeats
+  disabled = {},         -- name -> true for effects switched OFF in the menu
 }
+
+-- Load the disabled-effect set (comma-separated names) from persistence.
+do
+  local s = pd.persist_get and pd.persist_get("chaos_disabled") or ""
+  for name in tostring(s):gmatch("[^,]+") do st.disabled[name] = true end
+end
+
+local function effect_enabled(name)
+  return not st.disabled[name]
+end
+
+local function persist_disabled()
+  if not pd.persist_set then return end
+  local t = {}
+  for name in pairs(st.disabled) do t[#t + 1] = name end
+  table.sort(t)
+  pd.persist_set("chaos_disabled", table.concat(t, ","))
+end
 
 local function persist()
   if pd.persist_set then
     pd.persist_set("chaos_enabled", st.enabled and "1" or "0")
     pd.persist_set("chaos_interval", tostring(st.interval))
+    pd.persist_set("chaos_effectdur", tostring(st.effectdur))
     pd.persist_set("chaos_votetime", tostring(st.votetime))
   end
 end
@@ -97,6 +122,36 @@ local function hsv(h)
   else return 255, 0, x end
 end
 
+-- Factory for the timed "arm every NPC" effects (K7 for all, enemy rockets,
+-- weapon roulette). On start it snapshots each NPC's current weapon and hands
+-- out a new one; on stop (timer end / clean restart) it gives the originals
+-- back. `pick` is either a fixed weaponnum or a function()->weaponnum evaluated
+-- per NPC (for the randomiser). Each returned effect owns its own `saved` table
+-- so concurrent arm effects don't clobber each other. Needs pd.chr_weapon to
+-- restore (degrades to give-only without it).
+local function arm_all_effect(label, weight, pick)
+  local saved = {}
+  return {
+    label = label, w = weight, dur = 1, -- dur>0 = timed; length is st.effectdur
+    start = function()
+      local list = pd.all_chrs() or {}
+      if #list == 0 then error("no chrs") end
+      saved = {}
+      for _, c in ipairs(list) do
+        saved[c] = pd.chr_weapon and pd.chr_weapon(c) or nil
+        local w = (type(pick) == "function") and pick(c) or pick
+        pd.chr_give_weapon(c, w)
+      end
+    end,
+    stop = function()
+      for c, w in pairs(saved) do
+        if w and w >= 0 then pd.chr_give_weapon(c, w) end
+      end
+      saved = {}
+    end,
+  }
+end
+
 chaos.effects = {
   -- arsenal roulette
   arsenal      = { label="Free gun!",         w=10, dur=0, start=function()
@@ -105,22 +160,63 @@ chaos.effects = {
   disarm       = { label="Butterfingers",     w=8,  dur=0, start=function()
                      local h = pd.weapon_held()
                      if h and h > W.UNARMED then pd.take_weapon(h) end end },
-  knife_fight  = { label="Knife fight!",      w=5,  dur=0, start=function()
-                     pd.give_weapon(W.KNIFE); pd.switch_weapon(W.KNIFE) end },
+  knife_fight  = { label="Knife fight!",      w=5,  dur=20,
+                   -- force the knife and lock out all other weapons (Cyclone-style)
+                   start=function()
+                     pd.give_weapon(W.KNIFE); pd.switch_weapon(W.KNIFE)
+                     pd.give_ammo(0x09, 1) -- AMMOTYPE_KNIFE: one throwable knife
+                     if pd.knife_lock then pd.knife_lock(true) end
+                   end,
+                   stop=function()
+                     if pd.knife_lock then pd.knife_lock(false) end
+                   end },
   ammo_rain    = { label="Ammo rain",         w=8,  dur=0, start=function() pd.refill_ammo() end },
   -- cheat-bank chaos (visual + gameplay)
   mirror       = setmetatable({ label="Mirror world",  w=8 }, {__index=cheat_effect(CHEAT.MIRROR, 30)}),
-  wireframe    = setmetatable({ label="The Matrix",    w=6 }, {__index=cheat_effect(CHEAT.WIREFRAME, 20)}),
   tonal        = setmetatable({ label="Evil music",    w=6 }, {__index=cheat_effect(CHEAT.TONAL, 60)}),
   fists        = setmetatable({ label="Hurricane fists", w=6 }, {__index=cheat_effect(CHEAT.FISTS, 30)}),
   slomo        = setmetatable({ label="Slow motion",   w=6 }, {__index=cheat_effect(CHEAT.SLOMO, 12)}),
   dkmode       = setmetatable({ label="DK mode",       w=5 }, {__index=cheat_effect(CHEAT.DK, 45)}),
   smalljo      = setmetatable({ label="Tiny Jo",       w=4 }, {__index=cheat_effect(CHEAT.SMALLJO, 30)}),
   smallchars   = setmetatable({ label="Tiny everyone", w=4 }, {__index=cheat_effect(CHEAT.SMALLCHARS, 30)}),
-  elvis        = setmetatable({ label="Play as Elvis", w=3 }, {__index=cheat_effect(CHEAT.ELVIS, 45)}),
-  marquis      = setmetatable({ label="Marquis mode",  w=3 }, {__index=cheat_effect(CHEAT.MARQUIS, 30)}),
-  enemyrockets = setmetatable({ label="Enemy rockets!", w=3 }, {__index=cheat_effect(CHEAT.ENEMYROCKETS, 30)}),
-  enemyshields = setmetatable({ label="Shielded enemies", w=4 }, {__index=cheat_effect(CHEAT.ENEMYSHIELDS, 30)}),
+  -- Queensberry rules: everyone melee only. Disarm every enemy (remembering
+  -- their weapons), force the player to fists + lock weapon switching, and keep
+  -- CHEAT_MARQUIS on so freshly-spawned guards are unarmed too. All restored on
+  -- the timer: enemies get their guns back, the player can swap off unarmed.
+  marquis      = { label="Marquis mode",  w=3, dur=20,
+                   start=function()
+                     st.marquis_saved = {}
+                     local list = pd.all_chrs() or {}
+                     for _, c in ipairs(list) do
+                       if pd.chr_weapon then st.marquis_saved[c] = pd.chr_weapon(c) end
+                       pd.chr_give_weapon(c, W.UNARMED) -- player pawn is skipped (NPC-only)
+                     end
+                     pd.cheat(CHEAT.MARQUIS, true)
+                     pd.switch_weapon(W.UNARMED)
+                     if pd.knife_lock then pd.knife_lock(true) end
+                   end,
+                   stop=function()
+                     for c, w in pairs(st.marquis_saved or {}) do
+                       if w and w > W.UNARMED then pd.chr_give_weapon(c, w) end
+                     end
+                     st.marquis_saved = {}
+                     pd.cheat(CHEAT.MARQUIS, false)
+                     if pd.knife_lock then pd.knife_lock(false) end
+                   end },
+  -- Enemies actually wield rocket launchers (and hand their guns back after),
+  -- the K7-party mechanism rather than the projectile-swap cheat.
+  enemyrockets = arm_all_effect("Enemy rockets!", 3, W.ROCKET),
+  -- Give every current enemy a full shield, once. (CHEAT_ENEMYSHIELDS only
+  -- shields chrs at spawn, so already-spawned guards got nothing.) Single
+  -- activation — the shields stay; they're not taken back.
+  enemyshields = { label="Shielded enemies", w=4, dur=0, start=function()
+                     local list = pd.all_chrs() or {}
+                     local n = 0
+                     for _, c in ipairs(list) do
+                       if pd.chr_set_shield(c, 8) then n = n + 1 end
+                     end
+                     if n == 0 then error("no chrs") end
+                   end },
   -- CHEAT_GOLDENEYE = the "GoldenEye Style" master: all 12 classic behaviours
   -- at once (snap lean, lower-and-raise reloads, GE arc HUD + damage flash,
   -- classic crosshair, no dual-wield, i-frames, ...). docs/PORT_GOLDENEYE.md.
@@ -139,10 +235,26 @@ chaos.effects = {
                    start=function() pd.device_on(W.NIGHTVISION) end,
                    stop=function() pd.device_off(W.NIGHTVISION) end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
-  blink        = { label="Blink",             w=5, dur=0, start=function() pd.fade(255,255,255,255, 45) end },
+  blink        = { label="Blink",             w=5, fixeddur=true, dur=3,
+                   -- flash white, hold 1s, then fade back to gameplay over 2s
+                   start=function()
+                     pd.fade(255, 255, 255, 255, 0)   -- flash to white + hold
+                     st.blink_fade = false
+                     st.blink_held = 0
+                   end,
+                   tick=function()
+                     if not st.blink_fade then
+                       st.blink_held = st.blink_held + (pd.lvupdate and pd.lvupdate() or 1)
+                       if st.blink_held >= 60 then     -- 1s of game time held
+                         st.blink_fade = true
+                         pd.fade(255, 255, 255, 255, 120)   -- fade out over 2s
+                       end
+                     end
+                   end,
+                   stop=function() pd.fade(0, 0, 0, 0, 0) end },  -- ensure cleared
   -- ammo roulette (pd.ammo_swap: every held gun fires another weapon's
   -- primary rounds; refills keep the borrowed ammo topped up while active)
-  rocket_rounds  = { label="Rockets for everyone", w=4, dur=20,
+  rocket_rounds  = { label="Everything Rockets",   w=4, dur=20,
                      start=function() pd.ammo_swap(W.ROCKET); pd.refill_ammo() end,
                      tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
                      stop=function() pd.ammo_swap() end },
@@ -172,8 +284,14 @@ chaos.effects = {
                        pd.dual_wield(W.CYCLONE, 1)    -- both hands, Magazine Discharge
                        pd.cheat(CHEAT.NORELOAD, true) -- unlimited ammo, no reloads
                        pd.refill_ammo()
+                       -- force secondary + hold fire + no weapon switching
+                       if pd.gun_lock then pd.gun_lock(true) end
                      end,
-                     stop=function() pd.cheat(CHEAT.NORELOAD, false) end },
+                     stop=function()
+                       pd.cheat(CHEAT.NORELOAD, false)
+                       if pd.gun_lock then pd.gun_lock(false) end
+                       pd.take_weapon(W.CYCLONE) -- take the cyclones back
+                     end },
   widescreen     = { label="CinemaScope",         w=3, dur=20,
                      start=function() pd.aspect_scale(2) end,
                      stop=function() pd.aspect_scale(1) end },
@@ -206,18 +324,8 @@ chaos.effects = {
                      end,
                      stop=function() pd.fov_scale(1) end },
   -- crowd control
-  infighting     = { label="Civil war",           w=4, dur=0,
-                     start=function()
-                       local list = pd.all_chrs() or {}
-                       if #list < 2 then error("not enough chrs") end
-                       for i = 1, #list do
-                         pd.chr_target(list[i], list[(i % #list) + 1])
-                       end
-                     end },
-  neuralyzer     = { label="Neuralyzed",          w=4, dur=0,
-                     start=function()
-                       for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_calm(c) end
-                     end },
+  -- (Civil war removed — PD's player-centric guard AI made it unreliable and a
+  -- source of mission softlocks. The pd.civil_war binding remains in C, unused.)
   house_party    = { label="House party",         w=3, dur=0,
                      start=function()
                        local list = pd.all_chrs() or {}
@@ -231,24 +339,45 @@ chaos.effects = {
                      start=function()
                        local held = pd.weapon_held()
                        local a = math.random() * 2 * math.pi
+                       -- spawn ~1000 units away and let her hunt the player down
                        pd.spawn_body(-1, (held and held > 1) and held or W.FALCON2,
-                                     math.sin(a) * 180, math.cos(a) * 180)
+                                     math.sin(a) * 1000, math.cos(a) * 1000)
                      end },
   -- doors
   open_sesame    = { label="Open sesame",         w=4, dur=0,
                      start=function() pd.doors_all(true) end },
-  lockdown       = { label="Lockdown",            w=3, dur=0,
-                     start=function() pd.doors_all(false) end },
-  body_snatch    = { label="BODY SNATCHED",       w=1, dur=0,
+  lockdown       = { label="Lockdown",            w=3, fixeddur=true, dur=15,
+                     -- actually LOCK every door shut for the duration (fake key
+                     -- flag), not just the transient close of doors_all
+                     start=function() pd.doors_lock(true) end,
+                     stop=function() pd.doors_lock(false) end },
+  body_snatch    = { label="BODY SNATCHED",       w=1, dur=1,
+                     -- "Lite" takeover: take a guard's place (its weapon +
+                     -- position), disguised so nobody aggros, for the effect
+                     -- duration; then teleport back to Jo and it's business as
+                     -- usual. (Full third-person Counter-Op body isn't buildable
+                     -- mid-mission in solo.)
                      start=function()
                        local list = pd.all_chrs() or {}
                        if #list == 0 then error("no chrs") end
                        for _ = 1, 8 do
                          local c = list[math.random(#list)]
-                         if c and pd.body_snatch(c) then return end
+                         if c and pd.body_snatch(c) then    -- weapon+warp+disguise+remove guard
+                           -- calm everyone so nobody aggros against the disguise
+                           for _, o in ipairs(pd.all_chrs() or {}) do pd.chr_calm(o) end
+                           return
+                         end
                        end
                        error("no snatchable chr")
-                     end },
+                     end,
+                     tick=function(left)
+                       -- keep guards passive while disguised (mop up any that
+                       -- slipped through the target-search skip)
+                       if left % 30 == 0 then
+                         for _, o in ipairs(pd.all_chrs() or {}) do pd.chr_calm(o) end
+                       end
+                     end,
+                     stop=function() if pd.body_unsnatch then pd.body_unsnatch() end end },
   joyride        = { label="Joyride",             w=3, dur=0,
                      start=function()
                        if not pd.spawn_bike() then error("no bike here") end
@@ -325,8 +454,22 @@ chaos.effects = {
                    end,
                    stop=function() pd.room_tint() end },
   -- player state, SA-chaos style
-  turbo        = { label="GOTTA GO FAST",     w=6, dur=0, start=function() pd.boost(15) end },
-  drunk        = { label="One too many",      w=6, dur=0, start=function() pd.dizzy(3500) end },
+  turbo        = { label="GOTTA GO FAST",     w=6, fixeddur=true, dur=20,
+                   -- just fast movement, no Combat Boost / bullet-time stim
+                   start=function() pd.player_speed(2.5) end,
+                   stop=function() pd.player_speed(1) end },
+  drunk        = { label="One too many",      w=6, dur=20,
+                   start=function()
+                     pd.dizzy(3500)
+                     if pd.double_vision then pd.double_vision(true) end
+                   end,
+                   tick=function(left)
+                     -- keep the sway topped up so it lasts the whole effect
+                     if left % 60 == 0 then pd.dizzy(3500) end
+                   end,
+                   stop=function()
+                     if pd.double_vision then pd.double_vision(false) end
+                   end },
   one_hp       = { label="Health roulette",   w=4, dur=0, start=function()
                      pd.player_set_health(math.random(5, 60) / 100) end },
   dry_spell    = { label="Dry spell",         w=5, dur=0, start=function() pd.strip_ammo() end },
@@ -362,10 +505,10 @@ chaos.effects = {
   reinforce    = { label="Supply drop",       w=4, dur=0, start=function()
                      local c = random_chr(); if c then pd.spawn_at_chr(c, GUNS[math.random(#GUNS)]) end end },
   -- request batch 4
-  k7_party     = { label="K7 Avengers for all", w=4, dur=0, start=function()
-                     local list = pd.all_chrs() or {}
-                     if #list == 0 then error("no chrs") end
-                     for _, c in ipairs(list) do pd.chr_give_weapon(c, W.K7) end end },
+  k7_party     = arm_all_effect("K7 Avengers for all", 4, W.K7),
+  -- Every NPC gets a different random gun for the duration, then their own back.
+  weapon_roulette = arm_all_effect("NPC weapon roulette", 3,
+                     function() return GUNS[math.random(#GUNS)] end),
   paintball    = { label="Paintball!",        w=5, dur=30,
                    start=function()
                      pd.paintball(true)
@@ -382,7 +525,7 @@ chaos.effects = {
   weapon_jam   = { label="Weapon jam",        w=5, dur=12,
                    start=function() pd.weapon_jam(true) end,
                    stop=function() pd.weapon_jam(false) end },
-  take_a_break = { label="Take a break",      w=4, dur=function() return math.random(10, 30) end,
+  take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
                    start=function() pd.player_freeze(true) end,
                    stop=function() pd.player_freeze(false) end },
   vampire      = { label="Vampire",           w=4, dur=30,
@@ -397,7 +540,7 @@ chaos.effects = {
                    end,
                    start=function() end,
                    stop=function() end },
-  freeze       = { label="FREEZE!",           w=4, dur=function() return math.random(10, 20) end,
+  freeze       = { label="FREEZE!",           w=4, fixeddur=true, dur=function() return math.random(10, 20) end,
                    start=function() pd.chr_freeze(true) end,
                    stop=function() pd.chr_freeze(false) end },
   no_drops     = { label="No drops",          w=4, dur=45,
@@ -444,13 +587,29 @@ chaos.effects = {
                    tick=function(left)
                      if left % 75 == 0 then pd.shake(30) end
                    end },
-  thanos_snap  = { label="The snap",          w=2, dur=0, start=function()
+  thanos_snap  = { label="The snap",          w=2, fixeddur=true, dur=3,
+                   -- flash white + hold 1s + fade over 2s; each NPC has a 50/50
+                   -- chance to be dusted (real coin flip, not every-other).
+                   start=function()
                      local list = pd.all_chrs() or {}
                      if #list == 0 then error("no chrs") end
-                     pd.fade(255, 255, 255, 200, 90)
-                     for i, c in ipairs(list) do
-                       if i % 2 == 0 then pd.chr_damage(c, 100) end
-                     end end },
+                     pd.fade(255, 255, 255, 255, 0)   -- flash to white + hold
+                     st.snap_fade = false
+                     st.snap_held = 0
+                     for _, c in ipairs(list) do
+                       if math.random() < 0.5 then pd.chr_damage(c, 100) end
+                     end
+                   end,
+                   tick=function()
+                     if not st.snap_fade then
+                       st.snap_held = st.snap_held + (pd.lvupdate and pd.lvupdate() or 1)
+                       if st.snap_held >= 60 then      -- 1s of game time held
+                         st.snap_fade = true
+                         pd.fade(255, 255, 255, 255, 120)   -- fade out over 2s
+                       end
+                     end
+                   end,
+                   stop=function() pd.fade(0, 0, 0, 0, 0) end },
   plague       = { label="The plague",        w=3, dur=20,
                    tick=function(left)
                      if left % 120 == 0 then
@@ -559,12 +718,13 @@ chaos.effects = {
                    end,
                    stop=function() st.gungame_idx = nil end },
   glass_cannon = { label="Glass cannons",     w=4, dur=15,
-                   start=function() pd.damage_scale(8) end,
-                   stop=function() pd.damage_scale(1) end },
+                   -- every gun fires a Gold Magnum (DY357-LX) one-shot-kill round,
+                   -- then SHATTERS (removed from inventory — see the weaponfire
+                   -- handler). A glass cannon: devastating once, then gone.
+                   start=function() pd.ammo_swap(W.LX); pd.refill_ammo() end,
+                   stop=function() pd.ammo_swap(); st.glass_pending = nil end },
   karma        = { label="Empath",            w=4, dur=20,
                    start=function() end }, -- reflect handled in the damage hook
-  pinata       = { label="Pinata party",      w=4, dur=30,
-                   start=function() end }, -- kill rewards handled in the kill hook
   clone_army   = { label="Clone army",        w=2, dur=0, start=function()
                      local held = pd.weapon_held()
                      local wpn = (held and held > 1) and held or W.FALCON2
@@ -585,9 +745,6 @@ chaos.effects = {
                      pd.chr_freeze(false)
                      pd.song()
                    end },
-  full_flip    = { label="Full rotation",     w=2, dur=20,
-                   start=function() pd.cheat(CHEAT.MIRROR, true); pd.upside_down(true) end,
-                   stop=function() pd.cheat(CHEAT.MIRROR, false); pd.upside_down(false) end },
   personal_space = { label="Personal space",  w=3, dur=16,
                    start=function() end,
                    tick=function(left)
@@ -602,13 +759,9 @@ chaos.effects = {
   shields_up   = { label="Shields up",        w=4, dur=0, start=function()
                      local list = pd.all_chrs() or {}
                      if #list == 0 then error("no chrs") end
-                     for _, c in ipairs(list) do pd.chr_set_shield(c, 8) end end },
-  fire_sale    = { label="Fire sale",         w=4, dur=0, start=function()
-                     local list = pd.all_chrs() or {}
-                     if #list == 0 then error("no chrs") end
-                     for _, c in ipairs(list) do
-                       pd.spawn_at_chr(c, GUNS[math.random(#GUNS)])
-                     end end },
+                     for _, c in ipairs(list) do pd.chr_set_shield(c, 8) end
+                     pd.player_set_shield(1) -- everyone, incl. the player
+                   end },
   quantum_instability = { label="Quantum instability", w=3, dur=20,
                    start=function() end,
                    tick=function(left)
@@ -677,7 +830,10 @@ local function stop_all()
   for name in pairs(st.active) do stop_effect(name) end
 end
 
-function chaos.trigger(name, who)
+-- chaos.trigger(name, who, dur_override): fire an effect. dur_override (seconds)
+-- forces a specific length for timed effects (the Test menu passes 30) instead
+-- of the global st.effectdur; instant effects ignore it.
+function chaos.trigger(name, who, dur_override)
   local e = chaos.effects[name]
   if not e then
     pd.log("[chaos] unknown effect: " .. tostring(name))
@@ -689,11 +845,20 @@ function chaos.trigger(name, who)
     pd.log("[chaos] effect '" .. name .. "' failed: " .. tostring(err))
     return false
   end
-  -- dur may be a function for randomised durations (e.g. Take a break 10-30s)
-  local dur = (type(e.dur) == "function") and e.dur() or e.dur
-  if dur and dur > 0 then
-    st.active[name] = dur * TICKS
-    st.duration[name] = dur * TICKS
+  -- An effect's own dur is now mostly just a timed-vs-instant marker (a positive
+  -- value, possibly a function). The actual on-screen length comes from the
+  -- single adjustable st.effectdur so every timed effect shares one knob;
+  -- instant effects (dur 0/nil) stay instant. Effects flagged fixeddur keep
+  -- their own authored length (e.g. player-freeze effects that a 60s global
+  -- would turn into a soft-lock).
+  local base = (type(e.dur) == "function") and e.dur() or e.dur
+  if base and base > 0 then
+    -- fixeddur effects keep their own length even from the Test menu's 30s
+    -- override (e.g. Snap/Blink must stay 3s, not hold white for 30s).
+    local secs = e.fixeddur and base or (dur_override or st.effectdur)
+    local ticks = secs * TICKS
+    st.active[name] = ticks
+    st.duration[name] = ticks
   end
   announce(e.label .. (who and ("  [" .. who .. "]") or ""))
   table.insert(st.history, 1, name)
@@ -706,7 +871,7 @@ local function pick_random()
   for name, e in pairs(chaos.effects) do
     local recent = false
     for _, h in ipairs(st.history) do if h == name then recent = true end end
-    if not recent then
+    if not recent and effect_enabled(name) then
       total = total + (e.w or 1)
       pool[#pool + 1] = { name = name, acc = total }
     end
@@ -754,8 +919,8 @@ function chaos.handle(source, text)
   elseif cmd == "toggle" then
     chaos.handle(source, st.enabled and "off" or "on")
   elseif cmd == "status" then
-    pd.log(string.format("[chaos] %s  interval=%ds votetime=%ds active=%d port-fed-by=%s",
-        st.enabled and "ON" or "off", st.interval, st.votetime,
+    pd.log(string.format("[chaos] %s  interval=%ds effectdur=%ds votetime=%ds active=%d port-fed-by=%s",
+        st.enabled and "ON" or "off", st.interval, st.effectdur, st.votetime,
         (function() local n=0 for _ in pairs(st.active) do n=n+1 end return n end)(), source))
   elseif cmd == "list" then
     local names = {}
@@ -763,8 +928,11 @@ function chaos.handle(source, text)
     table.sort(names)
     pd.log("[chaos] effects: " .. table.concat(names, " "))
   elseif cmd == "interval" then
-    st.interval = math.max(5, tonumber(arg) or 30); persist()
+    st.interval = math.max(5, tonumber(arg) or 20); persist()
     pd.log("[chaos] interval = " .. st.interval .. "s")
+  elseif cmd == "effectdur" or cmd == "duration" then
+    st.effectdur = math.max(1, tonumber(arg) or 60); persist()
+    pd.log("[chaos] effect duration = " .. st.effectdur .. "s")
   elseif cmd == "votetime" then
     st.votetime = math.max(0, tonumber(arg) or 0); st.votetimer = st.votetime * TICKS
     persist()
@@ -812,9 +980,17 @@ pd.on("tick", function()
   -- scaled during slo-mo/boost. Everything below (effect timers, the vote
   -- window, the drumbeat) freezes with the game.
   local dt = pd.lvupdate and pd.lvupdate() or 1
-  if not st.enabled or dt <= 0 then return end
+  if dt <= 0 then return end -- paused: freeze everything, timers included
 
-  -- timed effect expiry (+ optional per-tick driver, e.g. disco's hue cycle)
+  -- Glass cannons: a fired gun shatters — remove it one tick after the shot
+  -- (deferred so we don't change weapons re-entrantly inside the fire event).
+  if st.glass_pending then
+    for wn in pairs(st.glass_pending) do pd.take_weapon(wn) end
+    st.glass_pending = nil
+  end
+
+  -- Timed-effect expiry runs REGARDLESS of the master switch, so effects fired
+  -- from the Test menu still count down and wear off while Chaos is turned off.
   for name, left in pairs(st.active) do
     local e = chaos.effects[name]
     if e and e.tick then pcall(e.tick, left) end
@@ -826,6 +1002,10 @@ pd.on("tick", function()
       st.active[name] = left
     end
   end
+
+  -- The random drumbeat and chat-vote only run while Chaos is enabled; the
+  -- expiry above already ran so manual test effects stay on their own timers.
+  if not st.enabled then return end
 
   -- vote mode: chat picks from the 3-candidate slate; the winner fires when
   -- the window closes (ties / no votes -> random candidate, chaos must flow).
@@ -867,6 +1047,13 @@ pd.on("weaponfire", function(weaponnum, playernum)
     pd.player_damage(1.5)
     pd.hud_message("CHAOS: BANG! It misfired!")
   end
+  -- Glass cannons: every shot is a one-shot-kill Gold Magnum round, but the gun
+  -- shatters afterwards — queue it for removal on the next tick (weaponnum > 1
+  -- skips fists/knife). You burn through your whole arsenal one shot at a time.
+  if st.active.glass_cannon and playernum == 0 and weaponnum and weaponnum > 1 then
+    st.glass_pending = st.glass_pending or {}
+    st.glass_pending[weaponnum] = true
+  end
 end)
 
 -- Vampire: damaging any chr while the effect is active feeds you.
@@ -882,7 +1069,6 @@ pd.on("damage", function(chrnum, attackerplayernum, amount)
 end)
 
 -- Gun Game: each kill advances to the next weapon in the list.
--- Pinata party: each kill bursts ammo + health.
 pd.on("kill", function(chrnum, killerplayernum)
   if killerplayernum ~= 0 then return end
   if st.active.gun_game and st.gungame_idx then
@@ -898,14 +1084,19 @@ pd.on("kill", function(chrnum, killerplayernum)
     if cur then pd.take_weapon(cur) end
     pd.give_weapon(nxt); pd.switch_weapon(nxt); pd.refill_ammo()
   end
-  if st.active.pinata then
-    pd.refill_ammo()
-    local h = pd.player_health()
-    if h then pd.player_set_health(math.min(1, h + 0.15)) end
-  end
 end)
 
 pd.on("stage", function()
+  -- Experiment cheats (GoldenEye / Wireframe / Mirror / Evil music) ride the
+  -- ENABLED cheat bank, which SURVIVES a stage reload (the active bank, used by
+  -- every other cheat, does not). So an experiment-cheat effect that was still
+  -- mid-timer would stick after the load. Clear the ones CHAOS had active here,
+  -- before st.active is wiped below — never touch a user's menu-set experiment.
+  if pd.cheat then
+    if st.active.mirror then pd.cheat(CHEAT.MIRROR, false) end
+    if st.active.tonal     then pd.cheat(CHEAT.TONAL, false) end
+    if st.active.goldeneye then pd.cheat(CHEAT.GOLDENEYE, false) end
+  end
   -- fresh world: drop timed-effect bookkeeping (cheat banks reset with the
   -- stage; re-arm the timer so the first effect isn't instant)
   st.active = {}
@@ -943,6 +1134,7 @@ pd.on("stage", function()
   -- freeform batch globals (weather only if WE turned it on — never kill a
   -- stage's own configured rain)
   if pd.chr_speed then pd.chr_speed(1) end
+  if pd.player_speed then pd.player_speed(1) end
   if pd.screen_tint then pd.screen_tint() end
   if pd.pixelate then pd.pixelate() end
   if pd.screen_fx then pd.screen_fx(63, false) end
@@ -953,6 +1145,9 @@ pd.on("stage", function()
   if pd.audio_reverse then pd.audio_reverse(false) end
   if pd.audio_pitch then pd.audio_pitch() end
   if pd.upside_down then pd.upside_down(false) end
+  if pd.double_vision then pd.double_vision(false) end
+  if pd.gun_lock then pd.gun_lock(false) end
+  if pd.knife_lock then pd.knife_lock(false) end
   if pd.gas then pd.gas(false) end
   if pd.t_pose then pd.t_pose(false) end
   if pd.pinball then pd.pinball(false) end
@@ -1010,22 +1205,83 @@ pd.on("draw", function()
 end)
 
 if pd.menu_add then
-  pd.menu_add("Chaos: toggle",      function() chaos.handle("menu", "toggle") end)
-  pd.menu_add("Chaos: random now",  function() local n = pick_random(); if n then chaos.trigger(n, "menu") end end)
-  pd.menu_add("Chaos: vote 30s on/off", function()
-    chaos.handle("menu", st.votetime > 0 and "votetime 0" or "votetime 30")
-  end)
+  -- One "Chaos" submenu in the Lua Director. At the TOP: the master switch and
+  -- the two global knobs (how long each effect lasts, how often one fires) as
+  -- tap-to-cycle entries whose labels rewrite in place (pd.menu_set_label).
+  -- Below them: every effect, alphabetical by label, as an ON/off toggle that
+  -- adds/removes it from the random rotation. All state persists via pd.persist.
+  local GROUP = "Chaos"
+  local INTERVALS = { 5, 10, 15, 20, 30, 45, 60, 90, 120 }
+  local DURATIONS = { 5, 10, 15, 20, 30, 45, 60, 90, 120, 180 }
 
-  -- Test menu: every effect as its own pause-menu entry (the Lua Director
-  -- dialog smooth-scrolls past one screen). Sorted by internal name so the
-  -- list order is stable between sessions.
+  -- Next value strictly greater than cur, wrapping to the smallest. Works even
+  -- if the persisted value isn't itself a list entry.
+  local function next_in(list, cur)
+    for _, v in ipairs(list) do if v > cur then return v end end
+    return list[1]
+  end
+
+  local i_toggle, i_dur, i_freq
+
+  local function lbl_toggle() return "Chaos: " .. (st.enabled and "ON" or "off") end
+  local function lbl_dur()    return "Effect duration: " .. st.effectdur .. "s" end
+  local function lbl_freq()   return "Trigger every: " .. st.interval .. "s" end
+
+  local function relabel()
+    if not pd.menu_set_label then return end
+    pd.menu_set_label(i_toggle, lbl_toggle())
+    pd.menu_set_label(i_dur, lbl_dur())
+    pd.menu_set_label(i_freq, lbl_freq())
+  end
+
+  i_toggle = pd.menu_add(lbl_toggle(), function()
+    chaos.handle("menu", "toggle"); relabel()
+  end, GROUP)
+  i_dur = pd.menu_add(lbl_dur(), function()
+    st.effectdur = next_in(DURATIONS, st.effectdur); persist(); relabel()
+  end, GROUP)
+  i_freq = pd.menu_add(lbl_freq(), function()
+    st.interval = next_in(INTERVALS, st.interval); persist(); relabel()
+  end, GROUP)
+
+  -- Effect list, sorted by display label (ties broken by internal name).
   local names = {}
   for name in pairs(chaos.effects) do names[#names + 1] = name end
-  table.sort(names)
+  table.sort(names, function(a, b)
+    local la = (chaos.effects[a].label or a):lower()
+    local lb = (chaos.effects[b].label or b):lower()
+    if la == lb then return a < b end
+    return la < lb
+  end)
+
+  -- Test menu: a sibling submenu ("Chaos Test") whose opener sits at the top of
+  -- the Director next to Chaos. (A true submenu-inside-Chaos crashed the menu
+  -- engine — a scrollable dialog pushed from another scrollable dialog — so it
+  -- is a top-level entry instead.) Selecting an effect fires it for a fixed 30s
+  -- to try in isolation; the timer counts down even while the master switch is
+  -- off (see the tick handler). Alphabetical by label.
   for _, name in ipairs(names) do
     local n = name
     local e = chaos.effects[n]
-    pd.menu_add("Test: " .. (e.label or n), function() chaos.trigger(n, "test") end)
+    pd.menu_add(e.label or n, function() chaos.trigger(n, "test", 30) end, "Chaos Test")
+  end
+
+  -- Effect on/off list (adds/removes each from the random rotation), alphabetical.
+  for _, name in ipairs(names) do
+    local n = name
+    local e = chaos.effects[n]
+    local mi
+    local function lbl() return (e.label or n) .. ": " .. (effect_enabled(n) and "ON" or "off") end
+    mi = pd.menu_add(lbl(), function()
+      if st.disabled[n] then
+        st.disabled[n] = nil                 -- re-enable
+      else
+        st.disabled[n] = true                -- disable + end it if it's live
+        if st.active[n] then stop_effect(n) end
+      end
+      persist_disabled()
+      if pd.menu_set_label and mi then pd.menu_set_label(mi, lbl()) end
+    end, GROUP)
   end
 end
 

@@ -4410,6 +4410,9 @@ void playerUpdateDamageStats(struct prop *attacker, struct prop *victim, f32 dam
  * explosion - true if damage is coming from an explosion
  * explosionpos - position of said explosion
  */
+#ifndef PLATFORM_N64
+bool chaosIsTwin(struct chrdata *chr); // chaos Evil twin — defined below
+#endif
 void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset,
 		struct prop *aprop, s32 hitpart, bool damageshield, struct prop *prop2,
 		struct modelnode *node, struct model *model, s32 side, s16 *arg11,
@@ -5240,6 +5243,13 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			// Handle chr dizziness and psychosis
 			if (makedizzy && race != RACE_DRCAROLL && race != RACE_ROBOT) {
 				if (gsetHasFunctionFlags(gset, FUNCFLAG_PSYCHOSIS)) {
+#ifndef PLATFORM_N64
+					// Chaos "Evil twin"/"Clone army" are immune to psychosis: it
+					// routes them into GAILIST_INIT_PSYCHOSIS, which rewrites their
+					// team to TEAM_NONCOMBAT then TEAM_ALLY and turns them friendly
+					// — exactly the "she goes friendly" bug. Keep them hostile.
+					if (!chaosIsTwin(chr))
+#endif
 					chr->hidden |= CHRHFLAG_PSYCHOSISED;
 				} else {
 					chr->blurdrugamount += gsetGetBlurAmount(gset);
@@ -5377,6 +5387,16 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 						}
 
 						if (chr->aibot == NULL) {
+#ifndef PLATFORM_N64
+							// Campaign guard death: fire the Lua "kill" event here
+							// too. The aibot death path (chrDie) already emits it,
+							// but campaign chrs never did — so kill-based chaos
+							// effects (Pinata party, Gun Game) never triggered in
+							// solo. Attribute to the attacking player, or -1 if none.
+							luaEmitKill((s32)chr->chrnum,
+									(aprop && aprop->type == PROPTYPE_PLAYER)
+										? (s32)playermgrGetPlayerNumByProp(aprop) : -1);
+#endif
 							chrDropConcealedItems(chr);
 						}
 
@@ -8141,7 +8161,6 @@ bool chrConsiderGrenadeThrow(struct chrdata *chr, u32 attackflags, u32 entityid)
 s32 chraiLuaSpawnAtChr(s32 chrnum, s32 weaponnum)
 {
 	struct chrdata *chr;
-	s32 modelnum;
 
 	if (g_NetMode == NETMODE_CLIENT) {
 		return 0; // world mutation is server-authoritative
@@ -8152,12 +8171,14 @@ s32 chraiLuaSpawnAtChr(s32 chrnum, s32 weaponnum)
 		return 0;
 	}
 
-	modelnum = playermgrGetModelOfWeapon(weaponnum);
-	if (modelnum < 0) {
-		return 0; // weapon has no droppable world model
-	}
-
-	return chrDropItem(chr, (u32)modelnum, (u32)weaponnum) ? 1 : 0;
+	// Drop a weapon as an INDEPENDENT floor pickup at the chr's feet. Do NOT
+	// use chrDropItem here: it reparents the item to the chr and defers the
+	// actual drop to the chr's death/drop tick, so on a LIVING NPC the weapon
+	// stays attached and never lands on the ground (Fire Sale spawned nothing at
+	// their feet). chraiLuaSpawnAtPos creates a free-standing, floor-snapped
+	// pickup at the given position — exactly what Fire Sale wants.
+	return chraiLuaSpawnAtPos(chrnum, weaponnum,
+			chr->prop->pos.x, chr->prop->pos.y, chr->prop->pos.z);
 }
 
 // Lua bridge: spawn a weapon/item world object at an arbitrary position, with
@@ -8403,11 +8424,31 @@ s32 chraiLuaSwitchWeapon(s32 weaponnum)
 // over time60 ticks). Chaos uses it for blink/flashbang-style effects.
 s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60)
 {
+	f32 frac;
+
 	if (apLuaPlayerChr() == NULL) {
 		return 0;
 	}
-	playerSetFadeColour(r, g, b, a);
-	playerSetFadeFrac(time60, 1);
+	// Flash instantly to (r,g,b) at intensity `a` (0-255), then fade back to the
+	// game over time60 frames — one clean flash. The colour fraction is 0..1, so
+	// `a` must be normalised: passing it raw (e.g. 200) set frac far over 1 (an
+	// overflowing full-white strobe) and the animation then targeted 1, i.e. it
+	// faded TO white and stuck there ("flashes white and never comes back").
+	if (a < 0) {
+		a = 0;
+	} else if (a > 255) {
+		a = 255;
+	}
+	frac = a * (1.0f / 255.0f);
+
+	playerSetFadeColour(r, g, b, frac); // instant flash to the colour + HOLD
+
+	// time60 > 0: fade back out to the game over time60 frames.
+	// time60 <= 0: leave it held at the colour — the caller drives the fade-out
+	// later with a second pd.fade (e.g. Snap/Blink hold white 1s then fade 2s).
+	if (time60 > 0) {
+		playerSetFadeFrac(time60, 0);
+	}
 	return 1;
 }
 
@@ -8545,14 +8586,26 @@ s32 chraiLuaStripAmmo(void)
 	return 1;
 }
 
-// pd.teleport_to_chr(chrnum): snap the local player to a chr's position via
-// chrSetPos — the same primitive the netcode uses to force-correct player
-// pawns, so bondwalk state / camera / rooms all follow. Server-side only
-// (a client's move would just be force-corrected straight back).
+// pd.teleport_to_chr(chrnum): snap the local player to a chr's position.
+// Server-side only (a client's move would just be force-corrected straight
+// back). When the player carries a body model (Combat Sim / anti-reality),
+// reuse chrSetPos — the same primitive the netcode uses to force-correct
+// player pawns, so bondwalk state / camera / rooms all follow.
+//
+// In the solo campaign the first-person player has NO chr model (chr->model
+// == NULL), and both chrSetPos and chrMoveToPos unconditionally dereference
+// it (modelSetRootPosition / model->definition) — calling them there crashes.
+// For that case relocate the prop directly: pos + room registration + the
+// bondwalk view-height (vv_*) fields, which is all a model-less player needs.
 s32 chraiLuaTeleportToChr(s32 chrnum)
 {
 	struct chrdata *pl = apLuaPlayerChr();
 	struct chrdata *chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	struct prop *plprop;
+	struct coord target;
+	RoomNum rooms[8];
+	f32 dx, dz, len, dist, angle;
+	f32 ground;
 
 	if (pl == NULL || pl->prop == NULL || g_NetMode == NETMODE_CLIENT) {
 		return 0;
@@ -8560,7 +8613,71 @@ s32 chraiLuaTeleportToChr(s32 chrnum)
 	if (chr == NULL || chr->prop == NULL || chr->prop == pl->prop) {
 		return 0;
 	}
-	return chrSetPos(pl, &chr->prop->pos, chr->prop->rooms, chrGetRotY(pl), true) ? 1 : 0;
+
+	// Ideal landing spot: beside the target, not inside it — offset
+	// horizontally by the two radii plus a margin, along the direction the
+	// player is coming from (so they arrive on their own side, roughly facing
+	// the target). Degenerate overlap falls back to a fixed direction.
+	target = chr->prop->pos;
+	dx = pl->prop->pos.x - chr->prop->pos.x;
+	dz = pl->prop->pos.z - chr->prop->pos.z;
+	len = sqrtf(dx * dx + dz * dz);
+	dist = pl->radius + chr->radius + 30.0f;
+	if (len > 0.001f) {
+		target.x += dx / len * dist;
+		target.z += dz / len * dist;
+		angle = atan2f(dx, dz);
+	} else {
+		target.x += dist;
+		angle = 0;
+	}
+
+	// Validate the spot against walls AND physics objects (tables, crates...):
+	// chrAdjustPosForSpawn tests CDTYPE_ALL at the ideal point and, if it
+	// collides, nudges through a ring of 8 directions looking for a clear one.
+	// If nothing is safe it returns false — fall back to the target's own
+	// position/rooms so the player at least lands in the same room as the NPC
+	// rather than embedded in an object.
+	roomsCopy(chr->prop->rooms, rooms);
+#if VERSION >= VERSION_NTSC_1_0
+	if (!chrAdjustPosForSpawn(pl->radius, &target, rooms, angle, true, false, false)) {
+#else
+	if (!chrAdjustPosForSpawn(pl->radius, &target, rooms, angle, true, false)) {
+#endif
+		target = chr->prop->pos;
+		roomsCopy(chr->prop->rooms, rooms);
+	}
+
+	if (pl->model != NULL) {
+		return chrSetPos(pl, &target, rooms, chrGetRotY(pl), true) ? 1 : 0;
+	}
+
+	// Model-less first-person player: move the prop by hand.
+	plprop = pl->prop;
+	propSetPerimEnabled(plprop, false);
+
+	plprop->pos = target;
+
+	ground = cdFindGroundInfoAtCyl(&plprop->pos, pl->radius, rooms,
+			&pl->floorcol, &pl->floortype, NULL, &pl->floorroom, NULL, NULL);
+	pl->ground = ground;
+	pl->manground = ground;
+	pl->sumground = ground * (PAL ? 8.4175090789795f : 9.999998f);
+
+	propDeregisterRooms(plprop);
+	roomsCopy(rooms, plprop->rooms);
+	chr0f0220ac(pl);
+
+	if (plprop->type == PROPTYPE_PLAYER) {
+		struct player *player = g_Vars.players[playermgrGetPlayerNumByProp(plprop)];
+		player->vv_manground = ground;
+		player->vv_ground = ground;
+		player->vv_verta = 0;
+		player->unk1c64 = 1;
+	}
+
+	propSetPerimEnabled(plprop, true);
+	return 1;
 }
 
 // pd.explosions_around(on): the Air Force One crash sequence — surround the
@@ -8671,6 +8788,27 @@ s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum)
 	return 1;
 }
 
+// pd.gun_lock(on): "Cyclone Frenzy" lock — while on, bmoveProcessInput forces
+// the SECONDARY fire function on both hands, holds the trigger (auto-fire), and
+// blocks weapon switching (cycle offsets + the amOpen weapon menu). Local player
+// only; cleared in lvInit so a mid-effect stage change can't leave it stuck.
+extern s32 g_ChaosGunLock;
+s32 chraiLuaGunLock(s32 on)
+{
+	g_ChaosGunLock = on ? 1 : 0;
+	return 1;
+}
+
+// pd.knife_lock(on): "Knife fight" lock — block weapon switching (cycle offsets
+// + the amOpen weapon menu) so only the equipped knife can be used, but leave
+// firing/functions normal. Local player only; cleared in lvInit.
+extern s32 g_ChaosKnifeLock;
+s32 chraiLuaKnifeLock(s32 on)
+{
+	g_ChaosKnifeLock = on ? 1 : 0;
+	return 1;
+}
+
 // pd.song(slot) / pd.song(): play an unlocked Combat Sim music track over the
 // stage music (musicStartTrackAsMenu — the credits-roll mechanism; the stage
 // music pauses underneath and resumes when the menu track ends). slot is
@@ -8691,6 +8829,27 @@ s32 chraiLuaPlaySong(s32 slot)
 	return 1;
 }
 
+// Chaos Evil-twin/clone registry: chrnums of live twins, used to make them
+// psychosis-immune (a twin damaged by the player must stay hostile, not flip to
+// the psychosised "friendly" AI list — see chaosIsTwin's use in chraiLuaChrDamage).
+s16 g_ChaosTwinChrnums[8];
+
+// True if chr is a chaos evil-twin/clone (used to make them psychosis-immune).
+bool chaosIsTwin(struct chrdata *chr)
+{
+	s32 i;
+
+	if (chr == NULL) {
+		return false;
+	}
+	for (i = 0; i < (s32)ARRAYCOUNT(g_ChaosTwinChrnums); i++) {
+		if (g_ChaosTwinChrnums[i] == chr->chrnum) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // pd.spawn_body(bodynum, weaponnum, dx, dz): spawn a HOSTILE chr of the given
 // body at the player's position plus a horizontal offset, facing the player,
 // already alerted. The chraiLuaSpawnAlly recipe with the allegiance inverted;
@@ -8700,22 +8859,49 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 	struct prop *prop;
 	struct chrdata *chr;
 	struct coord pos;
+	RoomNum spawnrooms[8];
+	f32 floory;
+	u16 floorcol;
+	s32 floorroom;
+	s32 headnum = -1; // >= 0 overrides bodyChooseHead (a twin uses Jo's own head)
 
 	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
 		return -1;
 	}
 
-	// bodynum -1 = "a copy of the player" (the evil-twin effect)
+	// bodynum -1 = "a copy of the player" (the evil-twin effect): use the
+	// player's own body AND head so she actually looks like Jo. (The head was a
+	// red herring earlier — the real "goes friendly" bug was the psychosis flag.)
 	if (bodynum < 0) {
 		bodynum = g_Vars.currentplayer->prop->chr->bodynum;
+		headnum = g_Vars.currentplayer->prop->chr->headnum;
 	}
 
 	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
 	pos.y = g_Vars.currentplayer->prop->pos.y;
 	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
 
-	prop = chrSpawnAtCoord(bodynum, bodyChooseHead(bodynum), &pos,
-			g_Vars.currentplayer->prop->rooms,
+	// Floor-snap the spawn: portal-walk from the player's rooms to the real
+	// floor room + height at the (possibly far, e.g. 1000-unit) target, so she
+	// lands on the ground in the correct room instead of floating or clipping.
+	roomsCopy(g_Vars.currentplayer->prop->rooms, spawnrooms);
+#if VERSION >= VERSION_NTSC_1_0
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, spawnrooms, &floory, &floorcol, NULL);
+#else
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, spawnrooms, &floory, &floorcol);
+#endif
+	if (floorroom > 0) {
+		pos.y = floory;
+		spawnrooms[0] = floorroom;
+		spawnrooms[1] = -1;
+	}
+
+	// GAILIST_ALERTED is a real combat list (chase + shoot). The twin is kept
+	// locked onto the PLAYER — and hostile — every frame by chaosTwinsHuntPlayer
+	// (propsTick), which overrides the AI/team drift that otherwise let her
+	// re-pick the nearest guard or turn into a passive blue-reticle buddy.
+	prop = chrSpawnAtCoord(bodynum, headnum >= 0 ? headnum : bodyChooseHead(bodynum), &pos,
+			spawnrooms,
 			atan2f(-dx, -dz), // face inward toward the player
 			ailistFindById(GAILIST_ALERTED),
 			SPAWNFLAG_ALLOWONSCREEN);
@@ -8726,9 +8912,49 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 
 	chr = prop->chr;
 	chr->flags |= CHRFLAG0_SKIPSAFETYCHECKS;
-	chr->team = TEAM_ENEMY;
+	// Put her on the GUARDS' side so the PLAYER is her only enemy. Then her own
+	// AI acquires the player through normal sight/detection and fights properly
+	// (forcing chr->target instead just made her replay the "spotted you"
+	// reaction forever without firing — the combat AI rejects a target it did
+	// not acquire itself). Copy the team of an existing chr that is hostile to
+	// the player: that team makes the player an enemy AND the guards allies.
+	// Skip TEAM_ALLY (0x10) — that team is the follow-Bond buddy. If nothing
+	// suitable is found, fall back to a hostile team the player doesn't share.
+	{
+		struct chrdata *plchr = g_Vars.currentplayer->prop->chr;
+		u8 twinteam = 0;
+		s32 numslots = chrsGetNumSlots();
+		s32 si;
+
+		for (si = 0; si < numslots; si++) {
+			s32 cn = (s32)g_ChrSlots[si].chrnum;
+			struct chrdata *other = (cn < 0) ? NULL : chrFindByLiteralId(cn);
+
+			if (other != NULL && other != plchr && other != chr && other->prop != NULL
+					&& other->prop->type == PROPTYPE_CHR && other->team != 0
+					&& other->team != TEAM_ALLY && !chrIsDead(other)
+					&& chrCompareTeams(other, plchr, COMPARE_ENEMIES)) {
+				twinteam = other->team;
+				break;
+			}
+		}
+
+		if (twinteam == 0) {
+			u8 plteam = plchr->team;
+			twinteam = TEAM_ENEMY;
+			if (twinteam & plteam) twinteam = TEAM_01;
+			if (twinteam & plteam) twinteam = TEAM_04;
+			if (twinteam & plteam) twinteam = TEAM_20;
+		}
+		chr->team = twinteam;
+	}
+	chr->voicebox = VOICEBOX_FEMALE; // Jo twin
 	chr->squadron = SQUADRON_01;
-	chr->hidden |= CHRHFLAG_DETECTED;
+	// NB: do NOT set CHRHFLAG_DETECTED here — that bit (0x80000000) means
+	// "detected" only on a PLAYER; on an AI chr the very same bit is
+	// CHRHFLAG_PSYCHOSISED, so setting it made the twin psychotic at spawn
+	// (GAILIST_ALERTED -> GAILIST_INIT_PSYCHOSIS, which rewrites her team to
+	// TEAM_NONCOMBAT then TEAM_ALLY = friendly). This was THE "goes friendly" bug.
 	chr->teamscandist = 50;
 	chr->accuracyrating = 100;
 	chr->speedrating = 100;
@@ -8743,22 +8969,93 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 		}
 	}
 
-	// Same flag the damage path sets: switch straight to the shot/alert list.
+	// Point her at the player and alert her so she engages immediately; with the
+	// player as her only enemy (guard team above) she stays on him and fires.
+	chr->target = propGetIndexByChrId(chr, CHR_BOND);
+	chr->alertness = 100;
 	chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
+
+	// Register the twin so chaosIsTwin() keeps her psychosis-immune when the
+	// player damages her (otherwise she flips to the friendly psychosised AI).
+	{
+		s32 ti;
+		for (ti = 0; ti < (s32)ARRAYCOUNT(g_ChaosTwinChrnums); ti++) {
+			if (g_ChaosTwinChrnums[ti] < 0) {
+				g_ChaosTwinChrnums[ti] = chr->chrnum;
+				break;
+			}
+		}
+	}
+
 	return chr->chrnum;
 }
 
-// pd.body_snatch(chrnum): the Counter-Operative takeover, solo only —
-// playerSpawnAnti moves the player into the target chr's body (position,
-// weapons, health, shield, third-person model; the host chr is freed), and we
-// layer the disguise flag on top so guard AI treats the player as one of
-// their own until the disguise is blown (the gailists.c patroller logic).
-// One-way for the rest of the level: there is no "return to Jo" path in the
-// engine (Counter-Op players stay guards until death). The wildest effect in
-// the table — keep its weight low.
+// Body-snatch "home" — the player's position before the snatch, so the timed
+// effect can teleport them back when it ends.
+static struct coord g_ChaosSnatchHome;
+static RoomNum g_ChaosSnatchHomeRooms[8];
+// Non-static so lvInit() can clear it on stage load — a mid-snatch stage change
+// tears down the Lua state without calling stop(), and a stale "active" flag
+// would keep guards from ever firing (and break real disguise missions).
+s32 g_ChaosSnatchActive = 0;
+
+// Warp the local player to pos/rooms. The solo first-person player has no chr
+// model, so move the prop by hand (the chraiLuaTeleportToChr model-less path);
+// a body-model player (Combat Sim) uses chrSetPos.
+static void chaosPlayerWarp(struct coord *pos, RoomNum *rooms)
+{
+	struct chrdata *pl = g_Vars.currentplayer->prop->chr;
+	struct prop *plprop = g_Vars.currentplayer->prop;
+	RoomNum tmp[8];
+	f32 ground;
+
+	if (pl == NULL) {
+		return;
+	}
+
+	roomsCopy(rooms, tmp);
+
+	if (pl->model != NULL) {
+		chrSetPos(pl, pos, tmp, chrGetRotY(pl), true);
+		return;
+	}
+
+	propSetPerimEnabled(plprop, false);
+	plprop->pos = *pos;
+	ground = cdFindGroundInfoAtCyl(&plprop->pos, pl->radius, tmp,
+			&pl->floorcol, &pl->floortype, NULL, &pl->floorroom, NULL, NULL);
+	pl->ground = ground;
+	pl->manground = ground;
+	pl->sumground = ground * (PAL ? 8.4175090789795f : 9.999998f);
+	propDeregisterRooms(plprop);
+	roomsCopy(tmp, plprop->rooms);
+	chr0f0220ac(pl);
+	if (plprop->type == PROPTYPE_PLAYER) {
+		struct player *player = g_Vars.players[playermgrGetPlayerNumByProp(plprop)];
+		player->vv_manground = ground;
+		player->vv_ground = ground;
+		player->vv_verta = 0;
+		player->unk1c64 = 1;
+	}
+	propSetPerimEnabled(plprop, true);
+}
+
+// pd.body_snatch(chrnum): "lite" Counter-Op takeover for the solo campaign.
+// The full playerSpawnAnti takeover needs the player to have a third-person chr
+// body model, which the first-person solo player lacks and can't build cleanly
+// mid-mission (the gunmem body-swap is cutscene-only machinery and stalls in
+// active gameplay). So instead of becoming the guard's model we take its PLACE:
+// remember where the player was (for pd.body_unsnatch), give the player the
+// guard's weapon, warp onto it, mark the player disguised, and remove the guard.
+// The chaos.lua effect also calms every chr so nobody aggros, and pd.body_unsnatch
+// (called when the timer ends) un-disguises and teleports the player home. Solo
+// only. Returns 1 on success, 0 if the target can't be snatched.
 s32 chraiLuaBodySnatch(s32 chrnum)
 {
 	struct chrdata *chr;
+	struct chrdata *pl;
+	struct prop *gunprop;
+	s32 weaponnum;
 
 	if (apLuaPlayerChr() == NULL || g_NetMode != NETMODE_NONE || g_Vars.normmplayerisrunning) {
 		return 0;
@@ -8769,10 +9066,63 @@ s32 chraiLuaBodySnatch(s32 chrnum)
 			|| chr->prop == g_Vars.currentplayer->prop) {
 		return 0;
 	}
-	if (!playerSpawnAnti(chr, true)) {
-		return 0;
+
+	pl = g_Vars.currentplayer->prop->chr;
+
+	// Remember the pre-snatch position so the timed effect can return here.
+	g_ChaosSnatchHome = g_Vars.currentplayer->prop->pos;
+	roomsCopy(g_Vars.currentplayer->prop->rooms, g_ChaosSnatchHomeRooms);
+	g_ChaosSnatchActive = 1;
+
+	// Take the guard's weapon.
+	gunprop = chrGetHeldProp(chr, HAND_RIGHT);
+	weaponnum = (gunprop && gunprop->weapon) ? gunprop->weapon->weaponnum : WEAPON_UNARMED;
+	if (weaponnum > WEAPON_UNARMED) {
+		invGiveSingleWeapon(weaponnum);
+		bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+		bgunGiveMaxAmmo(true);
+	}
+
+	// Warp onto the guard.
+	chaosPlayerWarp(&chr->prop->pos, chr->prop->rooms);
+
+	// Disguise: the target-selection search (chraicommands.c) skips chrs with
+	// CHRHFLAG_DISGUISED, so guards won't acquire the player. Also set the
+	// struct-player flag the outfit code reads. (chaos.lua calms everyone too.)
+	if (pl != NULL) {
+		pl->hidden |= CHRHFLAG_DISGUISED;
 	}
 	g_Vars.currentplayer->disguised = true;
+
+	// Remove the snatched guard — the playerSpawnAnti host-teardown sequence.
+	chrRemove(chr->prop, true);
+	propDeregisterRooms(chr->prop);
+	propDelist(chr->prop);
+	propDisable(chr->prop);
+	propFree(chr->prop);
+	return 1;
+}
+
+// pd.body_unsnatch(): end the snatch — drop the disguise so guards behave
+// normally again, and teleport the player back to where they were. Called from
+// the body_snatch effect's stop() when the timer ends.
+s32 chraiLuaBodyUnsnatch(void)
+{
+	struct chrdata *pl;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	pl = g_Vars.currentplayer->prop->chr;
+	if (pl != NULL) {
+		pl->hidden &= ~CHRHFLAG_DISGUISED;
+	}
+	g_Vars.currentplayer->disguised = false;
+
+	if (g_ChaosSnatchActive) {
+		chaosPlayerWarp(&g_ChaosSnatchHome, g_ChaosSnatchHomeRooms);
+		g_ChaosSnatchActive = 0;
+	}
 	return 1;
 }
 
@@ -8810,6 +9160,89 @@ s32 chraiLuaChrCalm(s32 chrnum)
 	return 1;
 }
 
+// pd.civil_war(on): "Civil war" — turn the NPCs on each other for the effect's
+// duration. Just forcing a target isn't enough: guards are the same team, so the
+// AI drops a same-team target and re-locks onto the player. So we split them into
+// mutually-hostile teams (distinct single team bits, cycled through the 8) — the
+// AI's own nearest-enemy search then fires on other guards — and additionally
+// point each one at its nearest living neighbour with full alertness + the
+// trigger-shot flag. The Lua effect re-asserts this every ~0.5s so they keep
+// hunting as they move and die. on=false restores the original teams and calms
+// everyone. Solo/server only. First activation snapshots teams; re-activations
+// (on=true while already active) just re-target.
+#define CHAOS_CIVILWAR_MAX 256
+static s16 g_ChaosCivilWarChr[CHAOS_CIVILWAR_MAX];
+static u8  g_ChaosCivilWarTeam[CHAOS_CIVILWAR_MAX];
+// Non-static so lvInit() can clear it on stage load — a mid-effect stage change
+// tears down the Lua state without calling stop(), and a stale count would let a
+// later restore write teams onto the wrong (recycled-chrnum) chrs.
+s32 g_ChaosCivilWarCount = 0;
+
+s32 chraiLuaCivilWar(s32 on)
+{
+	struct chrdata *pl = apLuaPlayerChr();
+	s32 n, i;
+
+	if (pl == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+
+	if (!on) {
+		for (i = 0; i < g_ChaosCivilWarCount; i++) {
+			struct chrdata *chr = chrFindByLiteralId(g_ChaosCivilWarChr[i]);
+			if (chr != NULL) {
+				chr->team = g_ChaosCivilWarTeam[i];
+				chr->chrflags &= ~CHRCFLAG_TRIGGERSHOTLIST;
+			}
+		}
+		g_ChaosCivilWarCount = 0;
+		return 1;
+	}
+
+	// Turn ONLY hostile combat guards on each other. Two hard rules learned the
+	// hard way: (1) never touch non-combatants / mission NPCs — forcing team +
+	// alert onto them breaks their scripted action block irreversibly and
+	// softlocks the mission; so skip TEAM_NONCOMBAT and anything that isn't an
+	// enemy of the player. (2) Split the guards into distinct team bits so each
+	// registers the others as enemies, but ONLY bits 0-6 — bit 7 (0x80) IS
+	// TEAM_NONCOMBAT and would turn a guard into a passive non-combatant. Then
+	// kick CHRCFLAG_TRIGGERSHOTLIST (guards have no mission script to break) so
+	// idle ones scan; their own AI acquires + engages the nearest enemy guard.
+	n = chraiLuaGetChrSlotCount();
+
+	for (i = 0; i < n && g_ChaosCivilWarCount < CHAOS_CIVILWAR_MAX; i++) {
+		s32 cn = chraiLuaGetChrNumBySlot(i);
+		struct chrdata *chr = (cn < 0) ? NULL : chrFindByLiteralId(cn);
+		s32 k;
+		bool known = false;
+
+		if (chr == NULL || chr->prop == NULL || chr->prop->type != PROPTYPE_CHR
+				|| chr->model == NULL || chrIsDead(chr) || chr == pl) {
+			continue;
+		}
+		// Combat guards only — never non-combatants / allies / mission NPCs.
+		if ((chr->team & TEAM_NONCOMBAT) || !chrCompareTeams(pl, chr, COMPARE_ENEMIES)) {
+			continue;
+		}
+		for (k = 0; k < g_ChaosCivilWarCount; k++) {
+			if (g_ChaosCivilWarChr[k] == chr->chrnum) {
+				known = true;
+				break;
+			}
+		}
+		if (!known) {
+			g_ChaosCivilWarChr[g_ChaosCivilWarCount] = chr->chrnum;
+			g_ChaosCivilWarTeam[g_ChaosCivilWarCount] = chr->team;
+			chr->team = (u8)(1 << (g_ChaosCivilWarCount % 7)); // bits 0-6 only
+			g_ChaosCivilWarCount++;
+		}
+
+		chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
+	}
+
+	return g_ChaosCivilWarCount > 0;
+}
+
 // pd.doors_all(open): request every door on the stage to open (1) or close
 // (0) — doorsRequestMode, the same call the AI door commands use. Closing is
 // transient (walking up re-triggers them); opening everything at once is the
@@ -8825,6 +9258,35 @@ s32 chraiLuaDoorsAll(s32 open)
 	for (prop = g_Vars.activeprops; prop; prop = prop->next) {
 		if (prop->type == PROPTYPE_DOOR && prop->door) {
 			doorsRequestMode(prop->door, open ? DOORMODE_OPENING : DOORMODE_CLOSING);
+			n++;
+		}
+	}
+	return n;
+}
+
+// pd.doors_lock(on): "Lockdown" — actually lock every door shut, not just the
+// transient close of pd.doors_all. Each locked door gets a fake key flag the
+// player can never hold (CHAOS_DOOR_LOCKBIT), so doorIsUnlocked returns false
+// for both interaction and auto-open (propobj.c: keyflags==0 gates opening).
+// We only OR/clear our own bit, so a door's real mission keyflags are preserved.
+// on = lock (set the bit + request close); off = unlock (clear the bit).
+#define CHAOS_DOOR_LOCKBIT 0x80000000u
+s32 chraiLuaDoorsLock(s32 on)
+{
+	struct prop *prop;
+	s32 n = 0;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	for (prop = g_Vars.activeprops; prop; prop = prop->next) {
+		if (prop->type == PROPTYPE_DOOR && prop->door) {
+			if (on) {
+				prop->door->keyflags |= CHAOS_DOOR_LOCKBIT;
+				doorsRequestMode(prop->door, DOORMODE_CLOSING);
+			} else {
+				prop->door->keyflags &= ~CHAOS_DOOR_LOCKBIT;
+			}
 			n++;
 		}
 	}
@@ -8903,10 +9365,17 @@ s32 chraiLuaAspectScale(f32 mult)
 extern s32 g_ChaosSfxShuffle;
 
 // pd.sfx_shuffle(on): every one-shot sound effect plays as a random other
-// sound (remapped inside sndStart, always to a valid sound-table id).
+// sound (remapped inside sndStart, always to a valid sound-table id). Turning it
+// OFF also hard-stops every playing sample sound — a one-shot remapped to a
+// looping sound would otherwise loop forever (needing a game restart).
 s32 chraiLuaSfxShuffle(s32 on)
 {
+	extern void sndStopAll(void);
+
 	g_ChaosSfxShuffle = on ? 1 : 0;
+	if (!on) {
+		sndStopAll();
+	}
 	return 1;
 }
 
@@ -8941,7 +9410,6 @@ s32 chraiLuaSpawnBike(void)
 	struct coord pos;
 	Mtxf mtx;
 	RoomNum seedrooms[8];
-	RoomNum floorroom;
 	f32 floory;
 	struct modelrodata_bbox *bbox;
 
@@ -8949,9 +9417,9 @@ s32 chraiLuaSpawnBike(void)
 		return 0;
 	}
 
-	pos.x = g_Vars.currentplayer->prop->pos.x + g_Vars.currentplayer->bond2.unk00.x * 150.0f;
+	pos.x = g_Vars.currentplayer->prop->pos.x + g_Vars.currentplayer->bond2.unk00.x * 80.0f;
 	pos.y = g_Vars.currentplayer->prop->pos.y;
-	pos.z = g_Vars.currentplayer->prop->pos.z + g_Vars.currentplayer->bond2.unk00.z * 150.0f;
+	pos.z = g_Vars.currentplayer->prop->pos.z + g_Vars.currentplayer->bond2.unk00.z * 80.0f;
 	mtx4LoadIdentity(&mtx);
 	roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms);
 
@@ -8961,18 +9429,16 @@ s32 chraiLuaSpawnBike(void)
 	if (g_ChaosBikeSpawned && obj->prop && obj->prop->obj == obj
 			&& obj->prop->type == PROPTYPE_OBJ && obj->model) {
 		bbox = modelFindBboxRodata(obj->model);
-		floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &obj->floorcol, NULL);
-		if (floorroom > 0) {
-			RoomNum placerooms[2];
+		// Sets obj->floorcol (floor shading) via the out-param.
+		cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &obj->floorcol, NULL);
+		// Rest on the player's own floor (pos.y) in the player's rooms — see the
+		// fresh-spawn path for why the snapped floor is unreliable.
+		{
 			struct coord placepos;
 			placepos.x = pos.x;
-			placepos.y = floory - objGetRotatedLocalYMinByMtx4(bbox, &mtx);
+			placepos.y = pos.y - objGetRotatedLocalYMinByMtx4(bbox, &mtx) * obj->model->scale;
 			placepos.z = pos.z;
-			placerooms[0] = floorroom;
-			placerooms[1] = -1;
-			func0f06a580(obj, &placepos, &mtx, placerooms);
-		} else {
-			func0f06a580(obj, &pos, &mtx, seedrooms);
+			func0f06a580(obj, &placepos, &mtx, seedrooms);
 		}
 		return 1;
 	}
@@ -9004,19 +9470,27 @@ s32 chraiLuaSpawnBike(void)
 	setupCreateHov(obj, &bike->hov);
 
 	bbox = modelFindBboxRodata(obj->model);
-	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &obj->floorcol, NULL);
-	if (floorroom > 0) {
-		RoomNum placerooms[2];
+	// Sets obj->floorcol (floor shading) via the out-param.
+	cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &obj->floorcol, NULL);
+	// Rest the bike on the PLAYER's own floor level (pos.y) in the player's rooms
+	// — NOT the snapped floor. A floor-snap at the offset can portal-walk to a
+	// much lower floor over a ledge and drop the bike out of sight (WAR put it
+	// ~130u below the player, on an elevated deck). Lift by the scaled bbox min so
+	// it rests on the surface; OBJFLAG_FALL settles any small mismatch.
+	{
 		struct coord placepos;
 		placepos.x = pos.x;
-		placepos.y = floory - objGetRotatedLocalYMinByMtx4(bbox, &mtx);
+		placepos.y = pos.y - objGetRotatedLocalYMinByMtx4(bbox, &mtx) * obj->model->scale;
 		placepos.z = pos.z;
-		placerooms[0] = floorroom;
-		placerooms[1] = -1;
-		func0f06a580(obj, &placepos, &mtx, placerooms);
-	} else {
-		func0f06a580(obj, &pos, &mtx, seedrooms);
+		func0f06a580(obj, &placepos, &mtx, seedrooms);
 	}
+
+	// Register the bike's prop into the active/rendered prop list. objInit only
+	// allocates the prop; the setup.c object recipe calls propActivate+propEnable
+	// after placement (setup.c:1199) — without them the bike exists but never
+	// ticks or renders (spawns "nothing"). This was the missing step.
+	propActivate(obj->prop);
+	propEnable(obj->prop);
 
 	g_ChaosBikeSpawned = 1;
 	return 1;
@@ -9121,11 +9595,21 @@ s32 chraiLuaShiny(s32 mode)
 	return 1;
 }
 
-// pd.chr_give_weapon(chrnum, weaponnum): replace a chr's held weapons with
-// the given one (right hand). NPCs only — a player's inventory is managed
-// through give_weapon/take_weapon. The old hand props are marked DELETING
-// (the netmsg chr-state weapons-held apply pattern) so they vanish rather
-// than drop.
+// pd.chr_give_weapon(chrnum, weaponnum): make a chr wield the given weapon.
+// NPCs only — a player's inventory is managed through give_weapon/take_weapon.
+//
+// Two different actor kinds need two different mechanisms:
+//
+//  - Simulants (chr->aibot): a bot re-picks its weapon from its own inventory
+//    every tick (bot.c changeguntimer60 path), so overwriting weapons_held is
+//    reverted almost immediately. Instead add the weapon to the bot inventory
+//    with a full ammo reserve and drive the engine's own switch routine, which
+//    sets aibot->weaponnum and schedules the hand-model equip. The bot keeps it
+//    until its AI later decides to change guns.
+//
+//  - Campaign guards (non-bot): chrTickShoot fires straight from the prop in
+//    weapons_held[hand], so replacing the held weapon models is enough. The old
+//    hand props are marked DELETING so they vanish rather than drop.
 s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum)
 {
 	struct chrdata *chr = chrFindByLiteralId(chrnum);
@@ -9138,6 +9622,15 @@ s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum)
 		return 0;
 	}
 
+	if (chr->aibot) {
+		if (weaponnum != WEAPON_UNARMED && weaponnum != WEAPON_NONE) {
+			botinvGiveSingleWeapon(chr, weaponnum);
+			botactGiveAmmoByWeapon(chr->aibot, weaponnum, FUNC_PRIMARY, 0x7fff);
+			botactGiveAmmoByWeapon(chr->aibot, weaponnum, FUNC_SECONDARY, 0x7fff);
+		}
+		return botinvSwitchToWeapon(chr, weaponnum, FUNC_PRIMARY) ? 1 : 0;
+	}
+
 	for (h = 0; h < 2; h++) {
 		struct prop *wp = chr->weapons_held[h];
 
@@ -9147,7 +9640,47 @@ s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum)
 		}
 	}
 
-	return chrGiveWeapon(chr, playermgrGetModelOfWeapon(weaponnum), weaponnum, 0) != NULL;
+	// Unarmed / no weapon has no hand model (model -1) — the hands are already
+	// cleared above, so leave the guard empty-handed. This is the restore path
+	// for a chr that was originally unarmed.
+	{
+		s32 model = playermgrGetModelOfWeapon(weaponnum);
+
+		if (model < 0) {
+			return 1;
+		}
+
+		return chrGiveWeapon(chr, model, weaponnum, 0) != NULL;
+	}
+}
+
+// pd.chr_weapon(chrnum) -> weaponnum. The chr's currently-wielded weapon:
+// aibot->weaponnum for simulants, else the right/left held weapon (WEAPON_UNARMED
+// if empty-handed). Returns -1 for an invalid chr. Lets Lua snapshot an NPC's
+// gun before pd.chr_give_weapon and restore it when a timed effect ends.
+s32 chraiLuaChrWeapon(s32 chrnum)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+	struct prop *wp;
+
+	if (chr == NULL || chr->prop == NULL) {
+		return -1;
+	}
+	if (chr->aibot) {
+		return chr->aibot->weaponnum;
+	}
+
+	wp = chrGetHeldProp(chr, HAND_RIGHT);
+	if (wp && wp->weapon) {
+		return wp->weapon->weaponnum;
+	}
+
+	wp = chrGetHeldProp(chr, HAND_LEFT);
+	if (wp && wp->weapon) {
+		return wp->weapon->weaponnum;
+	}
+
+	return WEAPON_UNARMED;
 }
 
 // pd.player_health(): current health fraction (0..1), the same scale
@@ -9291,6 +9824,19 @@ s32 chraiLuaChrSpeed(f32 mult)
 	return 1;
 }
 
+// pd.player_speed(mult): scale the LOCAL player's real walk + strafe speed
+// ("Gotta go fast"). 1 = normal. Consumed in bwalkApplyMoveData (bondwalk.c) —
+// a genuine movement multiplier, unlike the Combat Boost (bullet-time + 1.25x).
+s32 chraiLuaPlayerSpeed(f32 mult)
+{
+	extern f32 g_ChaosPlayerSpeed;
+
+	if (mult < 0.1f) mult = 0.1f;
+	if (mult > 5.0f) mult = 5.0f;
+	g_ChaosPlayerSpeed = mult;
+	return 1;
+}
+
 // pd.chr_damage(chrnum, amount): hurt any chr (or player pawn) through the
 // real damage path — shield, flinch, death, kill credit as environment.
 s32 chraiLuaChrDamage(s32 chrnum, f32 amount)
@@ -9298,7 +9844,20 @@ s32 chraiLuaChrDamage(s32 chrnum, f32 amount)
 	struct chrdata *chr = chrFindByLiteralId(chrnum);
 	struct coord vec = {0, 0, 1};
 
-	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || amount <= 0.0f) {
+	// Skip chrs that are already dead or mid-death: re-running the damage/death
+	// path on a corpse re-processes the kill and can corrupt the prop list
+	// (the ->next-cycle hang family). Reproduced by Airstrike (kills chrs) then
+	// The Snap (damages random chrs) hard-locking the game. Covers all
+	// pd.chr_damage callers (snap, plague, ...).
+	//
+	// NEVER damage a PLAYER pawn: pd.all_chrs() includes the local player, so
+	// The Snap/Plague could roll the player and kill Jo. When these effects are
+	// fired FROM the Lua Director menu, the player-death path re-enters
+	// menuPopDialog/menuClose mid-menu-tick and hangs the game (WAR crash). The
+	// player is damaged only through the proper player paths, never here.
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL
+			|| chr->prop->type == PROPTYPE_PLAYER
+			|| amount <= 0.0f || chrIsDead(chr)) {
 		return 0;
 	}
 	chrDamageByMisc(chr, amount, &vec, NULL, NULL);
@@ -9317,7 +9876,14 @@ s32 chraiLuaChrScale(s32 chrnum, f32 mult)
 	}
 	if (mult < 0.05f) mult = 0.05f;
 	if (mult > 8.0f) mult = 8.0f;
+	// A chr body is sized by BOTH the model scale (the root/basis, applied in
+	// the matrix builder) and the anim scale (the per-bone translations — what
+	// actually spreads the skeleton). body.c sets both at spawn, so scale both
+	// here or the limbs stay put and the size barely changes.
 	modelSetScale(chr->model, chr->model->scale * mult);
+	if (chr->model->anim != NULL) {
+		modelSetAnimScale(chr->model, chr->model->anim->animscale * mult);
+	}
 	return 1;
 }
 
@@ -9352,12 +9918,29 @@ s32 chraiLuaScreenTint(s32 r, s32 g, s32 b, s32 on)
 	return 1;
 }
 
-// pd.upside_down(on): flip the rendered 3D world top-bottom (the mirror
-// cheat's vertical sibling; renderer 1-byte bool — the wireframe gotcha).
-extern unsigned char gfx_upsidedown_mode;
+// pd.upside_down(on): "Australia mode" — rotate the whole finished frame 180
+// via the retro post filter (renderer 1-byte bool; the wireframe gotcha), and
+// reverse the controls game-side (g_ChaosControlReverse, bondmove.c). The old
+// clip-space Y-flip (gfx_upsidedown_mode) left the HUD upright and inverted
+// only vertical aim; the post rotation flips world + HUD together and, with the
+// controls reversed, aim tracks the rotated view.
+extern unsigned char gfx_rotate180_mode;
+extern s32 g_ChaosControlReverse;
 s32 chraiLuaUpsideDown(s32 on)
 {
-	gfx_upsidedown_mode = on ? 1 : 0;
+	gfx_rotate180_mode = on ? 1 : 0;
+	g_ChaosControlReverse = on ? 1 : 0;
+	return 1;
+}
+
+// pd.double_vision(on): "One too many" — blend a 180-flipped ghost of the
+// finished frame over the normal frame (retro post filter; renderer 1-byte
+// bool). Drunk double-vision: the world stays put and a flipped copy of the
+// whole frame is overlaid at 50%. Pairs with pd.dizzy for the sway.
+extern unsigned char gfx_doublevision_mode;
+s32 chraiLuaDoubleVision(s32 on)
+{
+	gfx_doublevision_mode = on ? 1 : 0;
 	return 1;
 }
 
@@ -9613,6 +10196,11 @@ s32 chraiLuaChrSetShield(s32 chrnum, f32 value)
 	}
 	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
 	if (chr == NULL) {
+		return 0;
+	}
+	// NPCs only — the player's shield is a separate system (pd.player_set_shield).
+	// Without this, "Shielded enemies" (all_chrs loop) also shielded Jo.
+	if (chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
 		return 0;
 	}
 	chrSetShield(chr, value);
@@ -12044,6 +12632,14 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 		if (g_ChaosChrFreeze && chrprop && chrprop->type != PROPTYPE_PLAYER) {
 			return;
 		}
+	}
+
+	// Chaos "Body Snatch": while the player is disguised as a snatched guard, no
+	// NPC returns fire. Hard guarantee on top of the disguise/calm — an already
+	// alerted guard (e.g. after the player kills one) keeps its target through
+	// the target-search skip and would otherwise shoot, so gate firing here.
+	if (g_ChaosSnatchActive && chrprop && chrprop->type != PROPTYPE_PLAYER) {
+		return;
 	}
 #endif
 

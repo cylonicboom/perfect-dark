@@ -814,6 +814,16 @@ void amAssignWeaponSlots(void)
 
 void amOpen(void)
 {
+#ifndef PLATFORM_N64
+	// Chaos "Cyclone Frenzy" gun-lock / "Knife fight" knife-lock: block the
+	// weapon/device menu (a weapon-switch avenue) for the local player while
+	// either lock is active.
+	extern s32 g_ChaosGunLock;
+	extern s32 g_ChaosKnifeLock;
+	if ((g_ChaosGunLock || g_ChaosKnifeLock) && !g_Vars.currentplayer->isremote) {
+		return;
+	}
+#endif
 	if (g_Vars.currentplayer->gunctrl.passivemode == false) {
 		g_AmIndex = g_Vars.currentplayernum;
 		g_Vars.currentplayer->activemenumode = AMMODE_VIEW;

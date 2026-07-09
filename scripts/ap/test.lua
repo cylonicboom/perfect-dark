@@ -372,17 +372,19 @@ pd.on("draw", function()
 end)
 
 if type(pd.menu_add) == "function" then
-  pd.menu_add("AP: Complete Next Check", ap.next)
-  pd.menu_add("AP: List Checks (console)", ap.list)
-  pd.menu_add("AP: Toggle HUD Counter", ap.hud)
-  pd.menu_add("AP Gate: Toggle Locking", ap.gate)
-  pd.menu_add("AP Gate: Status (console)", ap.gstatus)
-  pd.menu_add("AP Bonus: Full HP", ap.heal)
-  pd.menu_add("AP Bonus: Full Shield", ap.shield)
-  pd.menu_add("AP Bonus: Refill Ammo", ap.ammo)
-  pd.menu_add("AP Bonus: Grenade", ap.grenade)
-  pd.menu_add("AP Bonus: Cloak", ap.cloak)
-  pd.menu_add("AP Bonus: Spawn Perfect Buddy", ap.buddy)
+  -- All under an "Archipelago" submenu (3rd arg) so the Director root stays tidy.
+  local G = "Archipelago"
+  pd.menu_add("AP: Complete Next Check", ap.next, G)
+  pd.menu_add("AP: List Checks (console)", ap.list, G)
+  pd.menu_add("AP: Toggle HUD Counter", ap.hud, G)
+  pd.menu_add("AP Gate: Toggle Locking", ap.gate, G)
+  pd.menu_add("AP Gate: Status (console)", ap.gstatus, G)
+  pd.menu_add("AP Bonus: Full HP", ap.heal, G)
+  pd.menu_add("AP Bonus: Full Shield", ap.shield, G)
+  pd.menu_add("AP Bonus: Refill Ammo", ap.ammo, G)
+  pd.menu_add("AP Bonus: Grenade", ap.grenade, G)
+  pd.menu_add("AP Bonus: Cloak", ap.cloak, G)
+  pd.menu_add("AP Bonus: Spawn Perfect Buddy", ap.buddy, G)
 end
 
 pd.log("AP test harness loaded: /lua ap.list()  |  HUD counter on (/lua ap.hud())  |  pause menu -> Lua Director")

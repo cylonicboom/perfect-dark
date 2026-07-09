@@ -153,8 +153,29 @@ void setVar80084040(u32 value)
 
 void lvInit(void)
 {
+	extern s32 g_ChaosSnatchActive;   // chaos body-snatch: clear on stage load
+	extern s32 g_ChaosCivilWarCount;  // chaos civil-war: clear on stage load
+	extern s32 g_ChaosControlReverse; // chaos Australia: clear on stage load
+	extern unsigned char gfx_rotate180_mode; // chaos Australia: clear on stage load
+	extern unsigned char gfx_doublevision_mode; // chaos One-too-many: clear on stage load
+	extern s32 g_ChaosGunLock;        // chaos Cyclone Frenzy: clear on stage load
+	extern s32 g_ChaosKnifeLock;      // chaos Knife fight: clear on stage load
+	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry: clear on stage load
+	extern f32 g_ChaosPlayerSpeed;    // chaos Gotta go fast: reset on stage load
+	s32 twin_i;
 	g_Vars.lockscreen = 0;
 	g_Vars.joydisableframestogo = -1;
+	g_ChaosSnatchActive = 0;
+	g_ChaosCivilWarCount = 0;
+	g_ChaosControlReverse = 0;
+	gfx_rotate180_mode = 0;
+	gfx_doublevision_mode = 0;
+	g_ChaosGunLock = 0;
+	g_ChaosKnifeLock = 0;
+	g_ChaosPlayerSpeed = 1.0f;
+	for (twin_i = 0; twin_i < 8; twin_i++) {
+		g_ChaosTwinChrnums[twin_i] = -1;
+	}
 }
 
 void lvResetMiscSfx(void)

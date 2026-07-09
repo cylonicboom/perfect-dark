@@ -16,6 +16,9 @@ u32 cheatIsUnlocked(s32 cheat_id);
 bool cheatIsActive(s32 cheat_id);
 void cheatActivate(s32 cheat_id);
 void cheatDeactivate(s32 cheat_id);
+#ifndef PLATFORM_N64
+void cheatSetActive(s32 cheat_id, bool on); /* menu-equivalent toggle incl. Experiments */
+#endif
 void cheatsInit(void);
 void cheatsReset(void);
 char *cheatGetNameIfUnlocked(struct menuitem *item);

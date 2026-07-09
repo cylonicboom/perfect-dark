@@ -2334,6 +2334,33 @@ void sndPlayNosedive(s32 seconds)
 	g_SndNosediveHandle = NULL;
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Soundboard" cleanup: stop every currently-playing sample sound. The
+// SFX shuffle remaps one-shots to random sounds, and a one-shot remapped to a
+// looping sound loops forever (the game only ever stops it as a one-shot), so
+// on effect end we hard-stop the lot. Walks the active sndstate list like
+// sndTick (thread priority raised); MIDI/sequenced music is a separate system
+// and is untouched. Captures ->next before audioStop in case it delists.
+void sndStopAll(void)
+{
+	OSPri prevpri;
+	struct sndstate *state;
+	struct sndstate *next;
+
+	prevpri = osGetThreadPri(NULL);
+	osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
+
+	state = sndpGetHeadState();
+	while (state) {
+		next = (struct sndstate *)state->node.next;
+		audioStop(state);
+		state = next;
+	}
+
+	osSetThreadPri(0, prevpri);
+}
+#endif
+
 void sndStopNosedive(void)
 {
 	if (g_SndNosediveAge240 != -1) {

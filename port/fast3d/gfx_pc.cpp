@@ -347,6 +347,19 @@ int gfx_retro_pixel_h = 0;
 int gfx_retro_colors = 0;
 int gfx_retro_fx = 0;
 float gfx_retro_warp = 0.0f;
+// Chaos "Australia mode" (pd.upside_down): rotate the whole finished frame 180
+// via the retro post filter (uFx bit 64) — a real image rotation applied after
+// the world + viewmodel + HUD are drawn, so the UI turns with the scene and
+// aiming is untouched (controls are reversed game-side instead). Replaces the
+// old clip-space Y-flip (gfx_upsidedown_mode), which left the HUD upright and
+// inverted only vertical aim. 1-byte bool (the wireframe bridging gotcha).
+unsigned char gfx_rotate180_mode = 0;
+// Chaos "One too many" (pd.double_vision): blend rotated ghosts of the finished
+// frame over the normal frame (retro post filter uFx bits 128/256/512 = 180/90/
+// 270, averaged then mixed at 0.6) — a drunk kaleidoscope double-vision. Born
+// from the Australia-mode punch where the motion blur stayed upright over the
+// rotated world; here the world stays put and the ghosts spin. 1-byte bool.
+unsigned char gfx_doublevision_mode = 0;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
@@ -3893,7 +3906,8 @@ extern "C" void gfx_run(Gfx* commands) {
     // frame (world + viewmodel + HUD) in place, before the MSAA resolve /
     // present path picks it up. The colour-code -> shader-mode mapping
     // lives here so both backends stay in sync.
-    if ((gfx_retro_pixel_w > 0 || gfx_retro_colors != 0 || gfx_retro_fx != 0 || gfx_retro_warp != 0.0f) &&
+    if ((gfx_retro_pixel_w > 0 || gfx_retro_colors != 0 || gfx_retro_fx != 0 || gfx_retro_warp != 0.0f ||
+         gfx_rotate180_mode || gfx_doublevision_mode) &&
         gfx_rapi->retro_filter != nullptr) {
         int cmode = 0, clevels = 0;
         if (gfx_retro_colors == 1000) {
@@ -3909,7 +3923,9 @@ extern "C" void gfx_run(Gfx* commands) {
             clevels = gfx_retro_colors > 64 ? 64 : gfx_retro_colors;
         }
         gfx_rapi->retro_filter(gfx_retro_pixel_w, gfx_retro_pixel_h, cmode, clevels,
-                               gfx_retro_fx, gfx_retro_warp);
+                               gfx_retro_fx | (gfx_rotate180_mode ? 64 : 0) |
+                                   (gfx_doublevision_mode ? (128 | 256 | 512) : 0),
+                               gfx_retro_warp);
     }
 
     gfxFramebuffer = 0;

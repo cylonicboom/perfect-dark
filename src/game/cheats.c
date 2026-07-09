@@ -359,6 +359,34 @@ void cheatDeactivate(s32 cheat_id)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Toggle a cheat's live state the way the menus do, so scripted/console callers
+// (pd.cheat) work for EVERY cheat. The Experiments cheats (GoldenEye, Wireframe,
+// Mirror, Tonal Inversion, Classic Options) live in the ENABLED banks only:
+// cheatActivate deliberately refuses them (they must never enter the active bank
+// so mission completion / saving still count) and cheatIsActive reads their
+// enabled bit — so pd.cheat's cheatActivate/Deactivate did nothing for them.
+// Flip the enabled bit directly here (all Experiments are in bank 1); every
+// other cheat goes through the normal active-bank path.
+void cheatSetActive(s32 cheat_id, bool on)
+{
+	if (cheatIsExperiment(cheat_id)) {
+		if (on) {
+			g_CheatsEnabledBank1 |= (1 << (cheat_id - 32));
+		} else {
+			g_CheatsEnabledBank1 &= ~(1 << (cheat_id - 32));
+		}
+		return;
+	}
+
+	if (on) {
+		cheatActivate(cheat_id);
+	} else {
+		cheatDeactivate(cheat_id);
+	}
+}
+#endif
+
 void cheatsInit(void)
 {
 	g_CheatsActiveBank0 = 0;

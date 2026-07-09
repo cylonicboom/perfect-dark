@@ -5230,11 +5230,25 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 // pd.menu_add/menu_clear), NOT on MENUOP_OPEN.
 // ------------------------------------------------------------------------- //
 
-// Sized to: LUA_MENU_MAX entries + Back + END terminator. Statically terminated
-// so it is safe to open before any rebuild.
-static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + 2] = {
+// Sized to: LUA_MENU_MAX entries + one opener per submenu + Back + END. Statically
+// terminated so it is safe to open before any rebuild.
+static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + LUA_DIRECTOR_MAX_SUBMENUS + 2] = {
 	{ MENUITEMTYPE_END },
 };
+
+// Submenu support: registry entries whose group string is non-empty are pulled
+// out of the root list into their own pushable sub-dialog, and an opener is
+// placed at the TOP of the parent list (openers before flat entries). Groups
+// NEST via a '/' in the string — "Chaos/Test" builds a "Test" sub-dialog whose
+// opener sits at the top of the "Chaos" sub-dialog (parent auto-created). One
+// path/title buffer, item array, parent link, and dialogdef per distinct group.
+static char g_LuaSubmenuPaths[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL];  // full group path (match key)
+static char g_LuaSubmenuTitles[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL]; // display title (last path component)
+static s32  g_LuaSubmenuParent[LUA_DIRECTOR_MAX_SUBMENUS];                 // parent group index, or -1 for root
+static struct menuitem g_LuaSubmenuItems[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_MAX + 2] = {
+	{ { MENUITEMTYPE_END } },
+};
+static struct menudialogdef g_LuaSubmenuDialogs[LUA_DIRECTOR_MAX_SUBMENUS];
 
 MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -5247,37 +5261,159 @@ MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem 
 // Rebuild the items array from the Lua registry. Called from luaai_api.c
 // (pd.menu_add / pd.menu_clear) so the array is always valid + current before
 // any dialog open. Exposed (non-static) via game/luaai.h.
+// Fill one MENUITEMTYPE_SELECTABLE row that invokes registry entry `regidx`.
+// BIGFONT gives the normal menu row height; without it rows squash together.
+static void luaDirectorFillAction(struct menuitem *dst, s32 regidx)
+{
+	dst->type = MENUITEMTYPE_SELECTABLE;
+	dst->param = regidx;
+	dst->flags = MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
+	dst->param2 = (uintptr_t)luaMenuLabel(regidx);
+	dst->param3 = 0;
+	dst->handler = menuhandlerLuaDirectorItem;
+}
+
+static void luaDirectorFillBack(struct menuitem *dst)
+{
+	dst->type = MENUITEMTYPE_SELECTABLE;
+	dst->param = 0;
+	dst->flags = MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT;
+	dst->param2 = L_OPTIONS_213; // "Back"
+	dst->param3 = 0;
+	dst->handler = NULL;
+}
+
+// Find the group with this full path, creating it (and any '/'-separated
+// ancestor prefixes) if absent. Returns the group index, or -1 if the submenu
+// table is full. Recurses once per nesting level to resolve the parent.
+static s32 luaDirectorGroup(const char *path, s32 *numsubs)
+{
+	s32 s;
+	const char *slash;
+
+	for (s = 0; s < *numsubs; s++) {
+		if (strcmp(g_LuaSubmenuPaths[s], path) == 0) {
+			return s;
+		}
+	}
+	if (*numsubs >= LUA_DIRECTOR_MAX_SUBMENUS) {
+		return -1;
+	}
+
+	s = (*numsubs)++;
+	strncpy(g_LuaSubmenuPaths[s], path, LUA_MENU_LABEL - 1);
+	g_LuaSubmenuPaths[s][LUA_MENU_LABEL - 1] = '\0';
+
+	slash = strrchr(g_LuaSubmenuPaths[s], '/');
+	if (slash) {
+		char parent[LUA_MENU_LABEL];
+		s32 len = (s32)(slash - g_LuaSubmenuPaths[s]);
+
+		if (len > LUA_MENU_LABEL - 1) {
+			len = LUA_MENU_LABEL - 1;
+		}
+		memcpy(parent, g_LuaSubmenuPaths[s], len);
+		parent[len] = '\0';
+
+		strncpy(g_LuaSubmenuTitles[s], slash + 1, LUA_MENU_LABEL - 1);
+		g_LuaSubmenuTitles[s][LUA_MENU_LABEL - 1] = '\0';
+		g_LuaSubmenuParent[s] = luaDirectorGroup(parent, numsubs);
+	} else {
+		strncpy(g_LuaSubmenuTitles[s], g_LuaSubmenuPaths[s], LUA_MENU_LABEL - 1);
+		g_LuaSubmenuTitles[s][LUA_MENU_LABEL - 1] = '\0';
+		g_LuaSubmenuParent[s] = -1;
+	}
+
+	g_LuaSubmenuDialogs[s].type = MENUDIALOGTYPE_DEFAULT;
+	g_LuaSubmenuDialogs[s].title = (uintptr_t)g_LuaSubmenuTitles[s];
+	g_LuaSubmenuDialogs[s].items = g_LuaSubmenuItems[s];
+	g_LuaSubmenuDialogs[s].handler = NULL;
+	g_LuaSubmenuDialogs[s].flags = MENUDIALOGFLAG_LITERAL_TEXT
+			| MENUDIALOGFLAG_STARTSELECTS | MENUDIALOGFLAG_SMOOTHSCROLLABLE;
+	g_LuaSubmenuDialogs[s].nextsibling = NULL;
+	return s;
+}
+
 void luaDirectorRebuild(void)
 {
 	s32 n = luaMenuCount();
-	s32 i = 0;
-	s32 w = 0;
+	s32 i;
+	s32 w = 0; // root write cursor
+	s32 numsubs = 0;
+	s32 subwrite[LUA_DIRECTOR_MAX_SUBMENUS];
 
 	if (n > LUA_MENU_MAX) {
 		n = LUA_MENU_MAX;
 	}
 
-	for (i = 0; i < n; i++) {
-		g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
-		g_LuaDirectorMenuItems[w].param = i; // index into the Lua registry
-		// BIGFONT gives the normal menu row height; without it rows render at the
-		// minimal text height and squash together.
-		g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
-		g_LuaDirectorMenuItems[w].param2 = (uintptr_t)luaMenuLabel(i);
-		g_LuaDirectorMenuItems[w].param3 = 0;
-		g_LuaDirectorMenuItems[w].handler = menuhandlerLuaDirectorItem;
-		w++;
+	for (i = 0; i < LUA_DIRECTOR_MAX_SUBMENUS; i++) {
+		subwrite[i] = 0;
 	}
 
-	// Back
-	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_SELECTABLE;
-	g_LuaDirectorMenuItems[w].param = 0;
-	g_LuaDirectorMenuItems[w].flags = MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT;
-	g_LuaDirectorMenuItems[w].param2 = L_OPTIONS_213; // "Back"
-	g_LuaDirectorMenuItems[w].param3 = 0;
-	g_LuaDirectorMenuItems[w].handler = NULL;
-	w++;
+	// Pass 1: discover every group (+ ancestors) so indices/parents are fixed
+	// before anything is written.
+	for (i = 0; i < n; i++) {
+		const char *g = luaMenuGroup(i);
+		if (g != NULL && g[0] != '\0') {
+			luaDirectorGroup(g, &numsubs);
+		}
+	}
 
+	// Pass 2: openers first — each group's opener goes at the TOP of its parent
+	// (the root list when parent == -1), so submenus sit above leaf entries.
+	// SELECTABLE_OPENSDIALOG reads the child dialog from the handler field (see
+	// menuitem.c menuPushDialog((menudialogdef *)item->handler)).
+	for (i = 0; i < numsubs; i++) {
+		struct menuitem *dst;
+		s32 parent = g_LuaSubmenuParent[i];
+
+		if (parent < 0) {
+			dst = &g_LuaDirectorMenuItems[w];
+			w++;
+		} else if (subwrite[parent] < LUA_MENU_MAX) {
+			dst = &g_LuaSubmenuItems[parent][subwrite[parent]];
+			subwrite[parent]++;
+		} else {
+			continue;
+		}
+
+		dst->type = MENUITEMTYPE_SELECTABLE;
+		dst->param = 0;
+		dst->flags = MENUITEMFLAG_SELECTABLE_OPENSDIALOG
+				| MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
+		dst->param2 = (uintptr_t)g_LuaSubmenuTitles[i];
+		dst->param3 = 0;
+		dst->handler =
+				(uintptr_t (*)(s32, struct menuitem *, union handlerdata *))&g_LuaSubmenuDialogs[i];
+	}
+
+	// Pass 3: leaf entries into their group's array (root list if ungrouped),
+	// after the openers.
+	for (i = 0; i < n; i++) {
+		const char *g = luaMenuGroup(i);
+
+		if (g == NULL || g[0] == '\0') {
+			luaDirectorFillAction(&g_LuaDirectorMenuItems[w], i);
+			w++;
+		} else {
+			s32 sub = luaDirectorGroup(g, &numsubs); // already discovered — lookup
+
+			if (sub < 0 || subwrite[sub] >= LUA_MENU_MAX) {
+				continue; // overflow — drop the entry rather than corrupt
+			}
+			luaDirectorFillAction(&g_LuaSubmenuItems[sub][subwrite[sub]], i);
+			subwrite[sub]++;
+		}
+	}
+
+	// Pass 4: terminate each sub-dialog + the root with Back + END.
+	for (i = 0; i < numsubs; i++) {
+		luaDirectorFillBack(&g_LuaSubmenuItems[i][subwrite[i]]);
+		g_LuaSubmenuItems[i][subwrite[i] + 1].type = MENUITEMTYPE_END;
+	}
+
+	luaDirectorFillBack(&g_LuaDirectorMenuItems[w]);
+	w++;
 	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_END;
 }
 

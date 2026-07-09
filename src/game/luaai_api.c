@@ -52,8 +52,7 @@
 #define LUA_MAX_OVERLAYS 96
 #define LUA_MAX_XRAY     48
 #define LUA_TEXT_MAX     56
-/* LUA_MENU_MAX is defined in game/luaai.h (shared with mainmenu.c). */
-#define LUA_MENU_LABEL   40
+/* LUA_MENU_MAX / LUA_MENU_LABEL are defined in game/luaai.h (shared with mainmenu.c). */
 
 enum { OVL_BOX, OVL_TEXT };
 
@@ -85,6 +84,7 @@ static s32 g_LuaLastPlayerRoom = -0x7fffffff;
  * to the stored Lua function by index. */
 struct luamenuentry {
 	char label[LUA_MENU_LABEL];
+	char group[LUA_MENU_LABEL]; /* "" = root; else the submenu title it lives under */
 	int luaref; /* LUA_NOREF if unused */
 };
 
@@ -615,12 +615,18 @@ static int l_pd_spawn(lua_State *L)
  * ------------------------------------------------------------------------- */
 
 /* pd.all_chrs(fn): call fn(chrnum) for EVERY live actor (not just those whose AI
- * ran this frame, which is pd.each_chr). */
+ * ran this frame, which is pd.each_chr).
+ * pd.all_chrs()   : with no function arg, return an array table of the live
+ * chrnums instead (chaos.lua iterates the result as a list). */
 static int l_pd_all_chrs(lua_State *L)
 {
 	s32 i, n;
+	const int hasfn = (lua_type(L, 1) == LUA_TFUNCTION);
+	s32 outidx = 0;
 
-	luaL_checktype(L, 1, LUA_TFUNCTION);
+	if (!hasfn) {
+		lua_newtable(L);
+	}
 
 	n = chraiLuaGetChrSlotCount();
 	for (i = 0; i < n; i++) {
@@ -628,14 +634,19 @@ static int l_pd_all_chrs(lua_State *L)
 		if (chrnum < 0) {
 			continue; /* empty slot */
 		}
-		lua_pushvalue(L, 1); /* fn */
-		lua_pushinteger(L, chrnum);
-		if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-			luaApiLog2("all_chrs error: ", lua_tostring(L, -1));
-			lua_pop(L, 1);
+		if (hasfn) {
+			lua_pushvalue(L, 1); /* fn */
+			lua_pushinteger(L, chrnum);
+			if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+				luaApiLog2("all_chrs error: ", lua_tostring(L, -1));
+				lua_pop(L, 1);
+			}
+		} else {
+			lua_pushinteger(L, chrnum);
+			lua_rawseti(L, -2, ++outidx); /* result[outidx] = chrnum */
 		}
 	}
-	return 0;
+	return hasfn ? 0 : 1;
 }
 
 /* pd.chr_anim(chrnum, animnum, [speed]) -> bool. Play an animation on a chr. */
@@ -784,17 +795,24 @@ static void luaMenuClearAll(lua_State *L)
 		}
 		g_LuaMenu[i].luaref = LUA_NOREF;
 		g_LuaMenu[i].label[0] = '\0';
+		g_LuaMenu[i].group[0] = '\0';
 	}
 	g_LuaMenuCount = 0;
 	luaDirectorRebuild(); /* array back to just the terminator */
 }
 
-/* pd.menu_add(label, fn) -> index (or -1 if the registry is full). Adds a Lua
- * Director pause-menu entry; selecting it later calls fn(). */
+/* pd.menu_add(label, fn, [group]) -> index (or -1 if the registry is full).
+ * Adds a Lua Director pause-menu entry; selecting it later calls fn(). If group
+ * is a non-empty string the entry is placed under a submenu of that title (the
+ * submenu opener appears at the top of the root list); omit it for a root-level
+ * entry. */
 static int l_pd_menu_add(lua_State *L)
 {
 	const char *label = luaL_checkstring(L, 1);
+	const char *group;
+
 	luaL_checktype(L, 2, LUA_TFUNCTION);
+	group = luaL_optstring(L, 3, "");
 
 	if (g_LuaMenuCount >= LUA_MENU_MAX) {
 		luaApiLog("menu_add: registry full");
@@ -804,6 +822,8 @@ static int l_pd_menu_add(lua_State *L)
 
 	strncpy(g_LuaMenu[g_LuaMenuCount].label, label, LUA_MENU_LABEL - 1);
 	g_LuaMenu[g_LuaMenuCount].label[LUA_MENU_LABEL - 1] = '\0';
+	strncpy(g_LuaMenu[g_LuaMenuCount].group, group, LUA_MENU_LABEL - 1);
+	g_LuaMenu[g_LuaMenuCount].group[LUA_MENU_LABEL - 1] = '\0';
 
 	lua_pushvalue(L, 2); /* the fn */
 	g_LuaMenu[g_LuaMenuCount].luaref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -822,6 +842,23 @@ static int l_pd_menu_clear(lua_State *L)
 	return 0;
 }
 
+/* pd.menu_set_label(index, text): rewrite an existing entry's label in place.
+ * The Director menuitem holds a pointer to this buffer, so the on-screen text
+ * updates live with no rebuild — lets a menu entry display an adjustable value
+ * (chaos frequency / effect duration) that changes when it's selected. */
+static int l_pd_menu_set_label(lua_State *L)
+{
+	s32 i = (s32)luaL_checkinteger(L, 1);
+	const char *label = luaL_checkstring(L, 2);
+
+	if (i >= 0 && i < g_LuaMenuCount) {
+		strncpy(g_LuaMenu[i].label, label, LUA_MENU_LABEL - 1);
+		g_LuaMenu[i].label[LUA_MENU_LABEL - 1] = '\0';
+	}
+
+	return 0;
+}
+
 /* C accessors used by the Lua Director dialog in mainmenu.c. */
 s32 luaMenuCount(void)
 {
@@ -834,6 +871,14 @@ const char *luaMenuLabel(s32 i)
 		return "";
 	}
 	return g_LuaMenu[i].label;
+}
+
+const char *luaMenuGroup(s32 i)
+{
+	if (i < 0 || i >= g_LuaMenuCount) {
+		return "";
+	}
+	return g_LuaMenu[i].group;
 }
 
 void luaMenuInvoke(s32 i)
@@ -951,11 +996,10 @@ static int l_pd_cheat(lua_State *L)
 		lua_pushboolean(L, 0);
 		return 1;
 	}
-	if (on) {
-		cheatActivate(cheat_id);
-	} else {
-		cheatDeactivate(cheat_id);
-	}
+	// cheatSetActive (not cheatActivate) so the Experiments cheats work too —
+	// GoldenEye / Wireframe / Mirror / Tonal live in the enabled bank, which
+	// cheatActivate refuses; this routes them there like the menu does.
+	cheatSetActive(cheat_id, on);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -1131,6 +1175,15 @@ static int l_pd_chr_give_weapon(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_weapon(chrnum) -> weaponnum. The NPC's current weapon (-1 if invalid).
+ * Snapshot before chr_give_weapon so a timed effect can restore it. */
+static int l_pd_chr_weapon(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushinteger(L, chraiLuaChrWeapon(chrnum));
+	return 1;
+}
+
 /* pd.player_health() -> number. Current health fraction (0..1), the scale
  * player_set_health writes. */
 static int l_pd_player_health(lua_State *L)
@@ -1227,6 +1280,14 @@ static int l_pd_chr_speed(lua_State *L)
 	return 1;
 }
 
+/* pd.player_speed(mult) -> bool. Scale the local player's walk/strafe speed
+ * ("Gotta go fast"). 1 = normal. */
+static int l_pd_player_speed(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerSpeed((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
 /* pd.chr_damage(chrnum, amount) -> bool. Hurt any chr via the real damage
  * path; ~1.0 is roughly one gunshot. */
 static int l_pd_chr_damage(lua_State *L)
@@ -1267,10 +1328,19 @@ static int l_pd_screen_tint(lua_State *L)
 	return 1;
 }
 
-/* pd.upside_down(on) -> bool. Flip the rendered 3D world top-bottom. */
+/* pd.upside_down(on) -> bool. Australia mode: rotate the whole frame 180 and
+ * reverse the controls. */
 static int l_pd_upside_down(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaUpsideDown(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.double_vision(on) -> bool. One too many: blend a 180-flipped ghost of the
+ * frame over the normal one (drunk double-vision). */
+static int l_pd_double_vision(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaDoubleVision(lua_toboolean(L, 1)) != 0);
 	return 1;
 }
 
@@ -1466,6 +1536,21 @@ static int l_pd_dual_wield(lua_State *L)
 	return 1;
 }
 
+/* pd.gun_lock(on) -> bool. Cyclone Frenzy: force secondary fire on both hands,
+ * hold the trigger (auto-fire), and block weapon switching. */
+static int l_pd_gun_lock(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGunLock(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.knife_lock(on) -> bool. Knife fight: block weapon switching only. */
+static int l_pd_knife_lock(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaKnifeLock(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.aspect_scale([mult]) -> bool. Projection aspect multiplier: 2 = extra
  * wide, 0.5 = extra tall, 1 / no arg = normal. */
 static int l_pd_aspect_scale(lua_State *L)
@@ -1496,12 +1581,19 @@ static int l_pd_spawn_body(lua_State *L)
 	return 1;
 }
 
-/* pd.body_snatch(chrnum) -> bool. Counter-Op takeover: become that chr
- * (solo only, one-way for the rest of the level). */
+/* pd.body_snatch(chrnum) -> bool. Lite Counter-Op takeover: take the guard's
+ * place (its weapon + position + disguise; the guard is removed). Solo only. */
 static int l_pd_body_snatch(lua_State *L)
 {
 	s32 chrnum = (s32)luaL_checkinteger(L, 1);
 	lua_pushboolean(L, chraiLuaBodySnatch(chrnum) != 0);
+	return 1;
+}
+
+/* pd.body_unsnatch(): end the snatch — drop the disguise and teleport home. */
+static int l_pd_body_unsnatch(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaBodyUnsnatch() != 0);
 	return 1;
 }
 
@@ -1526,6 +1618,21 @@ static int l_pd_chr_calm(lua_State *L)
 static int l_pd_doors_all(lua_State *L)
 {
 	lua_pushinteger(L, chraiLuaDoorsAll(lua_toboolean(L, 1)));
+	return 1;
+}
+
+/* pd.doors_lock(on) -> count. Lockdown: lock (true) / unlock (false) every door. */
+static int l_pd_doors_lock(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaDoorsLock(lua_toboolean(L, 1)));
+	return 1;
+}
+
+/* pd.civil_war(on) -> bool. Turn NPCs on each other (nearest neighbour, hostile
+ * teams); call again with true to re-assert, false to restore. */
+static int l_pd_civil_war(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaCivilWar(lua_toboolean(L, 1)) != 0);
 	return 1;
 }
 
@@ -1683,6 +1790,7 @@ void luaApiRegister(lua_State *L)
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");
+	lua_pushcfunction(L, l_pd_menu_set_label); lua_setfield(L, -2, "menu_set_label");
 	/* session-persistent KV (survives the per-stage lua_State teardown) */
 	lua_pushcfunction(L, l_pd_persist_get); lua_setfield(L, -2, "persist_get");
 	lua_pushcfunction(L, l_pd_persist_set); lua_setfield(L, -2, "persist_set");
@@ -1715,6 +1823,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
 	lua_pushcfunction(L, l_pd_shiny);         lua_setfield(L, -2, "shiny");
 	lua_pushcfunction(L, l_pd_chr_give_weapon); lua_setfield(L, -2, "chr_give_weapon");
+	lua_pushcfunction(L, l_pd_chr_weapon);    lua_setfield(L, -2, "chr_weapon");
 	lua_pushcfunction(L, l_pd_player_health); lua_setfield(L, -2, "player_health");
 	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
 	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
@@ -1728,11 +1837,13 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_mute);          lua_setfield(L, -2, "mute");
 	lua_pushcfunction(L, l_pd_play_file);     lua_setfield(L, -2, "play_file");
 	lua_pushcfunction(L, l_pd_chr_speed);     lua_setfield(L, -2, "chr_speed");
+	lua_pushcfunction(L, l_pd_player_speed);  lua_setfield(L, -2, "player_speed");
 	lua_pushcfunction(L, l_pd_chr_damage);    lua_setfield(L, -2, "chr_damage");
 	lua_pushcfunction(L, l_pd_chr_scale);     lua_setfield(L, -2, "chr_scale");
 	lua_pushcfunction(L, l_pd_shake);         lua_setfield(L, -2, "shake");
 	lua_pushcfunction(L, l_pd_screen_tint);   lua_setfield(L, -2, "screen_tint");
 	lua_pushcfunction(L, l_pd_upside_down);   lua_setfield(L, -2, "upside_down");
+	lua_pushcfunction(L, l_pd_double_vision); lua_setfield(L, -2, "double_vision");
 	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");
 	lua_pushcfunction(L, l_pd_gas);           lua_setfield(L, -2, "gas");
 	lua_pushcfunction(L, l_pd_t_pose);        lua_setfield(L, -2, "t_pose");
@@ -1746,13 +1857,18 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_nbomb);         lua_setfield(L, -2, "nbomb");
 	lua_pushcfunction(L, l_pd_gust);          lua_setfield(L, -2, "gust");
 	lua_pushcfunction(L, l_pd_dual_wield);    lua_setfield(L, -2, "dual_wield");
+	lua_pushcfunction(L, l_pd_gun_lock);      lua_setfield(L, -2, "gun_lock");
+	lua_pushcfunction(L, l_pd_knife_lock);    lua_setfield(L, -2, "knife_lock");
 	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");
 	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");
 	lua_pushcfunction(L, l_pd_spawn_body);    lua_setfield(L, -2, "spawn_body");
 	lua_pushcfunction(L, l_pd_body_snatch);   lua_setfield(L, -2, "body_snatch");
+	lua_pushcfunction(L, l_pd_body_unsnatch); lua_setfield(L, -2, "body_unsnatch");
 	lua_pushcfunction(L, l_pd_chr_target);    lua_setfield(L, -2, "chr_target");
 	lua_pushcfunction(L, l_pd_chr_calm);      lua_setfield(L, -2, "chr_calm");
 	lua_pushcfunction(L, l_pd_doors_all);     lua_setfield(L, -2, "doors_all");
+	lua_pushcfunction(L, l_pd_doors_lock);    lua_setfield(L, -2, "doors_lock");
+	lua_pushcfunction(L, l_pd_civil_war);     lua_setfield(L, -2, "civil_war");
 	lua_pushcfunction(L, l_pd_chr_summon);    lua_setfield(L, -2, "chr_summon");
 	lua_pushcfunction(L, l_pd_fov_scale);     lua_setfield(L, -2, "fov_scale");
 	lua_pushcfunction(L, l_pd_one_punch);     lua_setfield(L, -2, "one_punch");
@@ -1788,6 +1904,7 @@ void luaApiResetFrame(void)
 		for (i = 0; i < g_LuaMenuCount; i++) {
 			g_LuaMenu[i].luaref = LUA_NOREF;
 			g_LuaMenu[i].label[0] = '\0';
+			g_LuaMenu[i].group[0] = '\0';
 		}
 		g_LuaMenuCount = 0;
 	}

@@ -13,9 +13,12 @@ port-only). No wire-format changes, no `NET_PROTOCOL_VER` bump — chaos is a
 local-machine feature; in netplay each effect acts on the local player/cheat
 banks only (see "Netplay caveats").
 
-**Status: compile-verified only.** The C hooks and the ingress build clean
-(dedicated target); the Lua layer and every effect need a ROM-in-hand runtime
-pass. Test checklist at the bottom.
+**Status: largely runtime-confirmed, actively iterated.** The retro/audio-filter
+suite, teleport family (`quantum_leap`), and the K7-style weapon arming are
+runtime-confirmed; the frequency/duration config and the Director submenu UI are
+the newest additions (compile-verified, runtime pass in progress). Individual
+effects are still being triaged — see the memory notes. Test checklist at the
+bottom.
 
 ---
 
@@ -65,7 +68,8 @@ text)`. One command per line/datagram:
 | `on` / `off` / `toggle` | Enable/disable the random drumbeat (persisted) |
 | `status` | Log enabled/interval/votetime/active-count |
 | `list` | Log all effect names |
-| `interval N` | Seconds between random effects (min 5, default 30, persisted) |
+| `interval N` | Seconds between random effects (min 5, **default 20**, persisted) |
+| `effectdur N` (alias `duration`) | Global length of every timed effect in seconds (min 1, **default 60**, persisted) |
 | `votetime N` | Vote window length in seconds; 0 = vote mode off (persisted) |
 | `trigger <effect> [who]` | Fire an effect immediately (channel-point style); `who` shows in the HUD announce |
 | `vote <1\|2\|3\|name>` | Vote for a slate candidate by number or name; winner fires when the window closes (off-slate votes ignored) |
@@ -104,14 +108,65 @@ slate is drawn. A Twitch/YouTube bot only has to forward chat "1"/"2"/"3"
 messages as `vote N` datagrams to the UDP ingress; the slate panel is what
 viewers read on stream. `votetime 0` returns to the solo drumbeat.
 
-## Test menu
+## Frequency & duration (configurable)
 
-Every effect is registered as a `Test: <label>` entry in the **Lua
-Director** pause-menu panel (sorted by internal name), alongside
-"Chaos: toggle", "Chaos: random now", and "Chaos: vote 30s on/off".
-Supporting C changes: `LUA_MENU_MAX` raised 24 → 160 (luaai.h) and the
-Director dialog got `MENUDIALOGFLAG_SMOOTHSCROLLABLE` (mainmenu.c, the
-endscreen long-content mechanism) so the ~100-entry list scrolls.
+Two global knobs, both persisted (`pd.persist`) and adjustable from the console
+(`/chaos interval N`, `/chaos effectdur N`) or the pause-menu (below):
+
+- **Frequency** (`st.interval`, default **20s**) — seconds between random
+  effects.
+- **Effect duration** (`st.effectdur`, default **60s**) — the on-screen length
+  of *every* timed effect. An effect's own `dur` field is now just a
+  timed-vs-instant marker: any positive `dur` runs for `st.effectdur`; `dur = 0`
+  stays instant. `chaos.trigger` applies this in one place.
+  - **Exemption**: an effect can set `fixeddur = true` to keep its own authored
+    length instead of the global. Used by `take_a_break` (freezes the *player*)
+    and `freeze` (freezes NPCs) — a 60s player-freeze would be a soft-lock, so
+    they keep their short randomised timers.
+
+## Pause-menu UI (Lua Director submenus)
+
+The Lua Director groups entries into **submenus**. `pd.menu_add(label, fn,
+[group])` takes an optional third arg — a submenu title; entries sharing a title
+collapse into a pushable sub-dialog, and the "> Title" opener is placed at the
+**top** of the Director root (openers always sit above any flat root entries, in
+first-registered order). Omit the group for a root-level entry.
+
+Current groups:
+
+- **Chaos** — the controls submenu. At the top, three tap-to-cycle entries that
+  rewrite their own label in place via `pd.menu_set_label(index, text)` (the
+  Director menuitem points at the live label buffer, so no rebuild): `Chaos:
+  ON/off` (master drumbeat), `Effect duration: Ns`, `Trigger every: Ns`. Below
+  them, **every effect alphabetically (by label) as an `<label>: ON/off` toggle**
+  that adds/removes it from the random rotation. The disabled set is a
+  comma-separated `chaos_disabled` persist key; `pick_random` (and thus the vote
+  slate) skips disabled effects; disabling a live effect ends it.
+- **Chaos Test** — a sibling submenu (opener next to Chaos at the Director top):
+  every effect alphabetically; selecting one fires it for a fixed **30s** to try
+  in isolation (`chaos.trigger(name, "test", 30)` — the `dur_override` arg forces
+  the length regardless of `st.effectdur`). These timers **count down even while
+  the master switch is off**: the tick handler runs the timed-effect expiry loop
+  unconditionally and only gates the random drumbeat / vote on `st.enabled`.
+- **Mission Director** (`scripts/director.lua`) and **Archipelago**
+  (`scripts/ap/test.lua`) group their own entries the same way.
+
+**Nesting**: `pd.menu_add`'s group arg may contain `/` (e.g. `"Chaos/Test"`) and
+`luaDirectorRebuild` resolves the tree recursively (opener placed at the top of
+the parent dialog, parent auto-created). **Caveat: a 3-deep scrollable stack
+(root Director → Chaos → Test, all `SMOOTHSCROLLABLE`) crashes the menu engine
+in `menuitemListTick` — two deep is fine, so keep submenus at the root level for
+now** (Chaos Test is a root sibling, not nested under Chaos). `LUA_MENU_MAX` is
+256 to fit chaos's Test triggers + on/off toggles alongside the other tools.
+
+Supporting C changes: the registry entry carries a `group[LUA_MENU_LABEL]`
+string (`luaai_api.c`); `luaDirectorRebuild` (mainmenu.c) builds one
+`menudialogdef` + item array per distinct group (up to
+`LUA_DIRECTOR_MAX_SUBMENUS = 12`), wiring openers as `SELECTABLE_OPENSDIALOG`
+items whose `handler` field holds the child dialog (read by
+`menuPushDialog((menudialogdef *)item->handler)` in menuitem.c). `LUA_MENU_MAX`
+is 160 and the dialogs carry `MENUDIALOGFLAG_SMOOTHSCROLLABLE` so long lists
+(the ~74 test triggers) scroll.
 
 ## Effect table (scripts/chaos.lua)
 
@@ -125,12 +180,25 @@ function, called every frame while active (disco's hue cycle).
   `amnesia` (take every gun), `dry_spell` (zero all ammo, weapons kept).
 - **Cheat bank** (timed): `mirror`, `wireframe`, `tonal` (tonal inversion),
   `fists`, `slomo`, `dkmode`, `smalljo`, `smallchars`, `elvis`, `marquis`,
-  `enemyrockets`, `enemyshields`.
+  `enemyshields`.
+- **Arm all NPCs** (timed give + restore, the `arm_all_effect(label, w, pick)`
+  factory): on start it snapshots each NPC's current weapon (`pd.chr_weapon`)
+  and hands out a new one; on stop it gives the originals back. `pick` is a fixed
+  weaponnum or a per-NPC function. Members: `k7_party` (K7 for all),
+  `enemyrockets` ("Enemy rockets!" — **now a rocket-launcher give**, replacing
+  the old `CHEAT_ENEMYROCKETS` projectile-swap so it restores cleanly),
+  `weapon_roulette` (each NPC a different random gun). `pd.chr_give_weapon`
+  handles both actor kinds: campaign guards fire straight from `weapons_held`,
+  so it swaps the held prop; simulants (`chr->aibot`) re-pick from a bot
+  inventory each tick, so it adds the weapon to the inventory with ammo and
+  drives `botinvSwitchToWeapon`. Restoring an originally-unarmed guard clears the
+  hands (weapon `-1` has no hand model).
 - **Player state**: `godmode` (10s invincible), `cloak`/`xray`/`nightvision`
   (device on, timed), `heal` (+full shield), `blink` (white screen flash),
-  `turbo` (15s Speed Pill boost, self-decays), `drunk` (tranq screen sway,
-  wears off), `one_hp` (health roulette: 5–60%), `quantum_leap` (teleport to
-  a random chr).
+  `turbo` (15s Speed Pill boost, self-decays), `drunk` ("One too many": tranq
+  screen sway + a 180-flipped double-vision ghost overlaid on the frame for the
+  duration, `pd.double_vision`), `one_hp` (health roulette: 5–60%),
+  `quantum_leap` (teleport to a random chr).
 - **World**: `panic` (alert every chr), `yeet` (fling every chr away from the
   player), `boom` (explosion at a random chr), `airstrike` (explosions at up
   to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
@@ -145,13 +213,17 @@ function, called every frame while active (disco's hue cycle).
 - **Requests batch 3**: `nbomb_me` ("N-Bomb delivery" — storm on the player),
   `hurricane` (whole map shoved one random direction: chrs, pushable
   objects, and you), `cyclone_frenzy` ("CYCLONE FRENZY", 30s — dual Cyclones
-  forced to Magazine Discharge + Unlimited Ammo No Reloads), `widescreen` /
+  forced to Magazine Discharge + Unlimited Ammo No Reloads, plus `pd.gun_lock`:
+  secondary forced, trigger auto-held, weapon switching disabled), `widescreen` /
   `tallscreen` (20s projection stretch, 2:1 / 1:2), `cavalry` (4 co-op
   buddies), `jukebox` (60s random unlocked Combat Sim track over the stage
   music), `skedar_ring` ("Skedar ambush" — 4 mini Skedar in a circle around
   the player, alerted, facing in), `body_snatch` ("BODY SNATCHED", weight 1 —
-  the Counter-Op takeover: you become a random guard, disguised; permanent
-  for the rest of the level, solo only).
+  a **lite** Counter-Op takeover, solo only: you teleport onto a random guard,
+  take its weapon, and it vanishes, with a best-effort disguise flag. The *full*
+  third-person-body takeover (`playerSpawnAnti`) is **not used** — the solo
+  first-person player has no chr body model and building one mid-mission stalls
+  the cutscene-only gunmem swap; see the binding note).
 - **FOV warps** (`pd.fov_scale`, the aspect-scale sibling): `fisheye`
   ("Quake Pro", ×1.6), `tunnel_vision` (×0.55), `vertigo` (15s sine pulse
   via the `tick` driver).
@@ -179,14 +251,35 @@ function, called every frame while active (disco's hue cycle).
   the effect pairs the toggle with a random `pd.song`; NRG/death stingers
   mid-stage shuffle too.
 - **`gormless`** — "Gormless" (20s): movement AND look fully inverted —
-  forward/back, strafe left/right, and both look axes. Implemented at the
-  two input chokepoints in `bmoveProcessInput`: the c1-stick negate (covers
-  gamepad + the port's keyboard-to-stick mapping, movement and stick-look
-  alike) and the `inputMouseGetScaledDelta` negate (whole mouse look).
-  Scripted autowalk is exempt (the CHEAT_MIRROR `bwalkUpdateTheta` lesson —
-  synthetic input aims at a world target); stacks honestly with the user's
-  invert-pitch option and with the `mirror` effect (mirror + gormless
-  horizontal = double negation = normal, which is its own kind of funny).
+  forward/back, strafe left/right, and both look axes. Implemented at
+  three input chokepoints in `bmoveProcessInput`: the c1-stick negate
+  (analog gamepad + keyboard-mapped-to-stick), the `inputMouseGetScaledDelta`
+  negate (whole mouse look), and — after the control-mode routing — a swap of
+  the finalised `digitalstep{forward,back,left,right}` flags. That last one is
+  the fix for the long-standing "movement doesn't flip, only look" bug:
+  `CONTROLMODE_PC` (keyboard) derives forward/back/strafe from the
+  U/D/L/R_CBUTTONS **step buttons**, never the stick, so the stick negate
+  alone never reached keyboard movement. Scripted autowalk is exempt (the
+  CHEAT_MIRROR `bwalkUpdateTheta` lesson — synthetic input aims at a world
+  target); stacks honestly with the user's invert-pitch option and with the
+  `mirror` effect (mirror + gormless horizontal = double negation = normal,
+  which is its own kind of funny).
+- **`australia`** — "Australia mode" (20s): the whole finished frame is
+  rotated **180°** (world + viewmodel + HUD) and the controls are reversed to
+  match. The rotation is a post-process — `pd.upside_down(on)` sets
+  `gfx_rotate180_mode`, and the retro post filter flips the sample UV
+  (`uFx` bit 64, `uv = 1 - uv`, shared shader body in `gfx_retro_common.h`, so
+  GL + SDL_GPU both get it) after everything is drawn. This replaces the old
+  clip-space Y-flip (`gfx_upsidedown_mode`, still present but no longer set by
+  any effect), which left the HUD upright and inverted only vertical aim.
+  Control reversal reuses Gormless's chokepoints via `g_ChaosControlReverse`
+  (OR'd with `g_ChaosGormless`), set alongside the rotation in `chraiLuaUpsideDown`
+  — but **forward/back stays normal** (you still walk into the scene); only
+  look (both axes) + strafe left/right flip. The `digitalstepforward/back` swap
+  is gated on `g_ChaosGormless` alone, so Australia leaves walk untouched while
+  Gormless flips everything.
+  Both `g_ChaosControlReverse` and `gfx_rotate180_mode` are cleared in `lvInit`
+  so a mid-stage Lua death can't leave the screen rotated / controls reversed.
 - **`one_punch`** — "ONE PUNCH" (25s): Hurricane Fists + fists-only (the
   per-effect `tick` snaps the held weapon back to unarmed if the player
   switches) + `pd.one_punch` — every unarmed strike is lethal through any
@@ -276,7 +369,7 @@ by the `apLuaPlayerChr()` pawn-null checks):
 
 | Binding | Backing | Notes |
 |---|---|---|
-| `pd.cheat(id, on)` | `cheatActivate`/`cheatDeactivate` | id bounds 0..63 (two 32-bit banks) |
+| `pd.cheat(id, on)` | `cheatSetActive` (cheats.c) | id bounds 0..63. Routes normal cheats through `cheatActivate/Deactivate` (active bank) and **Experiments cheats (45-60: GoldenEye/Wireframe/Mirror/Tonal/Classic) through the ENABLED bank** — those are enabled-bank-only by design (cheatActivate refuses them so missions still save), so a plain `cheatActivate` was a no-op for them |
 | `pd.cheat_active(id)` | `cheatIsActive` | |
 | `pd.sound(sfxnum)` | `sndStart(var80095200, ...)` | non-positional UI sting |
 | `pd.take_weapon(num)` | `chraiLuaTakeWeapon` | `invRemoveItemByNum` + `bgunCycleBack` if held |
@@ -292,9 +385,11 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.boost(secs)` | `bgunAddBoost` | Speed Pill boost; self-decays via `bgunTickBoost`; ≤0 cancels |
 | `pd.player_set_health(frac)` | `bondhealth` write | clamped 0.01..1 — never kills |
 | `pd.dizzy(amount)` | `blurdrugamount` write | tranq screen-sway, 0..4000 (below the TICKS(5000) KO band), decays naturally |
+| `pd.double_vision(on)` | `gfx_doublevision_mode` (renderer) | "One too many": retro post filter blends rotated ghosts of the finished frame over the normal one — `uFx` 128/256/512 = 180/90/270, all three set, averaged then mixed at 0.6 (drunk kaleidoscope). 90/270 are backend-swapped but set together so the result matches on GL + SDL_GPU; cleared in `lvInit` |
 | `pd.chr_cloak(chrnum, on)` | `CHRHFLAG_CLOAKED` bit | same flag as the cloaking device; IR scanner still reveals |
 | `pd.strip_ammo()` | `bgunSetAmmoQuantity(type, 0)` loop | all ammo types 1..`AMMOTYPE_ECM_MINE` |
-| `pd.teleport_to_chr(chrnum)` | `chrSetPos` | the netcode's player force-position primitive; server-side |
+| `pd.teleport_to_chr(chrnum)` | `chrSetPos` / direct prop move | Snap the local player *beside* a chr (offset by both radii along the approach direction), server-side. Validated with `chrAdjustPosForSpawn` (avoids walls + physics objects, nudges through a ring, falls back to the NPC's own pos/rooms). **Body-model player** (Combat Sim) uses `chrSetPos`; the **model-less solo player** (campaign — `chr->model == NULL`, which `chrSetPos`/`chrMoveToPos` would crash on) is moved by hand (prop pos + rooms + bondwalk `vv_*` view fields) |
+| `pd.chr_weapon(chrnum)` | `aibot->weaponnum` / held prop | Current weapon of an NPC (`-1` if invalid). Snapshot before `chr_give_weapon` to restore it when a timed effect ends |
 | `pd.flattex(mode)` | `gfx_flattex_mode` (gfx_pc.cpp) | 0 off / 1 white / 2 average-colour textures; applied by a texture-cache reimport at the next frame boundary; per-pixel **alpha preserved** so fonts/HUD stay readable; HD ext-tex falls back to the (flattened) N64 decode while active |
 | `pd.grayscale(on)` | `gfx_force_grayscale` → `rdp.grayscale` | forces `SHADER_OPT_GRAYSCALE` with a neutral colour (both GL and SDL_GPU honour it); the game never emits `G_SETGRAYSCALE_EXT`, so no contention |
 | `pd.room_tint(r,g,b)` / `()` | `g_ChaosRoomTintFrac` (dlights.c) | stage-wide room-lighting multiplier — `kohHighlightRoom`'s math applied to every room at both `scenarioHighlightRoom` sites; dirties all rooms (`ROOMFLAG_BRIGHTNESS_DIRTY_TEMP`, the paintroom pattern) |
@@ -302,22 +397,24 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.nbomb()` | `nbombCreateStorm` | the thrown N-Bomb's impact call, at the player's feet, player-owned |
 | `pd.gust(force)` | `chrYeetFromPos` + `objApplyMomentum` + `bondshotspeed` | one random compass direction for the whole map: chrs flung from a virtual point behind them, objects via the explosion-knockback gate (`!MOUNTED && !GRABBED && OBJFLAG3_PUSHABLE`), local player via the shot-knockback velocity |
 | `pd.dual_wield(weaponnum[, funcnum])` | `invGiveSingle/DoubleWeapon` + `bgunEquipWeapon2` both hands | the `playerSpawnAnti` dual-wield recipe + full ammo; funcnum 0/1 forces that fire function on both hand gsets (1 = Cyclone Magazine Discharge) |
+| `pd.gun_lock(on)` | `g_ChaosGunLock` → `bmoveProcessInput` (bondmove.c) + `amOpen` (activemenu.c) | Cyclone Frenzy: per-tick force `weaponfunc = FUNC_SECONDARY` both hands, `triggeron = true` (auto-fire), zero the weapon-cycle offsets, and block the weapon menu; local player, unpaused, alive; cleared in `lvInit` |
 | `pd.aspect_scale(mult)` | `g_ChaosAspectMult` (playermgr.c) | multiplier inside `playermgrSetAspectRatio` — playerTick re-derives natural aspect every tick, so the hook must live in the setter and restore is automatic; 2 = wide, 0.5 = tall, clamped 0.25..4 |
 | `pd.song(slot)` / `()` | `musicStartTrackAsMenu(mpGetTrackMusicNum(slot % unlocked))` / `musicEndMenu` | the credits-roll mechanism: stage music pauses underneath, resumes on stop; only unlocked Combat Sim tracks |
 | `pd.spawn_body(bodynum[, weaponnum, dx, dz])` | `chrSpawnAtCoord` | the `chraiLuaSpawnAlly` recipe with allegiance inverted: TEAM_ENEMY, GAILIST_ALERTED, `CHRCFLAG_TRIGGERSHOTLIST`, facing the player; weaponnum −1 = unarmed (melee bodies) |
-| `pd.body_snatch(chrnum)` | `playerSpawnAnti` + `player->disguised` | the real Counter-Op takeover: player teleports into the chr's body (weapons/health/shield/third-person model copied, host chr freed) + the disguise flag so guard AI ignores you until blown (gailists.c patroller logic). **Solo only, one-way for the rest of the level** — the engine has no return-to-Jo path |
+| `pd.body_snatch(chrnum)` | disguise flag + guard teardown | **Lite** takeover (solo only): sets `CHRHFLAG_DISGUISED` on the player chr + `player->disguised`, then frees the guard (the `playerSpawnAnti` host-teardown: `chrRemove`/`propDeregisterRooms`/`propDelist`/`propDisable`/`propFree`). chaos.lua pairs it with `pd.teleport_to_chr` + `pd.give_weapon` to take the guard's place. **Full `playerSpawnAnti` is NOT used** — the solo first-person player has no third-person chr body model, and building one mid-mission stalls the cutscene-only gunmem swap (fights the live gun system → 4s lockscreen then revert). Disguise is best-effort: only the disguise-aware patroller ailist consults the flag; ordinary patrol/combat guards don't |
 | `pd.fov_scale(mult)` | `g_ChaosFovMult` (playermgr.c) | multiplier inside `playermgrSetFovY` (the aspect-scale pattern); clamped 0.4..2.2; zoom/Gun-FOV interplay untested |
 | `pd.chr_target(chrnum, victim)` | `chr->target` via `propGetIndexByChrId` | the `aiSetTargetChr` recipe + alertness 100 + `CHRCFLAG_TRIGGERSHOTLIST` |
 | `pd.chr_calm(chrnum)` | `alertness = 0`, `target = -1`, trigger-shot flag cleared | doesn't rewind the AI script — stops the hunt until re-provoked |
 | `pd.doors_all(open)` | `doorsRequestMode` on every `PROPTYPE_DOOR` | returns the door count; closing is transient |
 | `pd.chr_summon(chrnum, dx, dz)` | `chrMoveToPos` with the player's rooms | ground-validated; fails cleanly (returns false) if the spot doesn't validate |
-| `pd.gormless(on)` | `g_ChaosGormless` → `bmoveProcessInput` (bondmove.c) | negates the c1 stick (safe + raw) and the mouse-look deltas; local player only, autowalk exempt |
+| `pd.gormless(on)` | `g_ChaosGormless` → `bmoveProcessInput` (bondmove.c) | negates the c1 stick (safe + raw), the mouse-look deltas, **and swaps the `digitalstep*` flags** (post-routing — catches CONTROLMODE_PC keyboard movement, which uses step buttons not the stick); local player only, autowalk exempt |
+| `pd.upside_down(on)` | `gfx_rotate180_mode` (renderer) + `g_ChaosControlReverse` (bondmove.c) | "Australia mode": rotates the whole finished frame 180° via the retro post filter (`uFx` bit 64, GL + SDL_GPU) *and* reverses the controls (shares Gormless's three chokepoints via OR); both flags cleared in `lvInit`. Replaces the old clip-space Y-flip `gfx_upsidedown_mode` (now unset by any effect) |
 | `pd.spawn_bike()` | runtime `hoverbikeobj` template + `objInitWithModelDef` + `setupCreateHov` | half size via `extrascale=128` + `modelSetScale` (the `setupCreateObject` semantics); the propobj.c geo-cyl radius now scales with extrascale (stage bikes at 256 are byte-identical); solo only; one static instance, revalidated via the `prop->obj` backlink across stage reloads |
 | `pd.sfx_shuffle(on)` | `g_ChaosSfxShuffle` → `sndStart` (src/lib/snd.c) | remap to `LCG % g_NumSounds` after the MP3 branch, before the validity check; local LCG so game RNG is untouched |
 | `pd.instrument_shuffle(on)` | `g_ChaosInstrumentShuffle` (u8!) → `AL_MIDI_ProgramChange` (n_csplayer.c) | remap to `LCG % bank->instCount`; **1-byte extern like `g_SndTonalInversion`** — never declare as game `bool`; audio thread, so local LCG only |
 | `pd.one_punch(on)` | `g_ChaosOnePunch` → `chrDamage` boost (chraction.c) | player + `WEAPON_UNARMED` + NPC victim → damage = maxdamage+shield+100 and `chrYeetFromPos(victim, attacker, 250)`; boosted before the `SVC_CHR_DAMAGE` broadcast |
 | `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
-| `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | the gset function getters return the swap weapon's PRIMARY for the local player's **hand gsets only** (pointer-compared against `hands[].gset`), so menus/inventory/NPC AI/remote pawns keep the real function; held weapon must be in the FALCON2..CROSSBOW gun range (knife excluded); target validated SHOOT-type at set time |
+| `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | "Everything Rockets": every held gun fires the swap weapon's shot but keeps its **own animation, fire rate, and hand behaviour** (Paintball-style — the fire FUNCTION is *not* swapped). The swap is applied only at **shot creation**: hitscan swaps (Farsight/Tranq/LX) + firing noise via `gsetPopulateFromCurrentPlayer` presenting the swap weapon on the populated copy; projectile swaps (rocket/grenade) via a prop.c intercept in the `HANDATTACKTYPE_SHOOT` dispatch (`chaosAmmoSwapProjectile()` → `bgunCreateFiredProjectile`, one projectile per fire event at the held gun's cadence; `bgunCreateFiredProjectile` save/restore-overrides the held weapon to the swap weapon). Held weapon must be FALCON2..CROSSBOW (knife excluded); target validated SHOOT-low-byte at set time. Menus/inventory/NPC AI/remote pawns keep the real weapon |
 
 Renderer notes: the flat-texture filter lives at the single
 `gfx_upload_tex_filtered` chokepoint in `gfx_pc.cpp` (all nine N64-format
@@ -333,8 +430,15 @@ save-safe.
 
 Pre-existing bindings chaos reuses: `give_weapon`, `refill_ammo`,
 `invincible`, `device_on`, `player_heal`, `player_set_shield`, `all_chrs`,
-`chr_alert`, `spawn_ally`, `spawn_at_chr`, `hud_message`, `persist_get/set`,
-`menu_add`, `on`, `log`.
+`chr_alert`, `chr_give_weapon`, `spawn_ally`, `spawn_at_chr`, `hud_message`,
+`persist_get/set`, `menu_add`, `on`, `log`.
+
+**`pd.all_chrs` is now polymorphic**: `pd.all_chrs(fn)` still calls `fn(chrnum)`
+for every actor (the `director.lua` callback form), but `pd.all_chrs()` with no
+function **returns an array table** of live chrnums — the form `chaos.lua`'s
+`random_chr()` and the crowd effects rely on. Menu helpers: `pd.menu_add(label,
+fn, [group])` (optional submenu title) and `pd.menu_set_label(index, text)`
+(live in-place relabel — see "Pause-menu UI").
 
 ## Twitch / YouTube integration (the open window)
 
@@ -387,11 +491,13 @@ Until then, the UDP bridge is the supported route.
 
 | File | Change |
 |---|---|
-| `scripts/chaos.lua` | NEW — the chaos engine (effects/timer/votes/protocol) |
+| `scripts/chaos.lua` | the chaos engine (effects/timer/votes/protocol/config/menu) |
+| `scripts/director.lua`, `scripts/ap/test.lua` | group their entries under submenus (`pd.menu_add` 3rd arg) |
 | `scripts/init.lua` | loads chaos.lua |
-| `src/game/luaai_api.c` | 10 new bindings + `luaExtEventPush` ring queue |
-| `src/game/chraction.c` | 7 `chraiLua*` helpers (take/held/switch weapon, fade, yeet, explosion, sound) |
-| `src/include/game/luaai.h` | declarations for the above |
+| `src/game/luaai_api.c` | the `pd.*` bindings + `luaExtEventPush` ring queue; `pd.chr_weapon`; `pd.menu_add` group arg + `pd.menu_set_label`; registry `group` field |
+| `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon` |
+| `src/game/mainmenu.c` | `luaDirectorRebuild` builds per-group submenu dialogs (openers at root top) |
+| `src/include/game/luaai.h` | declarations; `LUA_MENU_LABEL`, `LUA_DIRECTOR_MAX_SUBMENUS`, `luaMenuGroup` |
 | `port/src/net/net.c` | `/chaos` console command; `netChaosEventDrain()` UDP listener; `Chaos.EventPort` config |
 | `port/include/net/net.h` | `g_ChaosEventPort` / `netChaosEventDrain` declarations |
 

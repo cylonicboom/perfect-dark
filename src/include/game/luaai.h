@@ -294,6 +294,7 @@ s32 chraiLuaFlatTex(s32 mode);                /* 0 normal, 1 white/vertex-only, 
 s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale path */
 s32 chraiLuaShiny(s32 mode);                  /* 0 off, 1 fake-chrome UVs everywhere, 2 + gold tint */
 s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum); /* replace an NPC's held weapons with this one */
+s32 chraiLuaChrWeapon(s32 chrnum); /* the NPC's current weaponnum (-1 if invalid) */
 f32 chraiLuaPlayerHealth(void);               /* current health fraction 0..1 */
 s32 chraiLuaPlayerDamage(f32 amount);         /* hurt the local player via the real damage path */
 s32 chraiLuaWeaponJam(s32 on);                /* trigger pulls dry-fire, no shot, no ammo */
@@ -307,11 +308,15 @@ s32 chraiLuaGunSound(s32 weaponnum);          /* all guns fire with this weapon'
 s32 chraiLuaMute(s32 on);                     /* master audio mute */
 s32 chraiLuaPlayFile(const char *path);       /* play an external WAV/MP3 through the device stream */
 s32 chraiLuaChrSpeed(f32 mult);               /* scale all non-player chr anim/movement speed; 1 = off */
+s32 chraiLuaPlayerSpeed(f32 mult);            /* scale the local player's walk/strafe speed; 1 = normal */
 s32 chraiLuaChrDamage(s32 chrnum, f32 amount); /* hurt any chr via the real damage path */
 s32 chraiLuaChrScale(s32 chrnum, f32 mult);   /* multiply a chr's visual scale */
 s32 chraiLuaShake(s32 ticks);                 /* explosion screen-shake for N ticks */
 s32 chraiLuaScreenTint(s32 r, s32 g, s32 b, s32 on); /* full-screen luminance tint; on=0 clears */
-s32 chraiLuaUpsideDown(s32 on);               /* flip the rendered world top-bottom */
+s32 chraiLuaUpsideDown(s32 on);               /* Australia: rotate frame 180 + reverse controls */
+s32 chraiLuaDoubleVision(s32 on);             /* One too many: 180-flipped ghost blended over the frame */
+s32 chraiLuaGunLock(s32 on);                  /* Cyclone Frenzy: force secondary + hold fire + no weapon switch */
+s32 chraiLuaKnifeLock(s32 on);                /* Knife fight: block weapon switching only (knife used normally) */
 s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */
 s32 chraiLuaGas(s32 on);                      /* nerve gas on any stage (wash + cough + damage) */
 s32 chraiLuaTPose(s32 on);                    /* all skeletal models render in bind pose */
@@ -327,10 +332,13 @@ s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum); /* dual-equip a weapon; funcn
 s32 chraiLuaAspectScale(f32 mult);            /* projection aspect multiplier (1.0 = normal) */
 s32 chraiLuaPlaySong(s32 slot);               /* play an unlocked MP track over the stage music; -1 stops */
 s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz); /* hostile chr at player + offset */
-s32 chraiLuaBodySnatch(s32 chrnum);           /* Counter-Op takeover of a chr (solo, one-way) */
+s32 chraiLuaBodySnatch(s32 chrnum);           /* lite Counter-Op takeover of a chr (solo) */
+s32 chraiLuaBodyUnsnatch(void);               /* end body_snatch: un-disguise + teleport home */
 s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum); /* point a chr's combat AI at another chr */
 s32 chraiLuaChrCalm(s32 chrnum);              /* zero alertness, clear target (neuralyzer) */
 s32 chraiLuaDoorsAll(s32 open);               /* open (1) / close (0) every door; returns count */
+s32 chraiLuaDoorsLock(s32 on);                /* Lockdown: lock (1) / unlock (0) every door shut */
+s32 chraiLuaCivilWar(s32 on);                 /* NPCs fight each other (hostile teams + nearest target); on=false restores */
 s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the player */
 s32 chraiLuaFovScale(f32 mult);               /* vertical-FOV multiplier (1.0 = normal) */
 s32 chraiLuaOnePunch(s32 on);                 /* unarmed strikes: lethal + mega knockback */
@@ -373,12 +381,16 @@ void luaPossessApplyCamera(void); /* point the render camera at the fly pose */
  * Lua Director dialog (mainmenu.c) reads these accessors to render + dispatch.
  * Defined in luaai_api.c.
  * ------------------------------------------------------------------------- */
-#define LUA_MENU_MAX 160           /* max Director entries (shared with mainmenu.c); sized for
-                                      the chaos per-effect test entries (~74) on top of the
-                                      director/AP toolkits — the dialog smooth-scrolls */
+#define LUA_MENU_MAX 256           /* max Director entries (shared with mainmenu.c); sized for
+                                      chaos's per-effect Test triggers (~74) AND on/off toggles
+                                      (~74) plus the director/AP toolkits — the dialog smooth-scrolls */
+#define LUA_MENU_LABEL 40          /* per-entry label / group buffer size (shared) */
 s32 luaMenuCount(void);            /* number of registered Director entries */
 const char *luaMenuLabel(s32 i);   /* label of entry i ("" if out of range) */
+const char *luaMenuGroup(s32 i);   /* submenu title of entry i ("" = root) */
 void luaMenuInvoke(s32 i);         /* call entry i's Lua fn (guarded, logged) */
+
+#define LUA_DIRECTOR_MAX_SUBMENUS 12 /* distinct submenu groups in the Director */
 
 /* Rebuild the Director menu items array from the registry (defined in
  * mainmenu.c). Called by pd.menu_add/menu_clear so the array is always valid +

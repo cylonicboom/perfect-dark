@@ -5200,6 +5200,12 @@ void bgunCreateFiredProjectile(s32 handnum)
 	f32 spc4[4];
 
 #ifndef PLATFORM_N64
+	s32 chaosSavedWeaponnum = 0;
+	s32 chaosSavedWeaponfunc = 0;
+	bool chaosSwapped = false;
+#endif
+
+#ifndef PLATFORM_N64
 	if (g_NetMode == NETMODE_CLIENT) {
 		// The client can't create its own projectile (server-authoritative), but
 		// a fly-by-wire (Slayer secondary) fire must still engage the rocket-cam.
@@ -5220,6 +5226,33 @@ void bgunCreateFiredProjectile(s32 handnum)
 #endif
 
 	hand = g_Vars.currentplayer->hands + handnum;
+
+#ifndef PLATFORM_N64
+	// Chaos "Everything Rockets" (pd.ammo_swap): the held gun's fire FUNCTION is
+	// swapped to the ammo weapon's (game_0b0fd0.c), so the animation + attacktype
+	// become the swap weapon's and this path is reached — but the projectile is
+	// picked from the HELD weapon below, so a hitscan gun spawns nothing. Present
+	// the swap weapon as the held weapon for the projectile creation (restored at
+	// the end). Gate mirrors gsetChaosAmmoSwap so it fires exactly when the anim
+	// swapped.
+	{
+		extern s32 g_ChaosAmmoSwapWeapon;
+		struct player *plr = g_Vars.currentplayer;
+
+		if (g_ChaosAmmoSwapWeapon >= 0 && plr != NULL && !plr->isremote
+				&& (hand == &plr->hands[HAND_RIGHT] || hand == &plr->hands[HAND_LEFT])
+				&& hand->gset.weaponnum >= WEAPON_FALCON2
+				&& hand->gset.weaponnum <= WEAPON_CROSSBOW
+				&& hand->gset.weaponnum != WEAPON_COMBATKNIFE
+				&& hand->gset.weaponnum != g_ChaosAmmoSwapWeapon) {
+			chaosSavedWeaponnum = hand->gset.weaponnum;
+			chaosSavedWeaponfunc = hand->gset.weaponfunc;
+			chaosSwapped = true;
+			hand->gset.weaponnum = g_ChaosAmmoSwapWeapon;
+			hand->gset.weaponfunc = FUNC_PRIMARY;
+		}
+	}
+#endif
 
 	playerprop = g_Vars.currentplayer->prop;
 	prevpos = &g_Vars.currentplayer->bondprevpos;
@@ -5534,6 +5567,14 @@ void bgunCreateFiredProjectile(s32 handnum)
 			}
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// Restore the held weapon after the ammo-swap override above.
+	if (chaosSwapped) {
+		hand->gset.weaponnum = chaosSavedWeaponnum;
+		hand->gset.weaponfunc = chaosSavedWeaponfunc;
+	}
+#endif
 }
 
 void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)

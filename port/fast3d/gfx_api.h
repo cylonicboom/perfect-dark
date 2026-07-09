@@ -48,6 +48,8 @@ extern int gfx_retro_pixel_h;                // chaos: pixelation grid height
 extern int gfx_retro_colors;                 // chaos: 0 keep, 2..64 grey, >= 256 RGB332, 1000 invert, 1001 gameboy, 1002 thermal
 extern int gfx_retro_fx;                     // chaos: 1 scanlines, 2 grille, 4 CRT curve, 8 vignette, 16 VHS, 32 wobble
 extern float gfx_retro_warp;                 // chaos: fisheye lens strength (pd.lens); 0 = off
+extern unsigned char gfx_rotate180_mode;     // chaos: rotate the whole finished frame 180 (pd.upside_down / Australia)
+extern unsigned char gfx_doublevision_mode;  // chaos: blend a 180-flipped ghost over the frame (pd.double_vision / One too many)
 // HDR dazzle weight 0..1 set by the G_SETDAZZLE_EXT display-list command
 // (flush-aligned): draws issued while non-zero are emissive-boosted toward
 // the HDR peak by the SDL_GPU backend. GL and SDR ignore it.

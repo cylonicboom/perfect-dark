@@ -1673,6 +1673,13 @@ void bwalkHandleActivate(void)
 	}
 }
 
+// Chaos "Gotta go fast" (pd.player_speed): a straight multiplier on the local
+// player's walk + strafe speed. 1.0 = normal. Applied in bwalkApplyMoveData
+// after the vanilla speed multipliers (1.08 * speedboost), so it scales the
+// real movement velocity — unlike the Combat Boost, which is bullet-time + a
+// mere 1.25x forward ramp.
+f32 g_ChaosPlayerSpeed = 1.0f;
+
 void bwalkApplyMoveData(struct movedata *data)
 {
 	if (g_Vars.currentplayer->walkinitmove == false) {
@@ -1728,6 +1735,14 @@ void bwalkApplyMoveData(struct movedata *data)
 
 		g_Vars.currentplayer->speedforwards *= 1.08f;
 		g_Vars.currentplayer->speedforwards *= g_Vars.currentplayer->speedboost;
+
+#ifndef PLATFORM_N64
+		// Chaos "Gotta go fast": scale the real walk + strafe speed.
+		if (g_ChaosPlayerSpeed != 1.0f) {
+			g_Vars.currentplayer->speedforwards *= g_ChaosPlayerSpeed;
+			g_Vars.currentplayer->speedsideways *= g_ChaosPlayerSpeed;
+		}
+#endif
 
 		if ((data->canlookahead == false && data->digitalstepforward == false) ||
 				bmoveGetCrouchPos() != CROUCHPOS_STAND) {

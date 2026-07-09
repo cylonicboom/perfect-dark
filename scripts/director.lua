@@ -133,22 +133,25 @@ end)
 -- ---------------------------------------------------------------------------
 
 pd.menu_clear()
+-- Everything registers under a "Mission Director" submenu (pd.menu_add's 3rd
+-- arg is the submenu title); the opener appears at the top of the Lua Director.
+local G = "Mission Director"
 -- panel
-pd.menu_add("Spawn Wave",           spawn_wave)
-pd.menu_add("Hive Mind (alert all)", hive_mind)
-pd.menu_add("Make Everyone Sneeze", make_everyone_sneeze)
-pd.menu_add("Shield All",           shield_all)
+pd.menu_add("Spawn Wave",           spawn_wave, G)
+pd.menu_add("Hive Mind (alert all)", hive_mind, G)
+pd.menu_add("Make Everyone Sneeze", make_everyone_sneeze, G)
+pd.menu_add("Shield All",           shield_all, G)
 -- "Turn Everyone Into..." (solo/missions only; no-op in Combat Sim)
-pd.menu_add("Everyone -> Skedar",   function() turn_everyone_into(BODY_SKEDAR) end)
-pd.menu_add("Everyone -> Dr Caroll", function() turn_everyone_into(BODY_DRCAROLL) end)
-pd.menu_add("Everyone -> Mr Blonde", function() turn_everyone_into(BODY_MRBLONDE) end)
+pd.menu_add("Everyone -> Skedar",   function() turn_everyone_into(BODY_SKEDAR) end, G)
+pd.menu_add("Everyone -> Dr Caroll", function() turn_everyone_into(BODY_DRCAROLL) end, G)
+pd.menu_add("Everyone -> Mr Blonde", function() turn_everyone_into(BODY_MRBLONDE) end, G)
 -- Controllable entity (solo/missions only): fly a cube around, START/ESC or
 -- "Stop Possessing" to return to your body.
-pd.menu_add("Become A Cube",        function() pd.possess_spawn() end)
-pd.menu_add("Stop Possessing",      function() pd.unpossess() end)
+pd.menu_add("Become A Cube",        function() pd.possess_spawn() end, G)
+pd.menu_add("Stop Possessing",      function() pd.unpossess() end, G)
 -- scenario picker
-pd.menu_add("Scenario: Last Stand", scenario_last_stand)
-pd.menu_add("Scenario: Escort",     scenario_escort)
-pd.menu_add("Scenario: Off",        scenario_off)
+pd.menu_add("Scenario: Last Stand", scenario_last_stand, G)
+pd.menu_add("Scenario: Escort",     scenario_escort, G)
+pd.menu_add("Scenario: Off",        scenario_off, G)
 
 pd.log("director.lua loaded (" .. "pause menu -> Lua Director)")

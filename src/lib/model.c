@@ -1554,6 +1554,20 @@ void modelSetMatrices(struct modelrenderdata *renderdata, struct model *model)
 
 	renderdata->unk10 += model->definition->nummatrices;
 
+#ifndef PLATFORM_N64
+	{
+		// Chaos "Assert Authority" (pd.t_pose): the asm matrix builder
+		// (modelasm00018680) reads anim rotations directly, bypassing
+		// animGetRotTranslateScale where the T-pose zeroing lives. Force the
+		// reference C path while it's active so bind-pose zeroing takes effect.
+		extern s32 g_ChaosTPose;
+		if (g_ChaosTPose) {
+			modelUpdateMatrices(renderdata, model);
+			return;
+		}
+	}
+#endif
+
 #if VERSION >= VERSION_PAL_BETA
 	if (var8005efb0_2 || !modelasm00018680(renderdata, model)) {
 		modelUpdateMatrices(renderdata, model);

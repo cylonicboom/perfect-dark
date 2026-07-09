@@ -1771,6 +1771,18 @@ void handTickAttack(s32 handnum)
 				chrUncloakTemporarily(g_Vars.currentplayer->prop->chr);
 				mpstatsIncrementPlayerShotCount2(&gset, 0);
 
+#ifndef PLATFORM_N64
+				// Chaos "Everything Rockets": the held gun keeps its own animation
+				// + fire rate (the func is no longer swapped), but when the swap
+				// weapon is a projectile launcher we spawn its projectile here
+				// instead of the hitscan shot — one per fire event, i.e. at the
+				// held gun's cadence. Hitscan swaps fall through (shotCreate uses
+				// the swap gset via gsetPopulateFromCurrentPlayer).
+				extern bool chaosAmmoSwapProjectile(s32 heldweaponnum);
+				if (chaosAmmoSwapProjectile(weaponnum)) {
+					bgunCreateFiredProjectile(handnum);
+				} else
+#endif
 				if (weaponnum == WEAPON_SHOTGUN) {
 					shotCreate(handnum, true, true, 1, true);
 					shotCreate(handnum, true, true, 1, true);

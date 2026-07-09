@@ -54,6 +54,19 @@
 // inverted. Applied at the two input chokepoints in bmoveProcessInput (the
 // c1 stick negate + the mouse-look delta negate).
 s32 g_ChaosGormless = 0;
+// Chaos "Australia mode" (pd.upside_down): the frame is rotated 180 by the
+// renderer, so reverse the same movement + look axes as Gormless to keep the
+// controls matched to the flipped view. Shares Gormless's chokepoints via OR.
+s32 g_ChaosControlReverse = 0;
+// Chaos "Cyclone Frenzy" (pd.gun_lock): for the effect's duration, force the
+// SECONDARY fire function on both hands, hold the trigger down (auto-fire), and
+// block weapon switching — the cycle offsets here + amOpen (the weapon menu) at
+// its own definition. Local player, unpaused, alive.
+s32 g_ChaosGunLock = 0;
+// Chaos "Knife fight" (pd.knife_lock): block weapon switching so only the
+// equipped knife can be used — but leave firing/functions alone (normal manual
+// swings), unlike the Cyclone gun-lock. Shares the cycle-offset + amOpen chokes.
+s32 g_ChaosKnifeLock = 0;
 // Chaos "Take a break" (pd.player_freeze): zero the movement stick so the
 // player is rooted in place. Mouse look and firing stay live — you can watch
 // and shoot, you just can't move.
@@ -1193,7 +1206,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	// below. Local player only; scripted autowalk drives synthetic stick
 	// input aimed at a WORLD target (the CHEAT_MIRROR bwalkUpdateTheta
 	// exception), so it is exempt or the player would walk away from it.
-	if (g_ChaosGormless && !g_Vars.currentplayer->isremote
+	if ((g_ChaosGormless || g_ChaosControlReverse) && !g_Vars.currentplayer->isremote
 			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
 		movedata.c1stickxsafe = -movedata.c1stickxsafe;
 		movedata.c1stickysafe = -movedata.c1stickysafe;
@@ -1201,9 +1214,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		movedata.c1stickyraw = -movedata.c1stickyraw;
 	}
 
-	// Chaos "Take a break" (pd.player_freeze): kill the movement stick. Same
-	// scope rules as Gormless above (local player, not scripted autowalk).
-	// Mouse look (freelookdx/dy below) is left alone on purpose.
+	// Chaos "Take a break" (pd.player_freeze): kill the movement stick here; the
+	// rest of the input (look, fire, crouch, switch, lean, activate) is zeroed
+	// after all input is finalised, just before bgunTickGameplay below.
 	if (g_ChaosPlayerFreeze && !g_Vars.currentplayer->isremote
 			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
 		movedata.c1stickxsafe = 0;
@@ -1230,7 +1243,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		// Chaos "Gormless": invert the whole mouse look (both axes). Stacks
 		// with the user's invert-pitch option above by design — Gormless
 		// means "backwards from whatever you're used to".
-		if (g_ChaosGormless && !g_Vars.currentplayer->isremote) {
+		if ((g_ChaosGormless || g_ChaosControlReverse) && !g_Vars.currentplayer->isremote) {
 			movedata.freelookdx = -movedata.freelookdx;
 			movedata.freelookdy = -movedata.freelookdy;
 		}
@@ -2280,6 +2293,33 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Chaos "Gormless"/"Australia": the analog stick + mouse are reversed at
+	// their read sites above, but keyboard/gamepad DIGITAL movement never
+	// touches the stick — in CONTROLMODE_PC forward/back/strafe come from the
+	// U/D/L/R_CBUTTONS step buttons and land in digitalstep* inside the
+	// control-mode routing, so they were never reversed (the "movement doesn't
+	// flip, only look" bug). Swap the finalised step directions here, after
+	// routing and before the movement is consumed. Autowalk drives these toward
+	// a world target, so leave it exempt like the stick negate above.
+	if ((g_ChaosGormless || g_ChaosControlReverse) && !g_Vars.currentplayer->isremote
+			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
+		// Strafe left/right reverses for both effects — a 180-rotated screen
+		// (Australia) swaps left/right visually, and Gormless flips everything.
+		bool tmpstep = movedata.digitalstepleft;
+		movedata.digitalstepleft = movedata.digitalstepright;
+		movedata.digitalstepright = tmpstep;
+		// Forward/back reverses for Gormless only. In Australia mode you still
+		// walk "into" the scene (forward = forward) — only look + strafe flip —
+		// so leave walk alone when it's the control-reverse flag driving.
+		if (g_ChaosGormless) {
+			tmpstep = movedata.digitalstepforward;
+			movedata.digitalstepforward = movedata.digitalstepback;
+			movedata.digitalstepback = tmpstep;
+		}
+	}
+#endif
+
 	g_Vars.currentplayer->bondactivateorreload = 0;
 
 	s32 usereloads = (controlmode != CONTROLMODE_PC);
@@ -2309,6 +2349,64 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		movedata.speedvertadown = movedata.speedvertaup;
 		movedata.speedvertaup = savedverta;
 	}
+
+#ifndef PLATFORM_N64
+	// Chaos "Cyclone Frenzy" gun-lock: force secondary fire on both hands, hold
+	// the trigger (auto-fire), and suppress weapon cycling. Applied right before
+	// bgunTickGameplay consumes triggeron and before the cycle offsets are
+	// consumed below. amOpen (the weapon menu) is blocked at its own definition.
+	if (g_ChaosGunLock && !g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED
+			&& !g_Vars.currentplayer->isdead) {
+		g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponfunc = FUNC_SECONDARY;
+		g_Vars.currentplayer->hands[HAND_LEFT].gset.weaponfunc = FUNC_SECONDARY;
+		movedata.triggeron = true;
+		movedata.weaponforwardoffset = 0;
+		movedata.weaponbackoffset = 0;
+	}
+
+	// Chaos "Knife fight" lock: suppress weapon cycling only (the knife is used
+	// normally — no forced function or auto-swing). amOpen blocked at its def.
+	if (g_ChaosKnifeLock && !g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED
+			&& !g_Vars.currentplayer->isdead) {
+		movedata.weaponforwardoffset = 0;
+		movedata.weaponbackoffset = 0;
+	}
+
+	// Chaos "Take a break" (pd.player_freeze): block ALL player input — movement
+	// (stick already zeroed above), look (mouse + analog + look-up/down + aim
+	// turn), shooting, crouching, leaning, weapon switching, activate/reload.
+	// The player is fully frozen while the world keeps running. Local player,
+	// alive (pause is still allowed).
+	if (g_ChaosPlayerFreeze && !g_Vars.currentplayer->isremote
+			&& !g_Vars.currentplayer->isdead) {
+		movedata.triggeron = false;
+		movedata.freelookdx = 0.0f;
+		movedata.freelookdy = 0.0f;
+		movedata.analogturn = 0;
+		movedata.analogpitch = 0;
+		movedata.analogstrafe = 0;
+		movedata.analogwalk = 0;
+		movedata.analoglean = 0.0f;
+		movedata.digitalstepforward = false;
+		movedata.digitalstepback = false;
+		movedata.digitalstepleft = false;
+		movedata.digitalstepright = false;
+		movedata.speedvertadown = 0.0f;
+		movedata.speedvertaup = 0.0f;
+		movedata.aimturnleftspeed = 0.0f;
+		movedata.aimturnrightspeed = 0.0f;
+		movedata.weaponforwardoffset = 0;
+		movedata.weaponbackoffset = 0;
+		movedata.crouchdown = 0;
+		movedata.crouchup = 0;
+		movedata.rleanleft = false;
+		movedata.rleanright = false;
+		movedata.btapcount = 0;
+		movedata.alt1tapcount = 0;
+	}
+#endif
 
 	bgunTickGameplay(movedata.triggeron);
 

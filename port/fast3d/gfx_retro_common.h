@@ -13,7 +13,17 @@
  *   int   uMode    0 keep colours, 1 grey-N, 2 RGB332, 3 invert,
  *                  4 Game Boy DMG greens, 5 thermal palette
  *   int   uFx      bitmask: 1 scanlines, 2 RGB aperture grille, 4 CRT
- *                  curvature, 8 vignette, 16 VHS, 32 underwater wobble
+ *                  curvature, 8 vignette, 16 VHS, 32 underwater wobble,
+ *                  64 rotate 180 (Chaos "Australia mode" — flips the whole
+ *                  finished frame incl. HUD, so UI rotates with the world),
+ *                  128/256/512 drunk ghosts (Chaos "One too many"): blend a
+ *                  rotated ghost of the frame over the normal one — 128 = 180,
+ *                  256 = 90, 512 = 270; whichever are set are averaged then
+ *                  mixed in at 0.6. 90/270 rotate in raw UV (aspect-stretched,
+ *                  which suits a drunk ghost) and stay in [0,1]. NOTE: 90 and
+ *                  270 are NOT orientation-symmetric (GL bottom-up vs SDL_GPU
+ *                  top-down swaps them), but "One too many" sets BOTH, and the
+ *                  set {90,270} is symmetric, so the result matches on both.
  *   float uWarp    fisheye lens strength (0 = off; CRT adds its own +0.12)
  *   float uAspect  framebuffer w/h (for circular radial warp)
  *   float uTime    seconds, for the animated effects (VHS jitter, wobble)
@@ -28,6 +38,7 @@
 #define RETRO_GLSL_BODY \
     "void main() {\n" \
     "    vec2 uv = vUV;\n" \
+    "    if ((uFx & 64) != 0) { uv = vec2(1.0) - uv; }\n" \
     "    float k = uWarp + (((uFx & 4) != 0) ? 0.12 : 0.0);\n" \
     "    if (k != 0.0) {\n" \
     "        vec2 d = uv - 0.5;\n" \
@@ -69,6 +80,12 @@
     "    } else {\n" \
     "        c = texture(uColor, uv).rgb;\n" \
     "    }\n" \
+    "    vec3 g = vec3(0.0);\n" \
+    "    float gw = 0.0;\n" \
+    "    if ((uFx & 128) != 0) { g += texture(uColor, vec2(1.0) - uv).rgb; gw += 1.0; }\n" \
+    "    if ((uFx & 256) != 0) { g += texture(uColor, vec2(uv.y, 1.0 - uv.x)).rgb; gw += 1.0; }\n" \
+    "    if ((uFx & 512) != 0) { g += texture(uColor, vec2(1.0 - uv.y, uv.x)).rgb; gw += 1.0; }\n" \
+    "    if (gw > 0.0) { c = mix(c, g / gw, 0.6); }\n" \
     "    if (uMode == 1) {\n" \
     "        float l = dot(c, vec3(0.299, 0.587, 0.114));\n" \
     "        l = floor(min(l, 0.9999) * uLevels) / (uLevels - 1.0);\n" \

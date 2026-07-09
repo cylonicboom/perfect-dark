@@ -42,46 +42,41 @@ struct weaponfunc *weaponGetFunctionById(u32 weaponnum, u32 which)
 }
 
 #ifndef PLATFORM_N64
-// Chaos ammo swap (docs/PORT_CHAOS.md, pd.ammo_swap): while >= 0, the local
-// player's HELD guns resolve their fire function to this weapon's primary —
-// "every gun fires rockets". Scoped tightly to the current local player's
-// hand gsets, so menus / inventory screens (which pass their own gset
-// copies), NPC AI, and remote netplay pawns all keep the real function.
-// Gun-range weapons only: melee/throwable/device hand state machines can't
-// drive a shoot function. The swap TARGET is validated to be a SHOOT-type
-// primary at set time (chraiLuaAmmoSwap).
+// Chaos ammo swap (docs/PORT_CHAOS.md, pd.ammo_swap): while >= 0, every held
+// gun fires this weapon's shot ("Everything Rockets"), but keeps its OWN
+// animation, fire rate, and hand behaviour (like Paintball mode — we no longer
+// swap the fire FUNCTION, which is what drove the animation/rate). Instead the
+// swap is applied at SHOT CREATION only: gsetPopulateFromCurrentPlayer presents
+// the swap weapon for hitscan shots + firing noise (Farsight/Tranq/LX), and the
+// projectile path (bgunCreateFiredProjectile, driven from prop.c when the swap
+// weapon is a projectile launcher) spawns rockets/grenades. Held gun-range
+// weapons only (FALCON2..CROSSBOW, knife excluded); target validated at set time.
 s32 g_ChaosAmmoSwapWeapon = -1;
 
-static struct weaponfunc *gsetChaosAmmoSwap(struct gset *gset)
+// True when the swap is active, applies to this held weapon, and the swap weapon
+// is a projectile LAUNCHER (rocket/grenade) — so the hitscan shot should be
+// replaced by a fired projectile. prop.c calls this at the SHOOT dispatch.
+bool chaosAmmoSwapProjectile(s32 heldweaponnum)
 {
 	struct player *pl = g_Vars.currentplayer;
+	struct weaponfunc *func;
 
 	if (g_ChaosAmmoSwapWeapon < 0 || pl == NULL || pl->isremote) {
-		return NULL;
+		return false;
 	}
-	if (gset != &pl->hands[HAND_RIGHT].gset && gset != &pl->hands[HAND_LEFT].gset) {
-		return NULL;
+	if (heldweaponnum < WEAPON_FALCON2 || heldweaponnum > WEAPON_CROSSBOW
+			|| heldweaponnum == WEAPON_COMBATKNIFE
+			|| heldweaponnum == g_ChaosAmmoSwapWeapon) {
+		return false;
 	}
-	if (gset->weaponnum < WEAPON_FALCON2 || gset->weaponnum > WEAPON_CROSSBOW
-			|| gset->weaponnum == WEAPON_COMBATKNIFE
-			|| gset->weaponnum == g_ChaosAmmoSwapWeapon) {
-		return NULL;
-	}
-	return weaponGetFunctionById(g_ChaosAmmoSwapWeapon, FUNC_PRIMARY);
+	func = weaponGetFunctionById(g_ChaosAmmoSwapWeapon, FUNC_PRIMARY);
+	return func != NULL && (func->type & 0xff00) == (INVENTORYFUNCTYPE_SHOOT_PROJECTILE & 0xff00);
 }
 #endif
 
 struct weaponfunc *gsetGetWeaponFunction2(struct gset *gset)
 {
 	struct weapon *weapon = weaponFindById(gset->weaponnum);
-
-#ifndef PLATFORM_N64
-	struct weaponfunc *swap = gsetChaosAmmoSwap(gset);
-
-	if (swap) {
-		return swap;
-	}
-#endif
 
 	if (weapon) {
 		return weapon->functions[gset->weaponfunc];
@@ -93,14 +88,6 @@ struct weaponfunc *gsetGetWeaponFunction2(struct gset *gset)
 struct weaponfunc *gsetGetWeaponFunction(struct gset *gset)
 {
 	struct weapon *weapon = g_Weapons[gset->weaponnum];
-
-#ifndef PLATFORM_N64
-	struct weaponfunc *swap = gsetChaosAmmoSwap(gset);
-
-	if (swap) {
-		return swap;
-	}
-#endif
 
 	if (weapon) {
 #ifdef AVOID_UB
@@ -517,6 +504,21 @@ void gsetPopulateFromCurrentPlayer(s32 handnum, struct gset *gset)
 	gset->weaponfunc = g_Vars.currentplayer->hands[handnum].gset.weaponfunc;
 	gset->unk063a = g_Vars.currentplayer->hands[handnum].gset.unk063a;
 	gset->unk0639 = g_Vars.currentplayer->hands[handnum].gset.unk0639;
+
+#ifndef PLATFORM_N64
+	// Chaos "Everything Rockets" / ammo-swap: the func-getter swap
+	// (gsetChaosAmmoSwap) only fires for the LIVE hand gset (pointer-compared),
+	// but shot creation and noise run off a POPULATED COPY like this one — so a
+	// swapped hitscan gun (Farsight/Tranq/etc.) would otherwise keep the held
+	// weapon's shot. Present the swap weapon here too (gate mirrors the getter).
+	if (g_ChaosAmmoSwapWeapon >= 0 && !g_Vars.currentplayer->isremote
+			&& gset->weaponnum >= WEAPON_FALCON2 && gset->weaponnum <= WEAPON_CROSSBOW
+			&& gset->weaponnum != WEAPON_COMBATKNIFE
+			&& gset->weaponnum != g_ChaosAmmoSwapWeapon) {
+		gset->weaponnum = g_ChaosAmmoSwapWeapon;
+		gset->weaponfunc = FUNC_PRIMARY;
+	}
+#endif
 
 	if (gset->weaponnum == WEAPON_MAULER) {
 		gset->unk063a = g_Vars.currentplayer->hands[handnum].matmot1 * 10.0f;

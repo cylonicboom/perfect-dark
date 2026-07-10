@@ -297,8 +297,13 @@ void lvReset(s32 stagenum)
 	lvFadeReset();
 
 #ifndef PLATFORM_N64
+	extern s32 g_ChaosMissionComplete; // chaos: mission-success flag
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
 	netDemoStop();     // demo: close any open recording on stage load (port-only)
+	// lvInit() only runs once at boot in the port (pdmain.c), so its chaos
+	// mission-complete clear never re-arms — re-clear it here where the real
+	// per-stage reset runs, or a completed mission latches effects off forever.
+	g_ChaosMissionComplete = 0;
 #endif
 
 	var80084014 = false;

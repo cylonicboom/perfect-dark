@@ -448,8 +448,9 @@ chaos.effects = {
                      end,
                      stop=function()
                        pd.explosions_around(false)
-                       -- keep invincibility 1s longer (see st.sd_invuln in tick)
-                       st.sd_invuln = TICKS
+                       -- keep invincibility 3s longer (see st.sd_invuln in tick)
+                       -- so lingering blasts can't kill as the effect wears off
+                       st.sd_invuln = TICKS * 3
                      end },
   -- visual chaos (renderer + room lighting hooks; timed, all self-revert)
   untextured   = { label="1996 mode",          w=5, dur=30,
@@ -1028,7 +1029,9 @@ function chaos.handle(source, text)
   if not cmd then return end
   cmd = cmd:lower()
   if cmd == "on" then
-    st.enabled = true; st.timer = st.interval * TICKS; persist(); announce("enabled")
+    st.enabled = true; st.timer = st.interval * TICKS
+    st.cooldown = {} -- fresh anti-repeat deck: every effect at full chance again
+    persist(); announce("enabled")
     if st.votetime > 0 then st.votetimer = st.votetime * TICKS; pick_candidates() end
   elseif cmd == "off" then
     st.enabled = false; stop_all(); persist(); announce("disabled")

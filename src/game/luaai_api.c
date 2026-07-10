@@ -1108,6 +1108,16 @@ static int l_pd_lvupdate(lua_State *L)
 	return 1;
 }
 
+/* pd.mission_complete() -> bool. True once the game has pushed a COMPLETED solo/
+ * co-op mission endscreen (mission won, not failed/aborted); cleared on the next
+ * stage load. Lets chaos.lua tear down effects on success, before the hub. */
+static int l_pd_mission_complete(lua_State *L)
+{
+	extern s32 g_ChaosMissionComplete;
+	lua_pushboolean(L, g_ChaosMissionComplete != 0);
+	return 1;
+}
+
 /* pd.alarm(on) -> bool. Stage alarm on/off (server-side; SVC_ALARM mirrors). */
 static int l_pd_alarm(lua_State *L)
 {
@@ -1567,6 +1577,14 @@ static int l_pd_gun_lock(lua_State *L)
 	return 1;
 }
 
+/* pd.mag_dump(on) -> bool. Mag Dump: one trigger press empties the whole clip —
+ * automatic weapons hold the trigger, semi-autos rapidly pulse it. */
+static int l_pd_mag_dump(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaMagDump(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.knife_lock(on) -> bool. Knife fight: block weapon switching only. */
 static int l_pd_knife_lock(lua_State *L)
 {
@@ -1810,6 +1828,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_device_on);        lua_setfield(L, -2, "device_on");
 	lua_pushcfunction(L, l_pd_device_off);       lua_setfield(L, -2, "device_off");
 	lua_pushcfunction(L, l_pd_lvupdate);         lua_setfield(L, -2, "lvupdate");
+	lua_pushcfunction(L, l_pd_mission_complete); lua_setfield(L, -2, "mission_complete");
 	lua_pushcfunction(L, l_pd_invincible);       lua_setfield(L, -2, "invincible");
 	lua_pushcfunction(L, l_pd_spawn_ally);       lua_setfield(L, -2, "spawn_ally");
 	/* director pause-menu registry */
@@ -1883,6 +1902,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_gust);          lua_setfield(L, -2, "gust");
 	lua_pushcfunction(L, l_pd_dual_wield);    lua_setfield(L, -2, "dual_wield");
 	lua_pushcfunction(L, l_pd_gun_lock);      lua_setfield(L, -2, "gun_lock");
+	lua_pushcfunction(L, l_pd_mag_dump);      lua_setfield(L, -2, "mag_dump");
 	lua_pushcfunction(L, l_pd_knife_lock);    lua_setfield(L, -2, "knife_lock");
 	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");
 	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");

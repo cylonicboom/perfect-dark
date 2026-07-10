@@ -47,7 +47,9 @@ local st = {
   cvotes   = {0, 0, 0},  -- votes per candidate slot
   active   = {},         -- name -> ticks remaining (timed effects)
   duration = {},         -- name -> total ticks (for the HUD bars)
-  history  = {},         -- last few names, to avoid instant repeats
+  cooldown = {},         -- name -> fires-until-recovery: a shown effect's pick
+                         -- weight is suppressed, easing back to full only once
+                         -- the whole enabled list has had a turn (anti-repeat deck)
   disabled = {},         -- name -> true for effects switched OFF in the menu
 }
 
@@ -313,6 +315,11 @@ chaos.effects = {
                        if pd.gun_lock then pd.gun_lock(false) end
                        pd.take_weapon(W.CYCLONE) -- take the cyclones back
                      end },
+  mag_dump       = { label="Mag Dump",            w=4, dur=20,
+                     -- a single trigger tap empties the clip: autos hold fire,
+                     -- semi-autos get a rapidly pulsed trigger (all in C).
+                     start=function() if pd.mag_dump then pd.mag_dump(true) end end,
+                     stop=function()  if pd.mag_dump then pd.mag_dump(false) end end },
   widescreen     = { label="CinemaScope",         w=3, dur=20,
                      start=function() pd.aspect_scale(2) end,
                      stop=function() pd.aspect_scale(1) end },
@@ -441,7 +448,8 @@ chaos.effects = {
                      end,
                      stop=function()
                        pd.explosions_around(false)
-                       pd.invincible(false)
+                       -- keep invincibility 1s longer (see st.sd_invuln in tick)
+                       st.sd_invuln = TICKS
                      end },
   -- visual chaos (renderer + room lighting hooks; timed, all self-revert)
   untextured   = { label="1996 mode",          w=5, dur=30,
@@ -912,10 +920,14 @@ local function reset_all_modes()
   if pd.double_vision then pd.double_vision(false) end
   if pd.gun_lock then pd.gun_lock(false) end
   if pd.knife_lock then pd.knife_lock(false) end
+  if pd.mag_dump then pd.mag_dump(false) end
   if pd.gas then pd.gas(false) end
   if pd.t_pose then pd.t_pose(false) end
   if pd.pinball then pd.pinball(false) end
   if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
+  -- Drop any pending self-destruct invuln grace (the tick that would clear it
+  -- won't run once we're in the hub / end screen).
+  if st.sd_invuln then st.sd_invuln = nil; if pd.invincible then pd.invincible(false) end end
   st.scaled_g = nil
   st.scaled_a = nil
 end
@@ -951,26 +963,40 @@ function chaos.trigger(name, who, dur_override)
     st.duration[name] = ticks
   end
   announce(e.label .. (who and ("  [" .. who .. "]") or ""))
-  table.insert(st.history, 1, name)
-  if #st.history > 4 then table.remove(st.history) end
+  -- Anti-repeat deck: age every effect's cooldown by one fire, then put the one
+  -- that just played on a fresh cooldown as long as the enabled list. Its pick
+  -- weight stays suppressed (pick_random) until the whole list has cycled, so
+  -- effects spread out instead of clumping — but it's a chance, never a hard ban.
+  for n, cd in pairs(st.cooldown) do
+    if cd <= 1 then st.cooldown[n] = nil else st.cooldown[n] = cd - 1 end
+  end
+  local enabled_count = 0
+  for n in pairs(chaos.effects) do
+    if effect_enabled(n) then enabled_count = enabled_count + 1 end
+  end
+  st.cooldown[name] = math.max(1, enabled_count - 1)
   return true
 end
 
 local function pick_random()
   local pool, total = {}, 0
   for name, e in pairs(chaos.effects) do
-    local recent = false
-    for _, h in ipairs(st.history) do if h == name then recent = true end end
-    if not recent and effect_enabled(name) then
-      total = total + (e.w or 1)
+    if effect_enabled(name) then
+      -- Full base weight when rested; heavily reduced right after firing, easing
+      -- back as the cooldown ages down over subsequent effects (never zero, so a
+      -- repeat is merely unlikely and unfired effects dominate the draw).
+      local cd = st.cooldown[name] or 0
+      local w = (e.w or 1) / (1 + cd)
+      total = total + w
       pool[#pool + 1] = { name = name, acc = total }
     end
   end
-  if total == 0 then return nil end
-  local r = math.random(total)
+  if total <= 0 then return nil end
+  local r = math.random() * total
   for _, p in ipairs(pool) do
     if r <= p.acc then return p.name end
   end
+  return pool[#pool] and pool[#pool].name or nil
 end
 
 function chaos.set_seed(n)
@@ -978,7 +1004,7 @@ function chaos.set_seed(n)
   pd.log("[chaos] seeded with " .. tostring(n) .. " (deterministic effect stream)")
 end
 
--- Pick the 3 distinct effects chat votes on this window (weighted, history-
+-- Pick the 3 distinct effects chat votes on this window (weighted, cooldown-
 -- avoided, like the drumbeat). The Twitch/YouTube voting foundation: a bot
 -- forwards chat "1"/"2"/"3" as `vote N` datagrams; the HUD shows the slate.
 local function pick_candidates()
@@ -1084,6 +1110,22 @@ pd.on("tick", function()
   end
   st.in_menu = false
 
+  -- Mission SUCCESS safeguard: the instant the game shows a COMPLETED mission
+  -- endscreen (won, not failed/aborted), tear everything down — same as reaching
+  -- the hub, but earlier. The endscreen freezes the sim (dt would be 0 below), so
+  -- this must run BEFORE the paused early-return, or the visual filters/effects
+  -- would linger over the end-of-mission screen. Latched (fires once); the C flag
+  -- clears on the next stage load, re-arming it. Only fires on success — a failed
+  -- or aborted mission never sets the flag, so effects run right up to the hub.
+  if pd.mission_complete and pd.mission_complete() then
+    if not st.mission_done then
+      st.mission_done = true
+      reset_all_modes()
+    end
+    return
+  end
+  st.mission_done = false
+
   -- Advance on GAME time, not frames: lvupdate() is the ticks the sim
   -- actually ran this frame — 0 while paused (no pausing out a bad effect),
   -- scaled during slo-mo/boost. Everything below (effect timers, the vote
@@ -1102,6 +1144,16 @@ pd.on("tick", function()
   if st.glass_pending then
     for wn in pairs(st.glass_pending) do pd.take_weapon(wn) end
     st.glass_pending = nil
+  end
+
+  -- Self-destruct grace: hold invincibility ~1s past the last explosion so a
+  -- blast still expanding on the exact frame the effect wears off can't kill you.
+  if st.sd_invuln then
+    st.sd_invuln = st.sd_invuln - dt
+    if st.sd_invuln <= 0 then
+      st.sd_invuln = nil
+      if pd.invincible then pd.invincible(false) end
+    end
   end
 
   -- Timed-effect expiry runs REGARDLESS of the master switch, so effects fired

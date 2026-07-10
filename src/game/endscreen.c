@@ -1486,6 +1486,14 @@ struct menudialogdef g_SoloMissionEndscreenFailedMenuDialog = {
  * NTSC beta doesn't have cheats implemented, and has a different autostageindex
  * and thumbnail calculation.
  */
+#ifndef PLATFORM_N64
+// Chaos: latched true the moment the game pushes a COMPLETED solo/co-op mission
+// endscreen (mission won, not failed/aborted). Read by chaos.lua to tear down
+// all active effects + visual modes on success, just like returning to the hub.
+// Cleared on the next stage load (lvInit).
+s32 g_ChaosMissionComplete = 0;
+#endif
+
 void endscreenPrepare(void)
 {
 	s32 timedcheatid;
@@ -1537,6 +1545,10 @@ void endscreenPrepare(void)
 			menuPushRootDialog(&g_SoloMissionEndscreenFailedMenuDialog, MENUROOT_ENDSCREEN);
 		} else {
 			menuPushRootDialog(&g_SoloMissionEndscreenCompletedMenuDialog, MENUROOT_ENDSCREEN);
+
+#ifndef PLATFORM_N64
+			g_ChaosMissionComplete = 1; // chaos: stop all effects on mission success
+#endif
 
 			if (g_MissionConfig.iscoop) {
 				endscreenSetCoopCompleted();
@@ -1893,6 +1905,9 @@ void endscreenPushAnti(void)
 			}
 		} else {
 			// Bond - completed
+#ifndef PLATFORM_N64
+			g_ChaosMissionComplete = 1; // chaos: stop all effects on mission success
+#endif
 			if (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL
 #ifndef PLATFORM_N64
 				|| LOCALPLAYERCOUNT() >= 3

@@ -316,6 +316,7 @@ s32 chraiLuaScreenTint(s32 r, s32 g, s32 b, s32 on); /* full-screen luminance ti
 s32 chraiLuaUpsideDown(s32 on);               /* Australia: rotate frame 180 + reverse controls */
 s32 chraiLuaDoubleVision(s32 on);             /* One too many: 180-flipped ghost blended over the frame */
 s32 chraiLuaGunLock(s32 on);                  /* Cyclone Frenzy: force secondary + hold fire + no weapon switch */
+s32 chraiLuaMagDump(s32 on);                  /* Mag Dump: one trigger press empties the clip (hold auto / pulse semi) */
 s32 chraiLuaKnifeLock(s32 on);                /* Knife fight: block weapon switching only (knife used normally) */
 s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */
 s32 chraiLuaGas(s32 on);                      /* nerve gas on any stage (wash + cough + damage) */

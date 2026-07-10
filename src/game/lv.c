@@ -160,8 +160,11 @@ void lvInit(void)
 	extern unsigned char gfx_doublevision_mode; // chaos One-too-many: clear on stage load
 	extern s32 g_ChaosGunLock;        // chaos Cyclone Frenzy: clear on stage load
 	extern s32 g_ChaosKnifeLock;      // chaos Knife fight: clear on stage load
+	extern s32 g_ChaosMagDump;        // chaos Mag Dump: clear on stage load
+	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch: clear on stage load
 	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry: clear on stage load
 	extern f32 g_ChaosPlayerSpeed;    // chaos Gotta go fast: reset on stage load
+	extern s32 g_ChaosMissionComplete; // chaos: mission-success flag, clear on stage load
 	s32 twin_i;
 	g_Vars.lockscreen = 0;
 	g_Vars.joydisableframestogo = -1;
@@ -172,7 +175,10 @@ void lvInit(void)
 	gfx_doublevision_mode = 0;
 	g_ChaosGunLock = 0;
 	g_ChaosKnifeLock = 0;
+	g_ChaosMagDump = 0;
+	g_ChaosMagDumpArmed = 0;
 	g_ChaosPlayerSpeed = 1.0f;
+	g_ChaosMissionComplete = 0;
 	for (twin_i = 0; twin_i < 8; twin_i++) {
 		g_ChaosTwinChrnums[twin_i] = -1;
 	}

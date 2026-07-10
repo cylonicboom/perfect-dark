@@ -67,6 +67,14 @@ s32 g_ChaosGunLock = 0;
 // equipped knife can be used — but leave firing/functions alone (normal manual
 // swings), unlike the Cyclone gun-lock. Shares the cycle-offset + amOpen chokes.
 s32 g_ChaosKnifeLock = 0;
+// Chaos "Mag Dump" (pd.mag_dump): a single trigger press empties the whole clip
+// — automatic weapons get the trigger held down, semi-autos get it rapidly
+// pulsed (release/press every other tick, which each re-fires). Bullet weapons
+// only (single/automatic SHOOT funcs); armed on the player's own press, disarmed
+// when the clip runs dry (or a safety cap) so a held trigger just fires normally.
+// g_ChaosMagDumpArmed is the live "currently dumping" latch. Both cleared in lvInit.
+s32 g_ChaosMagDump = 0;
+s32 g_ChaosMagDumpArmed = 0;
 // Chaos "Take a break" (pd.player_freeze): zero the movement stick so the
 // player is rooted in place. Mouse look and firing stay live — you can watch
 // and shoot, you just can't move.
@@ -2372,6 +2380,53 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 			&& !g_Vars.currentplayer->isdead) {
 		movedata.weaponforwardoffset = 0;
 		movedata.weaponbackoffset = 0;
+	}
+
+	// Chaos "Mag Dump" (pd.mag_dump): a single trigger tap empties the magazine.
+	// Automatic weapons get the trigger held; semi-autos get it pulsed off/on so
+	// each release+press fires another round. Bullet weapons only (SHOOT single /
+	// automatic — excludes melee/throw/device by the low byte and rockets by the
+	// 0x0200 high byte). Armed on the player's real press; disarmed when the clip
+	// empties (one tap == one mag) or after a safety cap. A held trigger simply
+	// re-arms next tick, so ordinary auto fire is unchanged.
+	if (g_ChaosMagDump && !g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED
+			&& !g_Vars.currentplayer->isdead) {
+		struct hand *rhand = &g_Vars.currentplayer->hands[HAND_RIGHT];
+		struct gunctrl *ctrl = &g_Vars.currentplayer->gunctrl;
+		struct weaponfunc *func = currentPlayerGetWeaponFunction(HAND_RIGHT);
+		static s32 magpulse = 0;
+		static s32 magticks = 0;
+
+		if (func && (func->type & 0xff) == INVENTORYFUNCTYPE_SHOOT
+				&& ((func->type & 0xff00) == 0x0000 || (func->type & 0xff00) == 0x0100)) {
+			if (movedata.triggeron) {
+				g_ChaosMagDumpArmed = 1; // the player fired — start dumping
+			}
+
+			if (g_ChaosMagDumpArmed) {
+				magticks += g_Vars.lvupdate60;
+
+				if ((func->ammoindex >= 0
+							&& rhand->loadedammo[func->ammoindex] == 0
+							&& ctrl->ammotypes[func->ammoindex] >= 0)
+						|| magticks > 240) {
+					g_ChaosMagDumpArmed = 0; // clip empty (or capped) — stop
+					magpulse = 0;
+					magticks = 0;
+				} else if ((func->type & 0xff00) == 0x0100) {
+					movedata.triggeron = true;            // automatic: hold
+					magpulse = 0;
+				} else {
+					magpulse++;                           // semi-auto: rapid tap
+					movedata.triggeron = (magpulse & 1) != 0;
+				}
+			}
+		} else {
+			g_ChaosMagDumpArmed = 0; // non-bullet weapon — never dump
+			magpulse = 0;
+			magticks = 0;
+		}
 	}
 
 	// Chaos "Take a break" (pd.player_freeze): block ALL player input — movement

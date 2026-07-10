@@ -8799,6 +8799,21 @@ s32 chraiLuaGunLock(s32 on)
 	return 1;
 }
 
+// pd.mag_dump(on): "Mag Dump" — a single trigger press empties the whole clip.
+// Automatic weapons get the trigger held; semi-autos get it rapidly pulsed. The
+// per-tick driving + auto/semi detection lives in bmoveProcessInput. Local player
+// only; both g_ChaosMagDump and the g_ChaosMagDumpArmed latch clear in lvInit.
+extern s32 g_ChaosMagDump;
+extern s32 g_ChaosMagDumpArmed;
+s32 chraiLuaMagDump(s32 on)
+{
+	g_ChaosMagDump = on ? 1 : 0;
+	if (!g_ChaosMagDump) {
+		g_ChaosMagDumpArmed = 0;
+	}
+	return 1;
+}
+
 // pd.knife_lock(on): "Knife fight" lock — block weapon switching (cycle offsets
 // + the amOpen weapon menu) so only the equipped knife can be used, but leave
 // firing/functions normal. Local player only; cleared in lvInit.

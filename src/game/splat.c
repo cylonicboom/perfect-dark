@@ -124,6 +124,13 @@ void splatTickChr(struct prop *prop)
 	chr->tickssincesplat += g_Vars.lvupdate60;
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Max blood" (pd.max_blood): every hit splatters (the stock 1-in-3
+// dry roll is bypassed) with a bigger burst, chrs jump straight to the max
+// wounded-drip rate, and the hit spray is tripled (chr.c).
+s32 g_ChaosMaxBlood = 0;
+#endif
+
 void splatsCreateForChrHit(struct prop *prop, struct shotdata *shotdata, struct coord *arg2, struct coord *arg3, bool isskedar, s32 splattype, struct chrdata *chr2)
 {
 #if VERSION != VERSION_JPN_FINAL
@@ -135,6 +142,13 @@ void splatsCreateForChrHit(struct prop *prop, struct shotdata *shotdata, struct 
 
 	if (splattype == 0) {
 		u32 qty = rngCosmeticRandom() % 3;
+
+#ifndef PLATFORM_N64
+		if (g_ChaosMaxBlood) {
+			qty = 4 + rngCosmeticRandom() % 4;
+			chr->bulletstaken = 7; // wounded drips at the maximum rate
+		}
+#endif
 
 		if (qty) {
 			chr->stdsplatsadded += splatsCreate(qty, 0.8f, prop, shotdata, arg2, arg3, isskedar, splattype, TICKS(50), chr2, 0);

@@ -67,6 +67,14 @@ s32 g_ChaosGunLock = 0;
 // equipped knife can be used — but leave firing/functions alone (normal manual
 // swings), unlike the Cyclone gun-lock. Shares the cycle-offset + amOpen chokes.
 s32 g_ChaosKnifeLock = 0;
+// Chaos "Secondaries only" (pd.force_secondary): pin both hands to the
+// secondary weapon function each tick; trigger, switching and the weapon menu
+// all stay normal (unlike gun_lock).
+s32 g_ChaosForceSecondary = 0;
+// Chaos "Button thief" (pd.button_block): these pad buttons are stripped from
+// gameplay input reads (c1buttons below). Menus read the joy layer directly
+// and keep working.
+u32 g_ChaosButtonMask = 0;
 // Chaos "Mag Dump" (pd.mag_dump): a single trigger press empties the whole clip
 // — automatic weapons get the trigger held down, semi-autos get it rapidly
 // pulsed (release/press every other tick, which each re-fires). Bullet weapons
@@ -1183,6 +1191,16 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		c1buttonsthisframe &= ~inhibitedbuttons;
 		g_Vars.currentplayer->joybutinhibit = (g_Vars.currentplayer->joybutinhibit & 0x0) | inhibitedbuttons;
 	}
+
+#ifndef PLATFORM_N64
+	// Chaos "Button thief" (pd.button_block): strip the stolen buttons from
+	// this tick's gameplay input. Keyboard/mouse route through the same
+	// virtual pad, so this covers every binding of the stolen action.
+	if (g_ChaosButtonMask && !g_Vars.currentplayer->isremote) {
+		c1buttons &= ~g_ChaosButtonMask;
+		c1buttonsthisframe &= ~g_ChaosButtonMask;
+	}
+#endif
 
 	numsamples = joyGetNumSamples();
 	bmoveResetMoveData(&movedata);
@@ -2380,6 +2398,16 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 			&& !g_Vars.currentplayer->isdead) {
 		movedata.weaponforwardoffset = 0;
 		movedata.weaponbackoffset = 0;
+	}
+
+	// Chaos "Secondaries only": pin both hands to the secondary function.
+	// Re-asserted every tick (a function toggle or weapon switch reverts it
+	// for one frame at most); everything else is left alone.
+	if (g_ChaosForceSecondary && !g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED
+			&& !g_Vars.currentplayer->isdead) {
+		g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponfunc = FUNC_SECONDARY;
+		g_Vars.currentplayer->hands[HAND_LEFT].gset.weaponfunc = FUNC_SECONDARY;
 	}
 
 	// Chaos "Mag Dump" (pd.mag_dump): a single trigger tap empties the magazine.

@@ -298,12 +298,44 @@ void lvReset(s32 stagenum)
 
 #ifndef PLATFORM_N64
 	extern s32 g_ChaosMissionComplete; // chaos: mission-success flag
+	extern s32 g_ChaosLuaHomeValid;    // chaos TP-to-start: stale home = bad warp
+	extern u8 g_ChaosObjectiveForce[MAX_OBJECTIVES]; // chaos objective scramble
+	extern s32 g_ChaosForceSecondary;  // chaos Secondaries only
+	extern u32 g_ChaosButtonMask;      // chaos Button thief (a stale mask = lost input)
+	extern s32 g_ChaosAmmoCost;        // chaos Inflated bullets
+	extern s32 g_ChaosAutoAim;         // chaos XBLA mode
+	extern s32 g_ChaosNitro;           // chaos Nitroglycerin
+	extern s32 g_ChaosMaxBlood;        // chaos Max blood
+	extern u32 g_ChaosBloodColour;     // chaos blood recolour
+	extern s32 g_ChaosWeaponJam;       // chaos Weapon jam (v1/v2)
+	extern s32 g_ChaosWireframeChrs;   // chaos wireframe enemies
+	extern s32 g_ChaosDoubleShots;     // chaos Quad handed
+	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
+	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
 	netDemoStop();     // demo: close any open recording on stage load (port-only)
 	// lvInit() only runs once at boot in the port (pdmain.c), so its chaos
 	// mission-complete clear never re-arms — re-clear it here where the real
 	// per-stage reset runs, or a completed mission latches effects off forever.
 	g_ChaosMissionComplete = 0;
+	// Same reasoning: a home marked on the previous stage or a held objective
+	// override MUST NOT survive into a fresh mission (chaos.lua also clears
+	// these, but its Lua state can die mid-effect on a stage change).
+	g_ChaosLuaHomeValid = 0;
+	for (chobj_i = 0; chobj_i < MAX_OBJECTIVES; chobj_i++) {
+		g_ChaosObjectiveForce[chobj_i] = 0;
+	}
+	g_ChaosForceSecondary = 0;
+	g_ChaosButtonMask = 0;
+	g_ChaosAmmoCost = 1;
+	g_ChaosAutoAim = 0;
+	g_ChaosNitro = 0;
+	g_ChaosMaxBlood = 0;
+	g_ChaosBloodColour = 0;
+	g_ChaosWeaponJam = 0;
+	g_ChaosWireframeChrs = 0;
+	g_ChaosDoubleShots = 0;
+	inputSetChaosDeadzone(0);
 #endif
 
 	var80084014 = false;

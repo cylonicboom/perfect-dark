@@ -253,6 +253,11 @@ float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
 bool gfx_detail_textures_enabled = true;
 bool gfx_wireframe_mode = false;
+// Chaos "wireframe enemies" (docs/PORT_CHAOS.md): scoped wireframe set by the
+// G_CHRWIREFRAME_EXT bracket around hostile chr models. Read at draw time by
+// both backends alongside gfx_wireframe_mode; force-cleared each frame start
+// so a lost END marker can't leak past one frame.
+bool gfx_wireframe_scope = false;
 
 // Screen-space raytracing suite controls (docs/PORT_RAYTRACING.md). Defined
 // here — not in gfx_rt.cpp — so they exist on every build, including the
@@ -3499,6 +3504,12 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_SETGRAYSCALE_EXT:
                 rdp.grayscale = cmd->words.w1;
                 break;
+            case G_CHRWIREFRAME_EXT:
+                // scoped wireframe (chaos "wireframe enemies"): flush so the
+                // toggle applies exactly at the bracket boundary
+                gfx_flush();
+                gfx_wireframe_scope = cmd->words.w1 != 0;
+                break;
             case G_SETDAZZLE_EXT:
                 // flush so the boost applies exactly to the draws issued
                 // while the weight is set (glares / overexposure flash)
@@ -3745,6 +3756,7 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 }
 
 extern "C" void gfx_start_frame(void) {
+    gfx_wireframe_scope = false; // scoped bracket never survives a frame
     // Chaos visual modes (docs/PORT_CHAOS.md), applied at the frame boundary:
     // a flat-texture toggle clears the texture cache so everything re-imports
     // through gfx_upload_tex_filtered (the clear also invalidates the dlcache,

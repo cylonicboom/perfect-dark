@@ -355,6 +355,25 @@ s32 chraiLuaAudioRadio(s32 on);               /* AM-radio bandpass + overdrive *
 s32 chraiLuaAudioReverb(f32 wet);             /* cathedral reverb, wet 0..1; 0 = off */
 s32 chraiLuaAudioReverse(s32 on);             /* audio plays backwards in ~0.74s granules */
 s32 chraiLuaAudioPitch(f32 rate);             /* constant-tempo pitch shift; 1 = off */
+s32 chraiLuaForceSecondary(s32 on);           /* pin both hands to the secondary weapon function */
+s32 chraiLuaButtonMask(u32 mask);             /* strip pad buttons from gameplay input; 0 = off */
+s32 chraiLuaAmmoCost(s32 mult);               /* each shot spends mult clip rounds; 1 = normal */
+s32 chraiLuaAutoAim(s32 on);                  /* force aim assist on regardless of the option */
+s32 chraiLuaDeadzone(f32 frac);               /* analog deadzone floor 0..1 of full deflection; 0 = off */
+s32 chraiLuaNitro(s32 on);                    /* destroyed objects explode like the Crash Site ship */
+s32 chraiLuaObjectiveForce(s32 index, s32 state); /* 0 off / 1 force incomplete / 2 force complete; index -1 clears all */
+s32 chraiLuaObjectiveStatus(s32 index);       /* real objective status (override bypassed); -1 if not live */
+s32 chraiLuaMarkHome(void);                   /* record the player's position for warp_home */
+s32 chraiLuaWarpHome(void);                   /* teleport back to the marked home position */
+s32 chraiLuaEnv(s32 stagenum);                /* apply another stage's sky/fog environment; -1 restores */
+s32 chraiLuaFog(s32 fogmin, s32 fogmax, s32 r, s32 g, s32 b); /* custom fog overlay (per-mille of z-range) */
+s32 chraiLuaBloodColour(s32 r, s32 g, s32 b, s32 on); /* every body bleeds this colour; on=0 restores */
+s32 chraiLuaMaxBlood(s32 on);                 /* every hit splatters big + max drip rate */
+s32 chraiLuaItemsShuffle(void);               /* shuffle all loose weapon pickups' positions; returns count */
+s32 chraiLuaChrWireframe(s32 on);             /* hostile chrs render as wireframe (G_CHRWIREFRAME_EXT) */
+s32 chraiLuaDoubleShots(s32 on);              /* every fire event takes twice the shots (Quad handed) */
+u32 chraiLuaButtons(s32 pressed);             /* raw local-player pad buttons (held / pressed this frame) */
+s32 chraiLuaSpawnChopper(s32 kind, s32 extrascale); /* hostile chopper near the player: kind 0 = dD copter, 1 = A51 interceptor; extrascale 256 = full (<8 = per-kind default) */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

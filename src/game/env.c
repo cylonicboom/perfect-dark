@@ -415,6 +415,65 @@ void envChooseAndApply(s32 stagenum, bool allowoverride)
 	g_EnvOrigFogEnvironment = NULL;
 }
 
+#ifndef PLATFORM_N64
+// Chaos "extreme fog" (pd.fog): overlay a custom fog environment on the
+// current stage — works on no-fog stages too (envApplyFogEnvironment enables
+// the fog pipeline). fogmin/fogmax are per-mille of the z-range like the
+// stock tables (stock stages sit around 950..1050; lower = the wall starts
+// closer). near/far/clouds/water are inherited from the stage's own env row
+// so draw distance is untouched. Restore with envChooseAndApply(stagenum).
+void envChaosFog(s32 stagenum, s32 fogmin, s32 fogmax, u8 r, u8 g, u8 b)
+{
+	static struct fogenvironment tmp;
+	struct fogenvironment *env1 = NULL;
+	struct nofogenvironment *env2 = NULL;
+	struct fogenvironment *e;
+	struct nofogenvironment *e2;
+
+	for (e = &g_FogEnvironments[0]; e->stage != 0; e++) {
+		if (e->stage == stagenum) {
+			env1 = e;
+			break;
+		}
+	}
+
+	if (env1 == NULL) {
+		for (e2 = &g_NoFogEnvironments[0]; e2->stage != 0; e2++) {
+			if (e2->stage == stagenum) {
+				env2 = e2;
+				break;
+			}
+		}
+	}
+
+	if (env1) {
+		tmp = *env1;
+	} else {
+		struct nofogenvironment *src = env2 ? env2 : &g_NoFogEnvironments[0];
+		static const struct fogenvironment zeroenv = {0};
+
+		tmp = zeroenv;
+		tmp.stage = (s16)stagenum;
+		tmp.near = src->near;
+		tmp.far = src->far;
+		tmp.numsuns = 0;
+		tmp.suns = NULL;
+	}
+
+	// no distance-fade tiers under the chaos fog — keep it simple
+	tmp.opaperc = 0;
+	tmp.xluperc = 0;
+	tmp.refdist = 0;
+	tmp.fogmin = (s16)fogmin;
+	tmp.fogmax = (s16)fogmax;
+	tmp.sky_r = r;
+	tmp.sky_g = g;
+	tmp.sky_b = b;
+
+	envApplyFogEnvironment(&tmp);
+}
+#endif
+
 void envApplyTransitionFrac(f32 frac)
 {
 	static struct fogenvironment tmp;

@@ -914,8 +914,25 @@ static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 	return 0;
 }
 
-static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
+// Chaos "XBLA mode" (pd.deadzone): a runtime deadzone floor in raw axis units
+// (0..32768). When larger than the user's configured per-axis deadzone it
+// wins; 0 = off. Set via inputSetChaosDeadzone from the Lua chaos bindings.
+static s32 chaosDeadzone = 0;
+
+void inputSetChaosDeadzone(s32 dz)
 {
+	if (dz < 0) {
+		dz = 0;
+	} else if (dz > 31000) {
+		dz = 31000; // never a fully dead stick
+	}
+	chaosDeadzone = dz;
+}
+
+static inline s32 inputAxisScale(s32 x, const s32 deadzoneCfg, const f32 scale)
+{
+	const s32 deadzone = (chaosDeadzone > deadzoneCfg) ? chaosDeadzone : deadzoneCfg;
+
 	if (abs(x) < deadzone) {
 		return 0;
 	} else {

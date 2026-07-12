@@ -1060,7 +1060,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     // Wireframe cheat: draw depth-tested 3D geometry as polygon outlines. Skipped
     // for 2D HUD/menus (no depth test) and on GL ES (glPolygonMode is desktop-GL only).
-    const bool wireframe = gfx_wireframe_mode && s_wireframe_depth_test && !gl_es;
+    const bool wireframe = (gfx_wireframe_mode || gfx_wireframe_scope) && s_wireframe_depth_test && !gl_es;
     const bool wire_colour = wireframe && gfx_wireframe_wire_color_enabled
             && gfx_current_shader_program && gfx_current_shader_program->wireframe_color_location >= 0;
     if (wireframe) {

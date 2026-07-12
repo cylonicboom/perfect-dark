@@ -229,6 +229,13 @@
 // Implemented by both backends (GL + SDL_GPU); no-op when gfx_rt_enabled == 0
 // (and on SDL_GPU when the framebuffer is MSAA — depth not resolvable there).
 #define G_RTRESOLVE_EXT              0x4b
+// Port-only scoped wireframe bracket (chaos "wireframe enemies",
+// docs/PORT_CHAOS.md): draws issued while the scope is set render as polygon
+// outlines exactly like the Wireframe cheat, but only for that bracket.
+// w1 = 1 begin / 0 end. Emitted around hostile chr models in prop.c's render
+// dispatch; the renderer flushes on toggle. Honoured by both backends; the
+// scope is force-cleared each gfx_start_frame so a lost END can't leak.
+#define G_CHRWIREFRAME_EXT           0x4c
 
 /* G_EXTRAGEOMETRYMODE flags */
 
@@ -292,6 +299,14 @@
 }
 
 #define gDPSetGrayscaleColorEXT(pkt, r, g, b, lerp) DPRGBColor(pkt, G_SETINTENSITY_EXT, r, g, b, lerp)
+
+#define gDPChrWireframeEXT(pkt, state)                 \
+{                                                      \
+    Gfx* _g = (Gfx*)(pkt);                             \
+                                                       \
+    _g->words.w0 = _SHIFTL(G_CHRWIREFRAME_EXT, 24, 8); \
+    _g->words.w1 = state;                              \
+}
 
 // NOTE: these will function correctly only if you pass `gdl++` as `pkt`
 

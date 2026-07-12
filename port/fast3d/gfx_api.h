@@ -37,6 +37,7 @@ extern float gfx_current_native_aspect; // The aspect ratio of the above mode
 extern bool gfx_framebuffers_enabled;
 extern bool gfx_detail_textures_enabled;
 extern bool gfx_wireframe_mode;
+extern bool gfx_wireframe_scope;             // chaos: scoped wireframe bracket (G_CHRWIREFRAME_EXT)
 extern bool gfx_mirror_mode;                 // flip the 3D scene left-right (CHEAT_MIRROR)
 extern int gfx_flattex_mode;                 // chaos: 1 = white textures (vertex shading only), 2 = per-texture average colour
 extern int gfx_force_grayscale;              // chaos: force the grayscale shader path with a neutral colour

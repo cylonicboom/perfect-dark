@@ -28,6 +28,12 @@
 
 struct objective *g_Objectives[MAX_OBJECTIVES];
 u32 g_ObjectiveStatuses[MAX_OBJECTIVES];
+#ifndef PLATFORM_N64
+// Chaos "objective scramble" (pd.objective_force): per-objective status
+// override consulted in objectiveCheck. 0 = off, 1 = force INCOMPLETE,
+// 2 = force COMPLETE. Cleared in lvReset + by chaos.lua's reset.
+u8 g_ChaosObjectiveForce[MAX_OBJECTIVES];
+#endif
 struct tag *g_TagsLinkedList;
 struct briefingobj *g_BriefingObjs;
 struct criteria_roomentered *g_RoomEnteredCriterias;
@@ -373,6 +379,17 @@ s32 objectiveCheck(s32 index)
 				&& objstatus != OBJECTIVE_COMPLETE) {
 			objstatus = OBJECTIVE_FAILED;
 		}
+	}
+
+	// Chaos "objective scramble" (pd.objective_force): 1 = force INCOMPLETE,
+	// 2 = force COMPLETE, 0 = off. Solo only — display AND the mission-end
+	// all-complete check both route through objectiveCheck, so a held-down
+	// objective blocks completion until the effect releases it.
+	if (g_NetMode == NETMODE_NONE
+			&& index >= 0 && index < MAX_OBJECTIVES
+			&& g_ChaosObjectiveForce[index] != 0) {
+		objstatus = g_ChaosObjectiveForce[index] == 2
+				? OBJECTIVE_COMPLETE : OBJECTIVE_INCOMPLETE;
 	}
 
 	// Co-op host: latch objectives a client reported done via CLC_OBJECTIVE_DONE.

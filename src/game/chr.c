@@ -3516,8 +3516,36 @@ void chrRenderAttachedObject(struct prop *prop, struct modelrenderdata *renderda
 	}
 }
 
+#ifndef PLATFORM_N64
+// Chaos "blood colour" (pd.blood_colour): 0xRRGGBB00|1 when set. Every body
+// bleeds this colour — sparks, hit splats and floor drips all derive their
+// palette from this function.
+u32 g_ChaosBloodColour = 0;
+#endif
+
 void chrGetBloodColour(s16 bodynum, u8 *colour1, u32 *colour2)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosBloodColour) {
+		// Stock palettes sit around 1/4 brightness (human red is 0x40),
+		// with a brighter variant and a translucent third entry.
+		u8 r = (g_ChaosBloodColour >> 24) & 0xff;
+		u8 g = (g_ChaosBloodColour >> 16) & 0xff;
+		u8 b = (g_ChaosBloodColour >> 8) & 0xff;
+
+		if (colour1) {
+			colour1[0] = r >> 2;
+			colour1[1] = g >> 2;
+			colour1[2] = b >> 2;
+		}
+		if (colour2) {
+			colour2[0] = ((u32)(r >> 2) << 24) | ((u32)(g >> 2) << 16) | ((u32)(b >> 2) << 8) | 0xff;
+			colour2[1] = ((u32)(r >> 1) << 24) | ((u32)(g >> 1) << 16) | ((u32)(b >> 1) << 8) | 0xff;
+			colour2[2] = ((u32)(r >> 1) << 24) | ((u32)(g >> 1) << 16) | ((u32)(b >> 1) << 8) | 0xa0;
+		}
+		return;
+	}
+#endif
 	switch (bodynum) {
 	case BODY_ELVIS1:
 	case BODY_THEKING:
@@ -3942,6 +3970,17 @@ void chrEmitSparks(struct chrdata *chr, struct prop *prop, s32 hitpart, struct c
 #if VERSION < VERSION_JPN_FINAL
 	sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_BLOOD);
 	sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_FLESH);
+
+#ifndef PLATFORM_N64
+	// Chaos "Max blood" (pd.max_blood): triple the spray per hit.
+	{
+		extern s32 g_ChaosMaxBlood;
+		if (g_ChaosMaxBlood) {
+			sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_BLOOD);
+			sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_BLOOD);
+		}
+	}
+#endif
 #endif
 }
 

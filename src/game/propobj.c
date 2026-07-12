@@ -11624,6 +11624,24 @@ s32 objTickPlayer(struct prop *prop)
 			struct chopperobj *chopper = (struct chopperobj *)obj;
 
 			if (!chopper->dead) {
+#ifndef PLATFORM_N64
+				// Chaos spawned choppers (pd.spawn_chopper) run GAILIST_IDLE,
+				// so the mission ailist's see-target -> attack loop never
+				// runs. Drive the same calls the scripts make: LOS refresh
+				// (aiIfLosToTarget's backend — FOV skipped so it spots the
+				// player all around) and re-assert combat if anything
+				// dropped it back to patrol.
+				{
+					extern s32 chaosChopperIsChaos(struct chopperobj *chopper);
+					if (!lvIsPaused() && chaosChopperIsChaos(chopper)) {
+						chopperCheckTargetInSight(chopper);
+						if (chopper->attackmode == CHOPPERMODE_PATROL) {
+							chopper->attackmode = CHOPPERMODE_COMBAT;
+							chopper->patroltimer60 = TICKS(240);
+						}
+					}
+				}
+#endif
 				if (!lvIsPaused()) {
 					if (chopper->attackmode == CHOPPERMODE_DEAD) {
 						// empty
@@ -15297,6 +15315,17 @@ void objCheckDestroyed(struct defaultobj *obj, struct coord *pos, s32 playernum)
 			exptype = EXPLOSIONTYPE_24;
 		}
 
+#ifndef PLATFORM_N64
+		// Chaos "Nitroglycerin" (pd.nitro): every destroyed object goes up
+		// like the Crash Site ship, whatever its stock explosion type was.
+		{
+			extern s32 g_ChaosNitro;
+			if (g_ChaosNitro) {
+				exptype = EXPLOSIONTYPE_HUGE25;
+			}
+		}
+#endif
+
 		while (rootprop->parent) {
 			rootprop = rootprop->parent;
 		}
@@ -15395,6 +15424,66 @@ void objCheckDestroyed(struct defaultobj *obj, struct coord *pos, s32 playernum)
 		}
 	}
 }
+
+#ifndef PLATFORM_N64
+// Chaos "Nitroglycerin" (pd.nitro): objCheckDestroyed above upgrades every
+// destroyed object's explosion to the Crash Site ship blast while set.
+s32 g_ChaosNitro = 0;
+
+// Chaos "Item swap" (pd.items_shuffle): every weapon pickup lying loose on
+// the ground trades places with another. Held weapons (prop has a parent),
+// planted/embedded ones and airborne projectiles are skipped, as are
+// non-weapon objective props (moving those risks breaking mission scripting).
+// Uses the engine's own move idiom: write pos, deregister rooms, copy rooms.
+s32 chaosItemsShuffle(void)
+{
+	struct prop *list[64];
+	s32 n = 0;
+	s32 i;
+
+	if (g_Vars.props == NULL) {
+		return 0;
+	}
+
+	for (i = 0; i < g_Vars.maxprops && n < 64; i++) {
+		struct prop *prop = &g_Vars.props[i];
+
+		if (prop->type == PROPTYPE_WEAPON && prop->parent == NULL && prop->obj) {
+			struct defaultobj *obj = prop->obj;
+
+			if ((obj->hidden & (OBJHFLAG_EMBEDDED | OBJHFLAG_PROJECTILE | OBJHFLAG_DELETING)) == 0) {
+				list[n++] = prop;
+			}
+		}
+	}
+
+	if (n < 2) {
+		return 0;
+	}
+
+	// Fisher-Yates over the collected pickups, swapping pos + rooms
+	for (i = n - 1; i > 0; i--) {
+		s32 j = rngRandom() % (i + 1);
+
+		if (j != i) {
+			struct coord tmppos = list[i]->pos;
+			RoomNum tmprooms[8];
+
+			roomsCopy(list[i]->rooms, tmprooms);
+
+			list[i]->pos = list[j]->pos;
+			propDeregisterRooms(list[i]);
+			roomsCopy(list[j]->rooms, list[i]->rooms);
+
+			list[j]->pos = tmppos;
+			propDeregisterRooms(list[j]);
+			roomsCopy(tmprooms, list[j]->rooms);
+		}
+	}
+
+	return n;
+}
+#endif
 
 bool func0f084594(struct model *model, struct modelnode *node, struct coord *arg2, struct coord *arg3, struct hitthing *hitthing, s32 *mtxindexptr, struct modelnode **nodeptr)
 {

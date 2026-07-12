@@ -613,7 +613,7 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached) {
     const bool has_depth = fb.depth != NULL;
     // Cached draws stay solid under the wireframe cheat (parity with GL,
     // where glPolygonMode wireframe only wraps draw_triangles).
-    const bool fill_line = !cached && gfx_wireframe_mode && st.depth_test;
+    const bool fill_line = !cached && (gfx_wireframe_mode || gfx_wireframe_scope) && st.depth_test;
     // Backface culling exists only on the cached path (the immediate path is
     // CPU-culled by gfx_pc); set by cache_set_cull per replay segment.
     const uint32_t cull = cached ? st.cull_mode : 0;
@@ -1148,7 +1148,7 @@ static void gfx_sdlgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     // Wireframe cheat flat wire colour (mirrors the GL backend's per-draw
     // uniform juggle; only the fill mode itself lives in the pipeline).
-    const bool wire_colour = gfx_wireframe_mode && st.depth_test && gfx_wireframe_wire_color_enabled;
+    const bool wire_colour = (gfx_wireframe_mode || gfx_wireframe_scope) && st.depth_test && gfx_wireframe_wire_color_enabled;
     if (wire_colour) {
         st.fs_uni.wireframe_color[0] = gfx_wireframe_wire_color[0];
         st.fs_uni.wireframe_color[1] = gfx_wireframe_wire_color[1];

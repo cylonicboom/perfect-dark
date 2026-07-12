@@ -48,6 +48,12 @@
 #include "system.h" // sysLogPrintf/LOG_* for the proptick guards
 #endif
 
+#ifndef PLATFORM_N64
+// Chaos "wireframe enemies" (pd.chr_wireframe): hostile chrs render as
+// polygon outlines via the G_CHRWIREFRAME_EXT bracket in propRender.
+s32 g_ChaosWireframeChrs = 0;
+#endif
+
 s16 *g_RoomPropListChunkIndexes;
 struct roomproplistchunk *g_RoomPropListChunks;
 struct prop *g_InteractProp;
@@ -642,6 +648,22 @@ Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass)
 		gdl = objRender(prop, gdl, xlupass);
 		break;
 	case PROPTYPE_CHR:
+#ifndef PLATFORM_N64
+		// Chaos "wireframe enemies" (pd.chr_wireframe): bracket hostile chr
+		// models (their held weapons render as children inside chrRender, so
+		// they wireframe too) in the scoped-wireframe marker. Friendly and
+		// non-combat chrs stay solid.
+		if (g_ChaosWireframeChrs && prop->chr != NULL
+				&& g_Vars.currentplayer != NULL
+				&& g_Vars.currentplayer->prop != NULL
+				&& g_Vars.currentplayer->prop->chr != NULL
+				&& chrCompareTeams(g_Vars.currentplayer->prop->chr, prop->chr, COMPARE_ENEMIES)) {
+			gDPChrWireframeEXT(gdl++, 1);
+			gdl = chrRender(prop, gdl, xlupass);
+			gDPChrWireframeEXT(gdl++, 0);
+			break;
+		}
+#endif
 		gdl = chrRender(prop, gdl, xlupass);
 		break;
 	case PROPTYPE_PLAYER:

@@ -49,8 +49,19 @@ s32 optionsGetForwardPitch(s32 mpchrnum)
 	return (g_PlayerConfigsArray[mpchrnum].options & OPTION_FORWARDPITCH) != 0;
 }
 
+#ifndef PLATFORM_N64
+// Chaos "XBLA mode" (pd.autoaim): force aim assist on regardless of the
+// player's option. Read-only override — the saved option is untouched.
+s32 g_ChaosAutoAim = 0;
+#endif
+
 s32 optionsGetAutoAim(s32 mpchrnum)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosAutoAim) {
+		return true;
+	}
+#endif
 	return (g_PlayerConfigsArray[mpchrnum].options & OPTION_AUTOAIM) != 0;
 }
 

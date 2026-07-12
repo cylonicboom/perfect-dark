@@ -155,6 +155,26 @@ Current groups:
   the length regardless of `st.effectdur`). These timers **count down even while
   the master switch is off**: the tick handler runs the timed-effect expiry loop
   unconditionally and only gates the random drumbeat / vote on `st.enabled`.
+- **Chaos Alpha** — the new-suggestion **testbed** (the `alpha_effects` block in
+  chaos.lua, 2026-07-12 Discord batch: Gun Game v2, Hurricane v2, Blooper,
+  Martyrdom, Terminator, Skedar King, CAPTCHA, SPEED, Russian roulette, fake
+  game-over, Estus flask, phone-call Dokkaebi, classic weapons, …). Same shape
+  as Chaos Test (select → fires for a fixed 30s; `fixeddur` effects keep their
+  own length) but alpha effects are **never in the random rotation or vote
+  slate** (`pick_random` skips `e.alpha`) and have no on/off toggles. Batch 2
+  (same day) added 13 more backed by new C bindings — Secondaries only, XBLA
+  mode, Weapon jam v2, Inflated bullets, Objective scramble, Nitroglycerin,
+  Back to the start, Button thief, Perfect hills (fog), Max blood, Technicolor
+  blood, Item swap, Brandon's mod — each `start` errors with "needs new exe"
+  when run against an older binary. To promote
+  a graduate, move it out of `alpha_effects` into `chaos.effects` and drop the
+  flag. Alpha-only plumbing: a second `pd.on("draw")` handler (Blooper splats,
+  fake game-over overlay, CAPTCHA/SPEED/countdown HUD), `weaponfound` hook
+  (Mediguns), kill-hook branches that run for **any** death (Martyrdom,
+  Booby-trapped drops), and `st.a_boom_off` — a main-tick countdown that shuts
+  off a brief `explosions_around` burst (the C side fires exactly ONE staggered
+  blast ~250-400 units out in a ~12-tick window; that's the "Live grenade!" /
+  SPEED-failure boom).
 - **Mission Director** (`scripts/director.lua`) and **Archipelago**
   (`scripts/ap/test.lua`) group their own entries the same way.
 
@@ -421,6 +441,59 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.one_punch(on)` | `g_ChaosOnePunch` → `chrDamage` boost (chraction.c) | player + `WEAPON_UNARMED` + NPC victim → damage = maxdamage+shield+100 and `chrYeetFromPos(victim, attacker, 250)`; boosted before the `SVC_CHR_DAMAGE` broadcast |
 | `pd.backfire(on)` | `g_ChaosBackfire` (bondgun.c) | rotates the camera-space shot ray 180° about the vertical axis at the end of `bgunCalculatePlayerShotSpread` — every consumer (hitscan traces, `bgunCreateFiredProjectile` velocities, tracers, aim detection) fires behind the player, vertical aim preserved; local player only (remote pawns keep true direction) |
 | `pd.ammo_swap(weaponnum)` / `()` | `g_ChaosAmmoSwapWeapon` (game_0b0fd0.c) | "Everything Rockets": every held gun fires the swap weapon's shot but keeps its **own animation, fire rate, and hand behaviour** (Paintball-style — the fire FUNCTION is *not* swapped). The swap is applied only at **shot creation**: hitscan swaps (Farsight/Tranq/LX) + firing noise via `gsetPopulateFromCurrentPlayer` presenting the swap weapon on the populated copy; projectile swaps (rocket/grenade) via a prop.c intercept in the `HANDATTACKTYPE_SHOOT` dispatch (`chaosAmmoSwapProjectile()` → `bgunCreateFiredProjectile`, one projectile per fire event at the held gun's cadence; `bgunCreateFiredProjectile` save/restore-overrides the held weapon to the swap weapon). Held weapon must be FALCON2..CROSSBOW (knife excluded); target validated SHOOT-low-byte at set time. Menus/inventory/NPC AI/remote pawns keep the real weapon |
+
+### Batch 2 (2026-07-12, the Chaos Alpha C bindings)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.force_secondary(on)` | `g_ChaosForceSecondary` → `bmoveProcessInput` (bondmove.c) | "Secondaries only": per-tick pin of both hands' `gset.weaponfunc = FUNC_SECONDARY` — the gun_lock pattern minus auto-fire and the switch block |
+| `pd.button_block(mask)` | `g_ChaosButtonMask` (bondmove.c) | strips N64 pad buttons from the `c1buttons` gameplay read (A 0x8000, B 0x4000, Z 0x2000, R 0x10, C-pad 8/4/2/1); menus read the joy layer directly so the pause menu always works; kb/mouse route through the same virtual pad. **Reset in lvReset — a stale mask = a permanently lost input** |
+| `pd.ammo_cost(mult)` | `g_ChaosAmmoCost` (bondgun.c) | "Inflated bullets": tops up the clip decrement at the single `loadedammo -= shotstotake` site; shots unchanged, ammo drains ×mult; local player only |
+| `pd.weapon_jam(2)` | `g_ChaosWeaponJam` mode 2 (bondgun.c) | "jam v2": ~35% of pulls dry-fire (rngRandom at the mode-1 reroute), and a shot that fires drains the rest of the magazine at the decrement site — reload after every bang. `true`/1 = classic full jam |
+| `pd.autoaim(on)` | `g_ChaosAutoAim` → `optionsGetAutoAim` (options.c) | forces aim assist on; the saved player option is untouched |
+| `pd.deadzone(frac)` | `inputSetChaosDeadzone` (port/src/input.c) | runtime deadzone floor 0..0.95 of full deflection, wins over the user's per-axis setting inside `inputAxisScale`; gamepad only (kb/mouse unaffected) |
+| `pd.nitro(on)` | `g_ChaosNitro` → `objCheckDestroyed` (propobj.c) | every destroyed object's `exptype` upgraded to `EXPLOSIONTYPE_HUGE25` (the Crash Site ship) |
+| `pd.objective_force(i, state)` / `pd.objective_status(i)` | `g_ChaosObjectiveForce[]` → `objectiveCheck` (objectives.c) | state 1 = force INCOMPLETE, 2 = force COMPLETE, 0 = off; no-arg call clears all. Solo-gated (`g_NetMode == NETMODE_NONE`), placed AFTER the co-op overlay blocks. Display and `objectiveIsAllComplete` both route through it, so a held objective blocks mission end. `objective_status` reads the REAL value (override bypassed) — how the Lua effect finds a completed one; returns −1 for non-live objectives (count + difficulty-bits checked). Array cleared in **lvReset** |
+| `pd.mark_home()` / `pd.warp_home()` | `g_ChaosLuaHome*` + `chaosPlayerWarp` (chraction.c) | "Back to the start": chaos.lua marks once per stage on its first real gameplay tick; warp reuses the body-snatch model-less-safe player move. Valid flag cleared in **lvReset** so a stale cross-stage home can't be warped to |
+| `pd.env(stagenum)` / `()` | `envChooseAndApply` (env.c) | "Brandon's mod": apply another stage's whole sky/fog/cloud/water environment; no-arg restores the current stage's own row |
+| `pd.fog(fogmin, fogmax, r, g, b)` / `()` | `envChaosFog` (env.c) | custom fog overlay built from the stage's own env row (near/far inherited = draw distance untouched, distance-fade tiers off); works on no-fog stages because `envApplyFogEnvironment` enables the fog pipeline. fogmin/fogmax are per-mille of the z-range — stock rows sit ~950..1050, the Perfect Hills effect uses 500/850. No-arg = `pd.env()` restore |
+| `pd.blood_colour(r,g,b)` / `()` | `g_ChaosBloodColour` → `chrGetBloodColour` (chr.c) | every body bleeds this colour — sparks, hit splats and floor drips all derive their palette from that one function (values scaled to the stock ~¼-brightness convention) |
+| `pd.max_blood(on)` | `g_ChaosMaxBlood` (splat.c + chr.c) | every hit splatters (stock 1-in-3 dry roll bypassed, qty 4-7), `bulletstaken` pinned to 7 (max wounded-drip rate), hit spark spray tripled |
+| `pd.items_shuffle()` | `chaosItemsShuffle` (propobj.c) | Fisher-Yates over every loose `PROPTYPE_WEAPON` pickup (≤64), swapping pos + rooms with the engine's own move idiom (write pos → `propDeregisterRooms` → `roomsCopy`). Held (parented), embedded (planted mines), airborne-projectile and deleting props skipped; **objective items deliberately NOT moved** (script-softlock risk). Returns the count |
+
+All batch-2 C globals are cleared in **`lvReset`** (not just lvInit — the Lua
+state can die on a stage change with effects live, and a lingering button mask
+or objective override must never cross stages) *and* by `reset_all_modes` in
+chaos.lua (guarded `if pd.X then` so the script still runs on an older exe).
+
+### Batch 3 (2026-07-12, the deferred-list bindings)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.chr_wireframe(on)` | `g_ChaosWireframeChrs` (prop.c) → `G_CHRWIREFRAME_EXT 0x4c` | "Wireframe enemies": propRender's PROPTYPE_CHR case brackets hostile chrs (`chrCompareTeams COMPARE_ENEMIES`; held guns render as children inside chrRender so they wireframe too) in a new scoped-wireframe EXT opcode. The renderer (`gfx_wireframe_scope`, gfx_pc.cpp) flushes on toggle, ORs into both backends' existing wireframe reads (gfx_opengl draw_triangles + gfx_sdlgpu pipeline/wire-colour), and force-clears the scope each `gfx_start_frame` so a lost END can't leak. Friendly/non-combat chrs stay solid |
+| `pd.double_shots(on)` | `g_ChaosDoubleShots` (bondgun.c) | "Quad handed": doubles `hand->shotstotake` per fire event (same site as ammo_cost; ammo drains to match). Paired with dual-wield = four barrels |
+| `pd.buttons()` / `pd.buttons_pressed()` | `chraiLuaButtons` → `joyGetButtons(PressedThisFrame)` | the local player's RAW pad buttons — reads the joy layer directly, so it sees buttons `pd.button_block` is hiding from gameplay. This is the popup framework's input: block FIRE from shooting, read FIRE as the answer |
+| `pd.spawn_chopper([kind[, extrascale]])` | `chraiLuaSpawnChopper` (chraction.c) | **EXPLORATORY**: a hostile chopper near the player — the spawn_bike runtime-template recipe adapted to `OBJTYPE_CHOPPER` + setup.c's chopper field block, with `GAILIST_IDLE` (choppers `chraiExecute` every tick; a NULL ailist is fatal), the player as `target`, and `CHOPPERMODE_COMBAT`. kind 0 = `MODEL_DD_HOVERCOPTER` (chaos runs it at extrascale **64 = quarter size**; `objInitWithModelDef` does NOT apply extrascale — the explicit `modelSetScale` line does); kind 1 = `MODEL_A51INTERCEPTOR` at **256** — its MODELDEF is natively ~0.1 scale (the gunfire path's `0.1/model->scale` gun-pos correction), so 256 = authored size and anything lower shrinks it toward invisible (the first-round "vanished after one frame" bug). Because the spawns run `GAILIST_IDLE`, the mission ailists' see-target→fire loop is **driven from C instead**: the chopper tick dispatch calls `chaosChopperIsChaos()` (chraction.c) and runs `chopperCheckTargetInSight` per tick (the FOV half of `aiIfLosToTarget` is skipped so it spots the player all around) + re-asserts `CHOPPERMODE_COMBAT` — without this, `targetvisible` never goes true and the chopper never fires (the first-round "doesn't shoot" bug). Two static templates (`g_ChaosChoppers[2]`), per-kind respawn summons the existing instance. No patrol path = the "stay put" branch in chopperTickMove |
+
+Batch-3 Lua machinery: the **popup framework** — pop_quiz / eula / lore draw a
+centred card in the alpha draw hook, `pd.button_block` keeps FIRE/AIM from
+shooting while `pd.buttons_pressed` reads the answer, and the effect ends
+early by **returning true from its tick** (the expiry loop treats that as
+expire-now; never call `stop_effect` from inside a tick — the loop would
+re-add the key it just removed mid-`pairs`, which is undefined). Schedule 1
+rides the pre-existing `pd.possess_spawn`/`pd.unpossess` (returns nil on
+failure, not -1). The **category folders** are sibling test submenus (Test:
+Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
+`CATS` name table in the menu block — root-level siblings because 3-deep
+scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
+cleared in lvReset like batch 2.
+
+**Still deferred** (with reasons): DarkSim mission AI (bot AI is welded to
+Combat Sim player slots — the co-op plan's linchpin problem; Terminator is the
+approximation), player-2 pad swap (a correct swap must remap the whole VK_JOY
+bind layer; kb/mouse users can't test it), drug-spy body swap (the body-snatch
+gunmem tarpit — Schedule 1 possesses a drone instead), A51 interceptor
+(dropship model is cutscene-scale; the dD chopper covers the idea).
 
 Renderer notes: the flat-texture filter lives at the single
 `gfx_upload_tex_filtered` chokepoint in `gfx_pc.cpp` (all nine N64-format

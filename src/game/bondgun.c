@@ -223,9 +223,17 @@ s32 g_BgunGeMuzzleFlashes = false;
 // Chaos "backfire": local player's shots leave 180 degrees behind them (set
 // via pd.backfire; applied at the end of bgunCalculatePlayerShotSpread).
 s32 g_ChaosBackfire = 0;
-// Chaos "Weapon jam" (pd.weapon_jam): trigger pulls dry-fire instead of
-// shooting; see the HANDSTATE_ATTACKEMPTY reroute in bgunTickInc.
+// Chaos "Weapon jam" (pd.weapon_jam): 1 = every trigger pull dry-fires;
+// 2 = "jam v2": ~35% of pulls dry-fire and a shot that DOES fire drains the
+// rest of the magazine (reload to clear). See the HANDSTATE_ATTACKEMPTY
+// reroute in bgunTickInc + the drain at the clip-decrement site.
 s32 g_ChaosWeaponJam = 0;
+// Chaos "Inflated bullets" (pd.ammo_cost): each shot spends this many rounds
+// from the clip (1 = normal); topped up at the same decrement site.
+s32 g_ChaosAmmoCost = 1;
+// Chaos "Quad handed" (pd.double_shots): every fire event takes twice the
+// shots (with dual-wield that's four barrels' worth); ammo drains to match.
+s32 g_ChaosDoubleShots = 0;
 // Chaos "Pinball rounds" (pd.pinball): fired physics projectiles (rockets,
 // grenade rounds) are converted at launch into the grenade secondary's
 // Proximity Pinball — ballistic, bouncy, proximity-armed. See the conversion
@@ -1404,8 +1412,13 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 			// Chaos "Weapon jam" (pd.weapon_jam): trigger pulls route to the
 			// empty-clip state instead of ATTACK — the dry-fire click plays,
 			// no shot happens, no ammo is spent. Local player only (remote
-			// pawns' mirrored guns must keep firing for real).
-			if (g_ChaosWeaponJam && !g_Vars.currentplayer->isremote
+			// pawns' mirrored guns must keep firing for real). Mode 1 jams
+			// every pull; mode 2 ("jam v2") dry-fires ~35% of pulls and lets
+			// the rest through — but a shot that fires jams the remainder of
+			// the magazine (drained at the decrement site; reload to clear).
+			if ((g_ChaosWeaponJam == 1
+					|| (g_ChaosWeaponJam == 2 && (rngRandom() % 100) < 35))
+					&& !g_Vars.currentplayer->isremote
 					&& hand->triggeron && info->weaponnum != WEAPON_NONE) {
 				hand->unk0cc8_01 = false;
 
@@ -2010,6 +2023,15 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Chaos "Quad handed" (pd.double_shots): double the shots this fire event
+	// takes. Local player only; the ammo decrement below uses the same count.
+	if (g_ChaosDoubleShots && !g_Vars.currentplayer->isremote
+			&& hand->firing && hand->shotstotake > 0) {
+		hand->shotstotake *= 2;
+	}
+#endif
+
 	hand->burstbullets += hand->shotstotake;
 
 	if (func->flags & FUNCFLAG_NOMUZZLEFLASH) {
@@ -2047,6 +2069,26 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 				hand->shotstotake += hand->loadedammo[func->ammoindex];
 				hand->loadedammo[func->ammoindex] = 0;
 			}
+
+#ifndef PLATFORM_N64
+			// Chaos: "Inflated bullets" (pd.ammo_cost — each shot spends
+			// extra rounds; the shots themselves are unchanged) and "jam v2"
+			// (pd.weapon_jam(2) — a shot that fired jams the rest of the
+			// magazine: drain it so the player must reload to clear).
+			// Local player only.
+			if (!g_Vars.currentplayer->isremote) {
+				if (g_ChaosAmmoCost > 1) {
+					hand->loadedammo[func->ammoindex] -=
+							hand->shotstotake * (g_ChaosAmmoCost - 1);
+				}
+				if (g_ChaosWeaponJam == 2) {
+					hand->loadedammo[func->ammoindex] = 0;
+				}
+				if (hand->loadedammo[func->ammoindex] < 0) {
+					hand->loadedammo[func->ammoindex] = 0;
+				}
+			}
+#endif
 		}
 
 		switch (func->type & 0xff00) {

@@ -254,6 +254,10 @@ s32 inputGetLastKey(void);
 s32 inputGetMouseLockMode(void);
 void inputSetMouseLockMode(s32 lockmode);
 
+// chaos "XBLA mode" runtime deadzone floor in raw axis units (0..32768, 0 = off);
+// wins over the user's per-axis deadzone when larger
+void inputSetChaosDeadzone(s32 dz);
+
 // same as inputLockMouse but works only if mouse is enabled and lockmode == MLOCK_AUTO
 s32 inputAutoLockMouse(s32 wantlock);
 

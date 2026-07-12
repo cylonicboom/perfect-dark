@@ -1233,10 +1233,203 @@ static int l_pd_player_damage(lua_State *L)
 	return 1;
 }
 
-/* pd.weapon_jam(on) -> bool. Trigger pulls dry-fire: click, no shot, no ammo. */
+/* pd.weapon_jam(mode) -> bool. 1/true = every trigger pull dry-fires;
+ * 2 = "jam v2": ~35% of pulls dry-fire, and a shot that fires drains the rest
+ * of the magazine (reload to clear). false/0 = off. */
 static int l_pd_weapon_jam(lua_State *L)
 {
-	lua_pushboolean(L, chraiLuaWeaponJam(lua_toboolean(L, 1)) != 0);
+	s32 mode;
+	if (lua_isnumber(L, 1)) {
+		mode = (s32)lua_tointeger(L, 1);
+		if (mode < 0) {
+			mode = 0;
+		} else if (mode > 2) {
+			mode = 2;
+		}
+	} else {
+		mode = lua_toboolean(L, 1) ? 1 : 0;
+	}
+	lua_pushboolean(L, chraiLuaWeaponJam(mode) != 0);
+	return 1;
+}
+
+/* pd.force_secondary(on) -> bool. Pin both hands to the secondary function. */
+static int l_pd_force_secondary(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaForceSecondary(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.button_block(mask) -> bool. Strip these N64 pad buttons from gameplay
+ * input (A 0x8000, B 0x4000, Z 0x2000, L 0x20, R 0x10, C-up 8, C-down 4,
+ * C-left 2, C-right 1). 0 = give everything back. */
+static int l_pd_button_block(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaButtonMask((u32)luaL_optinteger(L, 1, 0)) != 0);
+	return 1;
+}
+
+/* pd.ammo_cost(mult) -> bool. Each shot spends mult rounds; 1 = normal. */
+static int l_pd_ammo_cost(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAmmoCost((s32)luaL_optinteger(L, 1, 1)) != 0);
+	return 1;
+}
+
+/* pd.autoaim(on) -> bool. Force aim assist on regardless of the option. */
+static int l_pd_autoaim(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaAutoAim(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.deadzone(frac) -> bool. Analog deadzone floor, 0..1 of full deflection
+ * (0.45 = the XBLA special). 0/none = off. */
+static int l_pd_deadzone(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaDeadzone((f32)luaL_optnumber(L, 1, 0.0)) != 0);
+	return 1;
+}
+
+/* pd.nitro(on) -> bool. Every destroyed object explodes like the Crash Site
+ * ship. */
+static int l_pd_nitro(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaNitro(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.objective_force(index, state) -> bool. state 0 = real status,
+ * 1 = force INCOMPLETE, 2 = force COMPLETE. index -1 clears all. Solo only. */
+static int l_pd_objective_force(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaObjectiveForce(
+			(s32)luaL_optinteger(L, 1, -1),
+			(s32)luaL_optinteger(L, 2, 0)) != 0);
+	return 1;
+}
+
+/* pd.objective_status(index) -> int. The objective's REAL status (any force
+ * bypassed): 0 incomplete / 1 complete / 2 failed, or -1 if the index isn't a
+ * live objective on this stage + difficulty. */
+static int l_pd_objective_status(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaObjectiveStatus((s32)luaL_checkinteger(L, 1)));
+	return 1;
+}
+
+/* pd.mark_home() -> bool. Record the player's position for pd.warp_home. */
+static int l_pd_mark_home(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaMarkHome() != 0);
+	return 1;
+}
+
+/* pd.warp_home() -> bool. Teleport back to the marked position. */
+static int l_pd_warp_home(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaWarpHome() != 0);
+	return 1;
+}
+
+/* pd.env(stagenum) -> bool. Apply another stage's sky/fog/cloud environment;
+ * pd.env() restores the current stage's own. */
+static int l_pd_env(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaEnv((s32)luaL_optinteger(L, 1, -1)) != 0);
+	return 1;
+}
+
+/* pd.fog(fogmin, fogmax, r, g, b) -> bool. Custom fog overlay: fogmin/fogmax
+ * are per-mille of the z-range (stock stages ~950..1050, lower = closer wall);
+ * r,g,b = the fog/sky colour. pd.fog() restores the stage's environment. */
+static int l_pd_fog(lua_State *L)
+{
+	if (lua_gettop(L) == 0) {
+		lua_pushboolean(L, chraiLuaEnv(-1) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaFog(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_checkinteger(L, 2),
+			(s32)luaL_optinteger(L, 3, 200),
+			(s32)luaL_optinteger(L, 4, 200),
+			(s32)luaL_optinteger(L, 5, 210)) != 0);
+	return 1;
+}
+
+/* pd.blood_colour(r, g, b) -> bool. Everyone bleeds this colour; pd.blood_colour()
+ * restores the per-body palettes. */
+static int l_pd_blood_colour(lua_State *L)
+{
+	if (lua_gettop(L) == 0) {
+		lua_pushboolean(L, chraiLuaBloodColour(0, 0, 0, 0) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaBloodColour(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_checkinteger(L, 2),
+			(s32)luaL_checkinteger(L, 3), 1) != 0);
+	return 1;
+}
+
+/* pd.max_blood(on) -> bool. Every hit splatters, and hard. */
+static int l_pd_max_blood(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaMaxBlood(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.items_shuffle() -> int. Shuffle every loose weapon pickup's position;
+ * returns how many moved. */
+static int l_pd_items_shuffle(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaItemsShuffle());
+	return 1;
+}
+
+/* pd.chr_wireframe(on) -> bool. Hostile chrs render as polygon outlines. */
+static int l_pd_chr_wireframe(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaChrWireframe(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.double_shots(on) -> bool. Every fire event takes twice the shots. */
+static int l_pd_double_shots(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaDoubleShots(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.buttons() -> int. The local player's RAW held pad buttons (N64 mask:
+ * A 0x8000, B 0x4000, Z 0x2000, R 0x10, C-up 8, C-down 4, C-left 2,
+ * C-right 1). Sees buttons even while pd.button_block hides them from
+ * gameplay — the popup framework blocks FIRE and still reads the answer. */
+static int l_pd_buttons(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)chraiLuaButtons(0));
+	return 1;
+}
+
+/* pd.buttons_pressed() -> int. Buttons newly pressed this frame (same mask). */
+static int l_pd_buttons_pressed(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)chraiLuaButtons(1));
+	return 1;
+}
+
+/* pd.spawn_chopper([kind[, extrascale]]) -> bool. A hostile chopper appears
+ * near the player and opens fire. kind 0 (default) = the dD hovercopter,
+ * 1 = the A51 manned interceptor (a native chopper type — the gunfire code
+ * special-cases its model scale). extrascale: 256 = full size; omitted uses
+ * the per-kind default (copter 64 = quarter, interceptor 256 — its modeldef
+ * is natively ~0.1 scale, don't shrink it further). Solo only. */
+static int l_pd_spawn_chopper(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSpawnChopper(
+			(s32)luaL_optinteger(L, 1, 0),
+			(s32)luaL_optinteger(L, 2, 0)) != 0);
 	return 1;
 }
 
@@ -1871,6 +2064,26 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_health); lua_setfield(L, -2, "player_health");
 	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
 	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
+	lua_pushcfunction(L, l_pd_force_secondary); lua_setfield(L, -2, "force_secondary");
+	lua_pushcfunction(L, l_pd_button_block);  lua_setfield(L, -2, "button_block");
+	lua_pushcfunction(L, l_pd_ammo_cost);     lua_setfield(L, -2, "ammo_cost");
+	lua_pushcfunction(L, l_pd_autoaim);       lua_setfield(L, -2, "autoaim");
+	lua_pushcfunction(L, l_pd_deadzone);      lua_setfield(L, -2, "deadzone");
+	lua_pushcfunction(L, l_pd_nitro);         lua_setfield(L, -2, "nitro");
+	lua_pushcfunction(L, l_pd_objective_force); lua_setfield(L, -2, "objective_force");
+	lua_pushcfunction(L, l_pd_objective_status); lua_setfield(L, -2, "objective_status");
+	lua_pushcfunction(L, l_pd_mark_home);     lua_setfield(L, -2, "mark_home");
+	lua_pushcfunction(L, l_pd_warp_home);     lua_setfield(L, -2, "warp_home");
+	lua_pushcfunction(L, l_pd_env);           lua_setfield(L, -2, "env");
+	lua_pushcfunction(L, l_pd_fog);           lua_setfield(L, -2, "fog");
+	lua_pushcfunction(L, l_pd_blood_colour);  lua_setfield(L, -2, "blood_colour");
+	lua_pushcfunction(L, l_pd_max_blood);     lua_setfield(L, -2, "max_blood");
+	lua_pushcfunction(L, l_pd_items_shuffle); lua_setfield(L, -2, "items_shuffle");
+	lua_pushcfunction(L, l_pd_chr_wireframe); lua_setfield(L, -2, "chr_wireframe");
+	lua_pushcfunction(L, l_pd_double_shots);  lua_setfield(L, -2, "double_shots");
+	lua_pushcfunction(L, l_pd_buttons);       lua_setfield(L, -2, "buttons");
+	lua_pushcfunction(L, l_pd_buttons_pressed); lua_setfield(L, -2, "buttons_pressed");
+	lua_pushcfunction(L, l_pd_spawn_chopper); lua_setfield(L, -2, "spawn_chopper");
 	lua_pushcfunction(L, l_pd_player_freeze); lua_setfield(L, -2, "player_freeze");
 	lua_pushcfunction(L, l_pd_chr_freeze);    lua_setfield(L, -2, "chr_freeze");
 	lua_pushcfunction(L, l_pd_no_drops);      lua_setfield(L, -2, "no_drops");

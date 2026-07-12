@@ -14,6 +14,7 @@
 #include "game/chr.h"
 #include "game/chraction.h"
 #include "game/chrai.h"
+#include "lib/memp.h"
 #include "game/luaai.h"
 #include "game/debug.h"
 #include "game/dlights.h"
@@ -9141,6 +9142,136 @@ s32 chraiLuaBodyUnsnatch(void)
 	return 1;
 }
 
+// pd.mark_home() / pd.warp_home(): record the local player's current position
+// (chaos.lua calls it once on stage entry = the mission start pad) and later
+// teleport back to it via the model-less-safe chaosPlayerWarp. The valid flag
+// is non-static and cleared in lvReset so a stale home from a previous stage
+// can never be warped to.
+static struct coord g_ChaosLuaHome;
+static RoomNum g_ChaosLuaHomeRooms[8];
+s32 g_ChaosLuaHomeValid = 0;
+
+s32 chraiLuaMarkHome(void)
+{
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		return 0;
+	}
+	g_ChaosLuaHome = g_Vars.currentplayer->prop->pos;
+	roomsCopy(g_Vars.currentplayer->prop->rooms, g_ChaosLuaHomeRooms);
+	g_ChaosLuaHomeValid = 1;
+	return 1;
+}
+
+s32 chraiLuaWarpHome(void)
+{
+	if (!g_ChaosLuaHomeValid
+			|| g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		return 0;
+	}
+	chaosPlayerWarp(&g_ChaosLuaHome, g_ChaosLuaHomeRooms);
+	return 1;
+}
+
+// pd.env(stagenum): apply another stage's sky/fog/cloud environment (Brandon's
+// mod). pd.env() / stagenum -1 restores the current stage's own environment.
+s32 chraiLuaEnv(s32 stagenum)
+{
+	envChooseAndApply(stagenum >= 0 ? stagenum : chraiLuaGetStageNum(), false);
+	return 1;
+}
+
+// pd.fog(fogmin, fogmax, r, g, b): overlay a custom fog on the current stage
+// (env.c envChaosFog — works on no-fog stages too). fogmin/fogmax are
+// per-mille of the z-range (stock stages sit around 950..1050; lower = the
+// wall starts closer). pd.fog() restores via envChooseAndApply.
+#ifndef PLATFORM_N64
+extern void envChaosFog(s32 stagenum, s32 fogmin, s32 fogmax, u8 r, u8 g, u8 b);
+#endif
+s32 chraiLuaFog(s32 fogmin, s32 fogmax, s32 r, s32 g, s32 b)
+{
+#ifndef PLATFORM_N64
+	envChaosFog(chraiLuaGetStageNum(), fogmin, fogmax, (u8)r, (u8)g, (u8)b);
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+// pd.blood_colour(r, g, b): every chr bleeds this colour (chr.c
+// chrGetBloodColour override — sparks, hit splats and floor drips all derive
+// from it). pd.blood_colour() restores per-body colours.
+extern u32 g_ChaosBloodColour;
+s32 chraiLuaBloodColour(s32 r, s32 g, s32 b, s32 on)
+{
+	if (!on) {
+		g_ChaosBloodColour = 0;
+	} else {
+		// low bit doubles as the "set" flag so pure black still registers
+		g_ChaosBloodColour = ((u32)(r & 0xff) << 24) | ((u32)(g & 0xff) << 16)
+				| ((u32)(b & 0xff) << 8) | 1;
+	}
+	return 1;
+}
+
+// pd.max_blood(on): every hit splatters (no 1-in-3 dry hits, triple spark
+// spray) and wounded chrs drip at the maximum rate (splat.c / chr.c).
+extern s32 g_ChaosMaxBlood;
+s32 chraiLuaMaxBlood(s32 on)
+{
+	g_ChaosMaxBlood = on ? 1 : 0;
+	return 1;
+}
+
+// pd.items_shuffle(): every weapon pickup lying on the ground trades places
+// with another (propobj.c chaosItemsShuffle). Returns how many moved.
+#ifndef PLATFORM_N64
+extern s32 chaosItemsShuffle(void);
+#endif
+s32 chraiLuaItemsShuffle(void)
+{
+#ifndef PLATFORM_N64
+	return chaosItemsShuffle();
+#else
+	return 0;
+#endif
+}
+
+// pd.chr_wireframe(on): hostile chrs render as polygon outlines (prop.c
+// G_CHRWIREFRAME_EXT bracket around chrRender; both fast3d backends).
+extern s32 g_ChaosWireframeChrs;
+s32 chraiLuaChrWireframe(s32 on)
+{
+	g_ChaosWireframeChrs = on ? 1 : 0;
+	return 1;
+}
+
+// pd.double_shots(on): every fire event takes twice the shots (bondgun.c
+// shotstotake doubling — with dual-wield that's the "Quad handed" bit).
+extern s32 g_ChaosDoubleShots;
+s32 chraiLuaDoubleShots(s32 on)
+{
+	g_ChaosDoubleShots = on ? 1 : 0;
+	return 1;
+}
+
+// pd.buttons() / pd.buttons_pressed(): the local player's RAW pad buttons
+// (held / newly-pressed this frame). Reads the joy layer directly, so it sees
+// buttons even while pd.button_block hides them from gameplay — the popup
+// framework (quiz/EULA) blocks FIRE from shooting but still reads the answer.
+u32 chraiLuaButtons(s32 pressed)
+{
+	s32 contpad;
+
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayerstats == NULL) {
+		return 0;
+	}
+	contpad = optionsGetContpadNum1(g_Vars.currentplayerstats->mpindex);
+	if (pressed) {
+		return joyGetButtonsPressedThisFrame(contpad, 0xffffffff);
+	}
+	return joyGetButtons(contpad, 0xffffffff);
+}
+
 // pd.chr_target(chrnum, victimchrnum): point a chr's combat AI at another chr
 // (the aiSetTargetChr recipe: target index + the trigger-shot flag + full
 // alertness). Backs the "Civil war" infighting effect.
@@ -9511,6 +9642,155 @@ s32 chraiLuaSpawnBike(void)
 	return 1;
 }
 
+// pd.spawn_chopper(): a hostile dD hovercopter appears near the player and
+// opens fire (the "helicopter helicopter" chaos effect). The spawn_bike
+// recipe adapted to OBJTYPE_CHOPPER: runtime template + objInitWithModelDef +
+// manual placement, then setup.c's chopper field block with an IDLE ailist
+// (choppers run chraiExecute every tick, and a NULL list is not survivable),
+// the player as target, and CHOPPERMODE_COMBAT. No patrol path: a path-less
+// chopper holds position and engages when its target is visible
+// (chopperTickMove's "stay put" branch). EXPLORATORY — the mission choppers
+// are ailist-driven, so combat behaviour without a script is best-effort.
+static struct chopperobj g_ChaosChoppers[2]; // 0 = dD hovercopter, 1 = A51 interceptor
+static s32 g_ChaosChopperSpawned[2] = {0, 0};
+
+s32 chraiLuaSpawnChopper(s32 kind, s32 extrascale)
+{
+	static const struct chopperobj zerochopper;
+	struct chopperobj *chopper;
+	struct defaultobj *obj;
+	struct coord pos;
+	Mtxf mtx;
+	RoomNum seedrooms[8];
+	f32 floory;
+	u16 floorcol;
+	s32 modelnum;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode != NETMODE_NONE) {
+		return 0;
+	}
+
+	kind = (kind == 1) ? 1 : 0;
+	modelnum = kind ? MODEL_A51INTERCEPTOR : MODEL_DD_HOVERCOPTER;
+	// The interceptor's MODELDEF is natively ~0.1 scale (the chopper gunfire
+	// code corrects its gun position by 0.1/model->scale), so extrascale 256
+	// = authored size — scaling it further down made it near-invisible. The
+	// dD copter is 1:1 at 256 (chaos runs it quarter size). Clamp so a bad
+	// script value can't produce a zero-scale model.
+	if (extrascale < 8) {
+		extrascale = kind ? 1024 : 64;
+	} else if (extrascale > 2048) {
+		extrascale = 2048;
+	}
+	chopper = &g_ChaosChoppers[kind];
+	obj = &chopper->base;
+
+	// ~350 units ahead of the player, hovering 200 above their floor
+	pos.x = g_Vars.currentplayer->prop->pos.x + g_Vars.currentplayer->bond2.unk00.x * 350.0f;
+	pos.y = g_Vars.currentplayer->prop->pos.y + 200.0f;
+	pos.z = g_Vars.currentplayer->prop->pos.z + g_Vars.currentplayer->bond2.unk00.z * 350.0f;
+	mtx4LoadIdentity(&mtx);
+	roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms);
+
+	// Already spawned this stage (prop backlink still valid): summon it back
+	// to the player and re-aggro.
+	if (g_ChaosChopperSpawned[kind] && obj->prop && obj->prop->obj == obj
+			&& obj->prop->type == PROPTYPE_OBJ && obj->model
+			&& chopper->attackmode != CHOPPERMODE_FALL
+			&& chopper->attackmode != CHOPPERMODE_DEAD) {
+		func0f06a580(obj, &pos, &mtx, seedrooms);
+		chopper->target = g_Vars.currentplayer->prop - g_Vars.props;
+		chopper->attackmode = CHOPPERMODE_COMBAT;
+		chopper->patroltimer60 = TICKS(240);
+		return 1;
+	}
+
+	*chopper = zerochopper;
+	obj->extrascale = (u16)extrascale;
+	obj->type = OBJTYPE_CHOPPER;
+	obj->modelnum = (s16)modelnum;
+	obj->pad = -1;
+	obj->flags = OBJFLAG_CHOPPER_INIT;
+	obj->realrot[0][0] = 1;
+	obj->realrot[1][1] = 1;
+	obj->realrot[2][2] = 1;
+	obj->maxdamage = 1000;
+	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
+	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
+	obj->floorcol = 0x0fff;
+
+	if (!setupLoadModeldef(modelnum)) {
+		return 0;
+	}
+	if (objInitWithModelDef(obj, g_ModelStates[modelnum].modeldef) == NULL
+			|| obj->model == NULL || obj->prop == NULL) {
+		return 0;
+	}
+	modelSetScale(obj->model, obj->model->scale * (obj->extrascale * (1.0f / 256.0f)));
+
+	// keep obj->floorcol fresh for the shade path (out-param)
+	cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol, NULL);
+	obj->floorcol = floorcol;
+
+	func0f06a580(obj, &pos, &mtx, seedrooms);
+
+	// setup.c's OBJTYPE_CHOPPER init block, minus the setup-file ailist
+	chopper->turnrot60 = 0;
+	chopper->roty = 0;
+	chopper->rotx = 0;
+	chopper->gunroty = 0;
+	chopper->gunrotx = 0;
+	chopper->barrelrot = 0;
+	chopper->barrelrotspeed = 0;
+	chopper->ailist = ailistFindById(GAILIST_IDLE);
+	chopper->aioffset = 0;
+	chopper->aireturnlist = -1;
+	chopper->path = NULL;
+	chopper->nextstep = 0;
+	chopper->targetvisible = false;
+	chopper->vz = 0;
+	chopper->vy = 0;
+	chopper->vx = 0;
+	chopper->otz = 0;
+	chopper->oty = 0;
+	chopper->otx = 0;
+	chopper->power = 0;
+	chopper->bob = 0;
+	chopper->bobstrength = 0.05f;
+	chopper->timer60 = 0;
+	chopper->cw = 0;
+	chopper->weaponsarmed = true;
+	chopper->fireslotthing = mempAlloc(sizeof(struct fireslotthing), MEMPOOL_STAGE);
+	chopper->fireslotthing->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
+	chopper->fireslotthing->beam->age = -1;
+	chopper->fireslotthing->unk08 = -1;
+	chopper->fireslotthing->unk00 = 0;
+	chopper->fireslotthing->unk01 = 0;
+	chopper->fireslotthing->unk0c = 0.85f;
+	chopper->fireslotthing->unk10 = 0.2f;
+	chopper->fireslotthing->unk14 = 0;
+	chopper->dead = false;
+
+	// hunt the player
+	chopper->target = g_Vars.currentplayer->prop - g_Vars.props;
+	chopper->attackmode = CHOPPERMODE_COMBAT;
+	chopper->patroltimer60 = TICKS(240);
+
+	obj->prop->forcetick = true;
+	propActivate(obj->prop);
+	propEnable(obj->prop);
+
+	g_ChaosChopperSpawned[kind] = 1;
+	return 1;
+}
+
+// propobj.c's chopper tick asks whether a chopper is one of ours (the chaos
+// spawns run GAILIST_IDLE, so the tick drives their see-target/attack loop).
+s32 chaosChopperIsChaos(struct chopperobj *chopper)
+{
+	return chopper == &g_ChaosChoppers[0] || chopper == &g_ChaosChoppers[1];
+}
+
 // Chaos Gormless master switch (bondmove.c, bmoveProcessInput).
 extern s32 g_ChaosGormless;
 
@@ -9723,12 +10003,127 @@ s32 chraiLuaPlayerDamage(f32 amount)
 	return 1;
 }
 
-// pd.weapon_jam(on): trigger pulls dry-fire (bondgun.c reroute).
+// pd.weapon_jam(mode): 1 = trigger pulls dry-fire (bondgun.c reroute);
+// 2 = "jam v2": pulls sometimes dry-fire, and a shot that DOES fire jams the
+// rest of the magazine (clip drains to 0 — reload to clear). 0 = off.
 extern s32 g_ChaosWeaponJam;
-s32 chraiLuaWeaponJam(s32 on)
+s32 chraiLuaWeaponJam(s32 mode)
 {
-	g_ChaosWeaponJam = on ? 1 : 0;
+	g_ChaosWeaponJam = mode;
 	return 1;
+}
+
+// pd.force_secondary(on): pin both hands to the secondary weapon function
+// (bondmove.c per-tick re-assert, the gun_lock pattern minus auto-fire and
+// the switch block).
+extern s32 g_ChaosForceSecondary;
+s32 chraiLuaForceSecondary(s32 on)
+{
+	g_ChaosForceSecondary = on ? 1 : 0;
+	return 1;
+}
+
+// pd.button_block(mask): named pad buttons vanish from gameplay input
+// (bondmove.c c1buttons strip; menus read the joy layer directly and are
+// unaffected). mask 0 = off.
+extern u32 g_ChaosButtonMask;
+s32 chraiLuaButtonMask(u32 mask)
+{
+	g_ChaosButtonMask = mask;
+	return 1;
+}
+
+// pd.ammo_cost(mult): each shot spends mult rounds from the clip
+// (bondgun.c post-decrement top-up). 1 = normal.
+extern s32 g_ChaosAmmoCost;
+s32 chraiLuaAmmoCost(s32 mult)
+{
+	g_ChaosAmmoCost = mult < 1 ? 1 : mult;
+	return 1;
+}
+
+// pd.autoaim(on): force aim assist on regardless of the player option
+// (options.c optionsGetAutoAim override).
+extern s32 g_ChaosAutoAim;
+s32 chraiLuaAutoAim(s32 on)
+{
+	g_ChaosAutoAim = on ? 1 : 0;
+	return 1;
+}
+
+// pd.deadzone(frac): override every analog-stick deadzone to frac (0..1) of
+// full deflection when larger than the user's own setting; 0 = off.
+// (port/src/input.c inputAxisScale.)
+#ifndef PLATFORM_N64
+extern void inputSetChaosDeadzone(s32 dz);
+#endif
+s32 chraiLuaDeadzone(f32 frac)
+{
+#ifndef PLATFORM_N64
+	if (frac < 0) {
+		frac = 0;
+	}
+	if (frac > 0.95f) {
+		frac = 0.95f;
+	}
+	inputSetChaosDeadzone((s32)(frac * 32768.0f));
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+// pd.nitro(on): every destroyed object explodes like the Crash Site ship
+// (propobj.c objCheckDestroyed exptype override).
+extern s32 g_ChaosNitro;
+s32 chraiLuaNitro(s32 on)
+{
+	g_ChaosNitro = on ? 1 : 0;
+	return 1;
+}
+
+// pd.objective_force(index, state): 0 = off (real status), 1 = force
+// INCOMPLETE, 2 = force COMPLETE. index -1 + state 0 clears all. Solo only
+// (objectives.c objectiveCheck override — display AND the all-complete check
+// both route through it, so a held-down objective blocks mission end until
+// released).
+extern u8 g_ChaosObjectiveForce[MAX_OBJECTIVES];
+s32 chraiLuaObjectiveForce(s32 index, s32 state)
+{
+	s32 i;
+
+	if (index < 0) {
+		for (i = 0; i < MAX_OBJECTIVES; i++) {
+			g_ChaosObjectiveForce[i] = 0;
+		}
+		return 1;
+	}
+	if (index >= MAX_OBJECTIVES) {
+		return 0;
+	}
+	g_ChaosObjectiveForce[index] = (u8)(state < 0 ? 0 : (state > 2 ? 2 : state));
+	return 1;
+}
+
+// pd.objective_status(index): the objective's REAL status (override bypassed):
+// 0 incomplete / 1 complete / 2 failed, or -1 if the index isn't a live
+// objective on this stage+difficulty.
+s32 chraiLuaObjectiveStatus(s32 index)
+{
+	u8 saved;
+	s32 status;
+
+	if (index < 0 || index >= MAX_OBJECTIVES || index >= objectiveGetCount()) {
+		return -1;
+	}
+	if (!(objectiveGetDifficultyBits(index) & (1 << lvGetDifficulty()))) {
+		return -1;
+	}
+	saved = g_ChaosObjectiveForce[index];
+	g_ChaosObjectiveForce[index] = 0;
+	status = objectiveCheck(index);
+	g_ChaosObjectiveForce[index] = saved;
+	return status;
 }
 
 // pd.pinball(on): fired physics projectiles become grenade-secondary

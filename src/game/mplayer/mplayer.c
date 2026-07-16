@@ -1063,6 +1063,16 @@ s32 mpCalculateTeamScoreLimit(void)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		// Port-only: manual challenge difficulty override. When the host fixes a
+		// player count ("make it harder" online), scale the score target by that
+		// count instead of the real number of connected players. Synced via
+		// SVC_STAGE_START so client displays / limits match the host.
+		if (g_MpChallengeNumPlayers > 0) {
+			numchrs = g_MpChallengeNumPlayers;
+		}
+#endif
+
 		switch (numchrs) {
 		case 1:
 			break;

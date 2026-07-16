@@ -15,6 +15,7 @@
 #include "game/playermgr.h"
 #include "game/prop.h"
 #include "game/training.h"
+#include "net/net.h"
 #include "bss.h"
 #include "lib/dma.h"
 #include "lib/rng.h"
@@ -253,6 +254,21 @@ void challengePerformSanityChecks(void)
 		// Turn off all simulants (and players 5-8 if supported) and turn them on if enabled
 		// for this number of players
 		g_MpSetup.chrslots &= 0x000f;
+
+#ifndef PLATFORM_N64
+		// Port-only: challenge difficulty override. Force the effective player
+		// count that selects the simulant roster + difficulties (and, via
+		// mpCalculateTeamScoreLimit, the score target) so an online co-op
+		// challenge can be made harder than the number of connected players.
+		// Host-only path; the resulting chrslots + bot difficulties reach clients
+		// via SVC_STAGE_START. Clamp to the 1..4 range the difficulty table has.
+		if (g_MpChallengeNumPlayers > 0) {
+			numplayers = g_MpChallengeNumPlayers;
+			if (numplayers > 4) {
+				numplayers = 4;
+			}
+		}
+#endif
 
 		for (i = 0; i < MAX_BOTS_PRESET; i++) {
 			g_BotConfigsArray[i].difficulty = g_MpSimulantDifficultiesPerNumPlayers[i][numplayers - 1];

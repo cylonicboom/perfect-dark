@@ -1754,6 +1754,53 @@ MenuItemHandlerResult menuhandlerMpAutoRandomWeapon(s32 operation, struct menuit
 
 	return 0;
 }
+
+// Port-only: challenge "Difficulty" dropdown. Challenges normally scale their
+// simulant roster/difficulty and score target by the number of players, so a
+// 2-player game is easier than a 4-player one. This lets you force that scaling
+// to a fixed level regardless of the real headcount — in local play (crank a
+// solo challenge up), on a listen host, or via the Host-Online admin client.
+// The labels are PD's own difficulty names mapped straight onto the forced
+// player count: Default = auto (vanilla, scale by real count), Agent..Dark Agent
+// = 1..4 "players". The value drives g_MpChallengeNumPlayers, consumed by
+// challengePerformSanityChecks (sims) and mpCalculateTeamScoreLimit (score), and
+// synced to clients via SVC_STAGE_START in a net game.
+MenuItemHandlerResult menuhandlerMpChallengeDifficulty(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const char *labels[] = {
+		"Default",       // 0 = auto: scale by the real connected player count
+		"Agent",         // 1
+		"Secret Agent",  // 2
+		"Perfect Agent", // 3
+		"Dark Agent",    // 4
+	};
+
+	switch (operation) {
+	// Always visible — the item only lives in the challenge dialogs (the
+	// "Challenges" list screen and the challenge details screen), so no lock-type
+	// gate is needed; you can set it while browsing challenges, local or online.
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(labels);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)labels[data->dropdown.value];
+	case MENUOP_SET:
+		g_MpChallengeNumPlayers = data->dropdown.value;
+		// Re-run the challenge sanity checks so the simulant roster / difficulties
+		// re-derive from the new forced count immediately (the menu-tick re-run
+		// only fires on the setup-root transition). No-op off a challenge / off
+		// the host, so it's safe to call unconditionally here.
+		challengePerformSanityChecks();
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value =
+			(g_MpChallengeNumPlayers >= 0 && g_MpChallengeNumPlayers <= 4)
+			? g_MpChallengeNumPlayers : 0;
+		break;
+	}
+
+	return 0;
+}
 #endif
 
 struct menuitem g_MpWeaponsMenuItems[] = {
@@ -6223,6 +6270,18 @@ struct menuitem g_MpConfirmChallengeViaListOrDetailsMenuItems[] = {
 		0,
 		NULL,
 	},
+#ifndef PLATFORM_N64
+	// Port-only: challenge Difficulty selector (controller-navigable confirm
+	// screen). Not lockable — it's always changeable before accepting.
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LESSLEFTPADDING | MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Difficulty",
+		0,
+		menuhandlerMpChallengeDifficulty,
+	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6286,6 +6345,16 @@ struct menuitem g_MpChallengesListOrDetailsMenuItems[] = {
 		0,
 		menuhandler0017e9d8,
 	},
+#ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LESSLEFTPADDING | MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Difficulty",
+		0,
+		menuhandlerMpChallengeDifficulty,
+	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -6359,6 +6428,20 @@ struct menuitem g_MpConfirmChallengeMenuItems[] = {
 		0,
 		NULL,
 	},
+#ifndef PLATFORM_N64
+	// Port-only: challenge Difficulty selector on the "Play challenge?" confirm
+	// screen — a normal controller-navigable dialog (unlike the challenge list,
+	// which traps stick/d-pad). Forces the challenge's sim + score scaling to a
+	// chosen player count; Default keeps the vanilla auto scaling.
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LESSLEFTPADDING | MENUITEMFLAG_DROPDOWN_BELOW | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Difficulty",
+		0,
+		menuhandlerMpChallengeDifficulty,
+	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

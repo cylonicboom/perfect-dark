@@ -298,6 +298,27 @@ void htbCreateUplink(void)
 	}
 
 #ifndef PLATFORM_N64
+	// Port-only determinism: the candidate list above is built by walking
+	// g_Vars.activeprops, whose ORDER can differ between host and client (prop
+	// insertion / room-registration order is not guaranteed identical). The same
+	// rngRandom() index below would then pick a DIFFERENT physical crate on each
+	// machine — the uplink replaces crate A on the host and crate B on the
+	// client, so one ammo box goes missing for clients. Sort by pad (stable
+	// level data, identical on every machine) so the RNG pick lands on the same
+	// crate everywhere. N64 build is unchanged.
+	{
+		s32 sa, sb;
+		for (sa = 1; sa < count; sa++) {
+			struct defaultobj *skey = candidates[sa];
+			for (sb = sa - 1; sb >= 0 && candidates[sb]->pad > skey->pad; sb--) {
+				candidates[sb + 1] = candidates[sb];
+			}
+			candidates[sb + 1] = skey;
+		}
+	}
+#endif
+
+#ifndef PLATFORM_N64
 	// Port-only: static spawn pin. When set, bypass both the ammocrate-
 	// replacement scan and the rngRandom padnums fallback so the uplink
 	// lands on the chosen INTROCMD_CASE/CASERESPAWN pad. Terminal

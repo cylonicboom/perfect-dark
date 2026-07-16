@@ -175,6 +175,7 @@ static inline u32 netbufWritePlayerMove(struct netbuf *buf, const struct netplay
 	netbufWriteS16(buf, (s16)netQuantRound(in->crosspos[0] * NET_MV_CROSS_SCALE, -32767, 32767));
 	netbufWriteS16(buf, (s16)netQuantRound(in->crosspos[1] * NET_MV_CROSS_SCALE, -32767, 32767));
 	netbufWriteS8(buf, in->weaponnum);
+	netbufWriteS8(buf, in->curweaponnum); // proto 87: currently-held weapon heartbeat (unconditional, after weaponnum)
 	netbufWriteCoord(buf, &in->pos);
 	netbufWriteS16(buf, in->animnum);
 	netbufWriteS16(buf, in->animframe);
@@ -205,6 +206,7 @@ static inline u32 netbufReadPlayerMove(struct netbuf *buf, struct netplayermove 
 	in->crosspos[0] = (f32)netbufReadS16(buf) / NET_MV_CROSS_SCALE;
 	in->crosspos[1] = (f32)netbufReadS16(buf) / NET_MV_CROSS_SCALE;
 	in->weaponnum = netbufReadS8(buf);
+	in->curweaponnum = netbufReadS8(buf); // proto 87: currently-held weapon heartbeat
 	netbufReadCoord(buf, &in->pos);
 	in->animnum = netbufReadS16(buf);
 	in->animframe = netbufReadS16(buf);
@@ -638,6 +640,7 @@ u32 netmsgClcAdminSetupWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.racelaps);
 	netbufWriteU8(dst, g_MpSetup.racepitytime);
 	netbufWriteU8(dst, g_MpSetup.respawndelay);
+	netbufWriteU8(dst, (u8)g_MpChallengeNumPlayers); // proto 87: challenge difficulty override
 	netbufWriteU8(dst, (u8)g_BotCount);
 	netbufWriteU8(dst, NET_MAX_BOTS);
 	for (s32 i = 0; i < NET_MAX_BOTS; ++i) {
@@ -680,6 +683,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	const u8 racelaps = netbufReadU8(src);
 	const u8 racepitytime = netbufReadU8(src);
 	const u8 respawndelay = netbufReadU8(src);
+	const u8 challengenumplayers = netbufReadU8(src); // proto 87
 	const u8 botcount = netbufReadU8(src);
 	const u8 numbots = netbufReadU8(src);
 
@@ -757,6 +761,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.racelaps = racelaps;
 	g_MpSetup.racepitytime = racepitytime;
 	g_MpSetup.respawndelay = respawndelay;
+	g_MpChallengeNumPlayers = challengenumplayers; // proto 87: challenge difficulty override
 	strcpy(g_MpSetup.name, "server");
 
 	for (u8 i = 0; i < numbots; ++i) {
@@ -1230,6 +1235,9 @@ u32 netmsgSvcStageStartWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_MpSetup.racepitytime);
 	// Respawn delay lockout (NET_PROTOCOL_VER >= 77).
 	netbufWriteU8(dst, g_MpSetup.respawndelay);
+	// Challenge difficulty override (NET_PROTOCOL_VER >= 87): forced player
+	// count for challenge scaling, 0 = auto. Combat-Sim block only.
+	netbufWriteU8(dst, (u8)g_MpChallengeNumPlayers);
 
 	// who the fuck is in the game
 	netbufWriteU8(dst, g_NetNumClients);
@@ -1407,6 +1415,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 	g_MpSetup.racelaps = netbufReadU8(src);
 	g_MpSetup.racepitytime = netbufReadU8(src);
 	g_MpSetup.respawndelay = netbufReadU8(src);
+	g_MpChallengeNumPlayers = netbufReadU8(src); // proto 87: challenge difficulty override
 	strcpy(g_MpSetup.name, "server");
 
 	if (src->error) {

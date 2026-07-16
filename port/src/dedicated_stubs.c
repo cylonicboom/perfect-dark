@@ -110,6 +110,7 @@ void inputMouseEnable(s32 enabled) { (void)enabled; }
 void inputUpdate(void) { }
 void inputSaveBinds(void) { }
 void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode) { (void)cidx; (void)n64mode; }
+void inputSetChaosDeadzone(s32 dz) { (void)dz; } // Lua chaos XBLA deadzone floor; no input layer on the dedicated server
 
 void inputClearLastKey(void) { }
 s32 inputGetLastKey(void) { return 0; }

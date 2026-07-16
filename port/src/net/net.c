@@ -786,6 +786,11 @@ static inline void netClientRecordMove(struct netclient *cl, const struct player
 		move->weaponnum = -1;
 	}
 
+	// Weapon heartbeat (proto 87): the currently-equipped weapon, sent every
+	// move so the host/other peers reconcile this pawn's third-person gun even
+	// when they never saw the switch edge or the initial/scripted loadout.
+	move->curweaponnum = pl->gunctrl.weaponnum;
+
 	if (pl->gunctrl.dualwielding && !pl->gunctrl.throwing) {
 		move->ucmd |= UCMD_SELECT_DUAL;
 		if ((move->ucmd ^ cl->outmove[1].ucmd) & UCMD_SELECT_DUAL) {
@@ -2033,6 +2038,11 @@ s32 netDisconnect(void)
 	netKillFeedClear();
 	g_NetLobbyState.valid = 0;
 	g_NetCoopHosting = 0; // co-op hosting intent is per-session
+
+	// Challenge difficulty override is a net-session setting: clear it so a later
+	// offline challenge doesn't inherit a forced player count (mpCalculateTeam-
+	// ScoreLimit reads it unconditionally).
+	g_MpChallengeNumPlayers = 0;
 
 	// Host Online Game session state is per-connection: drop the auto-admin
 	// token and mode so a later plain join doesn't auto-login or reroute the
@@ -4217,6 +4227,7 @@ s32 g_NetCoopLivesMode = COOP_LIVES_OFF;    // F3 host setting, synced
 s32 g_NetCoopLivesCount = 3;                // F3 lives per player (host setting, synced)
 s32 g_NetCoopLives[MAX_PLAYERS] = {0};      // F3 per-player remaining (host-authoritative)
 s32 g_NetCoopSharedLives = 0;               // F3 shared pool remaining (host-authoritative)
+s32 g_MpChallengeNumPlayers = 0;            // Combat Sim challenge difficulty override; 0 = auto, 1..4 = forced player count (synced)
 
 static f32 netLerpf(f32 a, f32 b, f32 t)
 {

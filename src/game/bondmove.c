@@ -291,6 +291,23 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 		}
 	}
 
+	// Weapon heartbeat reconcile (proto 87). The SELECT block above only fires on
+	// a weapon *switch*; the client's initial/scripted loadout and any missed
+	// SELECT edge otherwise leave this remote pawn on a stale or absent weapon,
+	// so the observer sees the wrong gun / no gun / no muzzle flash. curweaponnum
+	// carries the client's currently-held weapon every move: if it disagrees with
+	// what the pawn holds and no switch is in flight, equip it. The same guards as
+	// the SELECT block (not throwing, no switch queued, differs from current and
+	// from the queued switch) keep this from restarting the equip anim every tick.
+	if (inmove->curweaponnum >= 0
+			&& !(inmove->ucmd & UCMD_SELECT)
+			&& !pl->gunctrl.throwing
+			&& pl->gunctrl.switchtoweaponnum < 0
+			&& inmove->curweaponnum != bgunGetWeaponNum(HAND_RIGHT)) {
+		pl->gunctrl.dualwielding = (inmove->ucmd & UCMD_SELECT_DUAL) != 0;
+		bgunEquipWeapon(inmove->curweaponnum);
+	}
+
 	if ((inmove->ucmd & UCMD_SECONDARY) && !bgunIsUsingSecondaryFunction()) {
 		bgunConsiderToggleGunFunction(0, false, false, true);
 	} else if (!(inmove->ucmd & UCMD_SECONDARY) && bgunIsUsingSecondaryFunction()) {

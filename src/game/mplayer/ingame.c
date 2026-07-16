@@ -147,6 +147,19 @@ char *mpMenuTextInGameLimit(struct menuitem *item)
 		sprintf(g_StringPointer, langGet(L_MPMENU_114), g_MpSetup.timelimit + 1);
 		break;
 	case 1:
+#ifndef PLATFORM_N64
+		// Co-op / online challenges scale the real score target by the player
+		// count (mpCalculateTeamScoreLimit). The raw per-player scorelimit shown
+		// here read as the un-scaled "1-player" value even though the match
+		// enforces the scaled team target — display the value the match actually
+		// uses for a scaling challenge so the pause menu is accurate.
+		if (g_BossFile.locktype == MPLOCKTYPE_CHALLENGE
+				&& g_MpSetup.teamscorelimit != 400
+				&& (g_MpSetup.scenario == MPSCENARIO_COMBAT
+					|| g_MpSetup.scenario == MPSCENARIO_KINGOFTHEHILL)) {
+			sprintf(g_StringPointer, langGet(L_MPMENU_113), mpCalculateTeamScoreLimit() + 1);
+		} else
+#endif
 		sprintf(g_StringPointer, langGet(L_MPMENU_113), g_MpSetup.scorelimit + 1);
 		break;
 	case 2:

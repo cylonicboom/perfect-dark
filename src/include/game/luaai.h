@@ -321,7 +321,8 @@ s32 chraiLuaKnifeLock(s32 on);                /* Knife fight: block weapon switc
 s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */
 s32 chraiLuaGas(s32 on);                      /* nerve gas on any stage (wash + cough + damage) */
 s32 chraiLuaTPose(s32 on);                    /* all skeletal models render in bind pose */
-s32 chraiLuaChrKo(s32 chrnum);                /* tranq-style knockout: collapse, drop gun, wake later */
+s32 chraiLuaChrKo(s32 chrnum);                /* tranq-style knockout: collapse, drop gun, parked un-reaped */
+s32 chraiLuaChrWake(s32 chrnum);              /* recover a KO'd chr: blend back to standing, AI resumes */
 s32 chraiLuaPinball(s32 on);                  /* fired projectiles become proximity pinballs */
 s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
 s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */

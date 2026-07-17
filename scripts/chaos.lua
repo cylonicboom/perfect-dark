@@ -733,12 +733,9 @@ chaos.effects = {
                    start=function() pd.pinball(true) end,
                    stop=function() pd.pinball(false) end },
   -- composite batch: pure-Lua combos over the existing hook surface
-  nap_time     = { label="Nap time",          w=4, dur=0, start=function()
-                     local n = 0
-                     for _, c in ipairs(pd.all_chrs() or {}) do
-                       if pd.chr_ko(c) then n = n + 1 end
-                     end
-                     if n == 0 then error("nobody to KO") end end },
+  -- nap_time removed 2026-07-18: KO'ing whole stages proved too troublesome
+  -- to debug (see PORT_CHAOS.md "Knockouts & Nap time" for the KO/wake
+  -- mechanics). pd.chr_ko / pd.chr_wake remain available for scripting.
   gun_game     = { label="Gun Game",          w=3, dur=60,
                    start=function()
                      st.gungame_idx = 1

@@ -1682,11 +1682,22 @@ static int l_pd_t_pose(lua_State *L)
 	return 1;
 }
 
-/* pd.chr_ko(chrnum) -> bool. Tranquiliser-style knockout: the chr collapses,
- * drops its weapon, and wakes up later. */
+/* pd.chr_ko(chrnum) -> bool. Tranquiliser-style knockout: the chr collapses
+ * and drops its weapon. The body is parked un-reaped (engine KOs are
+ * otherwise permanent, and reaped chrs read as eliminated to mission
+ * scripts) — wake it with pd.chr_wake. */
 static int l_pd_chr_ko(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaChrKo((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.chr_wake(chrnum) -> bool. Recover a KO'd chr: blends back to standing
+ * over ~half a second and normal AI resumes (unarmed — the KO dropped their
+ * weapons). No-op unless the chr is in one of the drugged states. */
+static int l_pd_chr_wake(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaChrWake((s32)luaL_checkinteger(L, 1)) != 0);
 	return 1;
 }
 
@@ -2105,6 +2116,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_gas);           lua_setfield(L, -2, "gas");
 	lua_pushcfunction(L, l_pd_t_pose);        lua_setfield(L, -2, "t_pose");
 	lua_pushcfunction(L, l_pd_chr_ko);        lua_setfield(L, -2, "chr_ko");
+	lua_pushcfunction(L, l_pd_chr_wake);      lua_setfield(L, -2, "chr_wake");
 	lua_pushcfunction(L, l_pd_pinball);       lua_setfield(L, -2, "pinball");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");

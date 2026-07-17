@@ -71,6 +71,18 @@ void mpstatsIncrementTotalKnockoutCount(void)
 
 void mpstatsDecrementTotalKnockoutCount(void)
 {
+#ifndef PLATFORM_N64
+	// Chaos pd.chr_ko knockouts deliberately skip the increment (see
+	// chraiLuaChrKo), so a napping chr killed outright would decrement a
+	// counter that was never bumped, underflowing the u32 (which the u8
+	// getter then reads as 255) and breaking aiIfNumKnockedOutChrs
+	// mission-script branches. Vanilla flows always increment
+	// (chrKnockOut) before any decrement, so this clamp is unreachable
+	// on N64-faithful paths.
+	if (g_Vars.knockoutcount == 0) {
+		return;
+	}
+#endif
 	g_Vars.knockoutcount--;
 }
 

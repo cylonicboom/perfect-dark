@@ -194,3 +194,22 @@ Known behaviour notes:
   along with the body rumble. `Input.Player1.TriggerRumble=0` disables.
 - **Taskbar**: watch the taskbar button fill green during game boot
   (most visible on a cold start with a big ROM / first-run preprocessing).
+
+## Mouse grab / window-active mouse lock (`port/src/input.c`, 2026-07-18)
+
+`Input.MouseGrab` (default `1`): confines the OS cursor to the game window
+while it has focus, via `SDL_SetWindowMouseGrab`. This is the free-cursor
+half of "mouse lock when the window is active" — relative mouse mode
+(`Input.MouseLockMode`) already captures the cursor during gameplay, but in
+menus the cursor is free and could wander onto a second monitor where a
+click deactivates the game.
+
+- Applied at `inputInit` (videoInit runs just before, so the window exists)
+  and re-asserted on every `SDL_EVENT_WINDOW_FOCUS_GAINED` in the input
+  event watcher, which also re-asserts relative capture if the game held
+  the mouse when focus was lost. SDL releases the grab itself on focus
+  loss, so alt-tab always frees the cursor.
+- Follows `Input.MouseEnabled` (re-evaluated in `inputMouseEnable`):
+  controller-only players keep a free cursor.
+- Set `Input.MouseGrab=0` in pd.ini to restore the old unconfined cursor.
+- Dedicated build unaffected (input.c excluded there).

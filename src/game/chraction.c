@@ -10487,8 +10487,15 @@ s32 chraiLuaTPose(s32 on)
 
 // pd.chr_ko(chrnum): knock a chr out via the tranquiliser's sanctioned
 // knockout path (chrBeginDeath with knockout=true -> ACT_DRUGGEDDROP).
-// The chr collapses, drops its weapon, and wakes back up later — exactly
-// the tranq secondary behaviour. NPCs only; dead/already-KO'd chrs skip.
+// The chr collapses and drops its weapon. Engine knockouts are PERMANENT —
+// chrTickDruggedKo only fades/reaps the body, and a reaped chr reads as
+// eliminated to mission scripts (aiIfChrDead passes on !chr), failing
+// protect objectives. So CHRCFLAG_KEEPCORPSEKO is set to park the body
+// un-reaped until chraiLuaChrWake recovers it. The KO counter is NOT
+// incremented (nap KOs must not trip aiIfNumKnockedOutChrs branches or
+// exhaust the first-two-KOs KEEPCORPSEKO budget in chrKnockOut); the
+// matching decrement-below-zero hazard is clamped in mpstats.c.
+// NPCs only; dead/already-KO'd chrs skip.
 s32 chraiLuaChrKo(s32 chrnum)
 {
 	struct chrdata *chr = chrFindByLiteralId(chrnum);
@@ -10514,6 +10521,38 @@ s32 chraiLuaChrKo(s32 chrnum)
 	// table entry 0 whose deathanims is NULL -> NULL row deref (crash at
 	// chraction.c row->thudframe1). TORSO exists in every race's table.
 	chrBeginDeath(chr, &dir, 0.0f, HITPART_TORSO, &gset, true, -1);
+	chr->chrflags |= CHRCFLAG_KEEPCORPSEKO;
+	return 1;
+}
+
+// pd.chr_wake(chrnum): recover a chr from the tranquiliser knockout chain.
+// Uses the engine's own knockdown recovery (the ANIM_DEATH_STOMACH_LONG
+// path in chrTickArgh): a 26-tick blend back to standing via
+// func0f02ed28, after which normal AI resumes. Any drugged stage
+// (coming-up / falling / on the floor) can be woken. The chr comes up
+// unarmed — the drop scattered their weapons.
+s32 chraiLuaChrWake(s32 chrnum)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL || chr->model == NULL) {
+		return 0;
+	}
+	if (chr->prop->type != PROPTYPE_CHR || chr->aibot) {
+		return 0;
+	}
+	if (chr->actiontype != ACT_DRUGGEDCOMINGUP && chr->actiontype != ACT_DRUGGEDDROP
+			&& chr->actiontype != ACT_DRUGGEDKO) {
+		return 0;
+	}
+	if (chr->hidden & CHRHFLAG_DELETING) {
+		return 0;
+	}
+
+	chr->chrflags &= ~CHRCFLAG_KEEPCORPSEKO;
+	chr->fadealpha = 255;
+	chrRecordLastSeeTargetTime(chr);
+	func0f02ed28(chr, 26);
 	return 1;
 }
 

@@ -488,6 +488,43 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
+### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
+
+> The `nap_time` effect was removed from chaos.lua the same day — stage-wide
+> KOs proved too troublesome to debug. The `pd.chr_ko` / `pd.chr_wake`
+> bindings and all the C-side mechanics below remain live for scripting.
+
+`pd.chr_ko(chrnum)` (Chaos Alpha, `chraiLuaChrKo`) drives the tranquiliser's
+sanctioned KO path (`chrBeginDeath` knockout=true → ACT_DRUGGEDDROP → KO).
+Two hard-won facts about that chain:
+
+- **Engine knockouts are permanent.** `ACT_DRUGGEDCOMINGUP` means the drug
+  *coming on*, not waking — the chain is one-way, and `chrTickDruggedKo`
+  only fades/**reaps** the body (off-screen ~2s). A reaped chr reads as
+  eliminated to mission scripts (`aiIfChrDead` passes on `!chr`), so KO'ing
+  a protected NPC used to fail the mission. `chr_ko` now sets
+  `CHRCFLAG_KEEPCORPSEKO` to park the body un-reaped (that flag gates every
+  reap/cleanup site), and `pd.chr_wake(chrnum)` (`chraiLuaChrWake`) recovers
+  the chr — the engine's own knockdown recovery (`func0f02ed28`, a 26-tick
+  blend back to standing), AI resumes, unarmed since the drop scattered
+  their guns. Nap time is now `fixeddur` 20s: start KOs + records
+  `st.nap_chrs`, stop wakes them (runs on expiry, `/chaos off`, and
+  re-trigger).
+- **KO-counter bookkeeping**: `chr_ko` does NOT increment the knockout
+  counter (nap KOs must not trip `aiIfNumKnockedOutChrs` script branches or
+  exhaust `chrKnockOut`'s first-two-KOs KEEPCORPSEKO budget), and
+  `chrBeginDeath` decrements it when a KO'd chr is killed outright — so
+  `mpstatsDecrementTotalKnockoutCount` now clamps at zero (port-guarded;
+  unreachable on N64-faithful paths) to stop the u32 underflowing.
+- The Skedar crash: `chr_ko` passes `HITPART_TORSO`, not `HITPART_GENERAL` —
+  GENERAL (200) isn't in `g_AnimTablesByRace`, and the Skedar fallback row
+  (entry 0) has NULL deathanims → NULL deref (harmless on N64, faulted the
+  port). A port-guarded fallback in `chrBeginDeath` also scans for the first
+  valid row so no other caller can hit it.
+- Residual limit: stages whose scripts *explicitly* branch on a chr being
+  knocked out (the `aiIfChrKnockedOut`-style checks) still react during the
+  nap — that's scripted behaviour, not the reap bug.
+
 **Still deferred** (with reasons): DarkSim mission AI (bot AI is welded to
 Combat Sim player slots — the co-op plan's linchpin problem; Terminator is the
 approximation), player-2 pad swap (a correct swap must remap the whole VK_JOY

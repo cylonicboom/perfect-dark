@@ -157,6 +157,7 @@ static s32 mouseWheel = 0;
 
 static s32 mouseLocked = 0;
 static s32 mouseLockMode = MLOCK_AUTO;
+static s32 mouseGrab = 1;
 static u64 mouseCursorTime = 0;
 static s32 mouseShowCursor = 1;
 
@@ -571,11 +572,34 @@ static inline void inputInitAllControllers(void)
 	}
 }
 
+// Confine the OS cursor to the window while it has focus (Input.MouseGrab).
+// This is the free-cursor half of "mouse lock when the window is active":
+// relative mouse mode already contains the cursor during gameplay, but in
+// menus the cursor is free and can wander onto another monitor, where a
+// click deactivates the game. SDL manages the grab per-focus (released on
+// focus loss, re-applied on regain); the explicit FOCUS_GAINED re-assert
+// below covers boot order and any state SDL dropped while unfocused.
+static void inputApplyMouseGrab(void)
+{
+	SDL_Window *wnd = (SDL_Window *)videoGetWindowHandle();
+	if (wnd) {
+		SDL_SetWindowMouseGrab(wnd, mouseGrab && mouseEnabled);
+	}
+}
+
 // NOTE: must return SDL3's real 1-byte bool, spelled _Bool here because
 // types.h #defines `bool` to s32 (which would mismatch SDL_EventFilter)
 static _Bool inputEventFilter(void *data, SDL_Event *event)
 {
 	switch (event->type) {
+		case SDL_EVENT_WINDOW_FOCUS_GAINED:
+			// window became active: re-assert cursor confinement and, if the
+			// game holds the mouse (gameplay), relative capture
+			inputApplyMouseGrab();
+			if (mouseLocked) {
+				inputLockMouse(1);
+			}
+			break;
 		case SDL_EVENT_GAMEPAD_ADDED:
 			// NOTE: in SDL3 `which` is an instance ID, not a device index
 			inputRefreshJoyList();
@@ -868,6 +892,10 @@ s32 inputInit(void)
 	if (mouseLockMode != MLOCK_AUTO) {
 		inputLockMouse(mouseLockMode);
 	}
+
+	// videoInit ran just before us, so the window exists; the FOCUS_GAINED
+	// watcher keeps this asserted from here on
+	inputApplyMouseGrab();
 
 	// update the axis maps
 	// NOTE: by default sticks get swapped for 1.2: "right stick" here means left stick on your controller
@@ -1586,6 +1614,8 @@ void inputMouseEnable(s32 enabled)
 	if (!mouseEnabled && mouseLockMode != MLOCK_ON && mouseLocked) {
 		inputLockMouse(0);
 	}
+	// grab follows mouseEnabled so controller-only players keep a free cursor
+	inputApplyMouseGrab();
 }
 
 s32 inputAutoLockMouse(s32 wantlock)
@@ -1960,6 +1990,7 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 {
 	configRegisterInt("Input.MouseEnabled", &mouseEnabled, 0, 1);
 	configRegisterInt("Input.MouseLockMode", &mouseLockMode, MLOCK_OFF, MLOCK_AUTO);
+	configRegisterInt("Input.MouseGrab", &mouseGrab, 0, 1);
 	configRegisterFloat("Input.MouseSpeedX", &mouseSensX, -30.f, 30.f);
 	configRegisterFloat("Input.MouseSpeedY", &mouseSensY, -30.f, 30.f);
 	configRegisterInt("Input.FakeGamepads", &fakeControllers, 0, 4);

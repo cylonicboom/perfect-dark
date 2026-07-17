@@ -40,3 +40,4 @@ build-*/
 tools/ap/datapackage.json
 tools/ap/apworld/*.apworld
 *.pem
+/symbols/

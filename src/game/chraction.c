@@ -3374,6 +3374,20 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 				row = &g_AnimTablesByRace[race][index].deathanims[tmp];
 			} else {
 				row = &g_AnimTablesByRace[race][0].deathanims[0];
+#ifndef PLATFORM_N64
+				// Entry 0 of the anim table (hitpart 0) has NULL deathanims, so
+				// row is NULL whenever hitpart isn't in the table (index -1, e.g.
+				// HITPART_GENERAL). The N64 read low memory harmlessly; the port
+				// faults. Fall back to the first entry that has real anims.
+				if (row == NULL) {
+					for (i = 0; g_AnimTablesByRace[race][i].hitpart != -1; i++) {
+						if (g_AnimTablesByRace[race][i].deathanims != NULL) {
+							row = &g_AnimTablesByRace[race][i].deathanims[0];
+							break;
+						}
+					}
+				}
+#endif
 			}
 
 			chr->act_die.thudframe1 = row->thudframe1;
@@ -10495,7 +10509,11 @@ s32 chraiLuaChrKo(s32 chrnum)
 
 	gset.weaponnum = WEAPON_TRANQUILIZER;
 	gset.weaponfunc = FUNC_SECONDARY;
-	chrBeginDeath(chr, &dir, 0.0f, HITPART_GENERAL, &gset, true, -1);
+	// HITPART_TORSO, not HITPART_GENERAL: GENERAL (200) isn't in
+	// g_AnimTablesByRace, so chrBeginDeath's Skedar branch fell through to
+	// table entry 0 whose deathanims is NULL -> NULL row deref (crash at
+	// chraction.c row->thudframe1). TORSO exists in every race's table.
+	chrBeginDeath(chr, &dir, 0.0f, HITPART_TORSO, &gset, true, -1);
 	return 1;
 }
 

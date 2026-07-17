@@ -131,6 +131,27 @@ static ULONGLONG crashGetPreferredImageBase(void)
 	return cached;
 }
 
+// The PE link timestamp uniquely identifies one *link* of the exe, unlike
+// VERSION_HASH which is only refreshed when cmake reconfigures (two builds
+// from one configure share a hash). Printed in the crash header and used by
+// tools/symbolicate.py to pick the exact archived symbol file.
+static DWORD crashGetLinkTimestamp(void)
+{
+	HMODULE h = GetModuleHandleA(NULL);
+	if (!h) {
+		return 0;
+	}
+	PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)h;
+	if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+		return 0;
+	}
+	PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE *)h + dos->e_lfanew);
+	if (nt->Signature != IMAGE_NT_SIGNATURE) {
+		return 0;
+	}
+	return nt->FileHeader.TimeDateStamp;
+}
+
 // Find the addr2line binary. Looked up in this order:
 //   1. Next to the exe (so tester builds can ship addr2line.exe alongside pd
 //      and get symbolised crashes without an MSYS2 install).
@@ -346,6 +367,13 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 	const void *mainModBase = crashGetModuleBase(crashInit);
 	CRASH_MSG("\nMODULE: [%p]\n", pcModBase);
 	CRASH_MSG("MAIN MODULE: [%p]\n", mainModBase);
+	// Which build produced this dump — lets a raw-offset log from another
+	// machine be matched to the archived symbol file for that exe
+	// (tools/symbolicate.py). Hash is the configure-time git hash baked into
+	// versioninfo.h (force-included by the build); link= is the PE link
+	// timestamp, unique per link even when the hash is stale.
+	CRASH_MSG("BUILD: " VERSION_BRANCH " " VERSION_HASH " (" VERSION_TARGET ") link=%08lx\n",
+			(unsigned long)crashGetLinkTimestamp());
 
 	// Register dump: which register held the bad pointer narrows a faulting
 	// dereference to the exact expression when several share one source line.
@@ -555,6 +583,7 @@ static void crashStackTrace(char *msg, s32 sig, void *pc)
 
 	CRASH_MSG("MODULE: %p\n", crashGetModuleBase(frames[0]));
 	CRASH_MSG("MAIN MODULE: %p\n", crashGetModuleBase(crashInit));
+	CRASH_MSG("BUILD: " VERSION_BRANCH " " VERSION_HASH " (" VERSION_TARGET ")\n");
 	CRASH_MSG("\nBACKTRACE:\n");
 
 	s32 i;

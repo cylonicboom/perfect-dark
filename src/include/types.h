@@ -3786,6 +3786,10 @@ struct room {
 	u32 dlcolourhash;
 	s32 dlcolourhashframe;
 	bool dlcolourdirty;
+	// /shinyalpha opaque-only floor (dlights.c): bitmask of colour-palette
+	// entries referenced by XLU-layer geometry (glass etc.), built at room
+	// load by bgBuildShinyXluMask. NULL = no xlu geometry (pin everything).
+	u8 *shinyxlumask;
 #endif
 };
 

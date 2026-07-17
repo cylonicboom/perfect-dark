@@ -128,6 +128,8 @@ extern bool g_DlCacheEnabled;        // display-list cache master toggle (/dlcac
 
 void bgBuildRoomOctree(s32 roomnum);
 void bgFreeRoomOctree(s32 roomnum);
+void bgBuildShinyXluMask(s32 roomnum); // /shinyalpha — xlu-layer colour-ref bitmask (glass detection)
+void bgShinyLayerStats(s32 roomnum);   // /shinyalpha info — per-layer shiny vertex counts
 s32 bgOctreeMarkCurrentRoom(void); // /octree mark — returns marked room or -1
 void bgOctreeUnmarkAll(void);      // /octree unmark
 void bgOctreeLogRoomInfo(void);    // /octree stats — log current room's octree state + why it isn't culled

@@ -1874,6 +1874,7 @@ void bgBuildTables(s32 stagenum)
 #ifndef PLATFORM_N64
 		g_Rooms[i].extra_flags = 0;
 		g_Rooms[i].octree = NULL;
+		g_Rooms[i].shinyxlumask = NULL;
 #endif
 	}
 
@@ -3248,6 +3249,9 @@ void bgLoadRoom(s32 roomnum)
 		if (g_Rooms[roomnum].extra_flags & ROOMFLAG_EX_OCTREE) {
 			bgBuildRoomOctree(roomnum);
 		}
+
+		// /shinyalpha: which colour entries belong to xlu (glass) geometry.
+		bgBuildShinyXluMask(roomnum);
 #endif
 
 		g_Rooms[roomnum].flags |= ROOMFLAG_LIGHTS_DIRTY;
@@ -3287,6 +3291,105 @@ const char var7f1b7564[] = " Failed 2 - Crossed portal %d";
 const char var7f1b7584[] = " Failed 1 - Crossed portal %d";
 const char var7f1b75a4[] = " Passed";
 
+#ifndef PLATFORM_N64
+// /shinyalpha support (dlights.c reshade): walk one render layer's leaf gdls,
+// tracking the current G_COL colour-palette base, and for each G_VTX batch
+// visit every vertex. Marks referenced colour indices in `mask` (if given)
+// and tallies total/shiny(flag 0x01) vertex counts (if given). The command
+// field extraction mirrors bgPopulateVtxBatchType.
+static void bgWalkLayerColourRefs(s32 roomnum, u32 layer, u8 *mask, s32 *total, s32 *shiny)
+{
+	s32 numcolours = g_Rooms[roomnum].gfxdata->numcolours;
+	Gfx *gdl = bgGetNextGdlInLayer(roomnum, NULL, layer);
+	s32 i;
+	s32 j;
+
+	while (gdl) {
+		Vtx *vertices = bgFindVerticesForGdl(roomnum, gdl);
+		s32 colbase = 0;
+
+		for (i = 0; gdl[i].dma.cmd != G_ENDDL; i++) {
+			if (gdl[i].dma.cmd == G_COL) {
+				colbase = (s32)((UNSEGADDR(gdl[i].words.w1) & 0xffffff) / sizeof(Col));
+			} else if (gdl[i].dma.cmd == G_VTX) {
+				s32 numvertices = (((u32)gdl[i].bytes[GFX_W0_BYTE(1)] >> 4) & 0xf) + 1;
+				Vtx *batchvertices = (Vtx *)((uintptr_t)vertices + (UNSEGADDR(gdl[i].words.w1) & 0xffffff));
+
+				for (j = 0; j < numvertices; j++) {
+					s32 idx = colbase + (batchvertices[j].colour >> 2);
+
+					if (total) {
+						(*total)++;
+					}
+					if (shiny && (batchvertices[j].flags & 0x01)) {
+						(*shiny)++;
+					}
+					if (mask && idx >= 0 && idx < numcolours) {
+						mask[idx >> 3] |= 1 << (idx & 7);
+					}
+				}
+			}
+		}
+
+		gdl = bgGetNextGdlInLayer(roomnum, gdl, layer);
+	}
+}
+
+// Build the per-room "colour entry referenced by XLU-layer geometry" bitmask.
+// The /shinyalpha floor pins only colour entries NOT in this mask: shiny
+// metal (opa layer) stays solid in dark rooms while glass (xlu layer) keeps
+// the vanilla brightness fade. NULL when the room has no xlu geometry.
+void bgBuildShinyXluMask(s32 roomnum)
+{
+	s32 numcolours = g_Rooms[roomnum].gfxdata->numcolours;
+	u8 *mask;
+
+	g_Rooms[roomnum].shinyxlumask = NULL;
+
+	if (numcolours <= 0 || bgGetNextGdlInLayer(roomnum, NULL, VTXBATCHTYPE_XLU) == NULL) {
+		return;
+	}
+
+	mask = sysMemAlloc((numcolours + 7) / 8);
+
+	if (mask == NULL) {
+		return;
+	}
+
+	{
+		s32 i;
+		for (i = 0; i < (numcolours + 7) / 8; i++) {
+			mask[i] = 0;
+		}
+	}
+
+	bgWalkLayerColourRefs(roomnum, VTXBATCHTYPE_XLU, mask, NULL, NULL);
+	g_Rooms[roomnum].shinyxlumask = mask;
+}
+
+// /shinyalpha info: per-layer vertex counts so the opa-vs-xlu split of the
+// shiny (flag 0x01) class is visible for the room being debugged.
+void bgShinyLayerStats(s32 roomnum)
+{
+	s32 opatotal = 0;
+	s32 opashiny = 0;
+	s32 xlutotal = 0;
+	s32 xlushiny = 0;
+
+	if (roomnum <= 0 || roomnum >= g_Vars.roomcount || g_Rooms[roomnum].loaded240 == 0
+			|| g_Rooms[roomnum].gfxdata == NULL) {
+		return;
+	}
+
+	bgWalkLayerColourRefs(roomnum, VTXBATCHTYPE_OPA, NULL, &opatotal, &opashiny);
+	bgWalkLayerColourRefs(roomnum, VTXBATCHTYPE_XLU, NULL, &xlutotal, &xlushiny);
+
+	sysLogPrintf(LOG_CHAT, "SHINYALPHA: room %d layers: opa %d verts (%d shiny), xlu %d verts (%d shiny), xlumask=%s",
+			roomnum, opatotal, opashiny, xlutotal, xlushiny,
+			g_Rooms[roomnum].shinyxlumask ? "built" : "none");
+}
+#endif
+
 void bgUnloadRoom(s32 roomnum)
 {
 	u32 size;
@@ -3303,6 +3406,11 @@ void bgUnloadRoom(s32 roomnum)
 
 #ifndef PLATFORM_N64
 	bgFreeRoomOctree(roomnum);
+
+	if (g_Rooms[roomnum].shinyxlumask) {
+		sysMemFree(g_Rooms[roomnum].shinyxlumask);
+		g_Rooms[roomnum].shinyxlumask = NULL;
+	}
 #endif
 
 	if (g_Rooms[roomnum].gfxdatalen > 0) {

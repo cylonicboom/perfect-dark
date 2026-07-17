@@ -31,6 +31,8 @@
 #include "platform.h"
 
 #ifndef PLATFORM_N64
+#include "system.h"
+
 // Chaos room tint (docs/PORT_CHAOS.md): a global colour multiplier applied to
 // every room's lighting — the KotH hill-highlight math (kohHighlightRoom)
 // generalised to all rooms, independent of lightop. Written by
@@ -38,6 +40,60 @@
 // reshade actually re-runs.
 f32 g_ChaosRoomTintFrac[3] = {1.0f, 1.0f, 1.0f};
 s32 g_ChaosRoomTintOn = 0;
+
+// /shinyalpha (see the flag-0x01 branch in the room reshade below): floor
+// for the brightness-driven alpha fade on env/shiny room vertices, as a
+// 0-255 fraction of the authored alpha. Only applies to opa-layer entries
+// (shinyxlumask keeps glass on the vanilla fade). Default 255 = opa-layer
+// shiny surfaces (metal etc.) never turn transparent in dark rooms — the
+// fix for the "see-through shiny surfaces" family (docs/PORT_SHINY_ALPHA.md).
+// Set 0 (or Video.ShinyAlphaFloor=0) for vanilla full fade-out.
+s32 g_RoomShinyAlphaFloor = 255;
+
+// /shinyalpha info: histogram the AUTHORED alphas of a room's shiny
+// (flag 0x01) colour entries, so glass (authored translucent) and metal
+// (authored opaque) populations are visible without guessing.
+void roomShinyAlphaDebug(s32 roomnum)
+{
+	s32 buckets[6] = {0, 0, 0, 0, 0, 0};
+	s32 shinycount = 0;
+	s32 numcolours;
+	Col *src;
+	s32 i;
+
+	if (roomnum <= 0 || roomnum >= g_Vars.roomcount || g_Rooms[roomnum].loaded240 == 0
+			|| g_Rooms[roomnum].gfxdata == NULL) {
+		sysLogPrintf(LOG_CHAT, "SHINYALPHA: room %d not loaded", roomnum);
+		return;
+	}
+
+	numcolours = g_Rooms[roomnum].gfxdata->numcolours;
+	src = (Col *)((uintptr_t)g_Rooms[roomnum].gfxdata->vertices + g_Rooms[roomnum].gfxdata->numvertices * sizeof(Vtx));
+	src = (Col *)ALIGN8((uintptr_t)src);
+
+	for (i = 0; i < numcolours; i++) {
+		if (g_Rooms[roomnum].gfxdata->vertices[i].flags & 0x01) {
+			shinycount++;
+			if (src[i].a == 255) {
+				buckets[5]++;
+			} else if (src[i].a >= 192) {
+				buckets[4]++;
+			} else if (src[i].a >= 128) {
+				buckets[3]++;
+			} else if (src[i].a >= 64) {
+				buckets[2]++;
+			} else if (src[i].a >= 1) {
+				buckets[1]++;
+			} else {
+				buckets[0]++;
+			}
+		}
+	}
+
+	sysLogPrintf(LOG_CHAT, "SHINYALPHA: room %d: %d/%d shiny colours", roomnum, shinycount, numcolours);
+	sysLogPrintf(LOG_CHAT, "SHINYALPHA: authored a: 0:%d 1-63:%d 64-127:%d 128-191:%d 192-254:%d 255:%d",
+			buckets[0], buckets[1], buckets[2], buckets[3], buckets[4], buckets[5]);
+}
 #endif
 
 const char var7f1a78e0[] = "LIGHTS : Hit occured on light %d in room %d\n";
@@ -1632,6 +1688,29 @@ void roomHighlight(s32 roomnum)
 				dst[i].g = src[i].g;
 				dst[i].b = src[i].b;
 				dst[i].a = src[i].a * (1.0f / 255.0f * br_settled_regional);
+#ifndef PLATFORM_N64
+				// "Shiny surfaces see-through in dark rooms" family: this
+				// vertex class (flag 0x01 = env/shiny) keeps its RGB but has
+				// its alpha scaled by room brightness, so a blacked-out room
+				// (br 0) zeroes the alpha and the SHADE_ALPHA-blended surface
+				// vanishes entirely — you see through it to lit space beyond.
+				// /shinyalpha N floors the fade at N/255 of the AUTHORED
+				// alpha (0 = vanilla full fade-out, 255 = never fade) — but
+				// ONLY for colour entries not referenced by the room's XLU
+				// layer (glass): shiny metal (opa layer) pins solid, glass
+				// keeps the vanilla fade so its reflection sheen still dims
+				// with darkness instead of pinning full-bright. Authored
+				// alphas can't discriminate here (both materials author 255),
+				// hence the layer-membership mask (bgBuildShinyXluMask).
+				if (g_RoomShinyAlphaFloor > 0
+						&& (g_Rooms[roomnum].shinyxlumask == NULL
+							|| (g_Rooms[roomnum].shinyxlumask[i >> 3] & (1 << (i & 7))) == 0)) {
+					s32 minalpha = src[i].a * g_RoomShinyAlphaFloor / 255;
+					if (dst[i].a < minalpha) {
+						dst[i].a = minalpha;
+					}
+				}
+#endif
 			} else {
 				if (USINGDEVICE(DEVICE_NIGHTVISION) || USINGDEVICE(DEVICE_IRSCANNER)) {
 					tmpr = tmpg = tmpb = (src[i].r > src[i].g && src[i].r > src[i].b)

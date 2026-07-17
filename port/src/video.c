@@ -1040,6 +1040,15 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterString("Video.DlCacheFrontFaceGL", vidDlCacheFrontGL, sizeof(vidDlCacheFrontGL));
 	configRegisterString("Video.DlCacheFrontFaceGPU", vidDlCacheFrontGpu, sizeof(vidDlCacheFrontGpu));
 
+	// Shiny/env room-surface darkness-fade floor (mirrors /shinyalpha; the
+	// dlights.c flag-0x01 alpha class). 0 = vanilla full fade-out (shiny
+	// surfaces go fully transparent in blacked-out rooms); N = never fade
+	// below N/255 of the authored alpha.
+	{
+		extern s32 g_RoomShinyAlphaFloor;
+		configRegisterInt("Video.ShinyAlphaFloor", &g_RoomShinyAlphaFloor, 0, 255);
+	}
+
 	// Screen-space raytracing suite (docs/PORT_RAYTRACING.md; live control via
 	// the /rt console command). GL backend only; default off.
 	configRegisterInt("Video.RT.Enabled", &gfx_rt_enabled, 0, 1);

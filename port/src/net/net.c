@@ -6701,6 +6701,33 @@ s32 netConsoleCommand(const char *line)
 			sysLogPrintf(LOG_CHAT, "AUDIT: %s (see audit: line; enabled=%s rate=%u)",
 					ok ? "PASS" : "FAIL", g_NetAuditEnabled ? "yes" : "no", g_NetAuditRate);
 		}
+	} else if (strcmp(cmd, "shinyalpha") == 0) {
+		// /shinyalpha [0-255]  floor the brightness fade on env/shiny room
+		// vertices (dlights.c flag-0x01 class), as a fraction of authored
+		// alpha. Only affects authored-OPAQUE vertices (shiny metal); glass
+		// (authored translucent) keeps the vanilla fade. Diagnostic +
+		// workaround for shiny surfaces going fully see-through in
+		// blacked-out rooms. 0 = vanilla fade-out, 255 = never fade.
+		// /shinyalpha info   histogram the current room's authored alphas.
+		extern s32 g_RoomShinyAlphaFloor;
+		extern void roomShinyAlphaDebug(s32 roomnum);
+		extern void bgShinyLayerStats(s32 roomnum);
+		if (strcmp(arg, "info") == 0) {
+			if (g_Vars.currentplayer && g_Vars.currentplayer->prop) {
+				roomShinyAlphaDebug(g_Vars.currentplayer->prop->rooms[0]);
+				bgShinyLayerStats(g_Vars.currentplayer->prop->rooms[0]);
+			} else {
+				sysLogPrintf(LOG_CHAT, "SHINYALPHA: no player room (in a stage?)");
+			}
+		} else {
+			if (arg[0]) {
+				s32 v = atoi(arg);
+				g_RoomShinyAlphaFloor = v < 0 ? 0 : v > 255 ? 255 : v;
+			}
+			sysLogPrintf(LOG_CHAT, "SHINYALPHA: floor=%d/255 %s (opaque-authored only; glass keeps vanilla fade)",
+					g_RoomShinyAlphaFloor,
+					g_RoomShinyAlphaFloor ? "ON" : "OFF");
+		}
 	} else if (strcmp(cmd, "octree") == 0) {
 		// /octree [on|off]    toggle outdoor-room octree frustum culling
 		// /octree forcecull   debug: cull every batch (flagged rooms go black)
@@ -7097,6 +7124,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /wireframe vomit|trip            animate bg/wire hue + thickness (trip = 4x slower)");
 		sysLogPrintf(LOG_CHAT, "  /wireframe save|load             persist sky/wire colour + thickness to pd.ini");
 		sysLogPrintf(LOG_CHAT, "  /mirror [on|off]                 flip the world left-right (CHEAT_MIRROR)");
+		sysLogPrintf(LOG_CHAT, "  /shinyalpha [0-255|info]         floor dark-room fade on shiny surfaces (default 255, 0=vanilla)");
 		sysLogPrintf(LOG_CHAT, "  /octree [on|off|forcecull|stats] outdoor-room octree culling");
 		sysLogPrintf(LOG_CHAT, "  /octree mark|markall|unmark      flag current room / every room (test anywhere)");
 		sysLogPrintf(LOG_CHAT, "  /octree auto                     auto-cull every outdoor room (no manual mark)");

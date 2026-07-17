@@ -21,6 +21,7 @@
 #include "console.h"
 #include "utils.h"
 #include "net/net.h"
+#include "net/netupnp.h"
 #include "ext_tex.h"
 
 u32 g_OsMemSize = 0;
@@ -104,6 +105,10 @@ static void cleanup(void)
 {
 	sysLogPrintf(LOG_NOTE, "shutdown");
 	netDisconnect();
+	// netDisconnect only ARMS the async UPnP unmap; finish it now (bounded,
+	// ~2s worst case, only when a mapping actually exists) so quitting doesn't
+	// leave a stale port forward on the router.
+	netUpnpShutdown();
 	// Headless dedicated never loaded binds (inputInit early-returned) and
 	// has no user settings to persist. Skipping inputSaveBinds + configSave
 	// here avoids clobbering pd.ini with empty bind strings, which would

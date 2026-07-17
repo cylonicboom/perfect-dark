@@ -28,6 +28,7 @@
 #include "console.h"
 #include "mixer.h"
 #include "net/net.h"
+#include "net/netupnp.h"
 
 /*
  * private typedefs and defines
@@ -323,6 +324,11 @@ void schedEndFrame(OSSched *sc)
 	if (g_Vars.diffframe60) {
 		netEndFrame();
 	}
+
+	// UPnP port-forwarding pump. Deliberately NOT inside the g_NetMode-gated
+	// netEndFrame: the DeletePortMapping after "stop hosting" must keep
+	// ticking once the session is gone. Cheap no-op when idle.
+	netUpnpTick();
 
 	sndHandleRetrace();
 	schedAudioFrame(sc);

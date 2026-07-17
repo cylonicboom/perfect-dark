@@ -11,6 +11,7 @@ Public headers for the netplay layer. Edit here when adding new message IDs, str
 | `net.h` | `netclient`, `netplayermove`, `csp_snapshot`, `lagcomp_snapshot` structs; NETMODE/CLSTATE/UCMD/`DISCONNECT_PASSWORD` constants; `g_NetServerPassword`/`g_NetJoinPassword`/`g_NetServerActualPort` externs; runtime-tunable CSP/interp knobs (`g_NetCspCorrFramesMax`, etc.) |
 | `netmsg.h` | SVC_*/CLC_* message ID constants; `NET_QF_*` query flags + `NET_QUERYTYPE_*`; `netmsgQuerySummaryWrite`/`netmsgQueryDetailsWrite`; all read/write declarations |
 | `netmaster.h` | Master/browser constants (`NET_MASTER_*`, `NET_BROWSER_MAX`), `netserverentry`/`netserverdetails` structs, browser state externs, API. **Deliberately ENet-free** so `netmenu.c` can include it. |
+| `netupnp.h` | Client-hosted UPnP port forwarding: `NETUPNP_*` state constants, `g_NetUpnpEnabled`/`g_NetUpnpState`/`g_NetUpnpExternalIP` externs, API (`netUpnpStart/Stop/Tick/Shutdown`). **Deliberately ENet-free** (same rule as `netmaster.h`). See `docs/PORT_UPNP.md`. |
 | `netbuf.h` | `netbuf` struct; typed buffer read/write API (u8/u16/u32/f32/coord) |
 | `netenet.h` | Thin ENet include wrapper — undefines `bool`, `near`, `far` after inclusion to avoid collisions |
 

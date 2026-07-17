@@ -16,11 +16,13 @@
 | `port/src/net/netmsg.c` | Message serialization — all SVC_* and CLC_* read/write functions |
 | `port/src/net/netmenu.c` | In-game menus: "Host Network Game", "Join Game", **"Server Browser"** + details/password dialogs |
 | `port/src/net/netmaster.c` | **port-net-predict:** master-server heartbeat + standalone browser socket / list + per-server query parsing |
+| `port/src/net/netupnp.c` | **port-net-predict:** client-hosted UPnP port forwarding — SSDP gateway discovery + SOAP Add/DeletePortMapping state machine, pumped from `schedEndFrame` (see `docs/PORT_UPNP.md`) |
 | `port/src/net/netbuf.c` | Byte-level read/write buffer (typed readers/writers for u8, u16, u32, f32, coord, etc.) |
 | `port/include/net/net.h` | Public net API; `netclient`, `netplayermove` structs; NETMODE/CLSTATE/UCMD/DISCONNECT constants |
 | `port/include/net/netmsg.h` | SVC_* and CLC_* message ID constants; all read/write function declarations |
 | `port/include/net/netbuf.h` | `netbuf` struct definition; buffer API |
 | `port/include/net/netmaster.h` | **port-net-predict:** master/browser constants, `netserverentry`/`netserverdetails`, browser state externs, API (ENet-free so menus can include it) |
+| `port/include/net/netupnp.h` | **port-net-predict:** UPnP state constants (`NETUPNP_*`), `g_NetUpnpEnabled`/`g_NetUpnpState`/`g_NetUpnpExternalIP`, API (ENet-free) |
 | `port/include/net/netenet.h` | Thin ENet include wrapper (undefines `bool`, `near`, `far` after inclusion) |
 | `port/external/enet.c` | Bundled ENet source |
 | `port/include/external/enet.h` | Bundled ENet header |
@@ -195,6 +197,7 @@ Net.Server.AllowInfoQuery  # respond to server query packets (0/1)
 Net.Master.Addr            # user override; empty = use baked-in NET_MASTER_DEFAULT_ADDR (204.152.192.106)
 Net.Master.Port            # master-server UDP port (default 27100, same as the game port)
 Net.Master.Advertise       # server registers with the master (0/1, default 1)
+Net.UPnP.Enabled           # UPnP-forward the server port on the router when hosting (0/1, default 1; see docs/PORT_UPNP.md)
 Server.Password            # host join password (empty = open server)
 Net.Debug.LogPath          # diagnostic log file path (empty = disabled)
 Net.Debug.LogRate          # ticks between per-client/sim pos dumps (default 6, 0 = disabled)
@@ -217,6 +220,8 @@ Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` u
 --maxclients <n>    max client cap
 --master <addr>     master-server host/IP override (Net.Master.Addr)
 --no-advertise      don't register this server with the master
+--no-upnp           don't UPnP-forward the server port on the router
+                    (Net.UPnP.Enabled; see docs/PORT_UPNP.md)
 --password <pw>     set the host join password (Server.Password)
 --svcrate <ticks>   server state-send interval (= Net.Server.UpdateFrames, the
                     /svcrate console command): 1 = 60Hz, 2 = 30Hz/~half band-
@@ -237,6 +242,7 @@ Game.Egg                   # vanity-egg auto-enable on boot (written as `Egg=` u
   - `/loss <N>` — drop ~1 in N unreliable packets (`g_NetSimPacketLoss`). Reliable packets still go through. `/loss 0` disables.
   - `/diag <path>` — open the diagnostic CSV log to the given path (truncates). `/diag` with no arg closes it. See "Diagnostic Log" below.
   - `/diagrate <ticks>` — change `Net.Debug.LogRate` (per-tick position dump interval). 0 disables dumps.
+  - `/upnp [on|off|retry]` — client-hosted UPnP port forwarding (netupnp.c): no arg = status (state, gateway, active mapping, external IP), `on`/`off` toggles `Net.UPnP.Enabled` (`off` deletes an active mapping), `retry` re-runs discovery + mapping while hosting. See `docs/PORT_UPNP.md`.
   - `/netinfo` — print current net state (tick, mode, clients, sims, lag/loss settings, diag path) plus the live tuning knob values below.
   - `/slomo` — dump the slow-motion / combat-boost decision chain: type + option bits + challenge unlock, the per-frame engage flag, tick-pin state, live `lvupdate240/60/rem`, and the speedpill (boost) state. Run on both machines to pinpoint where a net slow-mo failure sits (options missing vs flag not set vs step not halved vs client not applying).
   - `/igtick` — print the LOCAL machine's in-game tick rate. First call records `lvframe60` and the wall-clock timestamp; second+ calls report `(lvframe60_now - lvframe60_then) / elapsed_seconds` so you can see whether the local game loop is actually advancing at 60 tps. Also dumps the local player chr's GE i-frame stamp + age + window so you can debug whether the gate is firing. Diagnostic counterpart to `/netinfo`, which only reports the server / wire tick.

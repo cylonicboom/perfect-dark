@@ -13,6 +13,7 @@
 #include "net/netprop.h"
 #include "net/demo.h"
 #include "net/netmaster.h"
+#include "net/netupnp.h"
 #include "net/playlist.h"
 #include "det.h"
 #include "mpsetups.h"
@@ -1162,6 +1163,12 @@ void netInit(void)
 		g_NetMasterAdvertise = 0;
 	}
 
+	// --no-upnp: don't ask the router to forward the server port when hosting
+	// (Net.UPnP.Enabled for the session).
+	if (sysArgCheck("--no-upnp")) {
+		g_NetUpnpEnabled = 0;
+	}
+
 	const char *argpassword = sysArgGetString("--password");
 	if (argpassword) {
 		strncpy(g_NetServerPassword, argpassword, sizeof(g_NetServerPassword) - 1);
@@ -1298,6 +1305,11 @@ s32 netStartServer(u16 port, s32 maxclients)
 
 	netDiagOpen();
 	netDiagLogf("server_start", "port=%u maxclients=%d protocol=%d", port, maxclients, NET_PROTOCOL_VER);
+
+	// Ask the router to forward the game port to us (async; Net.UPnP.Enabled).
+	// A master-hosted VPS instance has no gateway to find — the discovery just
+	// times out quietly there.
+	netUpnpStart(port);
 
 	return 0;
 }
@@ -1998,6 +2010,10 @@ s32 netDisconnect(void)
 	// Tell the master we're going away (best-effort) while the socket is still
 	// up and we're still in NETMODE_SERVER. No-op on clients.
 	netMasterUnregister();
+
+	// Remove the UPnP port forward (async — netUpnpTick keeps pumping after
+	// the session ends). No-op unless this server actually added one.
+	netUpnpStop();
 
 	// stop responding to connectionless packets
 	enet_host_set_intercept_callback(g_NetHost, NULL);
@@ -5899,6 +5915,9 @@ s32 netConsoleCommand(const char *line)
 			g_NetCspCorrFramesMax,
 			sqrtf(g_NetCspCorrThreshSq),
 			sqrtf(g_NetCspTeleportThreshSq));
+	} else if (strcmp(cmd, "upnp") == 0) {
+		// UPnP port forwarding for client-hosted servers (netupnp.c).
+		netUpnpConsoleCommand(arg);
 	} else if (strcmp(cmd, "netstats") == 0) {
 		// Per-message-type tx bytes GENERATED in the last second (multiply by the
 		// number of clients for actual wire bytes — these go into the broadcast
@@ -7067,6 +7086,7 @@ s32 netConsoleCommand(const char *line)
 		sysLogPrintf(LOG_CHAT, "  /diag <path>     start diag log to file (no arg = stop)");
 		sysLogPrintf(LOG_CHAT, "  /diagrate <n>    ticks between pos dumps (0 = disable dumps)");
 		sysLogPrintf(LOG_CHAT, "  /netinfo         print current net state + tuning knobs");
+		sysLogPrintf(LOG_CHAT, "  /upnp [on|off|retry]  router port forwarding for hosting (no arg = status)");
 		sysLogPrintf(LOG_CHAT, "  /igtick          print local in-game tick rate + GE iframe state");
 		sysLogPrintf(LOG_CHAT, "  /slomo           print slow-motion / combat-boost decision state");
 		sysLogPrintf(LOG_CHAT, "  /proplog [sid]   dump networked-prop lifecycle events (no arg = newest 40)");

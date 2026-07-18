@@ -218,6 +218,40 @@ u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height)
 	return tex->texdata;
 }
 
+// General-purpose PNG loader for the Lua image hook (pd.load_image): load an
+// arbitrary image from scripts/images/ into a fresh RGBA8888 buffer. Unlike
+// extTexLoad this isn't tied to the game-texture-replacement tables — the
+// caller owns the returned buffer and frees it with stbi_image_free (exposed
+// as extImageFree). Returns NULL on failure. `relpath` is opened directly
+// (working-directory relative), matching the scripts/ loader and pd.play_file.
+u8 *extImageLoad(const char *relpath, u32 *width, u32 *height)
+{
+	int w = 0, h = 0, channels = 0;
+	u8 *data;
+
+	// The scripts/ tree lives at the working directory (exe root), NOT under
+	// the data/ base dir — so open the path directly, the same way the Lua
+	// loader (fopen "scripts/init.lua") and pd.play_file (SDL_LoadWAV) do.
+	// fsFullPath would wrongly prepend the data/ base dir.
+	data = stbi_load(relpath, &w, &h, &channels, 4);
+
+	if (data) {
+		if (width) *width = (u32)w;
+		if (height) *height = (u32)h;
+	} else {
+		sysLogPrintf(LOG_WARNING, "extImageLoad: can't load '%s': %s", relpath, stbi_failure_reason());
+	}
+
+	return data;
+}
+
+void extImageFree(u8 *data)
+{
+	if (data) {
+		stbi_image_free(data);
+	}
+}
+
 u8 extTexFontID(struct font *font) {
 	if (font == g_FontHandelGothicSm)
 		return FONT_HANDELGOTHICSM;

@@ -237,6 +237,12 @@
 // scope is force-cleared each gfx_start_frame so a lost END can't leak.
 #define G_CHRWIREFRAME_EXT           0x4c
 
+// HUDVD chaos (docs/PORT_CHAOS.md): translate every subsequent 2D rect by
+// (x,y) whole pixels until reset to (0,0). Emitted around each HUD element so
+// they bounce DVD-style in independent directions. Honoured by both backends
+// (applied in gfx_draw_rectangle); force-cleared each gfx_start_frame.
+#define G_HUDOFFSET_EXT              0x4d
+
 /* G_EXTRAGEOMETRYMODE flags */
 
 #define G_INVERT_CULLING_EXT     0x00000001
@@ -306,6 +312,15 @@
                                                        \
     _g->words.w0 = _SHIFTL(G_CHRWIREFRAME_EXT, 24, 8); \
     _g->words.w1 = state;                              \
+}
+
+// HUDVD chaos: shift subsequent 2D rects by (x,y) whole pixels; (0,0) resets.
+#define gDPHudOffsetEXT(pkt, x, y)                                             \
+{                                                                             \
+    Gfx* _g = (Gfx*)(pkt);                                                     \
+                                                                             \
+    _g->words.w0 = _SHIFTL(G_HUDOFFSET_EXT, 24, 8) | _SHIFTL((s16)(x), 0, 16); \
+    _g->words.w1 = _SHIFTL((s16)(y), 0, 16);                                  \
 }
 
 // NOTE: these will function correctly only if you pass `gdl++` as `pkt`

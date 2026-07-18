@@ -8,6 +8,8 @@
 s32 extTexInit();
 void extTexFree();
 u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height);
+u8 *extImageLoad(const char *relpath, u32 *width, u32 *height); /* general PNG loader (pd.load_image) */
+void extImageFree(u8 *data);
 u8 extTexExists(u8 type, u16 id, s32 texnum);
 u8 extTexFontID(struct font *font);
 

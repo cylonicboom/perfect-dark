@@ -5346,6 +5346,43 @@ Gfx *playerRenderShield(Gfx *gdl)
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+// HUDVD chaos (docs/PORT_CHAOS.md): each HUD element bounces DVD-style off the
+// real screen edges in its own direction. All motion is renderer-owned (it
+// measures each element's on-screen bbox and bounces it — see gfx_pc.cpp); the
+// game just brackets each element with a slot index. gun/aim + hit-detection
+// are untouched (only the drawn rects move).
+bool g_HudvdActive = false;
+
+void hudvdSetActive(bool on)
+{
+	extern void gfx_hudvd_reset(void);
+	extern void gfx_hudvd_set_active(int on);
+
+	g_HudvdActive = on;
+	if (on) {
+		gfx_hudvd_reset();
+	}
+	gfx_hudvd_set_active(on ? 1 : 0);
+}
+
+Gfx *hudvdEmit(Gfx *gdl, s32 slot)
+{
+	if (g_HudvdActive) {
+		gDPHudOffsetEXT(gdl++, (s16)slot, 0);
+	}
+	return gdl;
+}
+
+Gfx *hudvdReset(Gfx *gdl)
+{
+	if (g_HudvdActive) {
+		gDPHudOffsetEXT(gdl++, (s16)-1, 0);
+	}
+	return gdl;
+}
+#endif
+
 Gfx *playerRenderHud(Gfx *gdl)
 {
 #ifndef PLATFORM_N64
@@ -5506,7 +5543,13 @@ Gfx *playerRenderHud(Gfx *gdl)
 	if (g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY
 			&& playerIsHealthVisible()
 			&& func0f0f0c68()) {
+#ifndef PLATFORM_N64
+		gdl = hudvdEmit(gdl, 0);
 		gdl = playerRenderHealthBar(gdl);
+		gdl = hudvdReset(gdl);
+#else
+		gdl = playerRenderHealthBar(gdl);
+#endif
 	}
 
 	if (g_Vars.normmplayerisrunning == false) {
@@ -5813,17 +5856,37 @@ Gfx *playerRenderHud(Gfx *gdl)
 	}
 
 	if (g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY) {
+#ifndef PLATFORM_N64
+		gdl = hudvdEmit(gdl, 1);
 		gdl = bgunDrawSight(gdl);
+		gdl = hudvdReset(gdl);
+#else
+		gdl = bgunDrawSight(gdl);
+#endif
 
 		if (bgunGetWeaponNum(HAND_RIGHT) == WEAPON_HORIZONSCANNER) {
 			gdl = bviewDrawHorizonScanner(gdl);
 		}
 
 		if (optionsGetAmmoOnScreen(g_Vars.currentplayerstats->mpindex)) {
+#ifndef PLATFORM_N64
+			gdl = hudvdEmit(gdl, 2);
 			gdl = bgunDrawHud(gdl);
+			gdl = hudvdReset(gdl);
+#else
+			gdl = bgunDrawHud(gdl);
+#endif
 		}
 
-#if VERSION >= VERSION_NTSC_1_0
+#ifndef PLATFORM_N64
+		// HUDVD: radar (3) + pickup/hud messages (4) each bounce independently.
+		gdl = hudvdEmit(gdl, 3);
+		gdl = radarRender(gdl);
+		gdl = hudvdReset(gdl);
+		gdl = hudvdEmit(gdl, 4);
+		gdl = hudmsgsRender(gdl);
+		gdl = hudvdReset(gdl);
+#elif VERSION >= VERSION_NTSC_1_0
 		gdl = radarRender(gdl);
 		gdl = hudmsgsRender(gdl);
 #else
@@ -5841,7 +5904,9 @@ Gfx *playerRenderHud(Gfx *gdl)
 		// feedback at high ping without touching the crosshair render.
 		gdl = netHitmarkerRender(gdl);
 		// Per-viewport kill feed (per-player MPDISPLAYOPTION_KILLFEED toggle).
+		gdl = hudvdEmit(gdl, 5);
 		gdl = hudmsgRenderKillFeed(gdl);
+		gdl = hudvdReset(gdl);
 #endif
 
 		gdl = playerDrawStoredFade(gdl);

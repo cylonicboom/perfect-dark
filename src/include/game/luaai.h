@@ -282,6 +282,14 @@ s32 chraiLuaSwitchWeapon(s32 weaponnum);      /* force-equip an owned weapon */
 s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60); /* viewport fade */
 s32 chraiLuaYeetChr(s32 chrnum, f32 force);   /* knockback-fling a chr away from the player */
 s32 chraiLuaExplodeAtChr(s32 chrnum, s32 type); /* explosion at a chr's feet */
+s32 chraiLuaExplodeAtPos(f32 x, f32 y, f32 z, s32 type); /* explosion at a position */
+s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z); /* live armed grenade at a position */
+s32 chraiLuaDoorTraps(s32 on);                /* booby-trapped doors: opening detonates */
+u32 chraiLuaDoorOpens(void);                  /* doors-opened counter (task sensor) */
+s32 chraiLuaEnvColours(s32 sr, s32 sg, s32 sb, s32 cr, s32 cg, s32 cb); /* sky+cloud override */
+f32 chraiLuaPlayerYaw(void);                  /* look yaw degrees (spin task sensor) */
+s32 chraiLuaPlayerCrouch(void);               /* 0 stand / 1 duck / 2 squat */
+s32 chraiLuaHasWeapon(s32 weaponnum);         /* weapon in player inventory */
 s32 chraiLuaPlaySound(s32 sfxnum);            /* one-shot local sound */
 s32 chraiLuaSetAlarm(s32 on);                 /* stage alarm on/off (server-side) */
 s32 chraiLuaBoost(f32 secs);                  /* Speed Pill boost for N secs (<=0 cancels) */
@@ -306,7 +314,9 @@ s32 chraiLuaDamageScale(f32 frac);            /* scale all chr/player damage; 1 
 s32 chraiLuaZoomScale(f32 mult);              /* scale weapon aim-zoom FOV; >1 zooms OUT */
 s32 chraiLuaGunSound(s32 weaponnum);          /* all guns fire with this weapon's shoot sound; 0 = off */
 s32 chraiLuaMute(s32 on);                     /* master audio mute */
-s32 chraiLuaPlayFile(const char *path);       /* play an external WAV/MP3 through the device stream */
+s32 chraiLuaPlayFile(const char *path, s32 loop); /* play an external WAV/MP3 through the device stream */
+void chraiLuaStopFile(void);                  /* stop the pd.play_file sound */
+s32 chraiLuaWeaponRename(s32 weaponnum, const char *name); /* relabel a weapon (nil restores) */
 s32 chraiLuaChrSpeed(f32 mult);               /* scale all non-player chr anim/movement speed; 1 = off */
 s32 chraiLuaPlayerSpeed(f32 mult);            /* scale the local player's walk/strafe speed; 1 = normal */
 s32 chraiLuaChrDamage(s32 chrnum, f32 amount); /* hurt any chr via the real damage path */
@@ -333,7 +343,7 @@ s32 chraiLuaGust(f32 force);                  /* shove chrs/objects/player in on
 s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum); /* dual-equip a weapon; funcnum 0/1 forces fire func */
 s32 chraiLuaAspectScale(f32 mult);            /* projection aspect multiplier (1.0 = normal) */
 s32 chraiLuaPlaySong(s32 slot);               /* play an unlocked MP track over the stage music; -1 stops */
-s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz); /* hostile chr at player + offset */
+s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses); /* hostile chr at player + offset */
 s32 chraiLuaBodySnatch(s32 chrnum);           /* lite Counter-Op takeover of a chr (solo) */
 s32 chraiLuaBodyUnsnatch(void);               /* end body_snatch: un-disguise + teleport home */
 s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum); /* point a chr's combat AI at another chr */
@@ -373,6 +383,7 @@ s32 chraiLuaMaxBlood(s32 on);                 /* every hit splatters big + max d
 s32 chraiLuaItemsShuffle(void);               /* shuffle all loose weapon pickups' positions; returns count */
 s32 chraiLuaChrWireframe(s32 on);             /* hostile chrs render as wireframe (G_CHRWIREFRAME_EXT) */
 s32 chraiLuaDoubleShots(s32 on);              /* every fire event takes twice the shots (Quad handed) */
+s32 chraiLuaQuadTop(s32 on);                  /* second pair of viewmodel guns at the top of the screen */
 u32 chraiLuaButtons(s32 pressed);             /* raw local-player pad buttons (held / pressed this frame) */
 s32 chraiLuaSpawnChopper(s32 kind, s32 extrascale); /* hostile chopper near the player: kind 0 = dD copter, 1 = A51 interceptor; extrascale 256 = full (<8 = per-kind default) */
 

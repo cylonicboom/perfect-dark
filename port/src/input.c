@@ -165,6 +165,12 @@ static f32 mouseSensX = 2.5f;
 static f32 mouseSensY = 2.5f;
 
 static s32 lastKey = 0;
+// Which physical device the player most recently used: 0 = keyboard/mouse,
+// 1 = gamepad. Updated in the event watcher; read by chaos Button Thief
+// (inputLastSourceWasPad) so it only steals binds that exist for the device
+// in hand (movement is discrete C-buttons on kb/mouse but an analog stick on
+// a pad, where stealing a C-button does nothing).
+static s32 lastSourceWasPad = 0;
 static char lastChar = 0;
 static s32 textInput = 0;
 // One-frame cooldown applied after text input ends. While text input was
@@ -635,18 +641,25 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 			if (!lastKey && mouseWheel) {
 				lastKey = (mouseWheel < 0) + VK_MOUSE_WHEEL_UP;
 			}
+			lastSourceWasPad = 0;
 			break;
 
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 			if (!lastKey) {
 				lastKey = VK_MOUSE_BEGIN - 1 + event->button.button;
 			}
+			lastSourceWasPad = 0;
+			break;
+
+		case SDL_EVENT_MOUSE_MOTION:
+			lastSourceWasPad = 0;
 			break;
 
 		case SDL_EVENT_KEY_DOWN:
 			if (!lastKey) {
 				lastKey = VK_KEYBOARD_BEGIN + event->key.scancode;
 			}
+			lastSourceWasPad = 0;
 			break;
 
 		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -658,6 +671,7 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 					lastKey += idx * INPUT_MAX_CONTROLLER_BUTTONS;
 				}
 			}
+			lastSourceWasPad = 1;
 			break;
 
 		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
@@ -670,6 +684,11 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 						lastKey += idx * INPUT_MAX_CONTROLLER_BUTTONS;
 					}
 				}
+			}
+			// Only a real stick/trigger push flips the source (small idle jitter
+			// past a deadzone shouldn't claim the player picked up the pad).
+			if (event->gaxis.value > 8000 || event->gaxis.value < -8000) {
+				lastSourceWasPad = 1;
 			}
 			break;
 
@@ -946,6 +965,12 @@ static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 // (0..32768). When larger than the user's configured per-axis deadzone it
 // wins; 0 = off. Set via inputSetChaosDeadzone from the Lua chaos bindings.
 static s32 chaosDeadzone = 0;
+
+// Chaos Button Thief: 1 if the player's most recent input came from a gamepad.
+s32 inputLastSourceWasPad(void)
+{
+	return lastSourceWasPad;
+}
 
 void inputSetChaosDeadzone(s32 dz)
 {

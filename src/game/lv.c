@@ -310,6 +310,11 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosWeaponJam;       // chaos Weapon jam (v1/v2)
 	extern s32 g_ChaosWireframeChrs;   // chaos wireframe enemies
 	extern s32 g_ChaosDoubleShots;     // chaos Quad handed
+	extern s32 g_ChaosQuadTopGuns;     // chaos Quad handed top guns
+	extern s32 g_ChaosDoorTraps;       // chaos Booby-trapped doors
+	extern u32 g_ChaosDoorOpenCount;   // door-open task sensor
+	extern s32 g_ChaosLangOverrideId;  // chaos weapon rename (phone_call Nokia)
+	extern s32 g_ChaosGameOverStatus;  // chaos Game over? Unknown/Missing override
 	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
@@ -335,6 +340,11 @@ void lvReset(s32 stagenum)
 	g_ChaosWeaponJam = 0;
 	g_ChaosWireframeChrs = 0;
 	g_ChaosDoubleShots = 0;
+	g_ChaosQuadTopGuns = 0;
+	g_ChaosDoorTraps = 0;
+	g_ChaosDoorOpenCount = 0;
+	g_ChaosLangOverrideId = -1; // chaos weapon rename (Nokia phone) — never persist
+	g_ChaosGameOverStatus = 0;  // chaos Game over? status override
 	inputSetChaosDeadzone(0);
 #endif
 
@@ -2044,7 +2054,18 @@ Gfx *lvRender(Gfx *gdl)
 				}
 
 				gdl = skyRenderOverexposure(gdl);
+#ifndef PLATFORM_N64
+				// HUDVD chaos: the active (weapon/gadget select) menu bounces too.
+				{
+					extern Gfx *hudvdEmit(Gfx *gdl, s32 slot);
+					extern Gfx *hudvdReset(Gfx *gdl);
+					gdl = hudvdEmit(gdl, 6);
+					gdl = amRender(gdl);
+					gdl = hudvdReset(gdl);
+				}
+#else
 				gdl = amRender(gdl);
+#endif
 				mtx00016748(1);
 
 				if (g_Vars.currentplayer->menuisactive) {

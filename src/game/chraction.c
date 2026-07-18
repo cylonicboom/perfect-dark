@@ -8501,6 +8501,163 @@ s32 chraiLuaPlaySound(s32 sfxnum)
 	return 1;
 }
 
+// pd.explosion_at(x, y, z [, type]): detonate at an arbitrary position,
+// attributed to the local player. Rooms are portal-walked from the player's
+// (known-valid) rooms to the real floor room at the target — the same
+// placement recipe as chraiLuaSpawnAtPos. Backs the Live Grenade / Martyrdom
+// delayed-boom pattern: Lua records a position, spawns a grenade pickup
+// there (pd.spawn), then calls this when the fuse runs out.
+s32 chraiLuaExplodeAtPos(f32 x, f32 y, f32 z, s32 type)
+{
+	struct coord pos;
+	RoomNum rooms[8];
+	f32 floory;
+	u16 floorcol;
+	s32 floorroom;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+
+	pos.x = x;
+	pos.y = y;
+	pos.z = z;
+
+	roomsCopy(g_Vars.currentplayer->prop->rooms, rooms);
+#if VERSION >= VERSION_NTSC_1_0
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, rooms, &floory, &floorcol, NULL);
+#else
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, rooms, &floory, &floorcol);
+#endif
+	if (floorroom > 0) {
+		rooms[0] = floorroom;
+		rooms[1] = -1;
+	}
+
+	return explosionCreateSimple(NULL, &pos, rooms, (s16)type, g_Vars.bondplayernum) ? 1 : 0;
+}
+
+// pd.grenade(x, y, z): drop a LIVE, armed grenade at a position — the real
+// engine thrown-grenade path (bgunCreateThrownProjectile2): it lands, arms,
+// plays the SFX_THROW pin/throw sound, and the engine detonates it on the
+// grenade's own fuse. Attributed to the local player. Backs Live Grenade /
+// Martyrdom (no Lua-side explosion timing needed — the grenade is real).
+s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z)
+{
+	struct coord pos;
+	struct coord vel;
+	RoomNum rooms[8];
+	f32 floory;
+	u16 floorcol;
+	s32 floorroom;
+	Mtxf mtx;
+	struct gset gset;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+
+	pos.x = x;
+	pos.y = y;
+	pos.z = z;
+
+	roomsCopy(g_Vars.currentplayer->prop->rooms, rooms);
+#if VERSION >= VERSION_NTSC_1_0
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, rooms, &floory, &floorcol, NULL);
+#else
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, rooms, &floory, &floorcol);
+#endif
+	if (floorroom > 0) {
+		pos.y = floory + 10.0f; // just above the floor so it settles, not clips
+		rooms[0] = floorroom;
+		rooms[1] = -1;
+	}
+
+	gset.weaponnum = WEAPON_GRENADE;
+	gset.weaponfunc = FUNC_PRIMARY; // invfunc_grenade_throw
+	gset.unk0639 = 0;
+	gset.unk063a = 0;
+
+	vel.x = 0.0f;
+	vel.y = -1.0f; // drop straight down at the target
+	vel.z = 0.0f;
+	mtx4LoadIdentity(&mtx);
+
+	return bgunCreateThrownProjectile2(g_Vars.currentplayer->prop->chr, &gset,
+			&pos, rooms, &mtx, &vel) ? 1 : 0;
+}
+
+// pd.door_traps(on): booby-trapped doors — any door that starts opening
+// detonates (the doorSetMode hook in propobj.c). g_ChaosDoorOpenCount is
+// bumped there unconditionally so pd.door_opens() can be a task sensor
+// (EULA/CAPTCHA "open a door" requirements) even with traps off.
+extern s32 g_ChaosDoorTraps;
+extern u32 g_ChaosDoorOpenCount;
+s32 chraiLuaDoorTraps(s32 on)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	g_ChaosDoorTraps = on ? 1 : 0;
+	return 1;
+}
+
+u32 chraiLuaDoorOpens(void)
+{
+	return g_ChaosDoorOpenCount;
+}
+
+// pd.env_colours(skyr,skyg,skyb, cloudr,cloudg,cloudb): override the current
+// stage environment's sky + cloud colours in place (Brandon's mod random
+// bright skies). Restore = pd.env() — chraiLuaEnv(-1) re-applies the stage's
+// authored environment wholesale, colours included.
+s32 chraiLuaEnvColours(s32 sr, s32 sg, s32 sb, s32 cr, s32 cg, s32 cb)
+{
+	struct environment *env = envGetCurrent();
+
+	if (apLuaPlayerChr() == NULL || env == NULL) {
+		return 0;
+	}
+	env->sky_r = (u8)(sr < 0 ? 0 : sr > 255 ? 255 : sr);
+	env->sky_g = (u8)(sg < 0 ? 0 : sg > 255 ? 255 : sg);
+	env->sky_b = (u8)(sb < 0 ? 0 : sb > 255 ? 255 : sb);
+	env->clouds_r = (cr < 0 ? 0 : cr > 255 ? 255 : cr) * (1.0f / 255.0f);
+	env->clouds_g = (cg < 0 ? 0 : cg > 255 ? 255 : cg) * (1.0f / 255.0f);
+	env->clouds_b = (cb < 0 ? 0 : cb > 255 ? 255 : cb) * (1.0f / 255.0f);
+	return 1;
+}
+
+// pd.player_yaw(): the player's look yaw in degrees (0..360) — the EULA
+// "spin around" task sensor.
+f32 chraiLuaPlayerYaw(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return g_Vars.currentplayer->vv_theta;
+}
+
+// pd.player_crouch(): 0 stand / 1 duck / 2 squat — the "crouch for N
+// seconds" task sensor. NOTE the engine's CROUCHPOS_* run the OTHER way
+// (SQUAT=0, DUCK=1, STAND=2), so remap to the documented low-is-standing
+// order — a raw return made the crouch task tick while STANDING.
+s32 chraiLuaPlayerCrouch(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return CROUCHPOS_STAND - g_Vars.currentplayer->crouchpos;
+}
+
+// pd.has_weapon(weaponnum): is the weapon in the player's inventory.
+s32 chraiLuaHasWeapon(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return invHasSingleWeaponIncAllGuns(weaponnum) ? 1 : 0;
+}
+
 // pd.alarm(on): raise/clear the stage alarm (klaxon + every alarm-conditional
 // AI script). Server-side only — on a netplay server the SVC_ALARM mirror
 // (proto 85) carries the transition to clients.
@@ -8884,7 +9041,7 @@ bool chaosIsTwin(struct chrdata *chr)
 // body at the player's position plus a horizontal offset, facing the player,
 // already alerted. The chraiLuaSpawnAlly recipe with the allegiance inverted;
 // weaponnum -1 spawns unarmed (melee bodies like the mini Skedar claw).
-s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
+s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses)
 {
 	struct prop *prop;
 	struct chrdata *chr;
@@ -8893,7 +9050,14 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 	f32 floory;
 	u16 floorcol;
 	s32 floorroom;
+	u32 spawnflags = SPAWNFLAG_ALLOWONSCREEN;
 	s32 headnum = -1; // >= 0 overrides bodyChooseHead (a twin uses Jo's own head)
+
+	// pd.spawn_body(..., sunglasses=true): the head model gets its shades
+	// variant (SPAWNFLAG_FORCESUNGLASSES — the setup-file guard mechanism).
+	if (sunglasses) {
+		spawnflags |= SPAWNFLAG_FORCESUNGLASSES;
+	}
 
 	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
 		return -1;
@@ -8905,6 +9069,15 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 	if (bodynum < 0) {
 		bodynum = g_Vars.currentplayer->prop->chr->bodynum;
 		headnum = g_Vars.currentplayer->prop->chr->headnum;
+	}
+
+	// Force-load the body's model file if it isn't resident on this stage.
+	// The spawn path only loads on demand and bails silently if the file
+	// isn't in memory — which is why the full-size Skedar (BODY_SKEDAR /
+	// FILE_CSKEDAR) never appeared on non-Skedar stages. bodyLoad is a no-op
+	// if already loaded; a genuinely absent file still bails downstream.
+	if (bodynum >= 0 && bodynum < 152) {
+		bodyLoad(bodynum);
 	}
 
 	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
@@ -8930,11 +9103,15 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz)
 	// locked onto the PLAYER — and hostile — every frame by chaosTwinsHuntPlayer
 	// (propsTick), which overrides the AI/team drift that otherwise let her
 	// re-pick the nearest guard or turn into a passive blue-reticle buddy.
-	prop = chrSpawnAtCoord(bodynum, headnum >= 0 ? headnum : bodyChooseHead(bodynum), &pos,
+	// Pass headnum through raw: chrSpawnAtCoord picks a head for headed
+	// bodies and (port fix) leaves built-in-head bodies (skedar etc.)
+	// headless instead of wedging a human head on — that made
+	// pd.spawn_body(SKEDARKING/MINISKEDAR) fail outright.
+	prop = chrSpawnAtCoord(bodynum, headnum, &pos,
 			spawnrooms,
 			atan2f(-dx, -dz), // face inward toward the player
 			ailistFindById(GAILIST_ALERTED),
-			SPAWNFLAG_ALLOWONSCREEN);
+			spawnflags);
 
 	if (prop == NULL || prop->chr == NULL) {
 		return -1;
@@ -9265,6 +9442,15 @@ extern s32 g_ChaosDoubleShots;
 s32 chraiLuaDoubleShots(s32 on)
 {
 	g_ChaosDoubleShots = on ? 1 : 0;
+	return 1;
+}
+
+// pd.quad_top(on): render a second pair of viewmodel guns hanging upside-down
+// from the top of the screen (bgunRender 180-degree-rotated projection pass).
+extern s32 g_ChaosQuadTopGuns;
+s32 chraiLuaQuadTop(s32 on)
+{
+	g_ChaosQuadTopGuns = on ? 1 : 0;
 	return 1;
 }
 
@@ -10224,16 +10410,48 @@ s32 chraiLuaGunSound(s32 weaponnum)
 
 // pd.mute(on) / pd.play_file(path): port audio layer (port/src/audio.c).
 extern void audioSetMuted(s32 on);
-extern s32 audioPlayExternal(const char *path);
+extern s32 audioPlayExternal(const char *path, s32 loop);
+extern void audioStopExternal(void);
 s32 chraiLuaMute(s32 on)
 {
 	audioSetMuted(on ? 1 : 0);
 	return 1;
 }
 
-s32 chraiLuaPlayFile(const char *path)
+s32 chraiLuaPlayFile(const char *path, s32 loop)
 {
-	return audioPlayExternal(path);
+	return audioPlayExternal(path, loop);
+}
+
+// pd.stop_file(): stop the external sound started by pd.play_file (e.g. the
+// phone ringtone when the call is answered).
+void chraiLuaStopFile(void)
+{
+	audioStopExternal();
+}
+
+// pd.weapon_rename(weaponnum, name): relabel a weapon everywhere its name is
+// displayed (HUD, inventory, pickup toast — all funnel through langGet). Pass
+// nil/empty to restore the real name. Used by Phone Call to rename the
+// Psychosis Gun "phone" to Nokia 3315 for the duration.
+s32 chraiLuaWeaponRename(s32 weaponnum, const char *name)
+{
+	extern s32 g_ChaosLangOverrideId;
+	extern char g_ChaosLangOverrideStr[64];
+
+	if (name == NULL || name[0] == '\0') {
+		g_ChaosLangOverrideId = -1;
+		return 1;
+	}
+	g_ChaosLangOverrideId = (s32)bgunGetNameId(weaponnum);
+	{
+		s32 i;
+		for (i = 0; i < (s32)sizeof(g_ChaosLangOverrideStr) - 1 && name[i]; i++) {
+			g_ChaosLangOverrideStr[i] = name[i];
+		}
+		g_ChaosLangOverrideStr[i] = '\0';
+	}
+	return 1;
 }
 
 // pd.chr_speed(mult): scale every non-player chr's anim playback (movement +
@@ -18549,7 +18767,19 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 
 	if (chrsGetNumFree() > 1) {
 		if (headnum < 0) {
+#ifndef PLATFORM_N64
+			// Bodies with a BUILT-IN head (skedar, Elvis, Dr Caroll — the
+			// unk00_01 bit) must spawn headless: the setup path
+			// (bodyAllocateChr) skips head selection for them entirely, and
+			// bolting a human head on makes the model build fail (chaos
+			// pd.spawn_body of a Skedar King returned NULL here). Keep the
+			// negative headnum so body0f02ce8c takes the no-head path.
+			if (!g_HeadsAndBodies[bodynum].unk00_01) {
+				headnum = bodyChooseHead(bodynum);
+			}
+#else
 			headnum = bodyChooseHead(bodynum);
+#endif
 		}
 
 		pos2.x = pos->x;

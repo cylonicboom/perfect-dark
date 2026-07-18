@@ -259,6 +259,51 @@ bool gfx_wireframe_mode = false;
 // so a lost END marker can't leak past one frame.
 bool gfx_wireframe_scope = false;
 
+// HUDVD chaos (docs/PORT_CHAOS.md): renderer-owned per-element bounce. The game
+// brackets each HUD element with G_HUDOFFSET_EXT (slot index to begin the
+// bracket, -1 to end it). While a bracket is open the renderer (1) offsets every
+// rect by that slot's current pixel position and (2) accumulates the element's
+// actual on-screen bounding box. Once a frame it advances each slot and bounces
+// it off the real 320x220 HUD viewport edges — so elements never leave the
+// screen, and each slot has its own direction/speed. All motion lives here so
+// any wrapped element (including ones added later) bounces automatically.
+#define HUDVD_SLOTS 8
+#define HUDVD_VP_W 320.0f
+#define HUDVD_VP_H 220.0f
+struct HudvdSlot {
+    float px, py;             // current offset, pixels
+    float vx, vy;             // velocity, pixels/frame
+    float bx0, by0, bx1, by1; // measured (shifted) bbox this frame, pixels
+    bool has_bbox;
+};
+static HudvdSlot g_HudvdSlots[HUDVD_SLOTS];
+static int g_HudvdActiveSlot = -1;      // open bracket, or -1
+static bool g_HudvdOn = false;
+static int16_t gfx_hud_offset_x = 0;    // U10.2 = active slot px*4 (0 if none)
+static int16_t gfx_hud_offset_y = 0;
+
+extern "C" void gfx_hudvd_reset(void) {
+    // Distinct diagonal per slot (guaranteed different directions) + a per-slot
+    // speed spread so slots sharing a diagonal still diverge over time.
+    static const float dx[HUDVD_SLOTS] = { 1, -1,  1, -1,  1, -1,  1, -1 };
+    static const float dy[HUDVD_SLOTS] = { 1,  1, -1, -1, -1,  1,  1, -1 };
+    for (int i = 0; i < HUDVD_SLOTS; i++) {
+        g_HudvdSlots[i].px = 0.0f;
+        g_HudvdSlots[i].py = 0.0f;
+        g_HudvdSlots[i].vx = dx[i] * (0.9f + 0.16f * i);
+        g_HudvdSlots[i].vy = dy[i] * (0.7f + 0.12f * i);
+        g_HudvdSlots[i].has_bbox = false;
+    }
+}
+
+extern "C" void gfx_hudvd_set_active(int on) {
+    g_HudvdOn = (on != 0);
+    if (!g_HudvdOn) {
+        g_HudvdActiveSlot = -1;
+        gfx_hud_offset_x = gfx_hud_offset_y = 0;
+    }
+}
+
 // Screen-space raytracing suite controls (docs/PORT_RAYTRACING.md). Defined
 // here — not in gfx_rt.cpp — so they exist on every build, including the
 // dedicated server (which drops gfx_opengl.cpp/gfx_rt.cpp but still links
@@ -2713,6 +2758,31 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     uly += rdp.subpixel_ofs_y;
     lry += rdp.subpixel_ofs_y;
 
+    // HUDVD chaos per-element translate (U10.2 units). 0 outside HUD brackets.
+    ulx += gfx_hud_offset_x;
+    lrx += gfx_hud_offset_x;
+    uly += gfx_hud_offset_y;
+    lry += gfx_hud_offset_y;
+
+    // Measure this element's shifted on-screen bbox so gfx_start_frame can
+    // bounce it off the real viewport edges (pixels = U10.2 / 4).
+    if (g_HudvdActiveSlot >= 0) {
+        HudvdSlot* s = &g_HudvdSlots[g_HudvdActiveSlot];
+        float x0 = (ulx < lrx ? ulx : lrx) * 0.25f;
+        float x1 = (ulx < lrx ? lrx : ulx) * 0.25f;
+        float y0 = (uly < lry ? uly : lry) * 0.25f;
+        float y1 = (uly < lry ? lry : uly) * 0.25f;
+        if (!s->has_bbox) {
+            s->bx0 = x0; s->by0 = y0; s->bx1 = x1; s->by1 = y1;
+            s->has_bbox = true;
+        } else {
+            if (x0 < s->bx0) s->bx0 = x0;
+            if (x1 > s->bx1) s->bx1 = x1;
+            if (y0 < s->by0) s->by0 = y0;
+            if (y1 > s->by1) s->by1 = y1;
+        }
+    }
+
     // U10.2 coordinates
     float ulxf = ulx;
     float ulyf = uly;
@@ -3572,6 +3642,19 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_dp_set_subpixel_offset(C0(0, 16), C1(0, 16));
                 break;
             }
+            case G_HUDOFFSET_EXT: {
+                // w0 low16 = slot to begin its bracket, or -1 to end.
+                int slot = (int16_t)C0(0, 16);
+                if (!g_HudvdOn || slot < 0 || slot >= HUDVD_SLOTS) {
+                    g_HudvdActiveSlot = -1;
+                    gfx_hud_offset_x = gfx_hud_offset_y = 0;
+                } else {
+                    g_HudvdActiveSlot = slot;
+                    gfx_hud_offset_x = (int16_t)(g_HudvdSlots[slot].px * 4.0f);
+                    gfx_hud_offset_y = (int16_t)(g_HudvdSlots[slot].py * 4.0f);
+                }
+                break;
+            }
             case G_TEXRECT:
             case G_TEXRECTFLIP: {
                 int32_t lrx, lry, tile, ulx, uly;
@@ -3757,6 +3840,25 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 
 extern "C" void gfx_start_frame(void) {
     gfx_wireframe_scope = false; // scoped bracket never survives a frame
+
+    // HUDVD: advance + edge-bounce each slot using last frame's measured bbox,
+    // then clear per-frame state so nothing leaks past a frame.
+    g_HudvdActiveSlot = -1;
+    gfx_hud_offset_x = gfx_hud_offset_y = 0;
+    if (g_HudvdOn) {
+        for (int i = 0; i < HUDVD_SLOTS; i++) {
+            HudvdSlot* s = &g_HudvdSlots[i];
+            if (s->has_bbox) {
+                if (s->bx0 < 0.0f && s->vx < 0.0f) s->vx = -s->vx;
+                if (s->bx1 > HUDVD_VP_W && s->vx > 0.0f) s->vx = -s->vx;
+                if (s->by0 < 0.0f && s->vy < 0.0f) s->vy = -s->vy;
+                if (s->by1 > HUDVD_VP_H && s->vy > 0.0f) s->vy = -s->vy;
+            }
+            s->px += s->vx;
+            s->py += s->vy;
+            s->has_bbox = false;
+        }
+    }
     // Chaos visual modes (docs/PORT_CHAOS.md), applied at the frame boundary:
     // a flat-texture toggle clears the texture cache so everything re-imports
     // through gfx_upload_tex_filtered (the clear also invalidates the dlcache,

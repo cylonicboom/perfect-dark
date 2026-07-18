@@ -20796,11 +20796,28 @@ void doorFinishClose(struct doorobj *door)
  *
  * Handles playing door open/close sounds and activating the portal if opening.
  */
+#ifndef PLATFORM_N64
+// Chaos "Booby-trapped doors" (pd.door_traps, chraction.c): a door that
+// STARTS opening detonates. The open counter always counts (task sensor for
+// the EULA/CAPTCHA "open a door" requirements via pd.door_opens()).
+s32 g_ChaosDoorTraps = 0;
+u32 g_ChaosDoorOpenCount = 0;
+#endif
+
 void doorSetMode(struct doorobj *door, s32 newmode)
 {
 	if (newmode == DOORMODE_OPENING) {
 		if (door->mode == DOORMODE_IDLE || door->mode == DOORMODE_WAITING) {
 			doorStartOpen(door);
+#ifndef PLATFORM_N64
+			// Edge-triggered: only the idle->opening transition counts, so a
+			// door can't chain-detonate while it swings.
+			g_ChaosDoorOpenCount++;
+			if (g_ChaosDoorTraps && g_NetMode != NETMODE_CLIENT && door->base.prop != NULL) {
+				explosionCreateSimple(NULL, &door->base.prop->pos,
+						door->base.prop->rooms, EXPLOSIONTYPE_9, g_Vars.bondplayernum);
+			}
+#endif
 		}
 
 		door->mode = newmode;

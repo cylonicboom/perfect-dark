@@ -33,7 +33,21 @@
 #include "game/hudmsg.h"      /* hudmsgRenderBox */
 #include "game/cheats.h"      /* cheatActivate/Deactivate/IsActive (pd.cheat, chaos mode) */
 #include "game/bg.h"          /* g_BgOctreeStats (port-only octree cull counters) */
-#include "data.h"             /* g_FontHandelGothicXs / g_CharsHandelGothicXs */
+#include "game/training.h"    /* ciGet*Bio* (pd.bio_count / pd.bio_text — CI lore) */
+#include "game/lang.h"        /* langGet (bio text ids -> strings) */
+#include "game/menu.h"        /* func0f0f85e0 / menuPushDialog / menuPopDialog */
+#include "game/mainmenu.h"    /* menuhandlerAcceptMission (Game Over restart) */
+#include "game/endscreen.h"   /* endscreenMenuTitle* (real failed screen titles) */
+#include "game/player.h"      /* playerSetFadeColour (game_over black screen) */
+#include "game/music.h"       /* musicStartTrackAsMenu (game_over failed music) */
+#include "game/tex.h"         /* texSelect (pd.draw_sprite blood-splat textures) */
+#include "game/gfxmemory.h"   /* gfxAllocateVertices / gfxAllocateColours (draw_sprite) */
+#ifndef PLATFORM_N64
+#include "ext_tex.h"          /* extImageLoad / extImageFree (pd.load_image PNG hook) */
+#endif
+#include "lib/rng.h"          /* rngRandom (pd.menu_lore random bio pick) */
+#include "data.h"             /* g_FontHandelGothicXs / g_CharsHandelGothicXs; g_MpPlayerNum */
+#include "bss.h"              /* g_Vars / g_Menus (pd.menu_lore / pd.game_over gates) */
 #include "lib/vi.h"           /* viGetWidth / viGetHeight */
 #include "net/net.h"          /* g_NetMode / NETMODE_* for the AP gate server/solo guard */
 
@@ -54,16 +68,33 @@
 #define LUA_TEXT_MAX     56
 /* LUA_MENU_MAX / LUA_MENU_LABEL are defined in game/luaai.h (shared with mainmenu.c). */
 
-enum { OVL_BOX, OVL_TEXT };
+enum { OVL_BOX, OVL_TEXT, OVL_SPRITE, OVL_IMAGE };
 
 struct luaoverlay {
 	s32 kind;
 	s32 x, y, w, h;
 	u32 color;
+	s32 texnum;     /* OVL_SPRITE: g_TexWallhitConfigs index. OVL_IMAGE: g_LuaImages index. */
+	f32 angle;      /* OVL_IMAGE: rotation in radians (x,y = CENTRE when set). */
 	char text[LUA_TEXT_MAX];
 	s32 framesleft; /* >0 timed; one-frame entries use 1 + oneframe flag */
 	s32 oneframe;
 };
+
+#ifndef PLATFORM_N64
+/* External images loaded from scripts/images/ via pd.load_image. Each keeps
+ * its own RGBA8888 buffer + a textureconfig pointing at it so pd.draw_image
+ * can blit it through the same texrect path as the blood splats. This is a
+ * loading HOOK for future effects — nothing in the shipped effects uses it. */
+#define LUA_MAX_IMAGES 16
+struct luaimage {
+	u8 *data;   /* owned RGBA8888 (freed on stage reset) */
+	u32 w, h;   /* real pixel dimensions */
+	struct textureconfig config;
+};
+static struct luaimage g_LuaImages[LUA_MAX_IMAGES];
+static s32 g_LuaImageCount = 0;
+#endif
 
 static struct luaoverlay g_LuaOverlays[LUA_MAX_OVERLAYS];
 static s32 g_LuaOverlayCount = 0;
@@ -119,7 +150,7 @@ static void luaApiLog2(const char *prefix, const char *s)
  * ------------------------------------------------------------------------- */
 
 static void luaOverlayAdd(s32 kind, s32 x, s32 y, s32 w, s32 h, u32 color,
-		const char *text, f32 secs)
+		const char *text, s32 texnum, f32 angle, f32 secs)
 {
 	struct luaoverlay *o;
 
@@ -134,6 +165,8 @@ static void luaOverlayAdd(s32 kind, s32 x, s32 y, s32 w, s32 h, u32 color,
 	o->w = w;
 	o->h = h;
 	o->color = color;
+	o->texnum = texnum;
+	o->angle = angle;
 
 	if (text) {
 		strncpy(o->text, text, LUA_TEXT_MAX - 1);
@@ -225,7 +258,135 @@ static int l_pd_draw_box(lua_State *L)
 	u32 color = (u32)luaL_optinteger(L, 5, 0xffffffffu);
 	f32 secs = (f32)luaL_optnumber(L, 6, 0.0);
 
-	luaOverlayAdd(OVL_BOX, x, y, w, h, color, NULL, secs);
+	luaOverlayAdd(OVL_BOX, x, y, w, h, color, NULL, 0, 0.f, secs);
+	return 0;
+}
+
+/* pd.draw_sprite(texnum, x, y, w, h, [color], [secs]). Paint a game wall-hit
+ * texture (e.g. WALLHITTEX_BLOOD1..4 = 0x09..0x0c) as a HUD quad, tinted by
+ * color (default black-opaque). Used by Blooper to splat black blood on the
+ * screen. */
+static int l_pd_draw_sprite(lua_State *L)
+{
+	s32 texnum = (s32)luaL_checkinteger(L, 1);
+	s32 x = (s32)luaL_checkinteger(L, 2);
+	s32 y = (s32)luaL_checkinteger(L, 3);
+	s32 w = (s32)luaL_checkinteger(L, 4);
+	s32 h = (s32)luaL_checkinteger(L, 5);
+	u32 color = (u32)luaL_optinteger(L, 6, 0x000000ffu);
+	f32 secs = (f32)luaL_optnumber(L, 7, 0.0);
+
+	luaOverlayAdd(OVL_SPRITE, x, y, w, h, color, NULL, texnum, 0.f, secs);
+	return 0;
+}
+
+/* pd.load_image(name) -> handle | nil. Load a PNG from scripts/images/<name>
+ * (".png" appended if it has no extension) into an RGBA texture and return an
+ * opaque handle for pd.draw_image. A LOADING HOOK for future effects — no
+ * shipped effect uses it. Handles + buffers are freed on stage change.
+ * SIZE LIMIT: reliable max is 64x64. Past 64 wide the single-tile load halves
+ * the rows (top part shows doubled), so keep both dimensions <= 64 and
+ * power-of-two. Oversize still loads but renders partial (a warning is logged).
+ * To fill a bigger area, draw a 64x64 source at a larger w/h (draw_image scales). */
+static int l_pd_load_image(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	const char *name = luaL_checkstring(L, 1);
+	char path[256];
+	struct luaimage *im;
+	u8 *data;
+	u32 w = 0, h = 0;
+	const char *dot;
+
+	if (g_LuaImageCount >= LUA_MAX_IMAGES) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	dot = strrchr(name, '.');
+	snprintf(path, sizeof(path), "scripts/images/%s%s", name, dot ? "" : ".png");
+
+	data = extImageLoad(path, &w, &h);
+	if (!data || w == 0 || h == 0) {
+		if (data) extImageFree(data);
+		lua_pushnil(L);
+		return 1;
+	}
+
+	// Reliable max is 64x64: the single-tile load path halves the rows once
+	// the width goes past 64 (the top part shows doubled). Warn but still load
+	// so oversize is obvious in-game. Use power-of-two dimensions.
+	if (w > 64 || h > 64) {
+		char msg[192];
+		snprintf(msg, sizeof(msg),
+				"pd.load_image('%s'): %ux%u exceeds the reliable 64x64 max — "
+				"it will render only partially (top rows doubled).",
+				path, w, h);
+		luaApiLog(msg);
+	}
+
+	// Convert RGBA8888 -> RGBA5551 (16-bit, big-endian) — the game's normal
+	// texture format. The RGBA32 (G_IM_SIZ_32b) load path in the fast3d
+	// renderer computes the wrong tile dimensions for raw configs (it derives
+	// width from line_size_bytes/2, off by 2x), which stretched the image;
+	// the RGBA16 path sizes correctly. Best on power-of-two dimensions.
+	{
+		u8 *rgba16 = (u8 *)malloc((size_t)w * h * 2);
+		u32 i, n = w * h;
+		if (!rgba16) {
+			extImageFree(data);
+			lua_pushnil(L);
+			return 1;
+		}
+		for (i = 0; i < n; i++) {
+			u8 r = data[i * 4 + 0], g = data[i * 4 + 1], b = data[i * 4 + 2], a = data[i * 4 + 3];
+			u16 v = (u16)(((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (a >> 7));
+			rgba16[i * 2 + 0] = (u8)(v >> 8);
+			rgba16[i * 2 + 1] = (u8)(v & 0xff);
+		}
+		extImageFree(data); // done with the 8888 source
+
+		im = &g_LuaImages[g_LuaImageCount];
+		im->data = rgba16;
+		im->w = w;
+		im->h = h;
+		im->config.textureptr = rgba16;
+		im->config.width  = (u8)(w > 255 ? 255 : w);
+		im->config.height = (u8)(h > 255 ? 255 : h);
+		im->config.level  = 0;
+		im->config.format = G_IM_FMT_RGBA;
+		im->config.depth  = G_IM_SIZ_16b;
+		im->config.s = 0;
+		im->config.t = 0;
+		im->config.unk0b = 0;
+	}
+
+	lua_pushinteger(L, g_LuaImageCount);
+	g_LuaImageCount++;
+	return 1;
+#else
+	lua_pushnil(L);
+	return 1;
+#endif
+}
+
+/* pd.draw_image(handle, cx, cy, w, h, [angle_deg], [color], [secs]). Blit a
+ * pd.load_image texture as a w*h HUD quad CENTRED at (cx,cy), rotated angle_deg
+ * degrees. Default color = white opaque (untinted); pass a color to tint. */
+static int l_pd_draw_image(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	s32 handle = (s32)luaL_checkinteger(L, 1);
+	s32 cx = (s32)luaL_checkinteger(L, 2);
+	s32 cy = (s32)luaL_checkinteger(L, 3);
+	s32 w = (s32)luaL_checkinteger(L, 4);
+	s32 h = (s32)luaL_checkinteger(L, 5);
+	f32 angle = (f32)(luaL_optnumber(L, 6, 0.0) * (3.14159265358979 / 180.0)); /* deg -> rad */
+	u32 color = (u32)luaL_optinteger(L, 7, 0xffffffffu);
+	f32 secs = (f32)luaL_optnumber(L, 8, 0.0);
+
+	luaOverlayAdd(OVL_IMAGE, cx, cy, w, h, color, NULL, handle, angle, secs);
+#endif
 	return 0;
 }
 
@@ -238,7 +399,7 @@ static int l_pd_draw_text(lua_State *L)
 	u32 color = (u32)luaL_optinteger(L, 4, 0xffffffffu);
 	f32 secs = (f32)luaL_optnumber(L, 5, 0.0);
 
-	luaOverlayAdd(OVL_TEXT, x, y, 0, 0, color, text, secs);
+	luaOverlayAdd(OVL_TEXT, x, y, 0, 0, color, text, 0, 0.f, secs);
 	return 0;
 }
 
@@ -1093,6 +1254,135 @@ static int l_pd_explosion(lua_State *L)
 	return 1;
 }
 
+/* pd.explosion_at(x, y, z [, type]) -> bool. Detonate at a position (rooms
+ * portal-walked from the player). The Live Grenade / Martyrdom fuse boom. */
+static int l_pd_explosion_at(lua_State *L)
+{
+	f32 x = (f32)luaL_checknumber(L, 1);
+	f32 y = (f32)luaL_checknumber(L, 2);
+	f32 z = (f32)luaL_checknumber(L, 3);
+	s32 type = (s32)luaL_optinteger(L, 4, 9);
+	lua_pushboolean(L, chraiLuaExplodeAtPos(x, y, z, type) != 0);
+	return 1;
+}
+
+/* pd.grenade(x, y, z) -> bool. Drop a LIVE armed grenade at a position (real
+ * engine thrown-grenade: lands, arms, plays the pin/throw SFX, detonates on
+ * its own fuse). */
+static int l_pd_grenade(lua_State *L)
+{
+	f32 x = (f32)luaL_checknumber(L, 1);
+	f32 y = (f32)luaL_checknumber(L, 2);
+	f32 z = (f32)luaL_checknumber(L, 3);
+	lua_pushboolean(L, chraiLuaSpawnGrenade(x, y, z) != 0);
+	return 1;
+}
+
+/* pd.input_source() -> "pad" | "kbm". The device the player most recently
+ * used (Button Thief steals device-appropriate binds). */
+static int l_pd_input_source(lua_State *L)
+{
+	extern s32 inputLastSourceWasPad(void);
+	lua_pushstring(L, inputLastSourceWasPad() ? "pad" : "kbm");
+	return 1;
+}
+
+/* pd.door_traps(on) -> bool. Booby-trapped doors: any door that starts
+ * opening detonates. */
+static int l_pd_door_traps(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaDoorTraps(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.door_opens() -> int. Doors opened this stage (task sensor). */
+static int l_pd_door_opens(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)chraiLuaDoorOpens());
+	return 1;
+}
+
+/* pd.env_colours(skyr,skyg,skyb, cloudr,cloudg,cloudb) -> bool. Override the
+ * stage sky + cloud colours (0-255 each). pd.env() restores. */
+static int l_pd_env_colours(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaEnvColours(
+			(s32)luaL_checkinteger(L, 1), (s32)luaL_checkinteger(L, 2),
+			(s32)luaL_checkinteger(L, 3), (s32)luaL_checkinteger(L, 4),
+			(s32)luaL_checkinteger(L, 5), (s32)luaL_checkinteger(L, 6)) != 0);
+	return 1;
+}
+
+/* pd.player_yaw() -> degrees 0..360. Look yaw (spin-around task sensor). */
+static int l_pd_player_yaw(lua_State *L)
+{
+	lua_pushnumber(L, chraiLuaPlayerYaw());
+	return 1;
+}
+
+/* pd.player_crouch() -> 0 stand / 1 duck / 2 squat. */
+static int l_pd_player_crouch(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaPlayerCrouch());
+	return 1;
+}
+
+/* pd.has_weapon(weaponnum) -> bool. Weapon is in the player's inventory. */
+static int l_pd_has_weapon(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHasWeapon((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.bio_count() -> nchr, nmisc. How many character / misc bios the save has
+ * unlocked (Carrington Institute information terminal). */
+static int l_pd_bio_count(lua_State *L)
+{
+	lua_pushinteger(L, ciGetNumUnlockedChrBios());
+	lua_pushinteger(L, ciGetNumUnlockedMiscBios());
+	return 2;
+}
+
+/* pd.bio_text(kind, slot) -> name, body | nil. kind 0 = character bios
+ * (body = description text), kind 1 = misc bios. slot is 0-based within the
+ * unlocked set (pd.bio_count). The game's own lore, straight from the CI
+ * information terminal. */
+static int l_pd_bio_text(lua_State *L)
+{
+	s32 kind = (s32)luaL_checkinteger(L, 1);
+	s32 slot = (s32)luaL_checkinteger(L, 2);
+
+	if (kind == 0) {
+		struct chrbio *bio;
+		if (slot < 0 || slot >= ciGetNumUnlockedChrBios()) {
+			lua_pushnil(L);
+			return 1;
+		}
+		bio = ciGetChrBioByBodynum(ciGetChrBioBodynumBySlot(slot));
+		if (bio == NULL) {
+			lua_pushnil(L);
+			return 1;
+		}
+		lua_pushstring(L, langGet(bio->name));
+		lua_pushstring(L, langGet(bio->description));
+		return 2;
+	} else {
+		struct miscbio *bio;
+		if (slot < 0 || slot >= ciGetNumUnlockedMiscBios()) {
+			lua_pushnil(L);
+			return 1;
+		}
+		bio = ciGetMiscBio(ciGetMiscBioIndexBySlot(slot));
+		if (bio == NULL) {
+			lua_pushnil(L);
+			return 1;
+		}
+		lua_pushstring(L, langGet(bio->name));
+		lua_pushstring(L, langGet(bio->description));
+		return 2;
+	}
+}
+
 /* pd.device_off(weaponnum) -> bool. Deactivate a device (device_on inverse). */
 static int l_pd_device_off(lua_State *L)
 {
@@ -1402,6 +1692,14 @@ static int l_pd_double_shots(lua_State *L)
 	return 1;
 }
 
+/* pd.quad_top(on) -> bool. A second pair of viewmodel guns hangs upside-down
+ * from the top of the screen. */
+static int l_pd_quad_top(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaQuadTop(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.buttons() -> int. The local player's RAW held pad buttons (N64 mask:
  * A 0x8000, B 0x4000, Z 0x2000, R 0x10, C-up 8, C-down 4, C-left 2,
  * C-right 1). Sees buttons even while pd.button_block hides them from
@@ -1494,7 +1792,192 @@ static int l_pd_mute(lua_State *L)
  * scripts/sounds/chaos/ring.wav) through the device stream. */
 static int l_pd_play_file(lua_State *L)
 {
-	lua_pushboolean(L, chraiLuaPlayFile(luaL_checkstring(L, 1)) != 0);
+	const char *path = luaL_checkstring(L, 1);
+	s32 loop = lua_toboolean(L, 2); /* pd.play_file(path, loop) */
+	lua_pushboolean(L, chraiLuaPlayFile(path, loop) != 0);
+	return 1;
+}
+
+/* pd.stop_file(). Stop the external sound started by pd.play_file. */
+static int l_pd_stop_file(lua_State *L)
+{
+	chraiLuaStopFile();
+	return 0;
+}
+
+/* pd.weapon_rename(weaponnum [, name]). Relabel a weapon everywhere it's
+ * shown; no name / nil restores the real one. */
+static int l_pd_weapon_rename(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	const char *name = luaL_optstring(L, 2, NULL);
+	lua_pushboolean(L, chraiLuaWeaponRename(weaponnum, name) != 0);
+	return 1;
+}
+
+/* --------------------------------------------------------------------------
+ * Mid-mission menu drivers (pd.menu_lore / pd.game_over). Both use the exact
+ * CI-terminal recipe func0f0f85e0(dialog, root): push a root dialog + pause
+ * the live stage; the player closes it and func0f0fa6ac -> playerUnpause
+ * resumes. This is the same machinery the Start-button pause and the CI hub
+ * information terminal use, so it's a proven mid-stage path. Solo/co-op only
+ * (never Combat Sim / a net client — restart/menu semantics don't apply).
+ * ------------------------------------------------------------------------ */
+#ifndef PLATFORM_N64
+/* true only in a real solo/co-op mission with a live local pawn */
+static bool chaosMenuAllowed(void)
+{
+	return g_NetMode != NETMODE_CLIENT
+			&& !g_Vars.normmplayerisrunning
+			&& g_Vars.currentplayer != NULL
+			&& g_Vars.currentplayer->prop != NULL
+			&& g_Vars.stagenum != STAGE_CITRAINING;
+}
+
+/* ---- Game Over: the REAL mission-failed screen, indistinguishable from the
+ * engine's, but with our two choices (Accept = restart, Decline = resume). It
+ * mirrors the genuine two-screen flow:
+ *   1) g_ChaosFailedStatsDialog — a clone of g_SoloMissionEndscreenFailedMenuDialog:
+ *      MENUDIALOGTYPE_DANGER, the real "<Stage>: Failed" title, and the REAL
+ *      stats item list (g_MissionEndscreenMenuItems). Those text functions read
+ *      LIVE run stats (mission time, kills, accuracy, shots, difficulty, weapon
+ *      of choice) which are valid mid-mission; the cheat-availability lines hide
+ *      because we zero endscreen.cheatinfo. We deliberately do NOT call
+ *      endscreenResetModels / configure a menumodel — that pool IS the live
+ *      viewmodel gun-mem and reusing it mid-mission would corrupt it; a DANGER
+ *      dialog draws no 3D model on its own, so skipping it is safe.
+ *   2) On any input it pushes g_ChaosRetryDialog — the real retry look
+ *      (objectives + Accept/Decline, "Retry: <Stage>" title, the genuine
+ *      endscreenHandleRetryMission for Start=accept / Back=resume). Accept runs
+ *      the real menuhandlerAcceptMission (restart); Decline resumes the LIVE,
+ *      still-paused mission instead of quitting to the menu.
+ * ---------------------------------------------------------------------------- */
+extern struct menuitem g_MissionEndscreenMenuItems[]; /* the real failed/complete stats list (endscreen.c) */
+extern s32 g_ChaosGameOverStatus; /* forces Mission=Unknown / Agent=Missing while our screen is up */
+
+/* Close both game-over dialogs -> the menu-close path (func0f0fa6ac) unpauses
+ * the still-live mission, back to exactly where we were. Two pops = the
+ * stats+retry stack depth; the second is a safe no-op if only one is open. */
+static MenuItemHandlerResult chaosGameOverResume(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	if (operation == MENUOP_SET) {
+		playerSetFadeColour(0, 0, 0, 0.0f); // clear the game-over black screen
+		g_ChaosGameOverStatus = 0;          // stop forcing Unknown/Missing
+		menuPopDialog();
+		menuPopDialog();
+	}
+	return 0;
+}
+
+/* Retry screen — Accept / Decline. We do NOT reuse the engine's
+ * g_RetryMissionMenuItems (its Objectives item) or endscreenHandleRetryMission:
+ * that handler delegates to menudialog00103608, whose MENUOP_OPEN calls
+ * setupLoadBriefing into the (unconfigured) menumodel buffer and DMAs the
+ * briefing file into a garbage address — the mid-mission crash. Our handler
+ * loads nothing; Start selects the focused item (STARTSELECTS), Back resumes. */
+static struct menuitem g_ChaosRetryItems[] = {
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, L_OPTIONS_298 /* Accept */,  0, menuhandlerAcceptMission },
+	{ MENUITEMTYPE_SELECTABLE, 0, 0, L_OPTIONS_299 /* Decline */, 0, chaosGameOverResume },
+	{ MENUITEMTYPE_END },
+};
+
+static MenuDialogHandlerResult chaosRetryHandle(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_TICK
+			&& g_Menus[g_MpPlayerNum].curdialog
+			&& g_Menus[g_MpPlayerNum].curdialog->definition == dialogdef) {
+		struct menuinputs *inputs = data->dialog2.inputs;
+		if (inputs->back) {
+			inputs->back = false;
+			chaosGameOverResume(MENUOP_SET, NULL, NULL); // clear fade + pop2 -> resume
+		}
+	}
+	return 0;
+}
+
+static struct menudialogdef g_ChaosRetryDialog = {
+	MENUDIALOGTYPE_DANGER,
+	(uintptr_t)&endscreenMenuTitleRetryMission,   /* real "Retry: <Stage>" */
+	g_ChaosRetryItems,
+	chaosRetryHandle,
+	MENUDIALOGFLAG_STARTSELECTS | MENUDIALOGFLAG_DISABLEITEMSCROLL,
+	NULL,
+};
+
+/* Failed stats screen handler: on any input, advance to the retry screen —
+ * the same transition the real endscreenHandle2PFailed makes. */
+static MenuDialogHandlerResult chaosFailedStatsHandle(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_TICK
+			&& g_Menus[g_MpPlayerNum].curdialog
+			&& g_Menus[g_MpPlayerNum].curdialog->definition == dialogdef) {
+		struct menuinputs *inputs = data->dialog2.inputs;
+		if (inputs->select || inputs->back || inputs->start) {
+			inputs->select = inputs->back = inputs->start = false;
+			menuPushDialog(&g_ChaosRetryDialog);
+		}
+	}
+	return 0;
+}
+
+static struct menudialogdef g_ChaosFailedStatsDialog = {
+	MENUDIALOGTYPE_DANGER,
+	(uintptr_t)&endscreenMenuTitleStageFailed,    /* real "<Stage>: Failed" */
+	g_MissionEndscreenMenuItems,                  /* real live-stat lines */
+	chaosFailedStatsHandle,
+	MENUDIALOGFLAG_DISABLEITEMSCROLL | MENUDIALOGFLAG_SMOOTHSCROLLABLE,
+	NULL,
+};
+#endif
+
+/* pd.menu_lore() -> bool. Open ONE random unlocked CI bio (character profile
+ * or misc file) over the paused mission — the real hub-terminal reader
+ * pushed directly as the menu root, so closing it resumes the mission. */
+static int l_pd_menu_lore(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	extern struct menudialogdef g_BioProfileMenuDialog;
+	extern struct menudialogdef g_BioTextMenuDialog;
+	s32 nchr = ciGetNumUnlockedChrBios();
+	s32 nmisc = ciGetNumUnlockedMiscBios();
+
+	if (chaosMenuAllowed() && g_Menus[g_MpPlayerNum].curdialog == NULL && nchr + nmisc > 0) {
+		// g_ChrBioSlot is the selector the profile/text dialogs read — the
+		// same global the Information list menu sets on selection.
+		g_ChrBioSlot = (u8)(rngRandom() % (u32)(nchr + nmisc));
+		func0f0f85e0(g_ChrBioSlot < nchr ? &g_BioProfileMenuDialog : &g_BioTextMenuDialog,
+				MENUROOT_TRAINING);
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+#endif
+	lua_pushboolean(L, 0);
+	return 1;
+}
+
+/* pd.game_over() -> bool. Show the real mission-failed screen; Accept
+ * restarts, Decline resumes where you were. */
+static int l_pd_game_over(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	if (chaosMenuAllowed() && g_Menus[g_MpPlayerNum].curdialog == NULL) {
+		// Minimal endscreen-state prep, matching endscreenPrepare's non-model
+		// bits: zero cheatinfo (hides the "New Cheat Available" lines),
+		// point stageindex at the current stage (title + difficulty lines),
+		// player 0. NO endscreenResetModels / menumodel — see the dialog note.
+		g_Menus[g_MpPlayerNum].endscreen.cheatinfo = 0;
+		g_Menus[g_MpPlayerNum].endscreen.isfirstcompletion = false;
+		g_Menus[g_MpPlayerNum].endscreen.stageindex = g_MissionConfig.stageindex;
+		g_Menus[g_MpPlayerNum].playernum = 0;
+		playerSetFadeColour(0, 0, 0, 1.0f);              // black out the world behind the screen
+		musicStartTrackAsMenu(MUSIC_MISSION_FAILED);      // the mission-failed jingle
+		g_ChaosGameOverStatus = 1;                        // Mission: Unknown / Agent: Missing
+		func0f0f85e0(&g_ChaosFailedStatsDialog, MENUROOT_MAINMENU);
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+#endif
+	lua_pushboolean(L, 0);
 	return 1;
 }
 
@@ -1596,6 +2079,18 @@ static int l_pd_screen_fx(lua_State *L)
 	lua_pushboolean(L, chraiLuaScreenFx(
 			(s32)luaL_checkinteger(L, 1), lua_toboolean(L, 2)) != 0);
 	return 1;
+}
+
+/* pd.hudvd(on) -> nil. HUDVD chaos: each HUD element group (health, crosshair,
+ * ammo, radar, messages, kill-feed) bounces DVD-style in its own random
+ * diagonal. Purely cosmetic — aim/hit-detection are untouched. */
+static int l_pd_hudvd(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	extern void hudvdSetActive(bool on);
+	hudvdSetActive((bool)lua_toboolean(L, 1));
+#endif
+	return 0;
 }
 
 /* pd.crt(on) -> bool. The full CRT look: curved scanlines + RGB aperture
@@ -1814,15 +2309,17 @@ static int l_pd_song(lua_State *L)
 	return 1;
 }
 
-/* pd.spawn_body(bodynum [, weaponnum, dx, dz]) -> chrnum | -1. Spawn a
- * hostile chr of the given body at the player plus a horizontal offset. */
+/* pd.spawn_body(bodynum [, weaponnum, dx, dz, sunglasses]) -> chrnum | -1.
+ * Spawn a hostile chr of the given body at the player plus a horizontal
+ * offset. sunglasses=true forces the head's shades variant (Terminator). */
 static int l_pd_spawn_body(lua_State *L)
 {
 	s32 bodynum = (s32)luaL_checkinteger(L, 1);
 	s32 weaponnum = (s32)luaL_optinteger(L, 2, -1);
 	f32 dx = (f32)luaL_optnumber(L, 3, 0.0);
 	f32 dz = (f32)luaL_optnumber(L, 4, 0.0);
-	lua_pushinteger(L, chraiLuaSpawnBody(bodynum, weaponnum, dx, dz));
+	s32 sunglasses = lua_toboolean(L, 5);
+	lua_pushinteger(L, chraiLuaSpawnBody(bodynum, weaponnum, dx, dz, sunglasses));
 	return 1;
 }
 
@@ -1995,6 +2492,9 @@ void luaApiRegister(lua_State *L)
 	/* pd.* functions (pd table is at -1) */
 	lua_pushcfunction(L, l_pd_on);          lua_setfield(L, -2, "on");
 	lua_pushcfunction(L, l_pd_draw_box);    lua_setfield(L, -2, "draw_box");
+	lua_pushcfunction(L, l_pd_draw_sprite); lua_setfield(L, -2, "draw_sprite");
+	lua_pushcfunction(L, l_pd_load_image);  lua_setfield(L, -2, "load_image");
+	lua_pushcfunction(L, l_pd_draw_image);  lua_setfield(L, -2, "draw_image");
 	lua_pushcfunction(L, l_pd_draw_text);   lua_setfield(L, -2, "draw_text");
 	lua_pushcfunction(L, l_pd_hud_message); lua_setfield(L, -2, "hud_message");
 	lua_pushcfunction(L, l_pd_each_chr);    lua_setfield(L, -2, "each_chr");
@@ -2060,6 +2560,17 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_fade);          lua_setfield(L, -2, "fade");
 	lua_pushcfunction(L, l_pd_chr_yeet);      lua_setfield(L, -2, "chr_yeet");
 	lua_pushcfunction(L, l_pd_explosion);     lua_setfield(L, -2, "explosion");
+	lua_pushcfunction(L, l_pd_explosion_at);  lua_setfield(L, -2, "explosion_at");
+	lua_pushcfunction(L, l_pd_grenade);       lua_setfield(L, -2, "grenade");
+	lua_pushcfunction(L, l_pd_input_source);  lua_setfield(L, -2, "input_source");
+	lua_pushcfunction(L, l_pd_door_traps);    lua_setfield(L, -2, "door_traps");
+	lua_pushcfunction(L, l_pd_door_opens);    lua_setfield(L, -2, "door_opens");
+	lua_pushcfunction(L, l_pd_env_colours);   lua_setfield(L, -2, "env_colours");
+	lua_pushcfunction(L, l_pd_player_yaw);    lua_setfield(L, -2, "player_yaw");
+	lua_pushcfunction(L, l_pd_player_crouch); lua_setfield(L, -2, "player_crouch");
+	lua_pushcfunction(L, l_pd_has_weapon);    lua_setfield(L, -2, "has_weapon");
+	lua_pushcfunction(L, l_pd_bio_count);     lua_setfield(L, -2, "bio_count");
+	lua_pushcfunction(L, l_pd_bio_text);      lua_setfield(L, -2, "bio_text");
 	lua_pushcfunction(L, l_pd_ext_poll);      lua_setfield(L, -2, "ext_poll");
 	lua_pushcfunction(L, l_pd_alarm);         lua_setfield(L, -2, "alarm");
 	lua_pushcfunction(L, l_pd_boost);         lua_setfield(L, -2, "boost");
@@ -2092,6 +2603,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_items_shuffle); lua_setfield(L, -2, "items_shuffle");
 	lua_pushcfunction(L, l_pd_chr_wireframe); lua_setfield(L, -2, "chr_wireframe");
 	lua_pushcfunction(L, l_pd_double_shots);  lua_setfield(L, -2, "double_shots");
+	lua_pushcfunction(L, l_pd_quad_top);      lua_setfield(L, -2, "quad_top");
 	lua_pushcfunction(L, l_pd_buttons);       lua_setfield(L, -2, "buttons");
 	lua_pushcfunction(L, l_pd_buttons_pressed); lua_setfield(L, -2, "buttons_pressed");
 	lua_pushcfunction(L, l_pd_spawn_chopper); lua_setfield(L, -2, "spawn_chopper");
@@ -2104,6 +2616,10 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_gun_sound);     lua_setfield(L, -2, "gun_sound");
 	lua_pushcfunction(L, l_pd_mute);          lua_setfield(L, -2, "mute");
 	lua_pushcfunction(L, l_pd_play_file);     lua_setfield(L, -2, "play_file");
+	lua_pushcfunction(L, l_pd_stop_file);     lua_setfield(L, -2, "stop_file");
+	lua_pushcfunction(L, l_pd_weapon_rename); lua_setfield(L, -2, "weapon_rename");
+	lua_pushcfunction(L, l_pd_menu_lore);     lua_setfield(L, -2, "menu_lore");
+	lua_pushcfunction(L, l_pd_game_over);     lua_setfield(L, -2, "game_over");
 	lua_pushcfunction(L, l_pd_chr_speed);     lua_setfield(L, -2, "chr_speed");
 	lua_pushcfunction(L, l_pd_player_speed);  lua_setfield(L, -2, "player_speed");
 	lua_pushcfunction(L, l_pd_chr_damage);    lua_setfield(L, -2, "chr_damage");
@@ -2148,6 +2664,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_instrument_shuffle); lua_setfield(L, -2, "instrument_shuffle");
 	lua_pushcfunction(L, l_pd_pixelate);      lua_setfield(L, -2, "pixelate");
 	lua_pushcfunction(L, l_pd_screen_fx);     lua_setfield(L, -2, "screen_fx");
+	lua_pushcfunction(L, l_pd_hudvd);         lua_setfield(L, -2, "hudvd");
 	lua_pushcfunction(L, l_pd_crt);           lua_setfield(L, -2, "crt");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
@@ -2167,6 +2684,20 @@ void luaApiResetFrame(void)
 	g_LuaOverlayCount = 0;
 	g_LuaXrayCount = 0;
 	g_LuaLastPlayerRoom = -0x7fffffff; /* re-baseline room tracking on reset */
+#ifndef PLATFORM_N64
+	/* Free pd.load_image buffers (our RGBA5551 conversions — plain malloc, so
+	 * plain free). The Lua-side handles die with the state. */
+	{
+		s32 i;
+		for (i = 0; i < g_LuaImageCount; i++) {
+			if (g_LuaImages[i].data) {
+				free(g_LuaImages[i].data);
+				g_LuaImages[i].data = NULL;
+			}
+		}
+		g_LuaImageCount = 0;
+	}
+#endif
 	/* The Lua state is closing on reset, so the refs go with it; just drop the
 	 * count + clear labels (don't luaL_unref against a dead state). */
 	{
@@ -2359,6 +2890,122 @@ void luaTick(void)
 	g_LuaOverlayCount = w;
 }
 
+#ifndef PLATFORM_N64
+// Draw a wall-hit texture (blood splat) as a tinted HUD quad. Mirrors the
+// menugfx sprite recipe (texSelect + textured tri), with per-vertex colour =
+// the requested tint so the splat shape comes from the texture and the RGB
+// from `color`. Screen coords are the on-screen pixel rect; texcoords span the
+// whole texture.
+extern struct textureconfig *g_TexWallhitConfigs;
+
+// Blit a textureconfig as a screen-space texrect (no projection matrix needed
+// — same path the font glyphs use inside the text0f153628 bracket). Combine:
+// colour = PRIMITIVE (the requested tint), alpha = TEXEL0 * PRIMITIVE.alpha, so
+// the shape comes from the texture and the RGB from `color`. Pass a full-white
+// opaque colour to draw an image untinted.
+static Gfx *luaDrawTexConfig(Gfx *gdl, struct textureconfig *tc, s32 texw, s32 texh,
+		s32 x, s32 y, s32 w, s32 h, u32 color)
+{
+	if (texw < 1) texw = 1;
+	if (texh < 1) texh = 1;
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+
+	texSelect(&gdl, tc, 2, 0, 2, 1, NULL);
+
+	gDPSetCombineLERP(gdl++,
+			0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0,
+			0, 0, 0, PRIMITIVE, TEXEL0, 0, PRIMITIVE, 0);
+	gDPSetPrimColorViaWord(gdl++, 0, 0, color);
+
+	gSPTextureRectangle(gdl++,
+			x * 4, y * 4, (x + w) * 4, (y + h) * 4,
+			G_TX_RENDERTILE,
+			0, 0,
+			(texw << 10) / w, (texh << 10) / h);
+
+	return gdl;
+}
+
+static Gfx *luaDrawSprite(Gfx *gdl, s32 texnum, s32 x, s32 y, s32 w, s32 h, u32 color)
+{
+	if (!g_TexWallhitConfigs) {
+		return gdl;
+	}
+	return luaDrawTexConfig(gdl, &g_TexWallhitConfigs[texnum],
+			g_TexWallhitConfigs[texnum].width, g_TexWallhitConfigs[texnum].height,
+			x, y, w, h, color);
+}
+
+// Draw a loaded image as a w*h quad centred at (cx,cy), rotated by `angle`
+// radians. Uses textured triangles (rotation needs real geometry, unlike the
+// axis-aligned texrect), a MODULATE combine (colour = TEXEL0 * PRIMITIVE) so
+// the image shows its OWN colours — pass white for untinted, a colour to tint.
+static Gfx *luaDrawImage(Gfx *gdl, s32 handle, s32 cx, s32 cy, s32 w, s32 h, f32 angle, u32 color)
+{
+	struct luaimage *im;
+	s32 iw, ih;
+
+	if (handle < 0 || handle >= g_LuaImageCount || g_LuaImages[handle].data == NULL) {
+		return gdl;
+	}
+	im = &g_LuaImages[handle];
+	iw = (s32)im->w;
+	ih = (s32)im->h;
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+
+	// Load the RGBA5551 buffer with the standard gDPLoadTextureBlock macro
+	// (the same path menugfx uses for the raw RGBA16 blur buffer — it sets up
+	// the load/render tiles + sizes correctly, unlike a hand-built texSelect
+	// config which mis-sized the tile). Combine: colour = TEXEL0 * PRIMITIVE,
+	// alpha = TEXEL0 * PRIMITIVE, so white PRIM = the image untouched and a
+	// coloured PRIM tints it.
+	gDPPipeSync(gdl++);
+	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
+	gDPLoadTextureBlock(gdl++, im->data, G_IM_FMT_RGBA, G_IM_SIZ_16b, iw, ih, 0,
+			G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP,
+			texGetMask(iw), texGetMask(ih), G_TX_NOLOD, G_TX_NOLOD);
+	gDPSetCycleType(gdl++, G_CYC_1CYCLE);
+	gDPSetAlphaCompare(gdl++, G_AC_NONE);
+	gDPSetCombineLERP(gdl++,
+			TEXEL0, 0, PRIMITIVE, 0, TEXEL0, 0, PRIMITIVE, 0,
+			TEXEL0, 0, PRIMITIVE, 0, TEXEL0, 0, PRIMITIVE, 0);
+	gDPSetPrimColorViaWord(gdl++, 0, 0, color);
+	gSPClearGeometryMode(gdl++, G_CULL_BOTH);
+	gDPSetTextureFilter(gdl++, G_TF_BILERP);
+	gDPSetRenderMode(gdl++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
+
+	if (angle == 0.0f) {
+		// Axis-aligned: a screen-space texrect (fast, no vertices).
+		gSPTextureRectangle(gdl++,
+				(cx - w / 2) * 4, (cy - h / 2) * 4, (cx + w / 2) * 4, (cy + h / 2) * 4,
+				G_TX_RENDERTILE, 0, 0, (iw << 10) / w, (ih << 10) / h);
+	} else {
+		// Rotated: textured quad (texrects can't rotate).
+		Vtx *vertices = gfxAllocateVertices(4);
+		f32 co = cosf(angle), si = sinf(angle), hw = w * 0.5f, hh = h * 0.5f;
+		s16 smax = (s16)(iw << 5), tmax = (s16)(ih << 5);
+		const f32 dx[4] = { -1.f, 1.f, 1.f, -1.f };
+		const f32 dy[4] = { -1.f, -1.f, 1.f, 1.f };
+		s32 i;
+		for (i = 0; i < 4; i++) {
+			f32 lx = dx[i] * hw, ly = dy[i] * hh;
+			vertices[i].x = (s16)((cx + (lx * co - ly * si)) * 10);
+			vertices[i].y = (s16)((cy + (lx * si + ly * co)) * 10);
+			vertices[i].z = -10;
+			vertices[i].s = (i == 1 || i == 2) ? smax : 0;
+			vertices[i].t = (i >= 2) ? tmax : 0;
+			vertices[i].colour = 0;
+		}
+		gSPVertex(gdl++, osVirtualToPhysical(vertices), 4, 0);
+		gSPTri2(gdl++, 0, 1, 2, 2, 3, 0);
+	}
+
+	return gdl;
+}
+#endif
+
 Gfx *luaHudRender(Gfx *gdl)
 {
 #ifndef PLATFORM_N64
@@ -2381,6 +3028,10 @@ Gfx *luaHudRender(Gfx *gdl)
 			if (o->kind == OVL_BOX) {
 				gdl = hudmsgRenderBox(gdl, o->x, o->y, o->x + o->w, o->y + o->h,
 						1.f, o->color, 0.85f);
+			} else if (o->kind == OVL_SPRITE) {
+				gdl = luaDrawSprite(gdl, o->texnum, o->x, o->y, o->w, o->h, o->color);
+			} else if (o->kind == OVL_IMAGE) {
+				gdl = luaDrawImage(gdl, o->texnum, o->x, o->y, o->w, o->h, o->angle, o->color);
 			} else {
 				s32 tx = o->x, ty = o->y;
 				gdl = textRenderProjected(gdl, &tx, &ty, o->text,

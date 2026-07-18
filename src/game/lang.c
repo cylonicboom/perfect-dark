@@ -449,12 +449,29 @@ void langClearBank(s32 bank)
  * The language file data consists of a variable-length array of offsets into
  * the file. Not to be confused with pointers.
  */
+#ifndef PLATFORM_N64
+// Chaos single-string override (pd.weapon_rename): while g_ChaosLangOverrideId
+// is a real text id, langGet returns g_ChaosLangOverrideStr for it instead of
+// the bank string. Used to relabel the "phone" (Psychosis Gun -> Nokia 3315)
+// for the duration of the Phone Call effect; cleared when it ends. langGet is
+// the single choke every name-display path funnels through, so one hook covers
+// the HUD label, inventory menu, and pickup toast uniformly.
+s32 g_ChaosLangOverrideId = -1;
+char g_ChaosLangOverrideStr[64] = { 0 };
+#endif
+
 char *langGet(s32 textid)
 {
 	s32 bankindex = textid >> 9;
 	s32 textindex = textid & 0x1ff;
 	uintptr_t *bank = (uintptr_t*)g_LangBanks[bankindex];
 	uintptr_t addr;
+
+#ifndef PLATFORM_N64
+	if (g_ChaosLangOverrideId >= 0 && textid == g_ChaosLangOverrideId) {
+		return g_ChaosLangOverrideStr;
+	}
+#endif
 
 	if (bank && bank[textindex]) {
 		addr = (uintptr_t)bank + bank[textindex];

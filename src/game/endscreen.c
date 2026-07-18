@@ -362,8 +362,21 @@ static bool endscreenAllCoopDead(void) {
 #define COOP_ALLDEAD() (g_Vars.bond->isdead && g_Vars.coop->isdead)
 #endif
 
+#ifndef PLATFORM_N64
+// Chaos "Game over?" (pd.game_over): while the fake mid-mission failed screen
+// is up, force Mission Status = "Unknown" and Agent Status = "Missing" (set in
+// l_pd_game_over, cleared on resume/restart). No effect on the real endscreen.
+s32 g_ChaosGameOverStatus = 0;
+#endif
+
 char *endscreenMenuTextMissionStatus(struct menuitem *item)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosGameOverStatus) {
+		return langGet(L_MPWEAPONS_062); // "Unknown"
+	}
+#endif
+
 	if (g_CheatsActiveBank0 || g_CheatsActiveBank1) {
 		return langGet(L_MPWEAPONS_135); // "Cheated"
 	}
@@ -421,6 +434,12 @@ char *endscreenMenuTextMissionStatus(struct menuitem *item)
 
 char *endscreenMenuTextAgentStatus(struct menuitem *item)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosGameOverStatus) {
+		return langGet(L_MPWEAPONS_063); // "Missing"
+	}
+#endif
+
 	if (g_CheatsActiveBank0 || g_CheatsActiveBank1) {
 		return langGet(L_MPWEAPONS_134); // "Dishonored"
 	}

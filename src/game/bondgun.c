@@ -234,6 +234,10 @@ s32 g_ChaosAmmoCost = 1;
 // Chaos "Quad handed" (pd.double_shots): every fire event takes twice the
 // shots (with dual-wield that's four barrels' worth); ammo drains to match.
 s32 g_ChaosDoubleShots = 0;
+// Chaos "Quad handed" (pd.quad_top): re-render the two viewmodel guns under a
+// 180-degree-rotated projection so a second pair appears hanging from the top
+// of the screen. Consumed in bgunRender; reset in lvInit.
+s32 g_ChaosQuadTopGuns = 0;
 // Chaos "Pinball rounds" (pd.pinball): fired physics projectiles (rockets,
 // grenade rounds) are converted at launch into the grenade secondary's
 // Proximity Pinball — ballistic, bouncy, proximity-armed. See the conversion
@@ -12163,6 +12167,32 @@ void bgunRender(Gfx **gdlptr)
 			// Render the gun
 			modelRender(&renderdata, &hand->gunmodel);
 
+#ifndef PLATFORM_N64
+			// Chaos "Quad handed": render this gun a SECOND time under a
+			// vertically-mirrored projection, so the viewmodel also appears as
+			// a mirror reflection hanging from the top of the screen (two more
+			// barrels). The gun's model matrices are still loaded from the
+			// render above, so only the projection changes; we restore it right
+			// after for the hand render + cleanup below. A single-axis mirror
+			// reverses triangle winding, so cull nothing for this pass.
+			if (g_ChaosQuadTopGuns) {
+				u32 savedcull = renderdata.cullmode;
+				gdl = renderdata.gdl;
+				gdl = viPerspectiveFovMirrorY(gdl, usegunfov ? gunfovy : viGetFovY(), 1.5, 1000);
+				renderdata.gdl = gdl;
+				renderdata.cullmode = CULLMODE_NONE;
+				modelRender(&renderdata, &hand->gunmodel);
+				renderdata.cullmode = savedcull;
+				gdl = renderdata.gdl;
+				if (usegunfov) {
+					gdl = viPerspectiveFov(gdl, gunfovy, 1.5, 1000);
+				} else {
+					gdl = vi0000aca4(gdl, 1.5, 1000);
+				}
+				renderdata.gdl = gdl;
+			}
+#endif
+
 			// Render the hand
 			if (player->gunctrl.handmodeldef && renderhand) {
 				s32 prevcolour = renderdata.envcolour; // 7c
@@ -14438,6 +14468,15 @@ void bgun0f0abd30(s32 handnum)
 			}
 
 			hand->clipsizes[i] = weapon->ammos[i]->clipsize;
+
+#ifndef PLATFORM_N64
+			// Chaos "Quad handed": double the magazine capacity (pairs with
+			// the double ammo-per-shot from g_ChaosDoubleShots, so a mag lasts
+			// the same number of trigger pulls but holds/drains 2x).
+			if (g_ChaosQuadTopGuns && !g_Vars.currentplayer->isremote) {
+				hand->clipsizes[i] *= 2;
+			}
+#endif
 
 			if (handnum == HAND_LEFT && hand->gset.weaponnum == WEAPON_REMOTEMINE) {
 				hand->clipsizes[i] = 0;

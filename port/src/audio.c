@@ -32,6 +32,7 @@ static s32 audioMuted = 0;
 static u8 *extSound = NULL;
 static u32 extSoundLen = 0;
 static u32 extSoundPos = 0;
+static s32 extLoop = 0; // pd.play_file(path, loop): rewind instead of freeing
 static s16 *mixBuf = NULL;
 static u32 mixBufCap = 0;
 // - bitcrush (pd.audio_crush): sample-and-hold every crushStep'th stereo
@@ -397,9 +398,10 @@ static s32 audioLoadMp3(const char *path, Uint8 **outdata, int *outlen, SDL_Audi
 }
 #endif
 
-s32 audioPlayExternal(const char *path)
+s32 audioPlayExternal(const char *path, s32 loop)
 {
 #ifdef DEDICATED_SERVER
+	(void)loop;
 	return 0;
 #else
 	SDL_AudioSpec srcspec;
@@ -443,7 +445,21 @@ s32 audioPlayExternal(const char *path)
 	extSound = conv;
 	extSoundLen = (u32)convlen;
 	extSoundPos = 0;
+	extLoop = loop ? 1 : 0;
 	return 1;
+#endif
+}
+
+// Stop the external sound immediately (pd.stop_file / call answered).
+void audioStopExternal(void)
+{
+#ifndef DEDICATED_SERVER
+	extLoop = 0;
+	if (extSound) {
+		SDL_free(extSound);
+		extSound = NULL;
+		extSoundLen = extSoundPos = 0;
+	}
 #endif
 }
 
@@ -613,9 +629,13 @@ void audioEndFrame(void)
 			}
 
 			if (extSound && extSoundPos >= extSoundLen) {
-				SDL_free(extSound);
-				extSound = NULL;
-				extSoundLen = extSoundPos = 0;
+				if (extLoop) {
+					extSoundPos = 0; // seamless-ish loop: rewind, keep the buffer
+				} else {
+					SDL_free(extSound);
+					extSound = NULL;
+					extSoundLen = extSoundPos = 0;
+				}
 			}
 
 			SDL_PutAudioStreamData(stream, out, nextSize);

@@ -148,11 +148,18 @@ void splatsCreateForChrHit(struct prop *prop, struct shotdata *shotdata, struct 
 			qty = 4 + rngCosmeticRandom() % 4;
 			chr->bulletstaken = 7; // wounded drips at the maximum rate
 		}
-#endif
 
+		// The scale arg multiplies each splat's width/height (splatdata.unk50).
+		// Max blood: room-covering decals, not just more of them.
+		if (qty) {
+			chr->stdsplatsadded += splatsCreate(qty, g_ChaosMaxBlood ? 7.0f : 0.8f,
+					prop, shotdata, arg2, arg3, isskedar, splattype, TICKS(50), chr2, 0);
+		}
+#else
 		if (qty) {
 			chr->stdsplatsadded += splatsCreate(qty, 0.8f, prop, shotdata, arg2, arg3, isskedar, splattype, TICKS(50), chr2, 0);
 		}
+#endif
 	}
 #endif
 }

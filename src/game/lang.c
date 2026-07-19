@@ -457,6 +457,8 @@ void langClearBank(s32 bank)
 // the single choke every name-display path funnels through, so one hook covers
 // the HUD label, inventory menu, and pickup toast uniformly.
 s32 g_ChaosLangOverrideId = -1;
+s32 g_ChaosLangOverrideId2 = -1; // the weapon's SHORT name id (weapon wheel, scenario lines)
+s32 g_ChaosRenamedWeapon = -1;   // weaponnum being renamed — mainmenu hides its inventory model
 char g_ChaosLangOverrideStr[64] = { 0 };
 #endif
 
@@ -468,7 +470,8 @@ char *langGet(s32 textid)
 	uintptr_t addr;
 
 #ifndef PLATFORM_N64
-	if (g_ChaosLangOverrideId >= 0 && textid == g_ChaosLangOverrideId) {
+	if (g_ChaosLangOverrideId >= 0
+			&& (textid == g_ChaosLangOverrideId || textid == g_ChaosLangOverrideId2)) {
 		return g_ChaosLangOverrideStr;
 	}
 #endif

@@ -108,6 +108,9 @@ s32 bgunGetAttackType(s32 handnum);
 char *bgunGetName(s32 weaponnum);
 u16 bgunGetNameId(s32 weaponnum);
 char *bgunGetShortName(s32 arg0);
+#ifndef PLATFORM_N64
+u16 bgunGetShortNameId(s32 weaponnum); /* port: chaos weapon_rename wheel label */
+#endif
 void bgunReloadIfPossible(s32 handnum);
 void bgunSetAdjustPos(f32 angle);
 void bgunStartSlide(s32 handnum);

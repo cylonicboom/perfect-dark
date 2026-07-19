@@ -139,6 +139,31 @@ local function random_chr()
   return list[math.random(#list)]
 end
 
+-- Equip a weapon and KEEP equipping it until it sticks. A switch_weapon in the
+-- same tick as a take_weapon loses to take's cycle-back (bgunCycleBack beats
+-- bgunEquipWeapon2) and the player is left holding nothing — the main tick
+-- retries st.switch_want every frame for up to ~2s (stops on first success).
+local function force_switch(w)
+  pd.switch_weapon(w)
+  st.switch_want = { weapon = w, ticks = 120 }
+end
+
+-- Ringtones: prefer a random ring1..ring5 (wav or mp3) from
+-- scripts/sounds/chaos/, falling back to the original ring.wav/mp3. Drop
+-- however many ringN files you like in the folder — missing slots just skip.
+local function play_ring(loop)
+  local first = math.random(5)
+  for k = 0, 4 do
+    local i = (first + k - 1) % 5 + 1
+    if pd.play_file("scripts/sounds/chaos/ring" .. i .. ".wav", loop)
+        or pd.play_file("scripts/sounds/chaos/ring" .. i .. ".mp3", loop) then
+      return true
+    end
+  end
+  return (pd.play_file("scripts/sounds/chaos/ring.wav", loop)
+      or pd.play_file("scripts/sounds/chaos/ring.mp3", loop)) and true or false
+end
+
 -- hue (0..359) -> r, g, b in 0..255, full saturation/value (disco lights)
 local function hsv(h)
   local x = math.floor((1 - math.abs((h / 60) % 2 - 1)) * 255)
@@ -305,8 +330,8 @@ chaos.effects = {
                      stop=function() pd.backfire(false) end },
   nbomb_me       = { label="N-Bomb delivery",     w=4, dur=0,
                      start=function() pd.nbomb() end },
-  hurricane      = { label="Hurricane",           w=4, dur=0,
-                     start=function() pd.gust(150) end },
+  -- (hurricane removed 2026-07-19 — superseded by hurricane2's repeated
+  -- smaller gusts + storm weather.)
   cyclone_frenzy = { label="CYCLONE FRENZY",      w=3, dur=30,
                      start=function()
                        pd.dual_wield(W.CYCLONE, 1)    -- both hands, Magazine Discharge
@@ -600,9 +625,8 @@ chaos.effects = {
   ring_ring    = { label="Ring ring!",        w=4, dur=0, start=function()
                      -- ships without the sound; drop a WAV or MP3 at this path
                      -- (e.g. the Discord call ringtone) to complete the bit
-                     if not (pd.play_file("scripts/sounds/chaos/ring.wav")
-                         or pd.play_file("scripts/sounds/chaos/ring.mp3")) then
-                       error("scripts/sounds/chaos/ring.wav|mp3 missing")
+                     if not play_ring(false) then
+                       error("scripts/sounds/chaos/ring*.wav|mp3 missing")
                      end
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
   negative_zoom = { label="Negative zoom",    w=4, dur=25,
@@ -741,12 +765,8 @@ chaos.effects = {
   -- nap_time removed 2026-07-18: KO'ing whole stages proved too troublesome
   -- to debug (see PORT_CHAOS.md "Knockouts & Nap time" for the KO/wake
   -- mechanics). pd.chr_ko / pd.chr_wake remain available for scripting.
-  gun_game     = { label="Gun Game",          w=3, dur=60,
-                   start=function()
-                     st.gungame_idx = 1
-                     pd.give_weapon(GUNS[1]); pd.switch_weapon(GUNS[1]); pd.refill_ammo()
-                   end,
-                   stop=function() st.gungame_idx = nil end },
+  -- (gun_game + gun_game2 removed 2026-07-19 — never worked reliably,
+  -- retired rather than debugged further.)
   glass_cannon = { label="Glass cannons",     w=4, dur=15,
                    -- every gun fires a Gold Magnum (DY357-LX) one-shot-kill round,
                    -- then SHATTERS (removed from inventory — see the weaponfire
@@ -838,11 +858,11 @@ chaos.effects = {
 }
 
 -- ===================================================== CHAOS ALPHA ==========
--- New-suggestion testbed (2026-07-12 Discord batch). These effects are NOT in
--- the random rotation or vote slate — they only fire from the Lua Director's
--- "Chaos Alpha" submenu (fixed 30s trigger, like Chaos Test) or via
--- `/chaos trigger <name>`. To promote one into the pool once it graduates,
--- move it into chaos.effects above and drop the alpha flag.
+-- Former new-suggestion testbed (2026-07-12 Discord batch). GRADUATED
+-- 2026-07-19: everything here is now in the main rotation/vote slate (see the
+-- registration loop after the table) — only image_test remains alpha-only.
+-- New experimental effects can still land here first: mark them by name in
+-- the registration loop to keep them out of the rotation while testing.
 W.PSYCHOSIS = 0x2c
 local CLASSICS = { 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b } -- PP9i..RCP45
 local GOGGLES  = { W.NIGHTVISION, W.XRAY, W.IR, W.CLOAK }
@@ -944,38 +964,6 @@ local function task_random(nofire, strict)
 end
 
 local alpha_effects = {
-  -- Gun Game v2: 5 random guns, ONE kill per upgrade, complete after 5.
-  -- The current gun is the ONLY selectable weapon: the rest of the arsenal
-  -- is confiscated for the duration (returned after) and weapon switching is
-  -- locked, so every kill has to come from the assigned gun.
-  gun_game2  = { label="Gun Game v2", dur=1,
-                 start=function()
-                   local deck, used = {}, {}
-                   while #deck < 5 do
-                     local g = GUNS[math.random(#GUNS)]
-                     if not used[g] then used[g] = true; deck[#deck + 1] = g end
-                   end
-                   -- confiscate everything else (snapshot to restore after)
-                   local held = {}
-                   if pd.has_weapon then
-                     for _, g in ipairs(GUNS) do
-                       if pd.has_weapon(g) then held[#held + 1] = g; pd.take_weapon(g) end
-                     end
-                   end
-                   st.a_gg = { deck = deck, idx = 1, held = held }
-                   pd.give_weapon(deck[1]); pd.switch_weapon(deck[1]); pd.refill_ammo()
-                   if pd.knife_lock then pd.knife_lock(true) end
-                   pd.hud_message("CHAOS: GUN GAME - gun 1/5")
-                 end,
-                 stop=function()
-                   if pd.knife_lock then pd.knife_lock(false) end
-                   local gg = st.a_gg
-                   if gg then
-                     if gg.deck[gg.idx] then pd.take_weapon(gg.deck[gg.idx]) end
-                     for _, g in ipairs(gg.held or {}) do pd.give_weapon(g) end
-                   end
-                   st.a_gg = nil
-                 end },
   -- Hurricane v2: much smaller gust force, repeated through the effect, plus
   -- storm weather for the duration. (Faster weather animation needs C.)
   hurricane2 = { label="Hurricane v2", dur=1,
@@ -1091,6 +1079,73 @@ local alpha_effects = {
                  start=function() pd.fov_scale(1.2) end,
                  tick=function(left) pd.fov_scale(1 + 0.35 * math.sin(left / 24)) end,
                  stop=function() pd.fov_scale(1) end },
+  -- Bayblade: every NPC spins like a top (~2 rev/s, engine-side yaw stomp —
+  -- AI keeps fighting) while the beyblade clip plays. Drop
+  -- scripts/sounds/chaos/beyblade.wav|mp3 in for the full "LET IT RIP";
+  -- the spin works without it.
+  bayblade   = { label="Bayblade!", dur=1,
+                 start=function()
+                   if not pd.beyblade then error("needs new exe") end
+                   pd.beyblade(true)
+                   local _ = pd.play_file("scripts/sounds/chaos/beyblade.wav")
+                         or pd.play_file("scripts/sounds/chaos/beyblade.mp3")
+                 end,
+                 stop=function()
+                   pd.beyblade(false)
+                   if pd.stop_file then pd.stop_file() end
+                 end },
+  -- Speen: the PLAYER spins — view yaw whipped around at one revolution per
+  -- second (aim and heading go with it; look input still adds on top). Runs
+  -- 1s plus 1s per full 10s of the configured chaos effect time:
+  -- effectdur 45 -> 1 + floor(45/10) = 5 seconds of speen.
+  speen      = { label="Speen", fixeddur=true,
+                 dur=function() return 1 + math.floor(st.effectdur / 10) end,
+                 start=function()
+                   if not pd.player_add_yaw then error("needs new exe") end
+                   local _ = pd.play_file("scripts/sounds/chaos/speen.wav")
+                         or pd.play_file("scripts/sounds/chaos/speen.mp3")
+                 end,
+                 tick=function(left)
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   pd.player_add_yaw(dt * 6) -- 6 deg/60Hz tick = 360 deg/s
+                 end },
+  -- Banana peel: you slip — dropped to a full squat, shoved forward a few
+  -- map units (knockback physics, so walls stop the slide) and left staring
+  -- at the ceiling. scripts/sounds/chaos/banana.wav|mp3 sells it.
+  banana_peel = { label="Banana peel", dur=0,
+                 start=function()
+                   if not pd.player_slip or not pd.player_pitch then
+                     error("needs new exe")
+                   end
+                   pd.player_slip(25) -- squat + shove; pitch glides below
+                   -- glide the look-up over 0.3s (18 ticks) instead of a
+                   -- snap — the main tick runs st.pitch_anim to completion
+                   st.pitch_anim = { from = pd.player_pitch(), to = 65,
+                                     t = 0, len = 18 }
+                   local _ = pd.play_file("scripts/sounds/chaos/banana.wav")
+                         or pd.play_file("scripts/sounds/chaos/banana.mp3")
+                 end },
+  -- Do a Barrel Roll: the whole view rolls through exactly ONE 360 (about a
+  -- second), then rights itself. The Speen spiritual sibling, renderer-side
+  -- (pd.screen_roll — HUD stays upright, dlcache gated off while rolling).
+  barrel_roll = { label="Do a Barrel Roll", fixeddur=true, dur=1,
+                 start=function()
+                   if not pd.screen_roll then error("needs new exe") end
+                   st.a_roll = 0
+                   -- the clip likely outlives the 1s roll — let it play out
+                   -- (no stop_file in stop), it's the whole joke
+                   local _ = pd.play_file("scripts/sounds/chaos/barrelroll.wav")
+                         or pd.play_file("scripts/sounds/chaos/barrelroll.mp3")
+                 end,
+                 tick=function(left)
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   st.a_roll = math.min(360, (st.a_roll or 0) + dt * 6)
+                   pd.screen_roll(st.a_roll) -- 360 == upright, lands clean
+                 end,
+                 stop=function()
+                   st.a_roll = nil
+                   pd.screen_roll(0)
+                 end },
   -- A live grenade lands at your feet: a REAL armed grenade (pd.grenade —
   -- engine plays the pin/throw sound and detonates it on its own fuse).
   hot_potato = { label="Live grenade!", dur=0,
@@ -1198,11 +1253,66 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() st.a_run = nil end },
-  -- Ominous countdown: the klaxon wails for the duration and... that's it.
-  -- No visible countdown, no payoff. Just dread. (nobar: no HUD timer bar.)
+  -- Ominous countdown: the klaxon wails for the duration... and this time
+  -- something actually happens at zero — one random calamity from the payoff
+  -- table (including, occasionally, nothing at all: the dread must stay
+  -- honest). (nobar: no HUD timer bar — you don't get to know when.)
   countdown  = { label="Ominous countdown", fixeddur=true, dur=20, nobar=true,
-                 start=function() pd.alarm(true) end,
-                 stop=function() pd.alarm(false) end },
+                 start=function()
+                   st.a_cd = { fired = false }
+                   pd.alarm(true)
+                 end,
+                 tick=function(left)
+                   local cd = st.a_cd
+                   if not cd or cd.fired then return end
+                   if left <= 8 then -- last few ticks = zero (dt can be >1)
+                     cd.fired = true
+                     -- weighted payoffs: the explosion barrage is a VERY small
+                     -- chance (1/20) — the rest of the deck carries the dread
+                     local payoffs = {
+                       { w = 1, fn = function() -- rolling barrage (RARE)
+                         pd.hud_message("CHAOS: INCOMING!")
+                         if pd.explosions_around then
+                           pd.explosions_around(true)
+                           st.a_boom_off = 2 * TICKS -- main tick shuts it off
+                         else
+                           pd.explosion()
+                         end
+                       end },
+                       { w = 3, fn = function() -- N-bomb on your position
+                         pd.hud_message("CHAOS: package delivered")
+                         pd.nbomb()
+                       end },
+                       { w = 4, fn = function() -- gale-force blast
+                         pd.hud_message("CHAOS: storm front")
+                         pd.gust(150)
+                       end },
+                       { w = 5, fn = function() -- every guard on the map hears it
+                         pd.hud_message("CHAOS: they all heard that")
+                         for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end
+                       end },
+                       { w = 3, fn = function() -- something big lands nearby
+                         pd.hud_message("CHAOS: something landed")
+                         for i = 1, 2 do
+                           local a = math.random() * 2 * math.pi
+                           pd.spawn_body(BODY.MINISKEDAR, -1,
+                                         math.sin(a) * 250, math.cos(a) * 250)
+                         end
+                       end },
+                       { w = 4, fn = function() -- ...anticlimax
+                         pd.hud_message("CHAOS: ...false alarm. this time.")
+                       end },
+                     }
+                     local total = 0
+                     for _, p in ipairs(payoffs) do total = total + p.w end
+                     local roll = math.random(total)
+                     for _, p in ipairs(payoffs) do
+                       roll = roll - p.w
+                       if roll <= 0 then p.fn(); break end
+                     end
+                   end
+                 end,
+                 stop=function() pd.alarm(false); st.a_cd = nil end },
   -- CAPTCHA: prove you're human — a random verification task (shots, door,
   -- crouch, spin, or just pressing FIRE). Complete it and the window closes;
   -- run out of time and the failed check hurts.
@@ -1234,7 +1344,7 @@ local alpha_effects = {
                    for _, g in ipairs(GUNS) do pd.take_weapon(g) end
                    pd.take_weapon(W.KNIFE)
                    local w = (math.random() < 0.2) and W.LX or W.MAGNUM
-                   pd.give_weapon(w); pd.switch_weapon(w); pd.refill_ammo()
+                   pd.give_weapon(w); force_switch(w); pd.refill_ammo()
                  end },
   -- Russian roulette: you're handed a Magnum with exactly ONE round, weapon
   -- switching locks, and the effect waits until you pull the trigger — the
@@ -1247,7 +1357,7 @@ local alpha_effects = {
                    pd.strip_ammo()
                    pd.give_weapon(W.MAGNUM)
                    pd.give_ammo(AMMO.MAGNUM, 1)
-                   pd.switch_weapon(W.MAGNUM)
+                   force_switch(W.MAGNUM)
                    if pd.knife_lock then pd.knife_lock(true) end
                    pd.hud_message("CHAOS: six chambers. one round. FIRE.")
                  end,
@@ -1296,15 +1406,28 @@ local alpha_effects = {
                    -- pistol, 0x26 KL01313 SMG, 0x27 KF7 rifle, 0x28 ZZT SMG,
                    -- 0x29 DMC SMG, 0x2a AR53 rifle, 0x2b RC-P45)
                    local MAP = {
-                     [W.FALCON2] = 0x24, [W.MAGSEC] = 0x25, [W.MAULER] = 0x24,
+                     [W.FALCON2] = 0x24, [W.MAGSEC] = 0x26, [W.MAULER] = 0x24,
                      [W.PHOENIX] = 0x25, [W.MAGNUM] = 0x25, [W.LX] = 0x25,
-                     [W.CMP150] = 0x26, [W.CYCLONE] = 0x28, [W.LAPTOP] = 0x29,
-                     [W.DRAGON] = 0x27, [W.K7] = 0x27, [W.AR34] = 0x2a,
+                     [W.CMP150] = 0x27, [W.CYCLONE] = 0x28, [W.LAPTOP] = 0x29,
+                     [W.DRAGON] = 0x29, [W.K7] = 0x2a, [W.AR34] = 0x2a,
                      [W.SUPERDRAGON] = 0x2a, [W.SHOTGUN] = 0x2b,
                      [W.REAPER] = 0x2b, [W.SNIPER] = 0x27, [W.FARSIGHT] = 0x2b,
                      [W.DEVASTATOR] = 0x2b, [W.ROCKET] = 0x2b, [W.SLAYER] = 0x2b,
                      [W.CROSSBOW] = 0x26, [W.TRANQ] = 0x24,
+                     [0x03] = 0x24, [0x04] = 0x24, -- Falcon 2 Silencer / Scope
+                     [W.LASER] = 0x25, [W.PSYCHOSIS] = 0x24,
                    }
+                   -- The player sweep needs its own COMPLETE list: GUNS is the
+                   -- arsenal-roulette pool and misses holdable guns — the
+                   -- Falcon 2 Silencer/Scope variants (the usual mission
+                   -- loadout!), the LX, the Laser and the Psychosis Gun — so
+                   -- those survived the swap. Grenades are deliberately NOT
+                   -- swapped (they're classic-era-authentic; trading them for
+                   -- a random gun was a bug, not a feature).
+                   local SWAP = { 0x03, 0x04, W.LX, W.LASER, W.PSYCHOSIS }
+                   for _, g in ipairs(GUNS) do
+                     if g ~= W.GRENADE then SWAP[#SWAP + 1] = g end
+                   end
                    -- NPCs: swap each chr's gun for its equivalent, remember
                    -- the original for the restore pass.
                    st.a_classic = { chrs = {}, mine = {} }
@@ -1316,7 +1439,7 @@ local alpha_effects = {
                    -- Player: snapshot the whole arsenal, trade every gun for
                    -- its classic equivalent (deduped).
                    local given, first = {}, nil
-                   for _, g in ipairs(GUNS) do
+                   for _, g in ipairs(SWAP) do
                      if (pd.has_weapon and pd.has_weapon(g)) then
                        st.a_classic.mine[#st.a_classic.mine + 1] = g
                        pd.take_weapon(g)
@@ -1334,7 +1457,9 @@ local alpha_effects = {
                      given[first] = true
                    end
                    st.a_classic.given = given
-                   pd.switch_weapon(first); pd.refill_ammo()
+                   -- force_switch: the take_weapon cycle-back above would eat
+                   -- a same-tick equip, leaving the player empty-handed
+                   force_switch(first); pd.refill_ammo()
                  end,
                  stop=function()
                    local cl = st.a_classic
@@ -1347,7 +1472,7 @@ local alpha_effects = {
                      for _, g in ipairs(cl.mine or {}) do
                        pd.give_weapon(g); back = back or g
                      end
-                     if back then pd.switch_weapon(back); pd.refill_ammo() end
+                     if back then force_switch(back); pd.refill_ammo() end
                    end
                    st.a_classic = nil
                  end },
@@ -1398,13 +1523,7 @@ local alpha_effects = {
                  end,
                  stop=function() st.a_angst = nil end },
   -- ===== batch 2: effects backed by the new C bindings (2026-07-12) =====
-  -- Secondaries only: every weapon is pinned to its secondary function.
-  secondaries_only = { label="Secondaries only", dur=1,
-                 start=function()
-                   if not pd.force_secondary then error("needs new exe") end
-                   pd.force_secondary(true)
-                 end,
-                 stop=function() pd.force_secondary(false) end },
+  -- (secondaries_only removed 2026-07-19 per user.)
   -- XBLA mode: 45% stick deadzone, autoaim on, massive reverb. Xbox Live
   -- Arcade nostalgia at its most authentic.
   xbla_mode  = { label="XBLA mode", dur=1,
@@ -1476,27 +1595,32 @@ local alpha_effects = {
   button_thief = { label="Button thief", dur=1,
                  start=function()
                    if not pd.button_block then error("needs new exe") end
-                   -- The movement C-buttons (forward/back/strafe) only exist
-                   -- as discrete inputs on keyboard/mouse — on a gamepad
-                   -- movement is the analog stick, so stealing them would do
-                   -- nothing. Detect the device in hand and only steal binds
-                   -- that actually matter for it (pd.input_source, new exe).
-                   local FIREAIM = {
-                     { 0x2000, "FIRE" },        -- Z trigger
-                     { 0x0010, "AIM" },         -- R trigger
-                     { 0x8000, "ACTION (A)" },  -- A
-                     { 0x4000, "ACTION (B)" },  -- B
+                   -- Steal only buttons that are actually BOUND on the device
+                   -- in hand (pd.input_source), so every theft is felt:
+                   --   kbm: FIRE=LMB(Z), AIM=RMB(R), INTERACT=E(B button),
+                   --        RELOAD=R-key(ext X 0x0040), wheel=Y 0x0080,
+                   --        WASD = the C-buttons.
+                   --   pad: FIRE=RT(Z), AIM=LT(R), INTERACT=south(A button),
+                   --        RELOAD=west(X), NEXT WEAPON=north(Y); movement is
+                   --        the analog stick (not stealable via buttons), and
+                   --        B 0x4000 has no pad bind — skip both.
+                   -- (The old deck stole A on kbm and B on pad — neither is
+                   -- bound there, so those thefts changed nothing in-game.)
+                   local kbm = (not pd.input_source) or pd.input_source() == "kbm"
+                   local BTNS = {
+                     { 0x2000, "FIRE" },
+                     { 0x0010, "AIM" },
+                     { 0x0040, "RELOAD" },
+                     { 0x0080, "NEXT WEAPON" },
+                     kbm and { 0x4000, "INTERACT" } or { 0x8000, "INTERACT" },
                    }
-                   local MOVE = {
-                     { 0x0008, "FORWARD" },     -- C-up
-                     { 0x0004, "BACKWARD" },    -- C-down
-                     { 0x0002, "STRAFE LEFT" }, -- C-left
-                     { 0x0001, "STRAFE RIGHT" },-- C-right
-                   }
-                   local BTNS = {}
-                   for _, b in ipairs(FIREAIM) do BTNS[#BTNS + 1] = b end
-                   -- add movement binds only for keyboard/mouse players
-                   if not pd.input_source or pd.input_source() == "kbm" then
+                   if kbm then
+                     local MOVE = {
+                       { 0x0008, "FORWARD" },     -- C-up  = W
+                       { 0x0004, "BACKWARD" },    -- C-down = S
+                       { 0x0002, "STRAFE LEFT" }, -- C-left = A
+                       { 0x0001, "STRAFE RIGHT" },-- C-right = D
+                     }
                      for _, b in ipairs(MOVE) do BTNS[#BTNS + 1] = b end
                    end
                    -- shuffle a private deck, steal the first one now
@@ -1723,13 +1847,13 @@ local alpha_effects = {
                  start=function()
                    st.a_phone = { had = pd.has_weapon and pd.has_weapon(W.PSYCHOSIS) }
                    pd.give_weapon(W.PSYCHOSIS); pd.give_ammo(AMMO.PSYCHOSIS, 1)
-                   -- rename the "phone" everywhere it shows for the bit
+                   -- rename the "phone" everywhere it shows for the bit (the
+                   -- new exe also relabels the weapon WHEEL via the shortname
+                   -- override and hides the Psychosis model in the pause menu)
                    if pd.weapon_rename then pd.weapon_rename(W.PSYCHOSIS, "Nokia 3315") end
-                   -- loop the ringtone start-to-finish until answered (true =
-                   -- loop; needs the new exe — falls back to one-shot if the
-                   -- second arg is ignored)
-                   local _ = pd.play_file("scripts/sounds/chaos/ring.wav", true)
-                         or pd.play_file("scripts/sounds/chaos/ring.mp3", true)
+                   -- loop a ringtone start-to-finish until answered: random
+                   -- pick from ring1..ring5(.wav|.mp3), fallback ring.*
+                   local _ = play_ring(true)
                    pd.hud_message("CHAOS: incoming call! equip the phone to answer")
                  end,
                  tick=function(left)
@@ -1753,9 +1877,18 @@ local alpha_effects = {
                  end },
 }
 
+-- 2026-07-19: the alpha batch GRADUATED — every effect here joins the main
+-- rotation / vote slate / ON-off list at a standard draw weight (each keeps
+-- its tuned duration). image_test stays alpha-only: it's the image-hook
+-- validator, not a real effect (fires only from the Chaos Alpha folder or
+-- /chaos trigger).
 for name, e in pairs(alpha_effects) do
-  e.alpha = true
-  e.w = 0 -- never randomly drawn (pick_random skips alpha anyway)
+  if name == "image_test" then
+    e.alpha = true
+    e.w = 0 -- never randomly drawn (pick_random skips alpha anyway)
+  else
+    e.w = e.w or 3 -- standard weight (alpha entries carried none)
+  end
   chaos.effects[name] = e
 end
 
@@ -1806,7 +1939,9 @@ local function reset_all_modes()
   st.timer = st.interval * TICKS
   st.votetimer = st.votetime * TICKS
   st.misfire_armed = false
-  st.gungame_idx = nil
+  st.switch_want = nil
+  st.martyr_queue = nil
+  st.pitch_anim = nil
   -- Visual modes + ammo swap + input locks etc. — explicit reset (C globals).
   if pd.flattex then pd.flattex(0) end
   if pd.grayscale then pd.grayscale(false) end
@@ -1858,11 +1993,13 @@ local function reset_all_modes()
   -- Chaos Alpha state (belt and braces — each effect's stop() already ran).
   if pd.explosions_around then pd.explosions_around(false) end
   st.a_boom_off = nil
-  st.a_gg, st.a_bloop, st.a_twoh, st.a_imgtest = nil
+  st.a_bloop, st.a_twoh, st.a_imgtest = nil
   st.a_ltk, st.a_run, st.a_cap, st.a_rr = nil
   st.a_classic, st.a_angst, st.a_phone, st.a_count = nil
-  st.a_objf, st.a_thief = nil
+  st.a_objf, st.a_thief, st.a_cd, st.a_roll = nil
   st.a_quiz, st.a_eula, st.a_quad = nil
+  if pd.beyblade then pd.beyblade(false) end
+  if pd.screen_roll then pd.screen_roll(0) end
   st.home_marked = false -- re-mark the start point on the next stage entered
   -- Batch-2 C globals (new-exe bindings; guarded so old exes still run).
   if pd.force_secondary then pd.force_secondary(false) end
@@ -2103,6 +2240,24 @@ pd.on("tick", function()
     st.glass_pending = nil
   end
 
+  -- Martyrdom: spawn the corpse grenades queued by the kill hook, OUTSIDE the
+  -- kill callback (see there). Every attempt logs to the console (~) so a
+  -- failure names its link: no line at all = the kill event never fired;
+  -- "pos unavailable" = the dying chr couldn't be looked up; "FAIL" = the
+  -- engine refused the projectile spawn.
+  if st.martyr_queue then
+    for _, m in ipairs(st.martyr_queue) do
+      if m.has then
+        local ok = pd.grenade(m.x, m.y, m.z, m.chrnum)
+        pd.log(string.format("[chaos] martyrdom: chr=%d grenade=%s",
+                             m.chrnum, ok and "ok" or "FAIL"))
+      else
+        pd.log(string.format("[chaos] martyrdom: chr=%d pos unavailable", m.chrnum))
+      end
+    end
+    st.martyr_queue = nil
+  end
+
   -- Self-destruct grace: hold invincibility ~1s past the last explosion so a
   -- blast still expanding on the exact frame the effect wears off can't kill you.
   if st.sd_invuln then
@@ -2124,21 +2279,28 @@ pd.on("tick", function()
     end
   end
 
-  -- Gun Game v2: process at most one queued upgrade per tick (set by the
-  -- kill hook). Doing it here keeps the give/take/switch out of the kill
-  -- callback and coalesces multi-kills into a single advance.
-  if st.active.gun_game2 and st.a_gg and st.a_gg.pending == 1 then
-    local gg = st.a_gg
-    gg.pending = 0
-    if gg.deck[gg.idx] then pd.take_weapon(gg.deck[gg.idx]) end
-    gg.idx = gg.idx + 1
-    if gg.idx > #gg.deck then
-      pd.hud_message("CHAOS: GUN GAME COMPLETE!")
-      stop_effect("gun_game2")
+  -- Short view-pitch glide (banana peel's 0.3s look-up): runs OUTSIDE any
+  -- effect lifetime so instant effects can animate the view without a timed
+  -- wrapper (and its "wore off" toast).
+  if st.pitch_anim and pd.player_pitch then
+    local pa = st.pitch_anim
+    pa.t = pa.t + dt
+    local f = math.min(1, pa.t / pa.len)
+    pd.player_pitch(pa.from + (pa.to - pa.from) * f)
+    if f >= 1 then st.pitch_anim = nil end
+  end
+
+  -- Deferred weapon switch: a give_weapon+switch_weapon in the same tick as a
+  -- take_weapon loses the race — take's bgunCycleBack overrides the equip and
+  -- the player is left holding nothing. force_switch() records the wanted gun
+  -- here; keep re-equipping each tick until it sticks (or ~2s passes).
+  if st.switch_want then
+    local sw = st.switch_want
+    sw.ticks = sw.ticks - dt
+    if pd.weapon_held() == sw.weapon or sw.ticks <= 0 then
+      st.switch_want = nil
     else
-      pd.hud_message(string.format("CHAOS: gun %d/%d", gg.idx, #gg.deck))
-      local nxt = gg.deck[gg.idx]
-      pd.give_weapon(nxt); pd.switch_weapon(nxt); pd.refill_ammo()
+      pd.switch_weapon(sw.weapon)
     end
   end
 
@@ -2254,38 +2416,23 @@ pd.on("damage", function(chrnum, attackerplayernum, amount)
   end
 end)
 
--- Gun Game: each kill advances to the next weapon in the list.
+-- Kill hook: death-reactive effects (martyrdom grenades, etc).
 pd.on("kill", function(chrnum, killerplayernum)
   -- Alpha effects that react to ANY death, whoever caused it:
   if st.active.martyrdom and pd.grenade then
-    -- a REAL armed grenade drops where the chr fell; the engine plays the
-    -- pin sound and detonates it on its fuse
+    -- QUEUE the drop for the main tick instead of spawning here: this
+    -- callback runs synchronously inside the engine's death processing, and
+    -- creating a projectile prop mid-death-tick is the same re-entrancy that
+    -- broke gun_game2's weapon churn (the glass_pending lesson). Position is
+    -- captured now, spawn happens one frame later from the safe tick context.
     local x, y, z = pd.chr_pos(chrnum)
-    if x then pd.grenade(x, y, z) end
+    st.martyr_queue = st.martyr_queue or {}
+    st.martyr_queue[#st.martyr_queue + 1] =
+        { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil) }
   end
   if killerplayernum ~= 0 then return end
-  -- Alpha Gun Game v2: one kill per upgrade. Just FLAG an advance here (do
-  -- not touch weapons inside the kill callback — that fires once per corpse,
-  -- so a double kill ran the give/take/switch churn twice in one frame and
-  -- skipped a gun / corrupted the held weapon). The main tick does the
-  -- single, debounced advance. Capped at 1 so simultaneous kills = one
-  -- upgrade (one kill per weapon, as intended).
-  if st.active.gun_game2 and st.a_gg then
-    st.a_gg.pending = 1
-  end
-  if st.active.gun_game and st.gungame_idx then
-    local cur = GUNS[st.gungame_idx]
-    st.gungame_idx = st.gungame_idx + 1
-    if st.gungame_idx > #GUNS then
-      st.gungame_idx = 1
-      pd.hud_message("CHAOS: GUN GAME COMPLETE!")
-    else
-      pd.hud_message(string.format("CHAOS: gun %d/%d", st.gungame_idx, #GUNS))
-    end
-    local nxt = GUNS[st.gungame_idx]
-    if cur then pd.take_weapon(cur) end
-    pd.give_weapon(nxt); pd.switch_weapon(nxt); pd.refill_ammo()
-  end
+  -- (gun_game / gun_game2 kill-advance blocks removed 2026-07-19 with the
+  -- effects.)
 end)
 
 -- Stage transition: full teardown so no C-side effect leaks into the next
@@ -2576,6 +2723,11 @@ if pd.menu_add then
       widescreen=1, tallscreen=1, fisheye=1, tunnel_vision=1, vertigo=1,
       drunk=1, blink=1, assert_authority=1, giants=1, ant_farm=1,
       monsoon=1, blizzard=1, ring_ring=1, negative_zoom=1,
+      -- graduated alpha batch
+      vertigo2=1, blooper=1, dvd=1, hudvd=1, perfect_hills=1, max_blood=1,
+      blood_rainbow=1, brandons_mod=1, teen_angst=1, wireframe_enemies=1,
+      fake_objective=1, fake_objective_fail=1, hurricane2=1,
+      bayblade=1, speen=1, barrel_roll=1, banana_peel=1,
     } },
     { title = "Test: Cheats", set = {
       fists=1, slomo=1, dkmode=1, smalljo=1, smallchars=1, goldeneye=1,
@@ -2585,14 +2737,22 @@ if pd.menu_add then
       arsenal=1, ammo_rain=1, heal=1, shields_up=1, cavalry=1, buddy=1,
       reinforce=1, lock_n_load=1, random_loadout=1, turbo=1, enemyshields=1,
       golden_gun=1, no_drops=1, freeze=1, nap_time=1, benny_hill=1, zombies=1,
+      -- graduated alpha batch
+      estus=1, new_glasses=1, psychosis=1, mine_trio=1, quad_laser=1,
+      mediguns=1, tank=1, double_lx=1, two_handed=1, quad_handed=1,
     } },
     { title = "Test: Lethal", set = {
       self_destruct=1, misfire=1, weapon_jam=1, vampire=1, plague=1,
       thanos_snap=1, airstrike=1, boom=1, panic=1, intruder=1, predators=1,
       take_a_break=1, one_hp=1, dry_spell=1, amnesia=1, disarm=1,
       evil_twin=1, clone_army=1, skedar_ring=1, enemyrockets=1, karma=1,
-      glass_cannon=1, backfire=1, nbomb_me=1, hurricane=1, earthquake=1,
+      glass_cannon=1, backfire=1, nbomb_me=1, earthquake=1,
       quantum_leap=1, quantum_instability=1, gormless=1, woof_gas=1,
+      -- graduated alpha batch
+      hot_potato=1, martyrdom=1, booby_doors=1, russian_roulette=1,
+      countdown=1, skedar_reaper=1, terminator=1, gun_jam2=1, enemy_ltk=1,
+      speed=1, nitroglycerin=1, inflated_bullets=1, button_thief=1,
+      helicopter=1, interceptor=1,
     } },
   }
   local CATCHALL = "Test: Weapons & World"

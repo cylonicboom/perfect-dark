@@ -283,7 +283,7 @@ s32 chraiLuaScreenFade(s32 r, s32 g, s32 b, s32 a, f32 time60); /* viewport fade
 s32 chraiLuaYeetChr(s32 chrnum, f32 force);   /* knockback-fling a chr away from the player */
 s32 chraiLuaExplodeAtChr(s32 chrnum, s32 type); /* explosion at a chr's feet */
 s32 chraiLuaExplodeAtPos(f32 x, f32 y, f32 z, s32 type); /* explosion at a position */
-s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z); /* live armed grenade at a position */
+s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z, s32 chrnum); /* live armed grenade; chrnum >= 0 seeds the room search */
 s32 chraiLuaDoorTraps(s32 on);                /* booby-trapped doors: opening detonates */
 u32 chraiLuaDoorOpens(void);                  /* doors-opened counter (task sensor) */
 s32 chraiLuaEnvColours(s32 sr, s32 sg, s32 sb, s32 cr, s32 cg, s32 cb); /* sky+cloud override */
@@ -324,6 +324,12 @@ s32 chraiLuaChrScale(s32 chrnum, f32 mult);   /* multiply a chr's visual scale *
 s32 chraiLuaShake(s32 ticks);                 /* explosion screen-shake for N ticks */
 s32 chraiLuaScreenTint(s32 r, s32 g, s32 b, s32 on); /* full-screen luminance tint; on=0 clears */
 s32 chraiLuaUpsideDown(s32 on);               /* Australia: rotate frame 180 + reverse controls */
+s32 chraiLuaScreenRoll(f32 deg);              /* Barrel Roll: roll the 3D view (absolute degrees, 0 = off) */
+s32 chraiLuaPlayerAddYaw(f32 deg);            /* Speen: rotate the player's view yaw by deg degrees */
+s32 chraiLuaPlayerSlip(f32 push, f32 pitchdeg); /* Banana peel: squat + forward shove (+ optional pitch snap) */
+f32 chraiLuaPlayerPitchGet(void);             /* view pitch in degrees (+up) */
+s32 chraiLuaPlayerPitchSet(f32 deg);          /* set view pitch (clamped +/-90) */
+s32 chraiLuaBeyblade(s32 on);                 /* Bayblade!: spin every NPC's model yaw */
 s32 chraiLuaDoubleVision(s32 on);             /* One too many: 180-flipped ghost blended over the frame */
 s32 chraiLuaGunLock(s32 on);                  /* Cyclone Frenzy: force secondary + hold fire + no weapon switch */
 s32 chraiLuaMagDump(s32 on);                  /* Mag Dump: one trigger press empties the clip (hold auto / pulse semi) */

@@ -3158,6 +3158,20 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 
 	chr->sleep = 0;
 
+#ifndef PLATFORM_N64
+	// Campaign chr death CHOKE POINT: every non-aibot death that plays a death
+	// animation funnels through here — gunfire (via the argh path), robots and
+	// Dr Caroll from explosions, KO'd chrs finished off. Emit the Lua "kill"
+	// event here (not on knockouts — a KO'd chr that's later killed re-enters
+	// with knockout == false). The aibot path (chrDie) and the explosion-yeet
+	// path (chrDamage) emit at their own sites. The old emit lived ONLY in the
+	// explosion branch of chrDamage, so bullet kills never fired the event —
+	// which is why kill-based chaos effects (martyrdom) never triggered.
+	if (knockout == false) {
+		luaEmitKill((s32)chr->chrnum, aplayernum);
+	}
+#endif
+
 	// Handle robots and Dr Caroll then return early
 	if (race == RACE_ROBOT || race == RACE_DRCAROLL) {
 		impactforce1 = gsetGetImpactForce(gset) * 0.5f;
@@ -5382,6 +5396,14 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 							chrBeginDeath(chr, vector, angle, hitpart, gset, false, aplayernum);
 						} else {
 							chrYeetFromPos(chr, explosionpos, explosionforce);
+#ifndef PLATFORM_N64
+							// Explosion deaths of humans are yeeted straight to
+							// dead and never reach chrBeginDeath (the kill-event
+							// choke point) — emit here for this path only.
+							luaEmitKill((s32)chr->chrnum,
+									(aprop && aprop->type == PROPTYPE_PLAYER)
+										? (s32)playermgrGetPlayerNumByProp(aprop) : -1);
+#endif
 						}
 
 						if (canchoke) {
@@ -5402,16 +5424,10 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 						}
 
 						if (chr->aibot == NULL) {
-#ifndef PLATFORM_N64
-							// Campaign guard death: fire the Lua "kill" event here
-							// too. The aibot death path (chrDie) already emits it,
-							// but campaign chrs never did — so kill-based chaos
-							// effects (Pinata party, Gun Game) never triggered in
-							// solo. Attribute to the attacking player, or -1 if none.
-							luaEmitKill((s32)chr->chrnum,
-									(aprop && aprop->type == PROPTYPE_PLAYER)
-										? (s32)playermgrGetPlayerNumByProp(aprop) : -1);
-#endif
+							// (the Lua "kill" emit that lived here moved to the
+							// chrBeginDeath choke point + the yeet branch above —
+							// it only covered explosion deaths, so bullet kills
+							// never fired the event)
 							chrDropConcealedItems(chr);
 						}
 
@@ -8537,12 +8553,18 @@ s32 chraiLuaExplodeAtPos(f32 x, f32 y, f32 z, s32 type)
 	return explosionCreateSimple(NULL, &pos, rooms, (s16)type, g_Vars.bondplayernum) ? 1 : 0;
 }
 
-// pd.grenade(x, y, z): drop a LIVE, armed grenade at a position — the real
-// engine thrown-grenade path (bgunCreateThrownProjectile2): it lands, arms,
-// plays the SFX_THROW pin/throw sound, and the engine detonates it on the
-// grenade's own fuse. Attributed to the local player. Backs Live Grenade /
-// Martyrdom (no Lua-side explosion timing needed — the grenade is real).
-s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z)
+// pd.grenade(x, y, z [, chrnum]): drop a LIVE, armed grenade at a position —
+// the real engine thrown-grenade path (bgunCreateThrownProjectile2): it lands,
+// arms, and the engine detonates it on the grenade's own fuse. Plays the
+// pin-pull ping (SFX_05C1 — the sound the throw animation would have played)
+// plus the engine's own SFX_THROW. Attributed to the local player. Backs Live
+// Grenade / Martyrdom (no Lua-side explosion timing needed — it's real).
+//
+// chrnum >= 0 seeds the floor-room search from that chr's rooms: martyrdom
+// drops at corpses far from the player, where the player's rooms resolve no
+// floor and the grenade lands in the wrong room set (never detonating where
+// it should). Defaults to the player's rooms for at-your-feet drops.
+s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z, s32 chrnum)
 {
 	struct coord pos;
 	struct coord vel;
@@ -8552,6 +8574,8 @@ s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z)
 	s32 floorroom;
 	Mtxf mtx;
 	struct gset gset;
+	struct defaultobj *obj;
+	struct chrdata *seedchr = (chrnum >= 0) ? chrFindByLiteralId(chrnum) : NULL;
 
 	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
 		return 0;
@@ -8561,7 +8585,11 @@ s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z)
 	pos.y = y;
 	pos.z = z;
 
-	roomsCopy(g_Vars.currentplayer->prop->rooms, rooms);
+	if (seedchr && seedchr->prop) {
+		roomsCopy(seedchr->prop->rooms, rooms);
+	} else {
+		roomsCopy(g_Vars.currentplayer->prop->rooms, rooms);
+	}
 #if VERSION >= VERSION_NTSC_1_0
 	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, rooms, &floory, &floorcol, NULL);
 #else
@@ -8583,8 +8611,20 @@ s32 chraiLuaSpawnGrenade(f32 x, f32 y, f32 z)
 	vel.z = 0.0f;
 	mtx4LoadIdentity(&mtx);
 
-	return bgunCreateThrownProjectile2(g_Vars.currentplayer->prop->chr, &gset,
-			&pos, rooms, &mtx, &vel) ? 1 : 0;
+	obj = bgunCreateThrownProjectile2(g_Vars.currentplayer->prop->chr, &gset,
+			&pos, rooms, &mtx, &vel);
+
+	if (obj != NULL) {
+		// the pin-pull ping the throw animation would have played
+		// (gunscript_playsound(6, SFX_05C1) in invanim_grenade_throw). Played
+		// flat from the player's perspective via sndStart — the gunscripts
+		// route their sounds the same way, and the psCreate-on-the-projectile
+		// attempt was inaudible in testing (fresh projectile props don't
+		// register with propsnd this early).
+		sndStart(var80095200, SFX_05C1, NULL, -1, -1, -1, -1, -1);
+	}
+
+	return obj ? 1 : 0;
 }
 
 // pd.door_traps(on): booby-trapped doors — any door that starts opening
@@ -8635,6 +8675,81 @@ f32 chraiLuaPlayerYaw(void)
 		return 0;
 	}
 	return g_Vars.currentplayer->vv_theta;
+}
+
+// pd.player_slip(push [, pitch_deg]): Banana peel — drop the player to full
+// squat, shove them forward along their facing, and optionally snap the view
+// pitch (vv_verta, +up, clamps at 90; pass > 180 / omit in Lua to leave the
+// pitch alone — the effect glides it separately via pd.player_pitch). The
+// shove rides bondshotspeed (the explosion-knockback vector bwalk integrates
+// with collision + decay); world forward = (-vv_sintheta, 0, vv_costheta) —
+// the bond2 look-vector convention (bondmove.c ~3138).
+s32 chraiLuaPlayerSlip(f32 push, f32 pitchdeg)
+{
+	struct player *pl;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	pl = g_Vars.currentplayer;
+	pl->crouchpos = CROUCHPOS_SQUAT;
+	if (pitchdeg <= 180.0f) {
+		if (pitchdeg > 90.0f) {
+			pitchdeg = 90.0f;
+		} else if (pitchdeg < -90.0f) {
+			pitchdeg = -90.0f;
+		}
+		pl->vv_verta = pitchdeg;
+	}
+	pl->bondshotspeed.x += -pl->vv_sintheta * push;
+	pl->bondshotspeed.z += pl->vv_costheta * push;
+	return 1;
+}
+
+// pd.player_pitch([deg]): get (no arg) or set the player's view pitch in
+// degrees (vv_verta, +up, clamped to the engine's +/-90).
+f32 chraiLuaPlayerPitchGet(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return g_Vars.currentplayer->vv_verta;
+}
+
+s32 chraiLuaPlayerPitchSet(f32 deg)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (deg > 90.0f) {
+		deg = 90.0f;
+	} else if (deg < -90.0f) {
+		deg = -90.0f;
+	}
+	g_Vars.currentplayer->vv_verta = deg;
+	return 1;
+}
+
+// pd.player_add_yaw(deg): rotate the local player's view yaw by deg degrees
+// (Speen — spins the actual player: view, aim and movement heading). Additive
+// with normal look input; wrapped 0..360 the same way bondwalk's rotate path
+// does.
+s32 chraiLuaPlayerAddYaw(f32 deg)
+{
+	f32 angle;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	angle = g_Vars.currentplayer->vv_theta + deg;
+	while (angle < 0) {
+		angle += 360;
+	}
+	while (angle >= 360) {
+		angle -= 360;
+	}
+	g_Vars.currentplayer->vv_theta = angle;
+	return 1;
 }
 
 // pd.player_crouch(): 0 stand / 1 duck / 2 squat — the "crouch for N
@@ -10431,19 +10546,27 @@ void chraiLuaStopFile(void)
 }
 
 // pd.weapon_rename(weaponnum, name): relabel a weapon everywhere its name is
-// displayed (HUD, inventory, pickup toast — all funnel through langGet). Pass
-// nil/empty to restore the real name. Used by Phone Call to rename the
-// Psychosis Gun "phone" to Nokia 3315 for the duration.
+// displayed (HUD, inventory, pickup toast, weapon wheel — full name AND short
+// name funnel through langGet). While renamed, the pause-menu inventory also
+// hides the weapon's 3D model (func0f105948 checks g_ChaosRenamedWeapon) so a
+// spinning Psychosis Gun doesn't undercut the "Nokia 3315" bit. Pass nil/empty
+// to restore everything.
 s32 chraiLuaWeaponRename(s32 weaponnum, const char *name)
 {
 	extern s32 g_ChaosLangOverrideId;
+	extern s32 g_ChaosLangOverrideId2;
+	extern s32 g_ChaosRenamedWeapon;
 	extern char g_ChaosLangOverrideStr[64];
 
 	if (name == NULL || name[0] == '\0') {
 		g_ChaosLangOverrideId = -1;
+		g_ChaosLangOverrideId2 = -1;
+		g_ChaosRenamedWeapon = -1;
 		return 1;
 	}
 	g_ChaosLangOverrideId = (s32)bgunGetNameId(weaponnum);
+	g_ChaosLangOverrideId2 = (s32)bgunGetShortNameId(weaponnum);
+	g_ChaosRenamedWeapon = weaponnum;
 	{
 		s32 i;
 		for (i = 0; i < (s32)sizeof(g_ChaosLangOverrideStr) - 1 && name[i]; i++) {
@@ -10572,6 +10695,29 @@ s32 chraiLuaUpsideDown(s32 on)
 {
 	gfx_rotate180_mode = on ? 1 : 0;
 	g_ChaosControlReverse = on ? 1 : 0;
+	return 1;
+}
+
+// pd.screen_roll(deg): "Speen" — rotate the 3D view about the screen centre
+// by an absolute angle in DEGREES (0 = off/upright). The renderer applies an
+// aspect-corrected clip-space rotation in gfx_sp_vertex (gfx_screen_roll,
+// C++ float == f32); HUD texrects stay upright; bg.c gates dlcache off while
+// non-zero. The caller animates by re-setting the angle each tick.
+extern f32 gfx_screen_roll;
+s32 chraiLuaScreenRoll(f32 deg)
+{
+	gfx_screen_roll = deg * (3.14159265f / 180.0f);
+	return 1;
+}
+
+// pd.beyblade(on): "Bayblade!" — every non-player chr's model yaw spins at
+// ~2 rev/s (absolute frame-derived stomp in chr0f0220ec, chr.c, so AI facing
+// writes can't unwind it). Purely visual: AI, movement and aim keep running.
+s32 chraiLuaBeyblade(s32 on)
+{
+	extern s32 g_ChaosBeyblade;
+
+	g_ChaosBeyblade = on ? 1 : 0;
 	return 1;
 }
 

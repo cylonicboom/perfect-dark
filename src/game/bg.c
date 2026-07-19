@@ -182,6 +182,9 @@ extern s32 gfx_shiny_mode;
 // gfx_wireframe_mode). Gates dlcache off while active (the cached replay's
 // uMVP is not Y-flipped).
 extern unsigned char gfx_upsidedown_mode;
+// Chaos screen roll ("Speen", gfx_pc.cpp, C++ float == f32). Gates dlcache
+// off while active (the cached replay's uMVP is not rotated).
+extern f32 gfx_screen_roll;
 s32 g_WireframeAnimSpeed = 0; // /wireframe vomit|trip: 0=off, else hue degrees/frame (vomit 4, trip 1)
 #endif
 s32 g_BgMostAttemptedDrawSlots = 0;
@@ -4332,6 +4335,7 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		// CPU vertex processing, which cached rooms (GPU replay of recorded
 		// verts) never re-run - rooms would stay matte while props shine.
 		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode && !gfx_upsidedown_mode
+				&& gfx_screen_roll == 0.0f
 				&& !gfx_rt_fullbright_active
 				&& (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer

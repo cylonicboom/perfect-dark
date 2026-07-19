@@ -314,7 +314,11 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosDoorTraps;       // chaos Booby-trapped doors
 	extern u32 g_ChaosDoorOpenCount;   // door-open task sensor
 	extern s32 g_ChaosLangOverrideId;  // chaos weapon rename (phone_call Nokia)
+	extern s32 g_ChaosLangOverrideId2; // chaos weapon rename (shortname / wheel)
+	extern s32 g_ChaosRenamedWeapon;   // chaos weapon rename (inv model hide)
 	extern s32 g_ChaosGameOverStatus;  // chaos Game over? Unknown/Missing override
+	extern s32 g_ChaosBeyblade;        // chaos Bayblade! NPC spin
+	extern f32 gfx_screen_roll;        // chaos Speen view roll (renderer float)
 	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
@@ -344,7 +348,11 @@ void lvReset(s32 stagenum)
 	g_ChaosDoorTraps = 0;
 	g_ChaosDoorOpenCount = 0;
 	g_ChaosLangOverrideId = -1; // chaos weapon rename (Nokia phone) — never persist
+	g_ChaosLangOverrideId2 = -1;
+	g_ChaosRenamedWeapon = -1;
 	g_ChaosGameOverStatus = 0;  // chaos Game over? status override
+	g_ChaosBeyblade = 0;
+	gfx_screen_roll = 0.0f;
 	inputSetChaosDeadzone(0);
 #endif
 

@@ -1972,6 +1972,12 @@ s32 g_ChaosChrFreeze = 0;
 // playback rate — and with it their movement (anim root motion) and attack
 // cadence. > 1 = Benny Hill guards, < 1 = zombie shuffle. 1.0 = off.
 f32 g_ChaosChrSpeedMult = 1.0f;
+// Chaos "Bayblade!" (pd.beyblade): while set, every non-player chr's model
+// yaw is stomped each tick with an absolute frame-derived angle (~2 rev/s,
+// per-chr phase from the chrnum so they desync) — absolute so AI facing
+// writes can't unwind the spin. AI/movement/aim logic keeps running; only
+// the rendered facing spins.
+s32 g_ChaosBeyblade = 0;
 #endif
 
 void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
@@ -1994,6 +2000,15 @@ void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
 	if (g_ChaosChrSpeedMult > 0.0f && g_ChaosChrSpeedMult != 1.0f
 			&& chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
 		lvupdate240 = (s32)(lvupdate240 * g_ChaosChrSpeedMult + 0.5f);
+	}
+
+	// Chaos "Bayblade!": spin the model yaw. 0.41888 rad per 60Hz frame =
+	// 4 revolutions/second; lvframe60 % 150 wraps at exactly 20*pi so the
+	// angle stays small (f32 sin/cos precision) without a visible seam.
+	if (g_ChaosBeyblade && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+			&& chr->model != NULL) {
+		chrSetLookAngle(chr, (f32)(g_Vars.lvframe60 % 150) * 0.41888f
+				+ (f32)chr->chrnum * 0.7f);
 	}
 #endif
 

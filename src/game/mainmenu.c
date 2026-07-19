@@ -4190,6 +4190,22 @@ void func0f105948(s32 weaponnum)
 	u32 stack;
 	s32 wantindex;
 
+#ifndef PLATFORM_N64
+	// Chaos pd.weapon_rename (Phone Call "Nokia 3315"): a renamed weapon also
+	// hides its pause-menu inventory model — the real gun spinning under the
+	// fake name broke the bit.
+	{
+		extern s32 g_ChaosRenamedWeapon;
+
+		if (g_ChaosRenamedWeapon >= 0 && weaponnum == g_ChaosRenamedWeapon) {
+			g_Menus[g_MpPlayerNum].menumodel.bodymodeldef = NULL;
+			g_Menus[g_MpPlayerNum].menumodel.curparams = 0;
+			g_Menus[g_MpPlayerNum].menumodel.newparams = 0;
+			return;
+		}
+	}
+#endif
+
 	useindex = weaponnum - 2;
 	wantindex = useindex;
 

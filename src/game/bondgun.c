@@ -6743,6 +6743,22 @@ char *bgunGetShortName(s32 weaponnum)
 	return "** error\n";
 }
 
+#ifndef PLATFORM_N64
+// Port: the shortname text id (the weapon-wheel label). The chaos rename
+// override (pd.weapon_rename) needs it alongside bgunGetNameId so both the
+// full name and the wheel label get relabelled.
+u16 bgunGetShortNameId(s32 weaponnum)
+{
+	struct weapon *weapon = g_Weapons[weaponnum];
+
+	if (weapon) {
+		return weapon->shortname;
+	}
+
+	return 0;
+}
+#endif
+
 const char var7f1ac170[] = "wantedfn %d tiggle %d\n";
 
 void bgunReloadIfPossible(s32 handnum)

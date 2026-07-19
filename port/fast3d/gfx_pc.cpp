@@ -382,6 +382,15 @@ int gfx_shiny_mode = 0;
 // geometry exempt). bg.c gates dlcache off while active (cached replay's
 // uMVP is not Y-flipped), the gfx_shiny_mode pattern.
 bool gfx_upsidedown_mode = false;
+// Chaos screen roll (pd.screen_roll / "Speen"): rotate clip-space X/Y about
+// the screen centre by this many radians. 0 = off. Aspect-corrected so the
+// roll is rigid on screen. Unlike the mirror/upside-down single-axis flips a
+// rotation preserves winding (det +1), so no cull compensation is needed.
+// While active: 3D scissors are expanded to the viewport (an axis-aligned
+// scissor can't follow rotated geometry — portal scissors would clip it) and
+// bg.c gates dlcache off (cached replay's uMVP is not rotated). 2D texrects
+// (HUD/text) don't pass through gfx_sp_vertex and stay upright.
+float gfx_screen_roll = 0.0f;
 // Chaos screen tint (pd.screen_tint): 0x00RRGGBB, 0 = off. Rides the
 // grayscale shader path (luminance * tint) like the Midas gold mode.
 int gfx_screen_tint = 0;
@@ -1579,6 +1588,19 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             y = -y;
         }
 
+        // Chaos "Speen": roll the view about the screen centre. Pixel-space
+        // rotation expressed in NDC needs the aspect factors (ndc x and y have
+        // different pixel scales); det stays +1 so winding/cull are untouched.
+        if (gfx_screen_roll != 0.0f && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT)) {
+            const float rollc = cosf(gfx_screen_roll);
+            const float rolls = sinf(gfx_screen_roll);
+            const float ar = gfx_current_dimensions.aspect_ratio;
+            const float rx = x;
+            const float ry = y;
+            x = rollc * rx - rolls * ry / ar;
+            y = rolls * rx * ar + rollc * ry;
+        }
+
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
 
@@ -1874,9 +1896,18 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             // writes un-mirrored vertices directly and temporarily forces a
             // full-screen viewport, so reflecting its scissor would misplace the
             // HUD (notably in split-screen). is_rect distinguishes the two.
-            const float scx = (gfx_mirror_mode && !is_rect) ? gfx_mirror_scissor_x(rdp.scissor.x, rdp.scissor.width) : rdp.scissor.x;
-            const float scy = (gfx_upsidedown_mode && !is_rect) ? gfx_upsidedown_scissor_y(rdp.scissor.y, rdp.scissor.height) : rdp.scissor.y;
-            gfx_rapi->set_scissor(scx, scy, rdp.scissor.width, rdp.scissor.height);
+            // Chaos "Speen": an axis-aligned scissor can't follow rotated
+            // geometry — per-room portal scissors would carve chunks out of
+            // the spinning world. Expand 3D scissors to the whole viewport
+            // while the roll is active (2D rects keep theirs).
+            if (gfx_screen_roll != 0.0f && !is_rect) {
+                gfx_rapi->set_scissor(rdp.viewport.x, rdp.viewport.y,
+                                      rdp.viewport.width, rdp.viewport.height);
+            } else {
+                const float scx = (gfx_mirror_mode && !is_rect) ? gfx_mirror_scissor_x(rdp.scissor.x, rdp.scissor.width) : rdp.scissor.x;
+                const float scy = (gfx_upsidedown_mode && !is_rect) ? gfx_upsidedown_scissor_y(rdp.scissor.y, rdp.scissor.height) : rdp.scissor.y;
+                gfx_rapi->set_scissor(scx, scy, rdp.scissor.width, rdp.scissor.height);
+            }
             rendering_state.scissor = rdp.scissor;
         }
         rdp.viewport_or_scissor_changed = false;

@@ -1216,6 +1216,11 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	if (g_ChaosButtonMask && !g_Vars.currentplayer->isremote) {
 		c1buttons &= ~g_ChaosButtonMask;
 		c1buttonsthisframe &= ~g_ChaosButtonMask;
+		// The aim-mode toggle, fire-while-aiming, reload (X) and next-weapon
+		// (Y) reads use joyGetButtons*OnSample masked with c1allowedbuttons,
+		// not c1buttons — strip the stolen buttons there too or they still
+		// register.
+		c1allowedbuttons &= ~g_ChaosButtonMask;
 	}
 #endif
 

@@ -1274,7 +1274,8 @@ static int l_pd_grenade(lua_State *L)
 	f32 x = (f32)luaL_checknumber(L, 1);
 	f32 y = (f32)luaL_checknumber(L, 2);
 	f32 z = (f32)luaL_checknumber(L, 3);
-	lua_pushboolean(L, chraiLuaSpawnGrenade(x, y, z) != 0);
+	s32 chrnum = (s32)luaL_optinteger(L, 4, -1); /* room-search seed (martyrdom corpses) */
+	lua_pushboolean(L, chraiLuaSpawnGrenade(x, y, z, chrnum) != 0);
 	return 1;
 }
 
@@ -2045,6 +2046,56 @@ static int l_pd_upside_down(lua_State *L)
 	return 1;
 }
 
+/* pd.screen_roll(deg) -> bool. Do a Barrel Roll: rotate the 3D view about the
+ * screen centre by an absolute angle in degrees (0 = upright/off). Animate by
+ * re-setting each tick. */
+static int l_pd_screen_roll(lua_State *L)
+{
+	f32 deg = (f32)luaL_optnumber(L, 1, 0.0);
+	lua_pushboolean(L, chraiLuaScreenRoll(deg) != 0);
+	return 1;
+}
+
+/* pd.player_add_yaw(deg) -> bool. Speen: rotate the player's view yaw by deg
+ * degrees (spins the real player — view, aim, heading). */
+static int l_pd_player_add_yaw(lua_State *L)
+{
+	f32 deg = (f32)luaL_checknumber(L, 1);
+	lua_pushboolean(L, chraiLuaPlayerAddYaw(deg) != 0);
+	return 1;
+}
+
+/* pd.player_slip(push [, pitch_deg]) -> bool. Banana peel: full squat +
+ * forward shove (knockback-style, collision-respecting); pitch only when
+ * given (the effect glides it via pd.player_pitch instead). */
+static int l_pd_player_slip(lua_State *L)
+{
+	f32 push = (f32)luaL_optnumber(L, 1, 25.0);
+	f32 pitch = (f32)luaL_optnumber(L, 2, 999.0); /* > 180 = leave pitch alone */
+	lua_pushboolean(L, chraiLuaPlayerSlip(push, pitch) != 0);
+	return 1;
+}
+
+/* pd.player_pitch([deg]) -> deg | bool. No arg: current view pitch (+up).
+ * With arg: set it (clamped +/-90). */
+static int l_pd_player_pitch(lua_State *L)
+{
+	if (lua_gettop(L) < 1 || lua_isnil(L, 1)) {
+		lua_pushnumber(L, chraiLuaPlayerPitchGet());
+	} else {
+		lua_pushboolean(L, chraiLuaPlayerPitchSet((f32)luaL_checknumber(L, 1)) != 0);
+	}
+	return 1;
+}
+
+/* pd.beyblade(on) -> bool. Bayblade!: spin every NPC's model yaw at ~2 rev/s
+ * (visual only — AI keeps running). */
+static int l_pd_beyblade(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaBeyblade(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.double_vision(on) -> bool. One too many: blend a 180-flipped ghost of the
  * frame over the normal one (drunk double-vision). */
 static int l_pd_double_vision(lua_State *L)
@@ -2627,6 +2678,11 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_shake);         lua_setfield(L, -2, "shake");
 	lua_pushcfunction(L, l_pd_screen_tint);   lua_setfield(L, -2, "screen_tint");
 	lua_pushcfunction(L, l_pd_upside_down);   lua_setfield(L, -2, "upside_down");
+	lua_pushcfunction(L, l_pd_screen_roll);   lua_setfield(L, -2, "screen_roll");
+	lua_pushcfunction(L, l_pd_player_add_yaw); lua_setfield(L, -2, "player_add_yaw");
+	lua_pushcfunction(L, l_pd_player_slip);   lua_setfield(L, -2, "player_slip");
+	lua_pushcfunction(L, l_pd_player_pitch);  lua_setfield(L, -2, "player_pitch");
+	lua_pushcfunction(L, l_pd_beyblade);      lua_setfield(L, -2, "beyblade");
 	lua_pushcfunction(L, l_pd_double_vision); lua_setfield(L, -2, "double_vision");
 	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");
 	lua_pushcfunction(L, l_pd_gas);           lua_setfield(L, -2, "gas");
@@ -2982,18 +3038,33 @@ static Gfx *luaDrawImage(Gfx *gdl, s32 handle, s32 cx, s32 cy, s32 w, s32 h, f32
 				(cx - w / 2) * 4, (cy - h / 2) * 4, (cx + w / 2) * 4, (cy + h / 2) * 4,
 				G_TX_RENDERTILE, 0, 0, (iw << 10) / w, (ih << 10) / h);
 	} else {
-		// Rotated: textured quad (texrects can't rotate).
+		// Rotated: textured quad (texrects can't rotate). Two traps the
+		// axis-aligned texrect path doesn't hit:
+		// 1. The overlay bracket loads NO matrices, so tris go through
+		//    whatever lvRender left behind — load an explicit pixel-space
+		//    ortho projection + identity modelview (x10 for subpixel).
+		// 2. text0f153628 sets G_TP_NONE, and triangle texcoords are HALVED
+		//    when texture persp is off (texrects are exempt) — bake a 2x
+		//    into the S10.5 coords (<<6 instead of <<5).
 		Vtx *vertices = gfxAllocateVertices(4);
+		Mtx *ortho = gfxAllocateMatrix();
+		Mtx *ident = gfxAllocateMatrix();
 		f32 co = cosf(angle), si = sinf(angle), hw = w * 0.5f, hh = h * 0.5f;
-		s16 smax = (s16)(iw << 5), tmax = (s16)(ih << 5);
+		s16 smax = (s16)(iw << 6), tmax = (s16)(ih << 6);
 		const f32 dx[4] = { -1.f, 1.f, 1.f, -1.f };
 		const f32 dy[4] = { -1.f, -1.f, 1.f, 1.f };
 		s32 i;
+
+		guOrtho(ortho, 0, viGetWidth() * 10.0f, viGetHeight() * 10.0f, 0, -10, 10, 1);
+		guMtxIdent(ident);
+		gSPMatrix(gdl++, osVirtualToPhysical(ortho), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
+		gSPMatrix(gdl++, osVirtualToPhysical(ident), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
+
 		for (i = 0; i < 4; i++) {
 			f32 lx = dx[i] * hw, ly = dy[i] * hh;
 			vertices[i].x = (s16)((cx + (lx * co - ly * si)) * 10);
 			vertices[i].y = (s16)((cy + (lx * si + ly * co)) * 10);
-			vertices[i].z = -10;
+			vertices[i].z = 0;
 			vertices[i].s = (i == 1 || i == 2) ? smax : 0;
 			vertices[i].t = (i >= 2) ? tmax : 0;
 			vertices[i].colour = 0;

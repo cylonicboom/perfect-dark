@@ -319,6 +319,11 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosGameOverStatus;  // chaos Game over? Unknown/Missing override
 	extern s32 g_ChaosBeyblade;        // chaos Bayblade! NPC spin
 	extern f32 gfx_screen_roll;        // chaos Speen view roll (renderer float)
+	extern s32 g_ChaosOneBulletMags;   // chaos One Bullet Mags
+	extern s32 g_ChaosForcedMarch;     // chaos Forced March
+	extern s32 g_ChaosUwuMode;         // chaos UwUify text transform
+	extern void inputSetChaosInvertLook(s32 on);    // chaos Inverted Look
+	extern void inputSetChaosInputDelay(s32 frames);// chaos Stadia Mode
 	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
@@ -353,6 +358,11 @@ void lvReset(s32 stagenum)
 	g_ChaosGameOverStatus = 0;  // chaos Game over? status override
 	g_ChaosBeyblade = 0;
 	gfx_screen_roll = 0.0f;
+	g_ChaosOneBulletMags = 0;
+	g_ChaosForcedMarch = 0;
+	g_ChaosUwuMode = 0;
+	inputSetChaosInvertLook(0);
+	inputSetChaosInputDelay(0);
 	inputSetChaosDeadzone(0);
 #endif
 

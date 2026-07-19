@@ -2591,6 +2591,14 @@ struct menuitem g_ExtendedClassicMenuItems[] = {
 		cheatCheckboxMenuHandler,
 	},
 	{
+		MENUITEMTYPE_CHECKBOX,
+		CHEAT_CLASSIC_REMOVEHANDS,
+		0,
+		(uintptr_t)&cheatGetNameIfUnlocked,
+		0,
+		cheatCheckboxMenuHandler,
+	},
+	{
 		MENUITEMTYPE_SEPARATOR,
 		0,
 		0,

@@ -238,6 +238,11 @@ s32 g_ChaosDoubleShots = 0;
 // 180-degree-rotated projection so a second pair appears hanging from the top
 // of the screen. Consumed in bgunRender; reset in lvInit.
 s32 g_ChaosQuadTopGuns = 0;
+// Chaos "One Bullet Mags" (pd.one_bullet): clip capacity forced to 1 at the
+// equip-time bake — reload after every shot. Applied after the quad-handed
+// doubling so it always wins; existing loaded rounds are untouched until the
+// next reload.
+s32 g_ChaosOneBulletMags = 0;
 // Chaos "Pinball rounds" (pd.pinball): fired physics projectiles (rockets,
 // grenade rounds) are converted at launch into the grenade secondary's
 // Proximity Pinball — ballistic, bouncy, proximity-armed. See the conversion
@@ -668,6 +673,70 @@ void bgunExecuteGunVisCommands(struct hand *hand, struct modeldef *modeldef, str
 	}
 }
 
+#ifndef PLATFORM_N64
+// Classic Option "Remove Hands" weapon classes. Pistol-grip weapons KEEP the
+// hand (a floating pistol looks wrong — GE showed the hand on sidearms);
+// unarmed/knife keep it too, since the hand IS the weapon there.
+static bool bgunRemoveHandsKeepsHand(s32 weaponnum)
+{
+	switch (weaponnum) {
+	case WEAPON_UNARMED:
+	case WEAPON_COMBATKNIFE:
+	case WEAPON_FALCON2:
+	case WEAPON_FALCON2_SILENCER:
+	case WEAPON_FALCON2_SCOPE:
+	case WEAPON_MAGSEC4:
+	case WEAPON_MAULER:
+	case WEAPON_PHOENIX:
+	case WEAPON_DY357MAGNUM:
+	case WEAPON_DY357LX:
+	case WEAPON_TRANQUILIZER:
+	case WEAPON_PP9I:
+	case WEAPON_CC13:
+	case WEAPON_PSYCHOSISGUN:
+		return true;
+	}
+
+	return false;
+}
+
+// Thrown/planted items and gadgets render NO first-person model at all while
+// Remove Hands is active (a hovering grenade or wristwatch breaks the look).
+static bool bgunRemoveHandsHidesAll(s32 weaponnum)
+{
+	switch (weaponnum) {
+	case WEAPON_GRENADE:
+	case WEAPON_NBOMB:
+	case WEAPON_TIMEDMINE:
+	case WEAPON_PROXIMITYMINE:
+	case WEAPON_REMOTEMINE:
+	case WEAPON_ECMMINE:
+	case WEAPON_COMBATBOOST:
+	case WEAPON_NIGHTVISION:
+	case WEAPON_EYESPY:
+	case WEAPON_XRAYSCANNER:
+	case WEAPON_IRSCANNER:
+	case WEAPON_CLOAKINGDEVICE:
+	case WEAPON_HORIZONSCANNER:
+	case WEAPON_DATAUPLINK:
+	case WEAPON_RTRACKER:
+	case WEAPON_PRESIDENTSCANNER:
+	case WEAPON_DOORDECODER:
+	case WEAPON_AUTOSURGEON:
+	case WEAPON_EXPLOSIVES:
+	case WEAPON_SKEDARBOMB:
+	case WEAPON_COMMSRIDER:
+	case WEAPON_TRACERBUG:
+	case WEAPON_TARGETAMPLIFIER:
+	case WEAPON_SUITCASE:
+	case WEAPON_BRIEFCASE:
+		return true;
+	}
+
+	return false;
+}
+#endif
+
 void bgun0f098030(struct hand *hand, struct modeldef *modeldef)
 {
 	struct weapon *weapon = weaponFindById(hand->gset.weaponnum);
@@ -676,6 +745,32 @@ void bgun0f098030(struct hand *hand, struct modeldef *modeldef)
 
 	bgunExecuteGunVisCommands(hand, modeldef, weapon->gunviscmds);
 	bgunSetPartVisible(MODELPART_0042, false, hand, modeldef);
+
+#ifndef PLATFORM_N64
+	// Classic Option "Remove Hands": the floating-gun GoldenEye look — force
+	// the shared hand model parts hidden every frame, AFTER the weapon's own
+	// vis pass. Pistol-class weapons are exempt (bgunRemoveHandsKeepsHand).
+	// Hand-part visibility is otherwise only written at equip or by a
+	// weapon's own viscmds, so the latch restores default visibility once
+	// when the option turns off or a pistol comes up (a weapon that
+	// legitimately hides a hand, e.g. the grenade's left, re-hides it via
+	// its viscmds next frame).
+	{
+		static u8 handswerehidden[2];
+		s32 hi = (hand == &g_Vars.currentplayer->hands[HAND_LEFT]) ? HAND_LEFT : HAND_RIGHT;
+
+		if (classicOptionActive(CHEAT_CLASSIC_REMOVEHANDS, MPOPTION_CLASSIC_REMOVEHANDS)
+				&& !bgunRemoveHandsKeepsHand(hand->gset.weaponnum)) {
+			bgunSetPartVisible(MODELPART_HAND_LEFT, false, hand, modeldef);
+			bgunSetPartVisible(MODELPART_HAND_RIGHT, false, hand, modeldef);
+			handswerehidden[hi] = true;
+		} else if (handswerehidden[hi]) {
+			bgunSetPartVisible(MODELPART_HAND_LEFT, true, hand, modeldef);
+			bgunSetPartVisible(MODELPART_HAND_RIGHT, true, hand, modeldef);
+			handswerehidden[hi] = false;
+		}
+	}
+#endif
 
 	for (i = 0; i < 2; i++) {
 		if (weapon->ammos[i] && (weapon->ammos[i]->flags & AMMOFLAG_QTYAFFECTSPARTVIS)) {
@@ -749,6 +844,18 @@ void bgun0f0981e8(struct hand *hand, struct modeldef *modeldef)
 			if (hand->unk0ce8 && animspeed < 0.0f) {
 				modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, animspeedmult * animspeed, 0.0f);
 				modelSetAnimFrame(&hand->gunmodel, modelGetNumAnimFrames(&hand->gunmodel));
+#ifndef PLATFORM_N64
+			// Classic Reloads: the shotgun shoot/pump anim SNAPS straight to
+			// its final frame (the reverse-anim recipe above) — zero visible
+			// playback, and the model lands in its proper rest pose. (A full
+			// skip left the gun parked in the equip pose, mid-screen.) The
+			// flat 0.3s refire cadence lives in bgunTickIncAttackingShoot.
+			} else if ((hand->animload == ANIM_GUN_SHOTGUN_SHOOT_SINGLE
+						|| hand->animload == ANIM_GUN_SHOTGUN_SHOOT_DOUBLE)
+					&& classicOptionActive(CHEAT_CLASSIC_RELOAD, MPOPTION_CLASSIC_RELOAD)) {
+				modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, animspeedmult * animspeed, 0.0f);
+				modelSetAnimFrame(&hand->gunmodel, modelGetNumAnimFrames(&hand->gunmodel));
+#endif
 			} else {
 				modelSetAnimation(&hand->gunmodel, hand->animload, false, 0.0f, animspeedmult * animspeed, 0.0f);
 			}
@@ -2423,9 +2530,26 @@ bool bgunTickIncAttackingShoot(struct handweaponinfo *info, s32 handnum, struct 
 			sp68 = true;
 		}
 
+#ifndef PLATFORM_N64
+		if (hand->gset.weaponnum == WEAPON_SHOTGUN) {
+			if (classicOptionActive(CHEAT_CLASSIC_RELOAD, MPOPTION_CLASSIC_RELOAD)) {
+				// Classic Reloads: no pump at all (the cock anim is skipped in
+				// bgunStartAnimation, so BUSY never gates refire) — enforce a
+				// flat 0.3s (18 tick) cadence instead. stateframes = frames
+				// since the last shot in the attack state, the same counter
+				// the double-blast burst path times with.
+				if (hand->stateframes < TICKS(18)) {
+					sp68 = false;
+				}
+			} else if (hand->animmode == HANDANIMMODE_BUSY) {
+				sp68 = false;
+			}
+		}
+#else
 		if (hand->gset.weaponnum == WEAPON_SHOTGUN && hand->animmode == HANDANIMMODE_BUSY) {
 			sp68 = false;
 		}
+#endif
 
 		hand->matmot2 = hand->gs_float1;
 
@@ -6744,6 +6868,53 @@ char *bgunGetShortName(s32 weaponnum)
 }
 
 #ifndef PLATFORM_N64
+// Port: re-run the chaos clip-capacity bake (quad-handed 2x / one-bullet 1)
+// for both of the current player's hands WITHOUT a weapon change — the bake
+// normally only happens at equip (bgun0f0abd30), so toggling mid-hold did
+// nothing until the next weapon switch. Excess loaded rounds above a
+// shrunken capacity are refunded to reserve before the clip clamps.
+void bgunChaosRebakeClipSizes(void)
+{
+	struct player *player = g_Vars.currentplayer;
+	extern s32 g_ChaosOneBulletMags;
+	s32 handnum;
+	s32 i;
+
+	if (player == NULL || player->isremote) {
+		return;
+	}
+
+	for (handnum = 0; handnum < 2; handnum++) {
+		struct hand *hand = &player->hands[handnum];
+		struct weapon *weapon = weaponFindById(hand->gset.weaponnum);
+
+		for (i = 0; i < 2; i++) {
+			if (weapon && weapon->ammos[i]) {
+				s32 newsize = weapon->ammos[i]->clipsize;
+
+				if (g_ChaosQuadTopGuns) {
+					newsize *= 2;
+				}
+				if (g_ChaosOneBulletMags && newsize > 1) {
+					newsize = 1;
+				}
+				if (handnum == HAND_LEFT && hand->gset.weaponnum == WEAPON_REMOTEMINE) {
+					newsize = 0;
+				}
+
+				if (hand->loadedammo[i] > newsize) {
+					s32 type = weapon->ammos[i]->type;
+					bgunSetAmmoQuantity(type,
+							bgunGetAmmoCount(type) + hand->loadedammo[i] - newsize);
+					hand->loadedammo[i] = newsize;
+				}
+
+				hand->clipsizes[i] = newsize;
+			}
+		}
+	}
+}
+
 // Port: the shortname text id (the weapon-wheel label). The chaos rename
 // override (pd.weapon_rename) needs it alongside bgunGetNameId so both the
 // full name and the wheel label get relabelled.
@@ -8543,6 +8714,17 @@ void bgun0f0a5550(s32 handnum)
 			|| bgunGetGunMemType() == 0) {
 		hand->visible = false;
 	}
+
+#ifndef PLATFORM_N64
+	// Classic Option "Remove Hands": thrown/planted items and gadgets render
+	// no first-person model at all (a hovering grenade/wristwatch breaks the
+	// floating-gun look). Gameplay is untouched — only the viewmodel skips.
+	if (hand->visible
+			&& classicOptionActive(CHEAT_CLASSIC_REMOVEHANDS, MPOPTION_CLASSIC_REMOVEHANDS)
+			&& bgunRemoveHandsHidesAll(weaponnum)) {
+		hand->visible = false;
+	}
+#endif
 
 	if (hand->visible) {
 		modeldef = player->gunctrl.gunmodeldef;
@@ -14491,6 +14673,12 @@ void bgun0f0abd30(s32 handnum)
 			// the same number of trigger pulls but holds/drains 2x).
 			if (g_ChaosQuadTopGuns && !g_Vars.currentplayer->isremote) {
 				hand->clipsizes[i] *= 2;
+			}
+
+			// Chaos "One Bullet Mags": one round per magazine.
+			if (g_ChaosOneBulletMags && !g_Vars.currentplayer->isremote
+					&& hand->clipsizes[i] > 1) {
+				hand->clipsizes[i] = 1;
 			}
 #endif
 

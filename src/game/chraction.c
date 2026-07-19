@@ -8322,6 +8322,7 @@ s32 chraiLuaPlayerHeal(void)
 		return 0;
 	}
 	g_Vars.currentplayer->bondhealth = 1.0f;
+	playerDisplayHealth(); // silent HP change — pop the health bar
 	return 1;
 }
 
@@ -8334,6 +8335,7 @@ s32 chraiLuaPlayerSetShield(f32 frac)
 	if (frac < 0.0f) frac = 0.0f;
 	if (frac > 1.0f) frac = 1.0f;
 	playerSetShieldFrac(frac);
+	playerDisplayHealth(); // silent shield change — pop the health bar
 	return 1;
 }
 
@@ -8730,6 +8732,87 @@ s32 chraiLuaPlayerPitchSet(f32 deg)
 	return 1;
 }
 
+// pd.player_push(mag): shove the player along their facing (positive =
+// forward, negative = backward). The banana-peel bondshotspeed knockback
+// without the squat/pitch — Heavy Recoil fires it backward per shot.
+s32 chraiLuaPlayerPush(f32 mag)
+{
+	struct player *pl;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	pl = g_Vars.currentplayer;
+	pl->bondshotspeed.x += -pl->vv_sintheta * mag;
+	pl->bondshotspeed.z += pl->vv_costheta * mag;
+	return 1;
+}
+
+// pd.one_bullet(on): "One Bullet Mags" — clip capacity 1. The bake normally
+// only runs at equip, so bgunChaosRebakeClipSizes applies it to the gun in
+// hand immediately (excess loaded rounds refunded to reserve).
+s32 chraiLuaOneBullet(s32 on)
+{
+	extern s32 g_ChaosOneBulletMags;
+
+	g_ChaosOneBulletMags = on ? 1 : 0;
+	if (apLuaPlayerChr() != NULL) {
+		bgunChaosRebakeClipSizes();
+	}
+	return 1;
+}
+
+// pd.invert_look(on): flip vertical look — mouse+gyro dy and the pad right
+// stick (input.c).
+s32 chraiLuaInvertLook(s32 on)
+{
+	extern void inputSetChaosInvertLook(s32 on);
+
+	inputSetChaosInvertLook(on);
+	return 1;
+}
+
+// pd.input_delay(frames): "Stadia Mode" — every pad read (buttons, kbm keys,
+// sticks) is served N frames late (input.c ring). Mouse look stays live
+// (honest limit — that getter runs multiple times per frame). 0 = off.
+s32 chraiLuaInputDelay(s32 frames)
+{
+	extern void inputSetChaosInputDelay(s32 frames);
+
+	inputSetChaosInputDelay(frames);
+	return 1;
+}
+
+// pd.uwuify(on): every langGet string is uwuified (lang.c g_ChaosUwuMode;
+// %-format specs preserved, long strings pass through).
+s32 chraiLuaUwuify(s32 on)
+{
+	extern s32 g_ChaosUwuMode;
+
+	g_ChaosUwuMode = on ? 1 : 0;
+	return 1;
+}
+
+// pd.piglatin(on): igpay atinlay — same text pipeline as uwuify, mode 2.
+// Turning either off zeroes the shared mode.
+s32 chraiLuaPigLatin(s32 on)
+{
+	extern s32 g_ChaosUwuMode;
+
+	g_ChaosUwuMode = on ? 2 : 0;
+	return 1;
+}
+
+// pd.forced_march(on): the movement stick is pinned full forward
+// (bondmove.c g_ChaosForcedMarch).
+s32 chraiLuaForcedMarch(s32 on)
+{
+	extern s32 g_ChaosForcedMarch;
+
+	g_ChaosForcedMarch = on ? 1 : 0;
+	return 1;
+}
+
 // pd.player_add_yaw(deg): rotate the local player's view yaw by deg degrees
 // (Speen — spins the actual player: view, aim and movement heading). Additive
 // with normal look input; wrapped 0..360 the same way bondwalk's rotate path
@@ -8818,6 +8901,7 @@ s32 chraiLuaPlayerSetHealth(f32 frac)
 	if (frac < 0.01f) frac = 0.01f;
 	if (frac > 1.0f) frac = 1.0f;
 	g_Vars.currentplayer->bondhealth = frac;
+	playerDisplayHealth(); // silent HP change — pop the health bar
 	return 1;
 }
 
@@ -9566,6 +9650,11 @@ extern s32 g_ChaosQuadTopGuns;
 s32 chraiLuaQuadTop(s32 on)
 {
 	g_ChaosQuadTopGuns = on ? 1 : 0;
+	// clip capacity bakes at equip — re-run it now so the 2x applies to the
+	// gun already in hand (same fix as one_bullet)
+	if (apLuaPlayerChr() != NULL) {
+		bgunChaosRebakeClipSizes();
+	}
 	return 1;
 }
 

@@ -560,6 +560,7 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define CHEAT_CLASSIC_NODUALWIELD    58
 #define CHEAT_CLASSIC_IFRAMES        59
 #define CHEAT_CLASSIC_NOBLUR         60
+#define CHEAT_CLASSIC_REMOVEHANDS    61 // floating-gun GE look: hide the viewmodel hands
 
 #define CHEATFLAG_TIMED           0
 #define CHEATFLAG_ALWAYSON        1
@@ -3106,6 +3107,7 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define MPOPTION_KILLCAM                0x0002000000000000ULL // options bit 49: on death, replay the last 4s from the killer's POV (client-side; works in solo)
 #define MPOPTION_LASTATTACKERKILL       0x0004000000000000ULL // options bit 50: credit env/fall/knockback/suicide-play deaths to the most recent attacker (chr->lastattacker) instead of the victim — reward "push" kills
 #define MPOPTION_AUTOLIFTS              0x0008000000000000ULL // options bit 51: "Auto Lifts" — lifts can't be called; they cycle their stops on their own timers (deterministic, avoids online lift desyncs)
+#define MPOPTION_CLASSIC_REMOVEHANDS    0x0010000000000000ULL // options bit 52: Classic Option "Remove Hands" (floating GE gun; pairs with CHEAT_CLASSIC_REMOVEHANDS)
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

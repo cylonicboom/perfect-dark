@@ -460,6 +460,236 @@ s32 g_ChaosLangOverrideId = -1;
 s32 g_ChaosLangOverrideId2 = -1; // the weapon's SHORT name id (weapon wheel, scenario lines)
 s32 g_ChaosRenamedWeapon = -1;   // weaponnum being renamed — mainmenu hides its inventory model
 char g_ChaosLangOverrideStr[64] = { 0 };
+
+// Chaos text transforms (pd.uwuify / pd.piglatin): while set, every langGet
+// string is transformed — mode 1 = UwUify (r/l -> w, R/L -> W, n+vowel ->
+// ny+vowel), mode 2 = Pig Latin (leading consonants rotate to the tail +
+// "ay"; vowel-initial words get "way"). %-sequences are copied VERBATIM in
+// both modes — several callers use langGet results as sprintf FORMAT
+// strings, so mangling a %s would be a crash, not a joke. Output lives in
+// rotating pools of static buffers sized for everything one frame renders:
+// a small pool for labels/messages plus a few BIG slots for long text
+// (mission briefings, CI bios). Only absurdly long strings (> ~5KB) pass
+// through untransformed (both transforms expand text, so the slots leave
+// headroom; a pathological all-short-word string may truncate at the slot
+// cap rather than overflow).
+s32 g_ChaosUwuMode = 0; // 0 off, 1 uwu, 2 pig latin
+
+#define UWU_BUFS 32
+#define UWU_LEN  256
+#define UWU_BIGBUFS 4
+#define UWU_BIGLEN  8192
+#define UWU_MAXSRC  5000
+static char g_UwuBufs[UWU_BUFS][UWU_LEN];
+static char g_UwuBigBufs[UWU_BIGBUFS][UWU_BIGLEN];
+static u32 g_UwuNext = 0;
+static u32 g_UwuBigNext = 0;
+
+// Measure src (bail past UWU_MAXSRC) and hand back a rotating output slot:
+// small pool for labels, big slots for briefing-scale text. NULL = too long,
+// caller returns src untouched.
+static char *langChaosGetBuf(char *src, s32 *cap)
+{
+	s32 len;
+
+	for (len = 0; src[len]; len++) {
+		if (len > UWU_MAXSRC) {
+			return NULL;
+		}
+	}
+
+	if (len < UWU_LEN / 2 - 8) {
+		*cap = UWU_LEN;
+		g_UwuNext++;
+		return g_UwuBufs[(g_UwuNext - 1) % UWU_BUFS];
+	}
+
+	*cap = UWU_BIGLEN;
+	g_UwuBigNext++;
+	return g_UwuBigBufs[(g_UwuBigNext - 1) % UWU_BIGBUFS];
+}
+
+static char *langUwuify(char *src)
+{
+	char *dst;
+	s32 cap;
+	s32 i;
+	s32 o;
+
+	if (src == NULL || src[0] == '\0') {
+		return src;
+	}
+
+	dst = langChaosGetBuf(src, &cap);
+
+	if (dst == NULL) {
+		return src; // absurdly long — leave untouched
+	}
+	o = 0;
+
+	for (i = 0; src[i] && o < cap - 4; i++) {
+		char c = src[i];
+
+		if (c == '%') {
+			// copy the whole format spec verbatim: flags/width, then stop
+			// after the first letter (or %%)
+			dst[o++] = '%';
+			while (src[i + 1] && o < cap - 2) {
+				char n = src[i + 1];
+				dst[o++] = n;
+				i++;
+				if ((n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') || n == '%') {
+					break;
+				}
+			}
+			continue;
+		}
+
+		if (c == 'r' || c == 'l') {
+			dst[o++] = 'w';
+		} else if (c == 'R' || c == 'L') {
+			dst[o++] = 'W';
+		} else if ((c == 'n' || c == 'N')
+				&& (src[i + 1] == 'a' || src[i + 1] == 'o' || src[i + 1] == 'u'
+					|| src[i + 1] == 'A' || src[i + 1] == 'O' || src[i + 1] == 'U')) {
+			dst[o++] = c;
+			dst[o++] = (c == 'N') ? 'Y' : 'y';
+		} else {
+			dst[o++] = c;
+		}
+	}
+
+	dst[o] = '\0';
+	return dst;
+}
+
+static s32 langIsLetter(char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static s32 langIsVowel(char c)
+{
+	c |= 0x20;
+	return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u';
+}
+
+// Pig Latin, word by word: "chaos" -> "aoschay", "alert" -> "alertway".
+// Capitalisation transfers ("Perfect" -> "Erfectpay"); %-specs verbatim.
+static char *langPigLatinify(char *src)
+{
+	char *dst;
+	s32 cap;
+	s32 i;
+	s32 o;
+
+	if (src == NULL || src[0] == '\0') {
+		return src;
+	}
+
+	dst = langChaosGetBuf(src, &cap);
+
+	if (dst == NULL) {
+		return src;
+	}
+	o = 0;
+
+	for (i = 0; src[i] && o < cap - 8; ) {
+		char c = src[i];
+
+		if (c == '%') {
+			dst[o++] = '%';
+			i++;
+			while (src[i] && o < cap - 2) {
+				char n = src[i];
+				dst[o++] = n;
+				i++;
+				if ((n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') || n == '%') {
+					break;
+				}
+			}
+			continue;
+		}
+
+		if (!langIsLetter(c)) {
+			dst[o++] = c;
+			i++;
+			continue;
+		}
+
+		{
+			// scan the word, find its first vowel
+			s32 wstart = i;
+			s32 wend = i;
+			s32 vowel = -1;
+			s32 j;
+			s32 wascap;
+
+			while (src[wend] && langIsLetter(src[wend])) {
+				if (vowel < 0 && langIsVowel(src[wend])) {
+					vowel = wend;
+				}
+				wend++;
+			}
+
+			wascap = (src[wstart] >= 'A' && src[wstart] <= 'Z');
+
+			if (vowel == wstart) {
+				// vowel-initial: word + "way"
+				for (j = wstart; j < wend && o < cap - 6; j++) {
+					dst[o++] = src[j];
+				}
+				if (o < cap - 4) {
+					dst[o++] = 'w'; dst[o++] = 'a'; dst[o++] = 'y';
+				}
+			} else {
+				if (vowel < 0) {
+					vowel = wend; // no vowel: whole word + "ay"
+				}
+				// tail first, then the rotated consonant cluster, then "ay";
+				// transfer the leading capital to the new first letter
+				for (j = vowel; j < wend && o < cap - 6; j++) {
+					char t = src[j];
+					if (j == vowel && wascap && t >= 'a' && t <= 'z') {
+						t = t - 'a' + 'A';
+					}
+					dst[o++] = t;
+				}
+				for (j = wstart; j < vowel && o < cap - 6; j++) {
+					char t = src[j];
+					if (j == wstart && wascap) {
+						t = (t >= 'A' && t <= 'Z') ? t - 'A' + 'a' : t;
+					}
+					dst[o++] = t;
+				}
+				if (o < cap - 4) {
+					dst[o++] = 'a'; dst[o++] = 'y';
+				}
+			}
+
+			i = wend;
+		}
+	}
+
+	dst[o] = '\0';
+	return dst;
+}
+
+// Port: expose the transform for text that does NOT flow through langGet at
+// render time — HUD messages are COPIED into their slots at creation (and
+// chaos's own Lua strings never touch langGet at all), so in-game text needs
+// the transform applied at its own choke points. Returns src unchanged when
+// the mode is off.
+char *langChaosTransform(char *src)
+{
+	if (g_ChaosUwuMode == 1) {
+		return langUwuify(src);
+	}
+	if (g_ChaosUwuMode == 2) {
+		return langPigLatinify(src);
+	}
+	return src;
+}
 #endif
 
 char *langGet(s32 textid)
@@ -481,6 +711,12 @@ char *langGet(s32 textid)
 	} else {
 		addr = 0;
 	}
+
+#ifndef PLATFORM_N64
+	if (g_ChaosUwuMode && addr) {
+		return langChaosTransform((char *)addr);
+	}
+#endif
 
 	return (char *)addr;
 }

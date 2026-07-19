@@ -18,6 +18,9 @@ void langLoad(s32 bank);
 void langLoadToAddr(s32 bank, u8 *dst, s32 size);
 void langClearBank(s32 bank);
 char *langGet(s32 textid);
+#ifndef PLATFORM_N64
+char *langChaosTransform(char *src); /* port: chaos UwUify for non-langGet text (hudmsgs, overlays) */
+#endif
 void langReload(void);
 void langSetEuropean(u32 arg0);
 void langSetJpnEnabled(bool enable);

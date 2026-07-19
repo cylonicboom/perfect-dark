@@ -110,6 +110,7 @@ u16 bgunGetNameId(s32 weaponnum);
 char *bgunGetShortName(s32 arg0);
 #ifndef PLATFORM_N64
 u16 bgunGetShortNameId(s32 weaponnum); /* port: chaos weapon_rename wheel label */
+void bgunChaosRebakeClipSizes(void);   /* port: re-run chaos clip bake mid-hold */
 #endif
 void bgunReloadIfPossible(s32 handnum);
 void bgunSetAdjustPos(f32 angle);

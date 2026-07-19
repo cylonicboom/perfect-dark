@@ -75,6 +75,9 @@ s32 g_ChaosForceSecondary = 0;
 // gameplay input reads (c1buttons below). Menus read the joy layer directly
 // and keep working.
 u32 g_ChaosButtonMask = 0;
+// Chaos "Forced March" (pd.forced_march): the movement stick is pinned full
+// forward each tick — the player cannot stop walking. Look input unaffected.
+s32 g_ChaosForcedMarch = 0;
 // Chaos "Mag Dump" (pd.mag_dump): a single trigger press empties the whole clip
 // — automatic weapons get the trigger held down, semi-autos get it rapidly
 // pulsed (release/press every other tick, which each re-fires). Bullet weapons
@@ -2477,6 +2480,17 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 			magpulse = 0;
 			magticks = 0;
 		}
+	}
+
+	// Chaos "Forced March" (pd.forced_march): force the walk at the MOVEDATA
+	// level, after every control-style branch — the digital step-forward is
+	// consumed uniformly by bwalk on all styles. (A raw c1sticky inject
+	// pitched the VIEW on PC-style setups, where stick Y is look, not walk.)
+	// Placed before the freeze block so Take a Break still wins.
+	if (g_ChaosForcedMarch && !g_Vars.currentplayer->isremote
+			&& !g_Vars.currentplayer->isdead) {
+		movedata.digitalstepforward = true;
+		movedata.digitalstepback = false;
 	}
 
 	// Chaos "Take a break" (pd.player_freeze): block ALL player input — movement

@@ -329,6 +329,13 @@ s32 chraiLuaPlayerAddYaw(f32 deg);            /* Speen: rotate the player's view
 s32 chraiLuaPlayerSlip(f32 push, f32 pitchdeg); /* Banana peel: squat + forward shove (+ optional pitch snap) */
 f32 chraiLuaPlayerPitchGet(void);             /* view pitch in degrees (+up) */
 s32 chraiLuaPlayerPitchSet(f32 deg);          /* set view pitch (clamped +/-90) */
+s32 chraiLuaPlayerPush(f32 mag);              /* shove along facing (+fwd/-back, knockback-style) */
+s32 chraiLuaOneBullet(s32 on);                /* One Bullet Mags (equip-baked clip=1) */
+s32 chraiLuaInvertLook(s32 on);               /* flip vertical look (mouse/gyro/rstick) */
+s32 chraiLuaInputDelay(s32 frames);           /* Stadia Mode: pad reads N frames late (0=off) */
+s32 chraiLuaUwuify(s32 on);                   /* uwuify every langGet string */
+s32 chraiLuaPigLatin(s32 on);                 /* pig-latin every langGet string (shared mode) */
+s32 chraiLuaForcedMarch(s32 on);              /* movement stick pinned full forward */
 s32 chraiLuaBeyblade(s32 on);                 /* Bayblade!: spin every NPC's model yaw */
 s32 chraiLuaDoubleVision(s32 on);             /* One too many: 180-flipped ghost blended over the frame */
 s32 chraiLuaGunLock(s32 on);                  /* Cyclone Frenzy: force secondary + hold fire + no weapon switch */

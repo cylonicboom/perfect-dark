@@ -403,13 +403,15 @@ static int l_pd_draw_text(lua_State *L)
 	return 0;
 }
 
-/* pd.hud_message(text, [type]): big centred HUD banner, same path the engine
- * uses for "Objective Complete" (default type = HUDMSGTYPE_OBJECTIVECOMPLETE).
- * No-op when there's no live local player (title / menus). */
+/* pd.hud_message(text, [type]): HUD message. Default type is now
+ * HUDMSGTYPE_DEFAULT — the standard BOTTOM line (pickup style) — so chaos
+ * chatter stays out of the middle of the screen; pass an explicit type
+ * (1 = objective complete, 2 = objective failed) for the big centred banner
+ * (the fake-objective effects). No-op when there's no live local player. */
 static int l_pd_hud_message(lua_State *L)
 {
 	const char *text = luaL_checkstring(L, 1);
-	s32 type = (s32)luaL_optinteger(L, 2, HUDMSGTYPE_OBJECTIVECOMPLETE);
+	s32 type = (s32)luaL_optinteger(L, 2, HUDMSGTYPE_DEFAULT);
 	hudmsgCreateLua((char *)text, type);
 	return 0;
 }
@@ -2076,6 +2078,59 @@ static int l_pd_player_slip(lua_State *L)
 	return 1;
 }
 
+/* pd.player_push(mag) -> bool. Shove the player along their facing (positive
+ * forward, negative backward) — knockback-style, collision-respecting. */
+static int l_pd_player_push(lua_State *L)
+{
+	f32 mag = (f32)luaL_checknumber(L, 1);
+	lua_pushboolean(L, chraiLuaPlayerPush(mag) != 0);
+	return 1;
+}
+
+/* pd.one_bullet(on) -> bool. One Bullet Mags: clip capacity 1 (equip-baked). */
+static int l_pd_one_bullet(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaOneBullet(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.invert_look(on) -> bool. Flip vertical look (mouse/gyro/right stick). */
+static int l_pd_invert_look(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaInvertLook(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.input_delay(frames) -> bool. Stadia Mode: pad reads served N frames
+ * late; 0 = off. Mouse look stays live. */
+static int l_pd_input_delay(lua_State *L)
+{
+	s32 frames = (s32)luaL_optinteger(L, 1, 0);
+	lua_pushboolean(L, chraiLuaInputDelay(frames) != 0);
+	return 1;
+}
+
+/* pd.uwuify(on) -> bool. Evewy stwing in the game, uwuified. */
+static int l_pd_uwuify(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaUwuify(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.piglatin(on) -> bool. Everyway ingstray, igpay atinlay. */
+static int l_pd_piglatin(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPigLatin(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.forced_march(on) -> bool. Movement stick pinned full forward. */
+static int l_pd_forced_march(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaForcedMarch(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.player_pitch([deg]) -> deg | bool. No arg: current view pitch (+up).
  * With arg: set it (clamped +/-90). */
 static int l_pd_player_pitch(lua_State *L)
@@ -2682,6 +2737,13 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_add_yaw); lua_setfield(L, -2, "player_add_yaw");
 	lua_pushcfunction(L, l_pd_player_slip);   lua_setfield(L, -2, "player_slip");
 	lua_pushcfunction(L, l_pd_player_pitch);  lua_setfield(L, -2, "player_pitch");
+	lua_pushcfunction(L, l_pd_player_push);   lua_setfield(L, -2, "player_push");
+	lua_pushcfunction(L, l_pd_one_bullet);    lua_setfield(L, -2, "one_bullet");
+	lua_pushcfunction(L, l_pd_invert_look);   lua_setfield(L, -2, "invert_look");
+	lua_pushcfunction(L, l_pd_input_delay);   lua_setfield(L, -2, "input_delay");
+	lua_pushcfunction(L, l_pd_uwuify);        lua_setfield(L, -2, "uwuify");
+	lua_pushcfunction(L, l_pd_piglatin);      lua_setfield(L, -2, "piglatin");
+	lua_pushcfunction(L, l_pd_forced_march);  lua_setfield(L, -2, "forced_march");
 	lua_pushcfunction(L, l_pd_beyblade);      lua_setfield(L, -2, "beyblade");
 	lua_pushcfunction(L, l_pd_double_vision); lua_setfield(L, -2, "double_vision");
 	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");
@@ -3105,7 +3167,9 @@ Gfx *luaHudRender(Gfx *gdl)
 				gdl = luaDrawImage(gdl, o->texnum, o->x, o->y, o->w, o->h, o->angle, o->color);
 			} else {
 				s32 tx = o->x, ty = o->y;
-				gdl = textRenderProjected(gdl, &tx, &ty, o->text,
+				// langChaosTransform: chaos UwUify covers the Lua overlay
+				// text too (no-op when the mode is off)
+				gdl = textRenderProjected(gdl, &tx, &ty, langChaosTransform(o->text),
 						g_CharsHandelGothicXs, g_FontHandelGothicXs, (s32)o->color,
 						viGetWidth(), viGetHeight(), 0, 0);
 			}

@@ -721,6 +721,8 @@ enum {
 	MPOPTLABEL_CONFIGSIMS,
 	// Soundtrack
 	MPOPTLABEL_RANDMUSIC,
+	// Appended (label indices are append-only — menu items reference them):
+	MPOPTLABEL_REMOVEHANDS, // Classic Options: Remove Hands
 };
 
 // Both columns end with '\n' — the menu text renderer treats it as the
@@ -753,6 +755,7 @@ static const char *const g_MpOptLabels[][2] = {
 	{ "Modify Simulants\n",             "Modify Sims\n"    },
 	{ "Configure Simulants\n",          "Config Sims\n"    },
 	{ "Randomise Menu Music\n",         "Random Music\n"   },
+	{ "Remove Hands\n",                 "Remove Hands\n"   },
 };
 
 char *mpMenuTextOptLabel(struct menuitem *item)
@@ -8186,6 +8189,14 @@ struct menuitem g_MpClassicOptionsMenuItems[] = {
 		MENUITEMFLAG_LOCKABLEMINOR,
 		(uintptr_t)&mpMenuTextOptLabel,
 		MPOPTION_CLASSIC_NOBLUR >> 32,
+		menuhandlerMpCheckboxPortOption,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		MPOPTLABEL_REMOVEHANDS,
+		MENUITEMFLAG_LOCKABLEMINOR,
+		(uintptr_t)&mpMenuTextOptLabel,
+		MPOPTION_CLASSIC_REMOVEHANDS >> 32,
 		menuhandlerMpCheckboxPortOption,
 	},
 	{ MENUITEMTYPE_END },

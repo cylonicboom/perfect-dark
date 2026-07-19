@@ -148,13 +148,13 @@ local function force_switch(w)
   st.switch_want = { weapon = w, ticks = 120 }
 end
 
--- Ringtones: prefer a random ring1..ring5 (wav or mp3) from
+-- Ringtones: prefer a random ring1..ring6 (wav or mp3) from
 -- scripts/sounds/chaos/, falling back to the original ring.wav/mp3. Drop
 -- however many ringN files you like in the folder — missing slots just skip.
 local function play_ring(loop)
-  local first = math.random(5)
-  for k = 0, 4 do
-    local i = (first + k - 1) % 5 + 1
+  local first = math.random(6)
+  for k = 0, 5 do
+    local i = (first + k - 1) % 6 + 1
     if pd.play_file("scripts/sounds/chaos/ring" .. i .. ".wav", loop)
         or pd.play_file("scripts/sounds/chaos/ring" .. i .. ".mp3", loop) then
       return true
@@ -1840,6 +1840,198 @@ local alpha_effects = {
                  end,
                  stop=function() if pd.unpossess then pd.unpossess() end end },
 
+  -- ===== SA-inspired batch (2026-07-19, zolika1351 GTA:SA chaos list) =====
+  -- All held in the ALPHA_ONLY test area until runtime-proven.
+  -- Wrong Way: about face. That's it. That's the effect.
+  wrong_way  = { label="Wrong Way", dur=0, start=function()
+                   if not pd.player_add_yaw then error("needs new exe") end
+                   pd.player_add_yaw(180)
+                 end },
+  -- Combo Time: three random main-pool effects fire AT ONCE.
+  combo_time = { label="Combo Time", dur=0, start=function()
+                   local pool = {}
+                   for n, e in pairs(chaos.effects) do
+                     if not e.alpha and (e.w or 0) > 0 and not st.active[n]
+                         and effect_enabled(n) then
+                       pool[#pool + 1] = n
+                     end
+                   end
+                   for i = 1, math.min(3, #pool) do
+                     chaos.trigger(table.remove(pool, math.random(#pool)), "combo")
+                   end
+                 end },
+  -- No Pausing: the START button is confiscated. (Stomps any concurrent
+  -- button_block mask — the thief and the popups already share that quirk.)
+  no_pausing = { label="No Pausing", dur=1,
+                 start=function()
+                   if not pd.button_block then error("needs new exe") end
+                   pd.button_block(0x1000)
+                   pd.hud_message("CHAOS: pausing is for cowards")
+                 end,
+                 stop=function() pd.button_block(0) end },
+  -- No Shooting Allowed: you shoot, you die (weaponfire hook).
+  no_shooting = { label="No Shooting Allowed", dur=1,
+                 start=function()
+                   pd.hud_message("CHAOS: you shoot, you DIE")
+                 end },
+  -- Pacifist: violence has a price — every shot costs health (weaponfire hook).
+  pacifist   = { label="Pacifist", dur=1,
+                 start=function()
+                   pd.hud_message("CHAOS: violence has a price")
+                 end },
+  -- Slow Bleeding: lose 90% of REMAINING health across the duration —
+  -- proportional decay, floors around 10% of what you started with. Never
+  -- lethal by itself; everything else suddenly is.
+  slow_bleed = { label="Slow Bleeding", dur=1,
+                 start=function() st.a_bleed = {} end,
+                 tick=function(left)
+                   local b = st.a_bleed
+                   if not b then return end
+                   b.total = b.total or left
+                   b.next = b.next or left
+                   if left <= b.next then
+                     b.next = left - 30 -- one step per half second
+                     local steps = b.total / 30
+                     pd.player_set_health(pd.player_health() * (0.1 ^ (1 / steps)))
+                   end
+                 end,
+                 stop=function() st.a_bleed = nil end },
+  -- 1% chance of death: the roll is real.
+  death_chance = { label="1% chance of death", dur=0, start=function()
+                   if math.random(100) == 1 then
+                     pd.hud_message("CHAOS: unlucky.")
+                     pd.player_damage(100)
+                   else
+                     pd.hud_message("CHAOS: ...you live. this time")
+                   end
+                 end },
+  -- SUPERHOT: time moves when you move (binary — standing still toggles the
+  -- slo-mo cheat on, moving releases it).
+  superhot   = { label="SUPERHOT", dur=1,
+                 start=function() st.a_shot = { on = false } end,
+                 tick=function(left)
+                   local s = st.a_shot
+                   if not s then return end
+                   local x, y, z = pd.player_pos(0)
+                   if not x then return end
+                   local moved = s.x and ((x - s.x) ^ 2 + (z - s.z) ^ 2) or 0
+                   s.x, s.z = x, z
+                   local still = moved < 4
+                   if still ~= s.on then
+                     s.on = still
+                     pd.cheat(CHEAT.SLOMO, still)
+                   end
+                 end,
+                 stop=function()
+                   st.a_shot = nil
+                   pd.cheat(CHEAT.SLOMO, false)
+                 end },
+  -- (mitosis removed 2026-07-19 — spawn-at-corpse never worked, retired
+  -- rather than debugged.)
+  -- Fake Lag: random rubber-banding freezes, 0.1-0.3s at a time.
+  fake_lag   = { label="Fake Lag", dur=1,
+                 start=function() st.a_lagt = 0; st.a_lagon = nil end,
+                 tick=function(left)
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   st.a_lagt = (st.a_lagt or 0) - dt
+                   if st.a_lagt <= 0 then
+                     if st.a_lagon then
+                       pd.player_freeze(false); st.a_lagon = nil
+                       st.a_lagt = math.random(30, 120)
+                     else
+                       pd.player_freeze(true); st.a_lagon = true
+                       st.a_lagt = math.random(6, 18)
+                     end
+                   end
+                 end,
+                 stop=function()
+                   st.a_lagt, st.a_lagon = nil
+                   pd.player_freeze(false)
+                 end },
+  -- Note 7: phone call, but the phone is a Note 7. Answering it detonates.
+  note_7     = { label="Note 7", dur=1,
+                 start=function()
+                   st.a_note7 = { had = pd.has_weapon and pd.has_weapon(W.PSYCHOSIS) }
+                   pd.give_weapon(W.PSYCHOSIS); pd.give_ammo(AMMO.PSYCHOSIS, 1)
+                   if pd.weapon_rename then pd.weapon_rename(W.PSYCHOSIS, "Note 7") end
+                   local _ = play_ring(true)
+                   pd.hud_message("CHAOS: incoming call! equip the phone to answer")
+                 end,
+                 tick=function(left)
+                   local p = st.a_note7
+                   if p and pd.weapon_held() == W.PSYCHOSIS then
+                     if pd.stop_file then pd.stop_file() end
+                     pd.hud_message("CHAOS: hello? ...oh no. it's a Note 7")
+                     local x, y, z = pd.player_pos(0)
+                     if x and pd.explosion_at then pd.explosion_at(x, y, z) end
+                     return true
+                   end
+                   if left % 90 == 0 then
+                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end
+                   end
+                 end,
+                 stop=function()
+                   if pd.stop_file then pd.stop_file() end
+                   if pd.weapon_rename then pd.weapon_rename(W.PSYCHOSIS) end
+                   if st.a_note7 and not st.a_note7.had then pd.take_weapon(W.PSYCHOSIS) end
+                   st.a_note7 = nil
+                 end },
+  -- One Bullet Mags: reload after every shot. (The C binding re-bakes the
+  -- held gun's clip immediately — excess loaded rounds go back to reserve.)
+  one_bullet_mags = { label="One Bullet Mags", dur=1,
+                 start=function()
+                   if not pd.one_bullet then error("needs new exe") end
+                   pd.one_bullet(true)
+                 end,
+                 stop=function() pd.one_bullet(false) end },
+  -- Heavy Recoil: every shot launches you backward (weaponfire hook).
+  heavy_recoil = { label="Heavy Recoil", dur=1,
+                 start=function()
+                   if not pd.player_push then error("needs new exe") end
+                   pd.hud_message("CHAOS: mind the kick")
+                 end },
+  -- Inverted Look: up is down (mouse, gyro and right stick).
+  invert_look = { label="Inverted Look", dur=1,
+                 start=function()
+                   if not pd.invert_look then error("needs new exe") end
+                   pd.invert_look(true)
+                 end,
+                 stop=function() pd.invert_look(false) end },
+  -- Stadia Mode: your inputs arrive half a second late. Mouse look stays
+  -- live (honest limit) — buttons, keys and sticks all lag.
+  stadia_mode = { label="Stadia Mode", dur=1,
+                 start=function()
+                   if not pd.input_delay then error("needs new exe") end
+                   pd.input_delay(30)
+                   pd.hud_message("CHAOS: streaming from a data centre near you")
+                 end,
+                 stop=function() pd.input_delay(0) end },
+  -- UwUify: evewy stwing in the game. Evewy singwe one.
+  uwuify     = { label="UwUify", dur=1,
+                 start=function()
+                   if not pd.uwuify then error("needs new exe") end
+                   pd.uwuify(true)
+                   pd.hud_message("CHAOS: what have you bwought upon this cuwsed wand")
+                 end,
+                 stop=function() pd.uwuify(false) end },
+  -- Pig Latin: everyway ingstray, igpay atinlay. Same pipeline as UwUify
+  -- (menus, briefings, HUD messages, chaos popups).
+  piglatin   = { label="Pig Latin", dur=1,
+                 start=function()
+                   if not pd.piglatin then error("needs new exe") end
+                   pd.piglatin(true)
+                   pd.hud_message("CHAOS: eway eakspay igpay atinlay ownay")
+                 end,
+                 stop=function() pd.piglatin(false) end },
+  -- Forced March: ONWARD. You may not stop walking.
+  forced_march = { label="Forced March", dur=1,
+                 start=function()
+                   if not pd.forced_march then error("needs new exe") end
+                   pd.forced_march(true)
+                   pd.hud_message("CHAOS: ONWARD")
+                 end,
+                 stop=function() pd.forced_march(false) end },
+
   -- Dokkaebi: your phone rings LOUDLY, alerting every guard on repeat. A
   -- "phone" (a unique item) appears in your inventory — EQUIP it to answer
   -- and end the call. (Uses the Psychosis Gun slot as the stand-in handset.)
@@ -1877,13 +2069,18 @@ local alpha_effects = {
                  end },
 }
 
--- 2026-07-19: the alpha batch GRADUATED — every effect here joins the main
+-- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
 -- rotation / vote slate / ON-off list at a standard draw weight (each keeps
--- its tuned duration). image_test stays alpha-only: it's the image-hook
--- validator, not a real effect (fires only from the Chaos Alpha folder or
--- /chaos trigger).
+-- its tuned duration) UNLESS held back below. ALPHA_ONLY = the TEST AREA:
+-- listed effects live only in the Chaos Alpha folder + /chaos trigger, never
+-- the random rotation. Delete a name to graduate it.
+local ALPHA_ONLY = {
+  image_test=1, -- the image-hook validator, not a real effect
+  -- (SA-inspired batch graduated to the main pool 2026-07-19 after testing;
+  -- mitosis removed outright — spawn-at-corpse never worked.)
+}
 for name, e in pairs(alpha_effects) do
-  if name == "image_test" then
+  if ALPHA_ONLY[name] then
     e.alpha = true
     e.w = 0 -- never randomly drawn (pick_random skips alpha anyway)
   else
@@ -1942,6 +2139,9 @@ local function reset_all_modes()
   st.switch_want = nil
   st.martyr_queue = nil
   st.pitch_anim = nil
+  st.recoil_kick = nil
+  st.a_bleed, st.a_shot, st.a_note7 = nil
+  st.a_lagt, st.a_lagon = nil
   -- Visual modes + ammo swap + input locks etc. — explicit reset (C globals).
   if pd.flattex then pd.flattex(0) end
   if pd.grayscale then pd.grayscale(false) end
@@ -2000,6 +2200,12 @@ local function reset_all_modes()
   st.a_quiz, st.a_eula, st.a_quad = nil
   if pd.beyblade then pd.beyblade(false) end
   if pd.screen_roll then pd.screen_roll(0) end
+  -- SA batch C globals
+  if pd.one_bullet then pd.one_bullet(false) end
+  if pd.invert_look then pd.invert_look(false) end
+  if pd.input_delay then pd.input_delay(0) end
+  if pd.uwuify then pd.uwuify(false) end -- zeroes the shared text mode (covers piglatin)
+  if pd.forced_march then pd.forced_march(false) end
   st.home_marked = false -- re-mark the start point on the next stage entered
   -- Batch-2 C globals (new-exe bindings; guarded so old exes still run).
   if pd.force_secondary then pd.force_secondary(false) end
@@ -2258,6 +2464,19 @@ pd.on("tick", function()
     st.martyr_queue = nil
   end
 
+  -- Heavy Recoil: apply the deferred kick queued by the weaponfire hook —
+  -- one frame after the shot, so the projectile is created and gone before
+  -- the shooter gets launched. One kick per frame regardless of barrels.
+  if st.recoil_kick then
+    st.recoil_kick = nil
+    if st.active.heavy_recoil and pd.player_push then
+      pd.player_push(-22)
+      if pd.player_pitch then
+        pd.player_pitch(math.min(90, pd.player_pitch() + 10))
+      end
+    end
+  end
+
   -- Self-destruct grace: hold invincibility ~1s past the last explosion so a
   -- blast still expanding on the exact frame the effect wears off can't kill you.
   if st.sd_invuln then
@@ -2380,6 +2599,25 @@ pd.on("weaponfire", function(weaponnum, playernum)
   if st.active.captcha and st.a_cap and st.a_cap.task
       and st.a_cap.task.kind == "fire" and playernum == 0 then
     st.a_cap.task.shots = (st.a_cap.task.shots or 0) + 1
+  end
+  -- SA batch: No Shooting Allowed (instant death), Pacifist (a health tax),
+  -- Heavy Recoil (every shot launches you backward). weaponnum > 1 skips
+  -- fists/knife, the glass-cannon convention.
+  if playernum == 0 and weaponnum and weaponnum > 1 then
+    if st.active.no_shooting then
+      pd.hud_message("CHAOS: told you.")
+      pd.player_damage(100)
+    end
+    if st.active.pacifist then
+      pd.player_damage(0.4)
+    end
+    if st.active.heavy_recoil then
+      -- FLAG only — the kick applies from the MAIN tick, one frame later,
+      -- so the bullet/projectile is fully created and on its way before the
+      -- push/pitch move the shooter (kicking inside the fire event could
+      -- deflect the very shot being fired)
+      st.recoil_kick = true
+    end
   end
   -- Russian roulette: the trigger pull IS the spin. Resolve immediately.
   if st.active.russian_roulette and st.a_rr and not st.a_rr.fired
@@ -2728,10 +2966,12 @@ if pd.menu_add then
       blood_rainbow=1, brandons_mod=1, teen_angst=1, wireframe_enemies=1,
       fake_objective=1, fake_objective_fail=1, hurricane2=1,
       bayblade=1, speen=1, barrel_roll=1, banana_peel=1,
+      uwuify=1, piglatin=1,
     } },
     { title = "Test: Cheats", set = {
       fists=1, slomo=1, dkmode=1, smalljo=1, smallchars=1, goldeneye=1,
       cloak=1, xray=1, nightvision=1, marquis=1, godmode=1, one_punch=1,
+      superhot=1,
     } },
     { title = "Test: Helpful", set = {
       arsenal=1, ammo_rain=1, heal=1, shields_up=1, cavalry=1, buddy=1,
@@ -2753,6 +2993,8 @@ if pd.menu_add then
       countdown=1, skedar_reaper=1, terminator=1, gun_jam2=1, enemy_ltk=1,
       speed=1, nitroglycerin=1, inflated_bullets=1, button_thief=1,
       helicopter=1, interceptor=1,
+      no_shooting=1, pacifist=1, slow_bleed=1, death_chance=1, note_7=1,
+      heavy_recoil=1,
     } },
   }
   local CATCHALL = "Test: Weapons & World"

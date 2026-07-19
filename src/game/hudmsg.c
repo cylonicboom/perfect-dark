@@ -26,6 +26,7 @@
 #include "string.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "game/lang.h" /* langChaosTransform (chaos UwUify) */
 #endif
 
 u32 g_NextHudMessageId;
@@ -1116,6 +1117,14 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 			xmarginaextra = 0;
 			msg = &g_HudMessages[index];
 			wrapwidth = hudmsg0f0ddb1c(&xmarginaextra, conf16);
+#ifndef PLATFORM_N64
+			// Chaos UwUify: HUD text is COPIED into the slot here, so the
+			// langGet-side transform never reaches messages created from
+			// non-langGet strings (chaos's own Lua text) or pre-formatted
+			// buffers. Transform at the choke instead (no-op when off,
+			// idempotent on already-transformed text).
+			text = langChaosTransform(text);
+#endif
 			textMeasure(&textheight, &textwidth, text, *conf04, *conf08, 0);
 
 #if VERSION >= VERSION_JPN_FINAL

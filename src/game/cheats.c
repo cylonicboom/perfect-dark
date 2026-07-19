@@ -133,6 +133,7 @@ struct cheat g_Cheats[] = {
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Dual Wield (CHEAT_CLASSIC_NODUALWIELD)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Damage Invulnerability (CHEAT_CLASSIC_IFRAMES)
 	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // No Blur Effects (CHEAT_CLASSIC_NOBLUR)
+	{ 0,               0,                 0,                             0,       CHEATFLAG_ALWAYSUNLOCKED                     }, // Remove Hands (CHEAT_CLASSIC_REMOVEHANDS)
 #endif
 };
 
@@ -156,6 +157,7 @@ static const char *const s_cheat_literal_names[] = {
 	[CHEAT_CLASSIC_NODUALWIELD] = "No Dual Wield",
 	[CHEAT_CLASSIC_IFRAMES]     = "Damage Invulnerability",
 	[CHEAT_CLASSIC_NOBLUR]      = "No Blur Effects",
+	[CHEAT_CLASSIC_REMOVEHANDS] = "Remove Hands",
 };
 
 // The port-only "Experiments" cheats (Extended Options > Experiments and its
@@ -171,7 +173,7 @@ static const char *const s_cheat_literal_names[] = {
 // stay clear.
 static bool cheatIsExperiment(s32 cheat_id)
 {
-	return cheat_id >= CHEAT_GOLDENEYE && cheat_id <= CHEAT_CLASSIC_NOBLUR;
+	return cheat_id >= CHEAT_GOLDENEYE && cheat_id <= CHEAT_CLASSIC_REMOVEHANDS;
 }
 
 /**
@@ -411,10 +413,10 @@ void cheatsReset(void)
 #ifndef PLATFORM_N64
 		// Keep the Experiments cheats out of the active bank so they never
 		// count as cheats (cheatIsActive reads their enabled bits directly).
-		// They are CHEAT_GOLDENEYE..CHEAT_CLASSIC_NOBLUR, all in bank 1.
+		// They are CHEAT_GOLDENEYE..CHEAT_CLASSIC_REMOVEHANDS, all in bank 1.
 		{
 			s32 expcheat;
-			for (expcheat = CHEAT_GOLDENEYE; expcheat <= CHEAT_CLASSIC_NOBLUR; expcheat++) {
+			for (expcheat = CHEAT_GOLDENEYE; expcheat <= CHEAT_CLASSIC_REMOVEHANDS; expcheat++) {
 				g_CheatsActiveBank1 &= ~(1 << (expcheat - 32));
 			}
 		}

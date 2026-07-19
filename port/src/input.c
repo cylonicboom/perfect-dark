@@ -1002,6 +1002,56 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzoneCfg, const f32 scale)
 	}
 }
 
+// Chaos "Inverted Look" (pd.invert_look): flip vertical look — the mouse/gyro
+// dy in inputMouseGetScaledDelta plus the pad right stick below.
+static s32 chaosInvertLook = 0;
+
+void inputSetChaosInvertLook(s32 on)
+{
+	chaosInvertLook = on ? 1 : 0;
+}
+
+// Chaos "Stadia Mode" (pd.input_delay): buffer each pad's state and return it
+// N frames late. A zeroed OSContPad is neutral, so the first N frames replay
+// stillness. Mouse and gyro LOOK deltas are delayed too — but at their
+// per-frame SOURCE (inputUpdateMouse / inputUpdateGyro), because the
+// downstream getter runs more than once per frame and can't ring safely.
+#define CHAOS_DELAY_RING 64
+static s32 chaosInputDelay = 0; // frames, 0 = off
+static OSContPad chaosDelayRing[INPUT_MAX_CONTROLLERS][CHAOS_DELAY_RING];
+static u32 chaosDelayHead[INPUT_MAX_CONTROLLERS];
+static s32 chaosMouseRingX[CHAOS_DELAY_RING], chaosMouseRingY[CHAOS_DELAY_RING];
+static u32 chaosMouseHead;
+static f32 chaosGyroRingX[CHAOS_DELAY_RING], chaosGyroRingY[CHAOS_DELAY_RING];
+static u32 chaosGyroHead;
+
+void inputSetChaosInputDelay(s32 frames)
+{
+	if (frames < 0) {
+		frames = 0;
+	} else if (frames > CHAOS_DELAY_RING - 1) {
+		frames = CHAOS_DELAY_RING - 1;
+	}
+	if (frames && !chaosInputDelay) {
+		memset(chaosDelayRing, 0, sizeof(chaosDelayRing));
+		memset(chaosMouseRingX, 0, sizeof(chaosMouseRingX));
+		memset(chaosMouseRingY, 0, sizeof(chaosMouseRingY));
+		memset(chaosGyroRingX, 0, sizeof(chaosGyroRingX));
+		memset(chaosGyroRingY, 0, sizeof(chaosGyroRingY));
+	}
+	chaosInputDelay = frames;
+}
+
+static void inputChaosDelayApply(s32 idx, OSContPad *npad)
+{
+	if (chaosInputDelay <= 0) {
+		return;
+	}
+	chaosDelayRing[idx][chaosDelayHead[idx] % CHAOS_DELAY_RING] = *npad;
+	*npad = chaosDelayRing[idx][(chaosDelayHead[idx] + CHAOS_DELAY_RING - (u32)chaosInputDelay) % CHAOS_DELAY_RING];
+	chaosDelayHead[idx]++;
+}
+
 s32 inputReadController(s32 idx, OSContPad *npad)
 {
 	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS  || !npad) {
@@ -1054,6 +1104,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 	}
 
 	if (!pads[idx]) {
+		inputChaosDelayApply(idx, npad);
 		return 0;
 	}
 
@@ -1095,6 +1146,13 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		}
 	}
 
+	// Chaos "Inverted Look": flip the pad's vertical look stick (the mouse dy
+	// flips in inputMouseGetScaledDelta).
+	if (chaosInvertLook && npad->rstick_y) {
+		npad->rstick_y = (npad->rstick_y == -128) ? 127 : -npad->rstick_y;
+	}
+
+	inputChaosDelayApply(idx, npad);
 	return 0;
 }
 
@@ -1140,6 +1198,18 @@ static inline void inputUpdateMouse(void)
 	} else {
 		mouseDX = mx - mouseX;
 		mouseDY = my - mouseY;
+	}
+
+	// Chaos "Stadia Mode": run the per-frame look deltas through the same
+	// delay as the pad ring. Buffered HERE (once per frame) because the
+	// downstream getter runs several times per frame. Only while mouseLocked
+	// (in-game look) — the menu cursor stays live.
+	if (chaosInputDelay > 0 && mouseLocked) {
+		chaosMouseRingX[chaosMouseHead % CHAOS_DELAY_RING] = mouseDX;
+		chaosMouseRingY[chaosMouseHead % CHAOS_DELAY_RING] = mouseDY;
+		mouseDX = chaosMouseRingX[(chaosMouseHead + CHAOS_DELAY_RING - (u32)chaosInputDelay) % CHAOS_DELAY_RING];
+		mouseDY = chaosMouseRingY[(chaosMouseHead + CHAOS_DELAY_RING - (u32)chaosInputDelay) % CHAOS_DELAY_RING];
+		chaosMouseHead++;
 	}
 
 	mouseX = mx;
@@ -1212,6 +1282,16 @@ static inline void inputUpdateGyro(void)
 	gyroDY = -gyroAccX * GYRO_UNIT_SCALE * gyroSensY;
 	gyroAccX = 0.f;
 	gyroAccY = 0.f;
+
+	// Chaos "Stadia Mode": gyro look lags with everything else (see the
+	// mouse ring in inputUpdateMouse).
+	if (chaosInputDelay > 0) {
+		chaosGyroRingX[chaosGyroHead % CHAOS_DELAY_RING] = gyroDX;
+		chaosGyroRingY[chaosGyroHead % CHAOS_DELAY_RING] = gyroDY;
+		gyroDX = chaosGyroRingX[(chaosGyroHead + CHAOS_DELAY_RING - (u32)chaosInputDelay) % CHAOS_DELAY_RING];
+		gyroDY = chaosGyroRingY[(chaosGyroHead + CHAOS_DELAY_RING - (u32)chaosInputDelay) % CHAOS_DELAY_RING];
+		chaosGyroHead++;
+	}
 }
 
 void inputUpdate(void)
@@ -1599,6 +1679,11 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 		if (mouseLocked && gyroAimEnabled) {
 				mdx += gyroDX;
 				mdy += gyroDY;
+		}
+		// Chaos "Inverted Look": flip the combined vertical look delta
+		// (mouse + gyro; the pad right stick flips in inputReadController).
+		if (chaosInvertLook) {
+				mdy = -mdy;
 		}
 		if (dx) *dx = mdx;
 		if (dy) *dy = mdy;

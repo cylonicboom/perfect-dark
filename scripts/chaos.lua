@@ -848,7 +848,7 @@ chaos.effects = {
                          "your K/D is a social construct",
                          "remember to stretch",
                        }
-                       pd.hud_message(lines[math.random(#lines)])
+                       pd.hud_message(lines[math.random(#lines)], 1) -- centred, objective-pop style
                      end
                    end },
   assert_authority = { label="Assert Authority", w=3, dur=20,
@@ -1534,7 +1534,7 @@ local alpha_effects = {
                        "rain on the window. respawn screen of the soul",
                      }
                      st.a_angst = (st.a_angst or 0) % #lines + 1
-                     pd.hud_message(lines[st.a_angst])
+                     pd.hud_message(lines[st.a_angst], 1) -- centred, objective-pop style
                    end
                  end,
                  stop=function() st.a_angst = nil end },

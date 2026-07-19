@@ -480,7 +480,23 @@ static int l_pd_hud_message(lua_State *L)
 {
 	const char *text = luaL_checkstring(L, 1);
 	s32 type = (s32)luaL_optinteger(L, 2, HUDMSGTYPE_DEFAULT);
-	hudmsgCreateLua((char *)text, type);
+	char buf[256];
+	size_t n = strlen(text);
+
+	// The hudmsg text MUST end with '\n': textMeasure only advances the height
+	// on a newline, so a message without one measures height 0 and its box
+	// collapses to a sliver under the text (and centred types mis-position).
+	// The engine's own messages are all '\n'-terminated; Lua strings aren't.
+	if (n > sizeof(buf) - 2) {
+		n = sizeof(buf) - 2;
+	}
+	memcpy(buf, text, n);
+	if (n == 0 || buf[n - 1] != '\n') {
+		buf[n++] = '\n';
+	}
+	buf[n] = '\0';
+
+	hudmsgCreateLua(buf, type);
 	return 0;
 }
 

@@ -228,6 +228,25 @@ s32 g_ChaosBackfire = 0;
 // rest of the magazine (reload to clear). See the HANDSTATE_ATTACKEMPTY
 // reroute in bgunTickInc + the drain at the clip-decrement site.
 s32 g_ChaosWeaponJam = 0;
+
+// Only bullet-firing GUNS jam. Unarmed, the combat knife, and thrown/planted
+// weapons (grenades, N-bomb, mines) have no dry-fire click to route to.
+static bool bgunWeaponIsJammable(s32 weaponnum)
+{
+	switch (weaponnum) {
+	case WEAPON_NONE:
+	case WEAPON_UNARMED:
+	case WEAPON_COMBATKNIFE:
+	case WEAPON_GRENADE:
+	case WEAPON_NBOMB:
+	case WEAPON_TIMEDMINE:
+	case WEAPON_PROXIMITYMINE:
+	case WEAPON_REMOTEMINE:
+	case WEAPON_ECMMINE:
+		return false;
+	}
+	return true;
+}
 // Chaos "Inflated bullets" (pd.ammo_cost): each shot spends this many rounds
 // from the clip (1 = normal); topped up at the same decrement site.
 s32 g_ChaosAmmoCost = 1;
@@ -1533,7 +1552,7 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 			if ((g_ChaosWeaponJam == 1
 					|| (g_ChaosWeaponJam == 2 && (rngRandom() % 100) < 35))
 					&& !g_Vars.currentplayer->isremote
-					&& hand->triggeron && info->weaponnum != WEAPON_NONE) {
+					&& hand->triggeron && bgunWeaponIsJammable(info->weaponnum)) {
 				hand->unk0cc8_01 = false;
 
 				if (bgunSetState(handnum, HANDSTATE_ATTACKEMPTY)) {
@@ -2195,7 +2214,7 @@ void bgun0f09a6f8(struct handweaponinfo *info, s32 handnum, struct hand *hand, s
 					hand->loadedammo[func->ammoindex] -=
 							hand->shotstotake * (g_ChaosAmmoCost - 1);
 				}
-				if (g_ChaosWeaponJam == 2) {
+				if (g_ChaosWeaponJam == 2 && bgunWeaponIsJammable(hand->gset.weaponnum)) {
 					hand->loadedammo[func->ammoindex] = 0;
 				}
 				if (hand->loadedammo[func->ammoindex] < 0) {

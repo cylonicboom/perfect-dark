@@ -11,7 +11,13 @@
  *   vec2  uGrid    pixelation grid (e.g. 160x120); x <= 0 = no snap
  *   float uLevels  greyscale level count for uMode 1
  *   int   uMode    0 keep colours, 1 grey-N, 2 RGB332, 3 invert,
- *                  4 Game Boy DMG greens, 5 thermal palette
+ *                  4 Game Boy DMG greens, 5 thermal palette,
+ *                  6 Virtual Boy reds (4 shades, black -> bright red),
+ *                  7 hue rotate (animated by uTime — the whole frame's hue
+ *                  cycles continuously, luminance preserved: "Rainbow World")
+ *                  8 hue field (like 7, but the rotation RATE + DIRECTION vary
+ *                  as a smooth screen-space field — regions cycle at different
+ *                  speeds and some run backwards: "Prismatic")
  *   int   uFx      bitmask: 1 scanlines, 2 RGB aperture grille, 4 CRT
  *                  curvature, 8 vignette, 16 VHS, 32 underwater wobble,
  *                  64 rotate 180 (Chaos "Australia mode" — flips the whole
@@ -24,6 +30,11 @@
  *                  270 are NOT orientation-symmetric (GL bottom-up vs SDL_GPU
  *                  top-down swaps them), but "One too many" sets BOTH, and the
  *                  set {90,270} is symmetric, so the result matches on both.
+ *                  1024 = side-by-side eyes (Chaos "Virtual Boy"): the frame
+ *                  is duplicated into two half-width panels at the ORIGINAL
+ *                  aspect ratio — each eye is the whole scene uniformly
+ *                  scaled to 50%, letterboxed with black above and below
+ *                  (image occupies the middle half of the screen height).
  *   float uWarp    fisheye lens strength (0 = off; CRT adds its own +0.12)
  *   float uAspect  framebuffer w/h (for circular radial warp)
  *   float uTime    seconds, for the animated effects (VHS jitter, wobble)
@@ -39,6 +50,13 @@
     "void main() {\n" \
     "    vec2 uv = vUV;\n" \
     "    if ((uFx & 64) != 0) { uv = vec2(1.0) - uv; }\n" \
+    "    if ((uFx & 1024) != 0) {\n" \
+    "        if (uv.y < 0.25 || uv.y > 0.75) {\n" \
+    "            oCol = vec4(0.0, 0.0, 0.0, 1.0);\n" \
+    "            return;\n" \
+    "        }\n" \
+    "        uv = vec2(fract(uv.x * 2.0), (uv.y - 0.25) * 2.0);\n" \
+    "    }\n" \
     "    float k = uWarp + (((uFx & 4) != 0) ? 0.12 : 0.0);\n" \
     "    if (k != 0.0) {\n" \
     "        vec2 d = uv - 0.5;\n" \
@@ -101,6 +119,26 @@
     "        c = q4 < 1.0 ? vec3(0.06, 0.22, 0.06)\n" \
     "          : (q4 < 2.0 ? vec3(0.19, 0.38, 0.19)\n" \
     "          : (q4 < 3.0 ? vec3(0.55, 0.67, 0.06) : vec3(0.61, 0.74, 0.06)));\n" \
+    "    } else if (uMode == 6) {\n" \
+    "        float l = dot(c, vec3(0.299, 0.587, 0.114));\n" \
+    "        float q4 = floor(min(l, 0.9999) * 4.0);\n" \
+    "        c = q4 < 1.0 ? vec3(0.0, 0.0, 0.0)\n" \
+    "          : (q4 < 2.0 ? vec3(0.35, 0.0, 0.0)\n" \
+    "          : (q4 < 3.0 ? vec3(0.72, 0.0, 0.0) : vec3(1.0, 0.06, 0.06)));\n" \
+    "    } else if (uMode == 7) {\n" \
+    "        float a = uTime * 1.7;\n" \
+    "        vec3 kk = vec3(0.5773502692);\n" \
+    "        float ca = cos(a);\n" \
+    "        c = c * ca + cross(kk, c) * sin(a) + kk * dot(kk, c) * (1.0 - ca);\n" \
+    "        c = clamp(c, 0.0, 1.0);\n" \
+    "    } else if (uMode == 8) {\n" \
+    "        vec2 pp = gl_FragCoord.xy * 0.008;\n" \
+    "        float f = sin(pp.x) + sin(pp.y * 1.3 + 1.7) + sin((pp.x + pp.y) * 0.6 + 0.5);\n" \
+    "        float a = uTime * (0.9 * f);\n" \
+    "        vec3 kk = vec3(0.5773502692);\n" \
+    "        float ca = cos(a);\n" \
+    "        c = c * ca + cross(kk, c) * sin(a) + kk * dot(kk, c) * (1.0 - ca);\n" \
+    "        c = clamp(c, 0.0, 1.0);\n" \
     "    } else if (uMode == 5) {\n" \
     "        float l = dot(c, vec3(0.299, 0.587, 0.114));\n" \
     "        if (l < 0.25) c = mix(vec3(0.0, 0.0, 0.25), vec3(0.3, 0.0, 0.65), l * 4.0);\n" \

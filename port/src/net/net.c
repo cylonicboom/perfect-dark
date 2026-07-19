@@ -7583,7 +7583,9 @@ Gfx *netGrasluRender(Gfx *gdl)
 
 Gfx *netRedvox57Render(Gfx *gdl)
 {
-	return netEggRender(gdl, "Redvox57", 0xff000040, 0xff0000a0, 0xff8080ff, g_Redvox57Egg != 0, &g_Redvox57Anim);
+	// Redvox57 colour scheme: teal base (border + text) + purple highlight
+	// sweep (matches MENUDIALOGTYPE_REDVOX57 — teal 0x02ac8a, purple 0x7c02f5).
+	return netEggRender(gdl, "Redvox57", 0x02ac8a40, 0x02ac8aa0, 0x7c02f5ff, g_Redvox57Egg != 0, &g_Redvox57Anim);
 }
 
 // HUD-removed frames (lv.c var80075d60 != 2): drive both banners' fade-out
@@ -7591,7 +7593,7 @@ Gfx *netRedvox57Render(Gfx *gdl)
 Gfx *netCoopEggsRenderHidden(Gfx *gdl)
 {
 	gdl = netEggRender(gdl, "Graslu", 0x00ff0040, 0x00ff00a0, 0x80ff80ff, false, &g_GrasluAnim);
-	gdl = netEggRender(gdl, "Redvox57", 0xff000040, 0xff0000a0, 0xff8080ff, false, &g_Redvox57Anim);
+	gdl = netEggRender(gdl, "Redvox57", 0x02ac8a40, 0x02ac8aa0, 0x7c02f5ff, false, &g_Redvox57Anim);
 	return gdl;
 }
 

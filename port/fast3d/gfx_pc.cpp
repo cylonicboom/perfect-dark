@@ -362,6 +362,15 @@ bool gfx_mirror_mode = false;
 // keep their shapes. Toggling is applied in gfx_start_frame via a texture
 // cache clear, which re-imports everything through gfx_upload_tex_filtered.
 int gfx_flattex_mode = 0;
+// Chaos texture override (pd.tex_override): flat-texture mode 3 — every
+// imported texture's RGB is replaced with this external RGBA8888 image,
+// nearest-scaled to the texture's own dimensions; the texture's per-pixel
+// ALPHA is preserved so cutouts, glyphs and HUD shapes keep their outlines.
+// The buffer is owned by the game side (luaai_api.c pd.tex_override) and
+// stays valid while the mode is active.
+unsigned char *gfx_flattex_image = nullptr;
+int gfx_flattex_image_w = 0;
+int gfx_flattex_image_h = 0;
 // Chaos forced grayscale: drives rdp.grayscale with a neutral colour from
 // gfx_start_frame (the game itself never emits G_SETGRAYSCALE_EXT, so there
 // is no mid-frame contention).
@@ -423,6 +432,19 @@ float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
 float gfx_wireframe_line_width = 1.0f;
+// Chaos "iPod Ad" (silhouette): while on, depth-tested 3D geometry is drawn as
+// a flat fill colour (via the wireframe_color shader stage). gfx_silhouette_color
+// is the CURRENT scope colour (set per prop-class by G_FLATFILL_EXT); it resets
+// to gfx_silhouette_wall_color (the bright wall colour) at each gfx_start_frame
+// so unbracketed geometry (walls/sky) takes the wall colour.
+int gfx_silhouette = 0;
+float gfx_silhouette_wall_color[3] = {0.0f, 0.85f, 0.55f};
+float gfx_silhouette_color[3] = {0.0f, 0.85f, 0.55f};
+// White wireframe edges are drawn only for the WALL scope (level geometry) —
+// characters, objects and weapons (the class brackets) render as clean solid
+// silhouettes with no wireframe. G_FLATFILL_EXT clears this for a class colour
+// and restores it on reset; gfx_start_frame defaults it on (walls).
+int gfx_silhouette_edges = 1;
 bool gfx_external_textures_enabled = false; // data/ext_tex PNG substitution
 
 static bool game_renders_to_framebuffer;
@@ -1055,6 +1077,21 @@ static void gfx_upload_tex_filtered(uint32_t width, uint32_t height, bool gen_mi
             px[0] = fr;
             px[1] = fg;
             px[2] = fb;
+        }
+    } else if (gfx_flattex_mode == 3 && gfx_flattex_image != nullptr &&
+               gfx_flattex_image_w > 0 && gfx_flattex_image_h > 0 && width > 0 && height > 0) {
+        // texture override: stamp the external image over the texel RGB
+        // (nearest-neighbour scale to this texture's dimensions)
+        uint8_t* px = tex_upload_buffer;
+        for (uint32_t y = 0; y < height; y++) {
+            const uint32_t sy = y * (uint32_t)gfx_flattex_image_h / height;
+            const unsigned char* row = gfx_flattex_image + (size_t)sy * gfx_flattex_image_w * 4;
+            for (uint32_t x = 0; x < width; x++, px += 4) {
+                const uint32_t sx = x * (uint32_t)gfx_flattex_image_w / width;
+                px[0] = row[sx * 4 + 0];
+                px[1] = row[sx * 4 + 1];
+                px[2] = row[sx * 4 + 2];
+            }
         }
     }
     gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
@@ -3611,6 +3648,23 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_flush();
                 gfx_wireframe_scope = cmd->words.w1 != 0;
                 break;
+            case G_FLATFILL_EXT:
+                // iPod Ad silhouette: set the flat fill colour scope (a class
+                // bracket — no wireframe edges) or reset to the wall default
+                // (edges on). Flush so it applies at the boundary.
+                gfx_flush();
+                if (cmd->words.w0 & 1) {
+                    gfx_silhouette_color[0] = ((cmd->words.w1 >> 16) & 0xff) / 255.0f;
+                    gfx_silhouette_color[1] = ((cmd->words.w1 >> 8) & 0xff) / 255.0f;
+                    gfx_silhouette_color[2] = (cmd->words.w1 & 0xff) / 255.0f;
+                    gfx_silhouette_edges = 0; // solid silhouette, no wireframe
+                } else {
+                    gfx_silhouette_color[0] = gfx_silhouette_wall_color[0];
+                    gfx_silhouette_color[1] = gfx_silhouette_wall_color[1];
+                    gfx_silhouette_color[2] = gfx_silhouette_wall_color[2];
+                    gfx_silhouette_edges = 1; // walls: white wireframe edges
+                }
+                break;
             case G_SETDAZZLE_EXT:
                 // flush so the boost applies exactly to the draws issued
                 // while the weight is set (glares / overexposure flash)
@@ -3871,6 +3925,12 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 
 extern "C" void gfx_start_frame(void) {
     gfx_wireframe_scope = false; // scoped bracket never survives a frame
+    // iPod Ad: the fill scope resets to the wall colour each frame so
+    // unbracketed geometry (walls/sky) draws bright with wireframe edges on.
+    gfx_silhouette_color[0] = gfx_silhouette_wall_color[0];
+    gfx_silhouette_color[1] = gfx_silhouette_wall_color[1];
+    gfx_silhouette_color[2] = gfx_silhouette_wall_color[2];
+    gfx_silhouette_edges = 1;
 
     // HUDVD: advance + edge-bounce each slot using last frame's measured bbox,
     // then clear per-frame state so nothing leaks past a frame.
@@ -4061,6 +4121,12 @@ extern "C" void gfx_run(Gfx* commands) {
             cmode = 4; // Game Boy DMG greens
         } else if (gfx_retro_colors == 1002) {
             cmode = 5; // thermal palette
+        } else if (gfx_retro_colors == 1003) {
+            cmode = 6; // Virtual Boy reds
+        } else if (gfx_retro_colors == 1004) {
+            cmode = 7; // animated hue rotate (Rainbow World)
+        } else if (gfx_retro_colors == 1005) {
+            cmode = 8; // screen-space multi-rate hue field (Prismatic)
         } else if (gfx_retro_colors >= 256) {
             cmode = 2; // RGB 3-3-2
         } else if (gfx_retro_colors >= 2) {

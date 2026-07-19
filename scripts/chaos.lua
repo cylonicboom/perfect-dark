@@ -682,6 +682,22 @@ chaos.effects = {
   terminal     = { label="Terminal green",    w=4, dur=30,
                    start=function() pd.screen_tint(110, 255, 130) end,
                    stop=function() pd.screen_tint() end },
+  -- Rainbow World: every texture on screen has its hue rotated in lockstep,
+  -- cycling continuously (renderer colour mode 1004 — a luminance-preserving
+  -- hue rotation animated by the shader's clock, so it costs nothing to run
+  -- and needs no per-frame Lua). Whole frame incl. HUD.
+  rainbow_world = { label="Rainbow World",     w=4, dur=25,
+                   start=function() pd.pixelate(0, 0, 1004) end,
+                   stop=function() pd.pixelate() end },
+  -- Prismatic: like Rainbow World, but the hue-cycle RATE and DIRECTION vary
+  -- across the screen (renderer mode 1005) — parts of the view spin their
+  -- colours faster, slower, or backwards, so the whole scene shimmers out of
+  -- sync. (Screen-space field, not literally per-texture — a post-filter
+  -- can't tell one surface from another; colours flow over surfaces as you
+  -- move, which suits the psychedelic look.)
+  prismatic  = { label="Prismatic",           w=4, dur=25,
+                   start=function() pd.pixelate(0, 0, 1005) end,
+                   stop=function() pd.pixelate() end },
   -- retro era pair: pixelate the frame + bitcrush the audio (device rate is
   -- 22kHz, so step 4 ~= 5.5kHz @ 8-bit and step 2 ~= 11kHz @ 10-bit)
   bit8         = { label="8-bit era",         w=3, dur=30,
@@ -2032,6 +2048,217 @@ local alpha_effects = {
                  end,
                  stop=function() pd.forced_march(false) end },
 
+  -- Texture override test: EVERY texture in the game becomes test.png for
+  -- 20 seconds, then everything restores (the renderer re-imports the whole
+  -- texture cache through the override filter both ways). The validator for
+  -- pd.tex_override — alpha-only, like image_test.
+  texture_test = { label="Texture test", fixeddur=true, dur=20,
+                 start=function()
+                   if not pd.tex_override then error("needs new exe") end
+                   if not pd.tex_override("test.png") then
+                     error("scripts/images/test.png missing")
+                   end
+                 end,
+                 stop=function() pd.tex_override() end },
+  -- Nepotism: the whole world gets skinned with an image related to you.
+  -- First tries to match your agent name — an image whose name is a PREFIX
+  -- of your (lowercased, alphanumeric-only) name, longest match first, down
+  -- to 1 char (Gras/Graslu/Graslu00 -> gras.png; Red/Redvox/Redvox57 ->
+  -- red.png). If nothing resembles you, the family picks a favourite anyway:
+  -- a RANDOM image from scripts/images/. Works for any name.
+  nepotism   = { label="Nepotism", dur=1,
+                 start=function()
+                   if not pd.tex_override or not pd.player_name then
+                     error("needs new exe")
+                   end
+                   local name = (pd.player_name() or ""):lower():gsub("[^%w]", "")
+                   -- longest-prefix name match
+                   for len = #name, 1, -1 do
+                     if pd.tex_override(name:sub(1, len)) then return end
+                   end
+                   -- no relation: pick a random image from the folder
+                   local imgs = pd.list_images and pd.list_images() or {}
+                   if #imgs == 0 then error("scripts/images/ has no images") end
+                   -- shuffle-try so a broken/oversized PNG doesn't kill it
+                   for i = #imgs, 2, -1 do
+                     local j = math.random(i)
+                     imgs[i], imgs[j] = imgs[j], imgs[i]
+                   end
+                   for _, n in ipairs(imgs) do
+                     if pd.tex_override(n) then return end
+                   end
+                   error("no usable image in scripts/images/")
+                 end,
+                 stop=function() pd.tex_override() end },
+  -- iPod Ad: the silhouette dance. Walls turn a solid vivid colour, everyone
+  -- becomes a black silhouette, weapons and objects go pure white, and the
+  -- whole scene wears white wireframe edges. A random iPod-ad colour each time.
+  ipod_ad    = { label="iPod Ad", fixeddur=true, dur=25,
+                 start=function()
+                   if not pd.ipod_ad then error("needs new exe") end
+                   local COLS = {
+                     {  0, 217, 140 }, -- vivid green
+                     {255,  40, 130 }, -- hot pink
+                     { 40, 180, 255 }, -- cyan blue
+                     {255, 140,   0 }, -- orange
+                     {170,  60, 255 }, -- purple
+                     {255, 210,   0 }, -- yellow
+                   }
+                   local c = COLS[math.random(#COLS)]
+                   pd.ipod_ad(true, c[1], c[2], c[3])
+                 end,
+                 stop=function() pd.ipod_ad(false) end },
+  -- ===== SA/HL2 wave 2 (2026-07-19 "go nuts" batch) =====
+  -- Dutch Angle: the camera tilts and STAYS tilted. 1-in-20 it goes full 90.
+  dutch_angle = { label="Dutch Angle", dur=1,
+                 start=function()
+                   if not pd.screen_roll then error("needs new exe") end
+                   local a = (math.random(2) == 1 and 1 or -1)
+                       * (math.random(20) == 1 and 90 or math.random(8, 15))
+                   pd.screen_roll(a)
+                 end,
+                 stop=function() pd.screen_roll(0) end },
+  -- Blind: instant black, sight bleeds back in over ~8 seconds.
+  blind      = { label="Blind", fixeddur=true, dur=9,
+                 start=function() pd.fade(0, 0, 0, 255, 480) end,
+                 stop=function() pd.fade(0, 0, 0, 0, 0) end },
+  -- Fading Out: the lights go down slowly across the whole duration, then
+  -- snap back. (Never fully black — 240/255 at the end.)
+  fading_out = { label="Fading Out", dur=1,
+                 start=function() st.a_fadeout = {} end,
+                 tick=function(left)
+                   local f = st.a_fadeout
+                   if not f then return end
+                   f.total = f.total or left
+                   if not f.next or left <= f.next then
+                     f.next = left - 10
+                     pd.fade(0, 0, 0, math.floor(240 * (1 - left / f.total)), 0)
+                   end
+                 end,
+                 stop=function() st.a_fadeout = nil; pd.fade(0, 0, 0, 0, 0) end },
+  -- Sleepy Mode: your eyelids keep drooping — slow fade to nearly-black,
+  -- brief hold, snap awake, repeat at random intervals.
+  sleepy     = { label="Sleepy Mode", dur=1,
+                 start=function() st.a_sleep = { t = 0, period = 420 } end,
+                 tick=function(left)
+                   local s = st.a_sleep
+                   if not s then return end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   s.t = s.t + dt
+                   local droopstart = s.period - 120 -- 1.5s droop + 0.5s hold
+                   if s.t >= s.period then
+                     s.t = 0
+                     s.period = math.random(300, 540)
+                     pd.fade(0, 0, 0, 0, 0) -- snap awake
+                   elseif s.t >= droopstart then
+                     local p = (s.t - droopstart) / 90
+                     pd.fade(0, 0, 0, math.floor(235 * math.min(1, p)), 0)
+                   end
+                 end,
+                 stop=function() st.a_sleep = nil; pd.fade(0, 0, 0, 0, 0) end },
+  -- Virtual Boy: four shades of red working towards black (renderer palette
+  -- mode 1003, the Handheld recipe in red) AND the screen duplicated into
+  -- two side-by-side eye panels at the ORIGINAL aspect ratio (fx bit 1024 —
+  -- each eye is the whole scene at 50% scale, letterboxed top and bottom).
+  -- Nintendo 1995.
+  virtualboy = { label="Virtual Boy", dur=1,
+                 start=function()
+                   pd.pixelate(192, 112, 1003)
+                   pd.screen_fx(1024, true)
+                   pd.audio_crush(4, 8)
+                 end,
+                 stop=function()
+                   pd.pixelate()
+                   pd.screen_fx(1024, false)
+                   pd.audio_crush()
+                 end },
+  -- (mosh_pit + world_peace removed 2026-07-19 per user — world_peace's
+  -- chr_calm spam had no visible effect; retired, not debugged.)
+  -- (no_chaos_ui removed 2026-07-19 per user.)
+  -- Mercy: every active effect ends right now.
+  clear_effects = { label="Mercy", dur=0, start=function()
+                   local names = {}
+                   for n in pairs(st.active) do names[#names + 1] = n end
+                   for _, n in ipairs(names) do
+                     local e = chaos.effects[n]
+                     if e and e.stop then pcall(e.stop) end
+                     st.active[n] = nil
+                     st.duration[n] = nil
+                   end
+                 end },
+  -- Overtime: every active effect's timer refills to full. You're welcome.
+  refill_effects = { label="Overtime", dur=0, start=function()
+                   for n in pairs(st.active) do
+                     st.active[n] = st.duration[n] or st.active[n]
+                   end
+                 end },
+  -- Buttsbot: random (but stable) words across the whole game become "butt".
+  buttsbot   = { label="Buttsbot", dur=1,
+                 start=function()
+                   if not pd.buttsbot then error("needs new exe") end
+                   pd.buttsbot(true)
+                 end,
+                 stop=function() pd.buttsbot(false) end },
+  -- Itchy Trigger Finger: at random moments the gun fires ONE shot by
+  -- itself (a ~2-tick trigger pulse every 1-4 seconds).
+  itchy_trigger = { label="Itchy Trigger Finger", dur=1,
+                 start=function()
+                   if not pd.forced_fire then error("needs new exe") end
+                   st.a_itchy = { t = math.random(60, 240) }
+                 end,
+                 tick=function(left)
+                   local it = st.a_itchy
+                   if not it then return end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   if it.firing then
+                     it.firing = it.firing - dt
+                     if it.firing <= 0 then
+                       pd.forced_fire(false)
+                       it.firing = nil
+                     end
+                   else
+                     it.t = it.t - dt
+                     if it.t <= 0 then
+                       it.t = math.random(60, 240)
+                       it.firing = 2
+                       pd.forced_fire(true)
+                     end
+                   end
+                 end,
+                 stop=function()
+                   st.a_itchy = nil
+                   pd.forced_fire(false)
+                 end },
+  -- No HUD: health, crosshair, ammo, radar, messages, kill feed, weapon
+  -- select — gone. Aim from the heart.
+  no_hud     = { label="No HUD", dur=1,
+                 start=function()
+                   if not pd.hud_off then error("needs new exe") end
+                   pd.hud_off(true)
+                 end,
+                 stop=function() pd.hud_off(false) end },
+  -- WAYTOODANK: gun FOV 140. The weapon becomes an experience.
+  waytoodank = { label="WAYTOODANK", dur=1,
+                 start=function()
+                   if not pd.gun_fov then error("needs new exe") end
+                   pd.gun_fov(140)
+                 end,
+                 stop=function() pd.gun_fov(0) end },
+  -- Weeping Skedar: a ONE-OFF spawn, no timer — it hunts until dead, but
+  -- only moves when you're not looking at it. Don't blink. (The view-cone
+  -- statue logic runs in the MAIN tick off st.a_weep, outside any effect
+  -- duration, like the martyrdom queue.)
+  weeping    = { label="Weeping Skedar", dur=0,
+                 start=function()
+                   if not pd.chr_freeze_one then error("needs new exe") end
+                   local a = math.random() * 2 * math.pi
+                   local c = pd.spawn_body(BODY.SKEDAR, -1,
+                                           math.sin(a) * 900, math.cos(a) * 900)
+                   if not c or c < 0 then error("no room / skedar unavailable") end
+                   pd.chr_alert(c)
+                   st.a_weep = { c = c }
+                 end },
+
   -- Dokkaebi: your phone rings LOUDLY, alerting every guard on repeat. A
   -- "phone" (a unique item) appears in your inventory — EQUIP it to answer
   -- and end the call. (Uses the Psychosis Gun slot as the stand-in handset.)
@@ -2078,6 +2305,8 @@ local ALPHA_ONLY = {
   image_test=1, -- the image-hook validator, not a real effect
   -- (SA-inspired batch graduated to the main pool 2026-07-19 after testing;
   -- mitosis removed outright — spawn-at-corpse never worked.)
+  -- (SA/HL2 wave 2 graduated to the main pool 2026-07-19 after testing.)
+  texture_test=1, -- the pd.tex_override validator, not a real effect
 }
 for name, e in pairs(alpha_effects) do
   if ALPHA_ONLY[name] then
@@ -2141,6 +2370,15 @@ local function reset_all_modes()
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
+  st.a_fadeout, st.a_sleep, st.a_weep, st.a_itchy = nil
+  if pd.fade then pd.fade(0, 0, 0, 0, 0) end
+  if pd.forced_fire then pd.forced_fire(false) end
+  if pd.hud_off then pd.hud_off(false) end
+  if pd.gun_fov then pd.gun_fov(0) end
+  if pd.chr_freeze_one then pd.chr_freeze_one(-1) end
+  if pd.buttsbot then pd.buttsbot(false) end
+  if pd.tex_override then pd.tex_override() end
+  if pd.ipod_ad then pd.ipod_ad(false) end
   st.a_lagt, st.a_lagon = nil
   -- Visual modes + ammo swap + input locks etc. — explicit reset (C globals).
   if pd.flattex then pd.flattex(0) end
@@ -2168,8 +2406,8 @@ local function reset_all_modes()
   if pd.chr_speed then pd.chr_speed(1) end
   if pd.player_speed then pd.player_speed(1) end
   if pd.screen_tint then pd.screen_tint() end
-  if pd.pixelate then pd.pixelate() end
-  if pd.screen_fx then pd.screen_fx(63, false) end
+  if pd.pixelate then pd.pixelate() end -- also clears the hue-rotate / virtualboy colour modes
+  if pd.screen_fx then pd.screen_fx(0x43f, false) end -- incl. the 1024 side-by-side bit
   if pd.lens then pd.lens() end
   if pd.audio_crush then pd.audio_crush() end
   if pd.audio_radio then pd.audio_radio(false) end
@@ -2462,6 +2700,33 @@ pd.on("tick", function()
       end
     end
     st.martyr_queue = nil
+  end
+
+  -- Weeping Skedar: the view-cone statue logic — runs while the stalker
+  -- lives, independent of any effect timer (the spawn is a one-off).
+  -- Frozen while inside a ~40-degree half-cone of the player's facing.
+  if st.a_weep and pd.chr_freeze_one then
+    local w = st.a_weep
+    local hp = pd.chr_health(w.c)
+    if not hp or hp <= 0 then
+      pd.chr_freeze_one(-1)
+      st.a_weep = nil
+    else
+      local px, py, pz = pd.player_pos(0)
+      local cx, cy, cz = pd.chr_pos(w.c)
+      if px and cx then
+        local yaw = math.rad(pd.player_yaw and pd.player_yaw() or 0)
+        local fx, fz = -math.sin(yaw), math.cos(yaw)
+        local dx, dz = cx - px, cz - pz
+        local d = math.sqrt(dx * dx + dz * dz)
+        if d < 1 then d = 1 end
+        if (fx * dx + fz * dz) / d > 0.766 then
+          pd.chr_freeze_one(w.c)
+        else
+          pd.chr_freeze_one(-1)
+        end
+      end
+    end
   end
 
   -- Heavy Recoil: apply the deferred kick queued by the weaponfire hook —
@@ -2967,6 +3232,10 @@ if pd.menu_add then
       fake_objective=1, fake_objective_fail=1, hurricane2=1,
       bayblade=1, speen=1, barrel_roll=1, banana_peel=1,
       uwuify=1, piglatin=1,
+      -- SA/HL2 wave 2 graduates
+      dutch_angle=1, blind=1, fading_out=1, sleepy=1, virtualboy=1,
+      buttsbot=1, no_hud=1, waytoodank=1, rainbow_world=1, prismatic=1,
+      ipod_ad=1, nepotism=1,
     } },
     { title = "Test: Cheats", set = {
       fists=1, slomo=1, dkmode=1, smalljo=1, smallchars=1, goldeneye=1,
@@ -2995,6 +3264,7 @@ if pd.menu_add then
       helicopter=1, interceptor=1,
       no_shooting=1, pacifist=1, slow_bleed=1, death_chance=1, note_7=1,
       heavy_recoil=1,
+      itchy_trigger=1, weeping=1,
     } },
   }
   local CATCHALL = "Test: Weapons & World"

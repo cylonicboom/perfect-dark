@@ -10,6 +10,9 @@ void extTexFree();
 u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height);
 u8 *extImageLoad(const char *relpath, u32 *width, u32 *height); /* general PNG loader (pd.load_image) */
 void extImageFree(u8 *data);
+/* List PNG basenames (no extension) in scripts/images/ into out[]; returns the
+ * count written (capped at maxout). Used by pd.list_images (Nepotism). */
+s32 extImageList(char out[][64], s32 maxout);
 u8 extTexExists(u8 type, u16 id, s32 texnum);
 u8 extTexFontID(struct font *font);
 

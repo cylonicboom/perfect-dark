@@ -570,6 +570,9 @@ extern s32 g_MenuMouseControl;
 extern s32 g_MenuColourScheme;
 s32 menuApplyColourScheme(s32 type);
 u32 menuSchemeColour(u32 intensity);
+#ifndef PLATFORM_N64
+u32 menuRadioColour(void); /* per-scheme radio/checkbox fill (0xRRGGBB00; OR the alpha) */
+#endif
 #endif
 extern u32 g_HudAlignModeL;
 extern u32 g_HudAlignModeR;

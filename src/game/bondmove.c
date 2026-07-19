@@ -78,6 +78,9 @@ u32 g_ChaosButtonMask = 0;
 // Chaos "Forced March" (pd.forced_march): the movement stick is pinned full
 // forward each tick — the player cannot stop walking. Look input unaffected.
 s32 g_ChaosForcedMarch = 0;
+// Chaos "Itchy Trigger Finger" (pd.forced_fire): the trigger is held down for
+// you — the equipped weapon fires continuously.
+s32 g_ChaosForcedFire = 0;
 // Chaos "Mag Dump" (pd.mag_dump): a single trigger press empties the whole clip
 // — automatic weapons get the trigger held down, semi-autos get it rapidly
 // pulsed (release/press every other tick, which each re-fires). Bullet weapons
@@ -2491,6 +2494,13 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 			&& !g_Vars.currentplayer->isdead) {
 		movedata.digitalstepforward = true;
 		movedata.digitalstepback = false;
+	}
+
+	// Chaos "Itchy Trigger Finger" (pd.forced_fire): hold the trigger down.
+	// Same movedata choke, same freeze precedence.
+	if (g_ChaosForcedFire && !g_Vars.currentplayer->isremote
+			&& !g_Vars.currentplayer->isdead) {
+		movedata.triggeron = true;
 	}
 
 	// Chaos "Take a break" (pd.player_freeze): block ALL player input — movement

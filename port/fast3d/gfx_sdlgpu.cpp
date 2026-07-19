@@ -608,12 +608,14 @@ static void ensure_pass(void) {
 // ---------------------------------------------------------------------------
 // pipelines
 
-static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached) {
+static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = false) {
     const GpuFb &fb = fbs[st.cur_fb];
     const bool has_depth = fb.depth != NULL;
     // Cached draws stay solid under the wireframe cheat (parity with GL,
-    // where glPolygonMode wireframe only wraps draw_triangles).
-    const bool fill_line = !cached && (gfx_wireframe_mode || gfx_wireframe_scope) && st.depth_test;
+    // where glPolygonMode wireframe only wraps draw_triangles). force_line is
+    // the iPod-Ad white-edge second pass (line-mode over the flat fill).
+    const bool fill_line = !cached && st.depth_test
+            && (gfx_wireframe_mode || gfx_wireframe_scope || force_line);
     // Backface culling exists only on the cached path (the immediate path is
     // CPU-culled by gfx_pc); set by cache_set_cull per replay segment.
     const uint32_t cull = cached ? st.cull_mode : 0;
@@ -1149,10 +1151,14 @@ static void gfx_sdlgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // Wireframe cheat flat wire colour (mirrors the GL backend's per-draw
     // uniform juggle; only the fill mode itself lives in the pipeline).
     const bool wire_colour = (gfx_wireframe_mode || gfx_wireframe_scope) && st.depth_test && gfx_wireframe_wire_color_enabled;
-    if (wire_colour) {
-        st.fs_uni.wireframe_color[0] = gfx_wireframe_wire_color[0];
-        st.fs_uni.wireframe_color[1] = gfx_wireframe_wire_color[1];
-        st.fs_uni.wireframe_color[2] = gfx_wireframe_wire_color[2];
+    // iPod Ad silhouette: flat-fill 3D geometry with the scope colour, then a
+    // second line-mode pass draws the white wireframe edges (both backends now).
+    const bool sil_fill = gfx_silhouette && !(gfx_wireframe_mode || gfx_wireframe_scope) && st.depth_test;
+    if (wire_colour || sil_fill) {
+        const float *sc = sil_fill ? gfx_silhouette_color : gfx_wireframe_wire_color;
+        st.fs_uni.wireframe_color[0] = sc[0];
+        st.fs_uni.wireframe_color[1] = sc[1];
+        st.fs_uni.wireframe_color[2] = sc[2];
         st.fs_uni.wireframe_color[3] = 1.0f;
         st.fs_dirty = true;
     }
@@ -1167,7 +1173,28 @@ static void gfx_sdlgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     SDL_DrawGPUPrimitives(st.pass, (Uint32)(3 * buf_vbo_num_tris), 1, 0, 0);
 
-    if (wire_colour) {
+    // iPod Ad white wireframe edges: re-draw the same geometry (same bound
+    // vertex buffer + offset) with a LINE-mode pipeline and a white wire
+    // colour. Depth-tested like the fill so hidden edges don't show through.
+    // Walls only (gfx_silhouette_edges) — chrs/objects/weapons stay clean.
+    if (sil_fill && gfx_silhouette_edges) {
+        SDL_GPUGraphicsPipeline *linepipe = pipeline_resolve(false, true);
+        if (linepipe) {
+            if (linepipe != st.bound_pipeline) {
+                SDL_BindGPUGraphicsPipeline(st.pass, linepipe);
+                st.bound_pipeline = linepipe;
+            }
+            st.fs_uni.wireframe_color[0] = 1.0f;
+            st.fs_uni.wireframe_color[1] = 1.0f;
+            st.fs_uni.wireframe_color[2] = 1.0f;
+            st.fs_uni.wireframe_color[3] = 1.0f;
+            st.fs_dirty = true;
+            push_uniforms();
+            SDL_DrawGPUPrimitives(st.pass, (Uint32)(3 * buf_vbo_num_tris), 1, 0, 0);
+        }
+    }
+
+    if (wire_colour || sil_fill) {
         st.fs_uni.wireframe_color[0] = 0.0f;
         st.fs_uni.wireframe_color[1] = 0.0f;
         st.fs_uni.wireframe_color[2] = 0.0f;

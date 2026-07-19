@@ -675,6 +675,87 @@ static char *langPigLatinify(char *src)
 	return dst;
 }
 
+// Buttsbot (mode 3): stable per-word replacement — words of 4+ letters whose
+// character hash lands on 1-in-4 become "butt" (capitalisation transfers, a
+// trailing s survives). Hash-keyed rather than random so the same text
+// renders the same way every frame instead of rerolling.
+static char *langButtsify(char *src)
+{
+	char *dst;
+	s32 cap;
+	s32 i;
+	s32 o;
+
+	if (src == NULL || src[0] == '\0') {
+		return src;
+	}
+
+	dst = langChaosGetBuf(src, &cap);
+
+	if (dst == NULL) {
+		return src;
+	}
+	o = 0;
+
+	for (i = 0; src[i] && o < cap - 8; ) {
+		char c = src[i];
+
+		if (c == '%') {
+			dst[o++] = '%';
+			i++;
+			while (src[i] && o < cap - 2) {
+				char n = src[i];
+				dst[o++] = n;
+				i++;
+				if ((n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') || n == '%') {
+					break;
+				}
+			}
+			continue;
+		}
+
+		if (!langIsLetter(c)) {
+			dst[o++] = c;
+			i++;
+			continue;
+		}
+
+		{
+			s32 wstart = i;
+			s32 wend = i;
+			u32 hash = 0;
+
+			while (src[wend] && langIsLetter(src[wend])) {
+				hash = hash * 31 + (u8)(src[wend] | 0x20);
+				wend++;
+			}
+
+			if (wend - wstart >= 4 && (hash % 4) == 0) {
+				char first = src[wstart];
+				char last = src[wend - 1];
+
+				dst[o++] = (first >= 'A' && first <= 'Z') ? 'B' : 'b';
+				dst[o++] = 'u';
+				dst[o++] = 't';
+				dst[o++] = 't';
+				if (last == 's' || last == 'S') {
+					dst[o++] = last;
+				}
+			} else {
+				s32 j;
+				for (j = wstart; j < wend && o < cap - 4; j++) {
+					dst[o++] = src[j];
+				}
+			}
+
+			i = wend;
+		}
+	}
+
+	dst[o] = '\0';
+	return dst;
+}
+
 // Port: expose the transform for text that does NOT flow through langGet at
 // render time — HUD messages are COPIED into their slots at creation (and
 // chaos's own Lua strings never touch langGet at all), so in-game text needs
@@ -687,6 +768,9 @@ char *langChaosTransform(char *src)
 	}
 	if (g_ChaosUwuMode == 2) {
 		return langPigLatinify(src);
+	}
+	if (g_ChaosUwuMode == 3) {
+		return langButtsify(src);
 	}
 	return src;
 }

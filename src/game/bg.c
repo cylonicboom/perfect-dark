@@ -185,6 +185,11 @@ extern unsigned char gfx_upsidedown_mode;
 // Chaos screen roll ("Speen", gfx_pc.cpp, C++ float == f32). Gates dlcache
 // off while active (the cached replay's uMVP is not rotated).
 extern f32 gfx_screen_roll;
+// Chaos "iPod Ad" silhouette (gfx_pc.cpp, C++ int == s32). Synced from
+// g_ChaosIpodAd; the flat-fill scope colours are per-prop display-list opcodes.
+// Gates dlcache off (cached replay bypasses the per-prop G_FLATFILL brackets).
+extern s32 gfx_silhouette;
+extern f32 gfx_silhouette_wall_color[3];
 s32 g_WireframeAnimSpeed = 0; // /wireframe vomit|trip: 0=off, else hue degrees/frame (vomit 4, trip 1)
 #endif
 s32 g_BgMostAttemptedDrawSlots = 0;
@@ -4335,7 +4340,7 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		// CPU vertex processing, which cached rooms (GPU replay of recorded
 		// verts) never re-run - rooms would stay matte while props shine.
 		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode && !gfx_upsidedown_mode
-				&& gfx_screen_roll == 0.0f
+				&& gfx_screen_roll == 0.0f && !gfx_silhouette
 				&& !gfx_rt_fullbright_active
 				&& (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer
@@ -7020,6 +7025,17 @@ void bgTickPortals(void)
 		gfx_wireframe_mode = cheatIsActive(CHEAT_WIREFRAME) ? 1 : 0;
 		gfx_mirror_mode = cheatIsActive(CHEAT_MIRROR) ? 1 : 0;
 		g_SndTonalInversion = cheatIsActive(CHEAT_TONALINVERSION) ? 1 : 0;
+
+		// Chaos "iPod Ad": sync the silhouette enable + bright wall colour to
+		// the renderer (the per-prop black/white fills are display-list opcodes).
+		{
+			extern s32 g_ChaosIpodAd;
+			extern u8 g_ChaosIpodWall[3];
+			gfx_silhouette = g_ChaosIpodAd ? 1 : 0;
+			gfx_silhouette_wall_color[0] = g_ChaosIpodWall[0] / 255.0f;
+			gfx_silhouette_wall_color[1] = g_ChaosIpodWall[1] / 255.0f;
+			gfx_silhouette_wall_color[2] = g_ChaosIpodWall[2] / 255.0f;
+		}
 
 		// /wireframe vomit|trip: while wireframe is on, scroll the sky colour
 		// through the hue wheel one way and the wire colour the other, and

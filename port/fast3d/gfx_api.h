@@ -46,7 +46,7 @@ extern bool gfx_upsidedown_mode;             // chaos: flip the 3D scene top-bot
 extern int gfx_screen_tint;                  // chaos: 0x00RRGGBB luminance tint via the grayscale path; 0 = off
 extern int gfx_retro_pixel_w;                // chaos: pixelation grid width (pd.pixelate); 0 = off
 extern int gfx_retro_pixel_h;                // chaos: pixelation grid height
-extern int gfx_retro_colors;                 // chaos: 0 keep, 2..64 grey, >= 256 RGB332, 1000 invert, 1001 gameboy, 1002 thermal
+extern int gfx_retro_colors;                 // chaos: 0 keep, 2..64 grey, >= 256 RGB332, 1000 invert, 1001 gameboy, 1002 thermal, 1003 virtualboy reds, 1004 hue-rotate (animated), 1005 hue-field (multi-rate)
 extern int gfx_retro_fx;                     // chaos: 1 scanlines, 2 grille, 4 CRT curve, 8 vignette, 16 VHS, 32 wobble
 extern float gfx_retro_warp;                 // chaos: fisheye lens strength (pd.lens); 0 = off
 extern unsigned char gfx_rotate180_mode;     // chaos: rotate the whole finished frame 180 (pd.upside_down / Australia)
@@ -58,6 +58,10 @@ extern float gfx_hdr_dazzle;
 extern int gfx_wireframe_wire_color_enabled; // 0 = natural/textured wires
 extern float gfx_wireframe_wire_color[3];    // flat wire colour, 0..1 RGB
 extern float gfx_wireframe_line_width;        // wire thickness in pixels
+extern int gfx_silhouette;                   // chaos "iPod Ad": flat-fill 3D geometry
+extern float gfx_silhouette_wall_color[3];   // bright default fill (walls/sky), 0..1 RGB
+extern float gfx_silhouette_color[3];        // current fill scope colour (G_FLATFILL_EXT)
+extern int gfx_silhouette_edges;             // 1 = draw white wireframe edges (walls only)
 extern bool gfx_external_textures_enabled;   // data/ext_tex PNG substitution (rafccq/port-ext-textures)
 
 void gfx_init(const struct GfxInitSettings *settings);

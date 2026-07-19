@@ -321,9 +321,15 @@ void lvReset(s32 stagenum)
 	extern f32 gfx_screen_roll;        // chaos Speen view roll (renderer float)
 	extern s32 g_ChaosOneBulletMags;   // chaos One Bullet Mags
 	extern s32 g_ChaosForcedMarch;     // chaos Forced March
-	extern s32 g_ChaosUwuMode;         // chaos UwUify text transform
+	extern s32 g_ChaosForcedFire;      // chaos Itchy Trigger Finger
+	extern s32 g_ChaosHudOff;          // chaos No HUD
+	extern f32 g_ChaosGunFovOverride;  // chaos WAYTOODANK viewmodel FOV
+	extern s32 g_ChaosFreezeChrnum;    // chaos Weeping Skedar single freeze
+	extern s32 g_ChaosIpodAd;          // chaos iPod Ad silhouette
+	extern s32 g_ChaosUwuMode;         // chaos text transform (uwu/piglatin/buttsbot)
 	extern void inputSetChaosInvertLook(s32 on);    // chaos Inverted Look
 	extern void inputSetChaosInputDelay(s32 frames);// chaos Stadia Mode
+	extern void luaTexOverrideReset(void);          // chaos texture override
 	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
@@ -360,7 +366,13 @@ void lvReset(s32 stagenum)
 	gfx_screen_roll = 0.0f;
 	g_ChaosOneBulletMags = 0;
 	g_ChaosForcedMarch = 0;
+	g_ChaosForcedFire = 0;
+	g_ChaosHudOff = 0;
+	g_ChaosGunFovOverride = 0.0f;
+	g_ChaosFreezeChrnum = -1;
+	g_ChaosIpodAd = 0;
 	g_ChaosUwuMode = 0;
+	luaTexOverrideReset(); // chaos texture override — free the image + restore
 	inputSetChaosInvertLook(0);
 	inputSetChaosInputDelay(0);
 	inputSetChaosDeadzone(0);
@@ -2074,12 +2086,16 @@ Gfx *lvRender(Gfx *gdl)
 				gdl = skyRenderOverexposure(gdl);
 #ifndef PLATFORM_N64
 				// HUDVD chaos: the active (weapon/gadget select) menu bounces too.
+				// Chaos "No HUD" hides it with the rest of the HUD elements.
 				{
 					extern Gfx *hudvdEmit(Gfx *gdl, s32 slot);
 					extern Gfx *hudvdReset(Gfx *gdl);
-					gdl = hudvdEmit(gdl, 6);
-					gdl = amRender(gdl);
-					gdl = hudvdReset(gdl);
+					extern s32 g_ChaosHudOff;
+					if (!g_ChaosHudOff) {
+						gdl = hudvdEmit(gdl, 6);
+						gdl = amRender(gdl);
+						gdl = hudvdReset(gdl);
+					}
 				}
 #else
 				gdl = amRender(gdl);

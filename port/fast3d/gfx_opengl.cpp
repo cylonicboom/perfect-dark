@@ -1063,6 +1063,11 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     const bool wireframe = (gfx_wireframe_mode || gfx_wireframe_scope) && s_wireframe_depth_test && !gl_es;
     const bool wire_colour = wireframe && gfx_wireframe_wire_color_enabled
             && gfx_current_shader_program && gfx_current_shader_program->wireframe_color_location >= 0;
+    // iPod Ad silhouette: flat-fill depth-tested 3D geometry with the current
+    // scope colour (walls bright, chrs black, objects/weapons white). Reuses
+    // the wireframe_color shader stage. Not while wireframe outlines are on.
+    const bool sil_fill = gfx_silhouette && !wireframe && s_wireframe_depth_test
+            && gfx_current_shader_program && gfx_current_shader_program->wireframe_color_location >= 0;
     if (wireframe) {
         glLineWidth(gfx_wireframe_line_width);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -1072,10 +1077,26 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glUniform4f(gfx_current_shader_program->wireframe_color_location,
                 gfx_wireframe_wire_color[0], gfx_wireframe_wire_color[1], gfx_wireframe_wire_color[2], 1.0f);
     }
+    if (sil_fill) {
+        glUniform4f(gfx_current_shader_program->wireframe_color_location,
+                gfx_silhouette_color[0], gfx_silhouette_color[1], gfx_silhouette_color[2], 1.0f);
+    }
 
     glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
 
-    if (wire_colour) {
+    if (sil_fill && gfx_silhouette_edges) {
+        // White wireframe edges over the flat fill (the iPod-ad geometry
+        // outline) — walls only; chrs/objects/weapons stay clean silhouettes.
+        // Second pass in line mode with a white wire colour.
+        glLineWidth(gfx_wireframe_line_width);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glUniform4f(gfx_current_shader_program->wireframe_color_location, 1.0f, 1.0f, 1.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glLineWidth(1.0f);
+    }
+
+    if (wire_colour || sil_fill) {
         // Reset so subsequent draws sharing this program (e.g. the HUD) are unaffected.
         glUniform4f(gfx_current_shader_program->wireframe_color_location, 0.0f, 0.0f, 0.0f, 0.0f);
     }

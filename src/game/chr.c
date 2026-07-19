@@ -1978,6 +1978,11 @@ f32 g_ChaosChrSpeedMult = 1.0f;
 // writes can't unwind the spin. AI/movement/aim logic keeps running; only
 // the rendered facing spins.
 s32 g_ChaosBeyblade = 0;
+// Chaos "Weeping Skedar" (pd.chr_freeze_one): freeze exactly ONE chr by
+// chrnum (-1 = none) — the stalker only advances while unobserved; the Lua
+// tick sets/clears the target from a view-cone test. Same anim-gate freeze
+// as g_ChaosChrFreeze, plus the chrTickShoot fire gate.
+s32 g_ChaosFreezeChrnum = -1;
 #endif
 
 void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
@@ -1992,6 +1997,12 @@ void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
 	// locomotion is anim-root-motion driven); firing is suppressed separately
 	// in chrTickShoot.
 	if (g_ChaosChrFreeze && chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
+		return;
+	}
+
+	// Chaos "Weeping Skedar": statue exactly one chr while it's being watched.
+	if (g_ChaosFreezeChrnum >= 0 && chr->chrnum == g_ChaosFreezeChrnum
+			&& chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
 		return;
 	}
 
@@ -3510,7 +3521,23 @@ void chrRenderAttachedObject(struct prop *prop, struct modelrenderdata *renderda
 		struct model *model = obj->model;
 		struct prop *child;
 
+#ifndef PLATFORM_N64
+		// Chaos "iPod Ad": a chr's held weapon (and attached objects) render
+		// pure white — the chr body is inside the black scope from propRender,
+		// so paint white here, then restore black for the rest of the chr.
+		{
+			extern s32 g_ChaosIpodAd;
+			if (g_ChaosIpodAd) {
+				gDPFlatFillEXT(renderdata->gdl++, 255, 255, 255);
+				modelRender(renderdata, model);
+				gDPFlatFillEXT(renderdata->gdl++, 0, 0, 0);
+			} else {
+				modelRender(renderdata, model);
+			}
+		}
+#else
 		modelRender(renderdata, model);
+#endif
 
 		// Note: OBJH2FLAG_HASOPA << 1 is OBJH2FLAG_HASXLU
 		// so this is just checking if the appropriate flag is enabled

@@ -336,6 +336,15 @@ s32 chraiLuaInputDelay(s32 frames);           /* Stadia Mode: pad reads N frames
 s32 chraiLuaUwuify(s32 on);                   /* uwuify every langGet string */
 s32 chraiLuaPigLatin(s32 on);                 /* pig-latin every langGet string (shared mode) */
 s32 chraiLuaForcedMarch(s32 on);              /* movement stick pinned full forward */
+s32 chraiLuaForcedFire(s32 on);               /* trigger held down for you */
+s32 chraiLuaHudOff(s32 on);                   /* hide every HUD element */
+s32 chraiLuaGunFov(f32 deg);                  /* viewmodel FOV override (0 restores) */
+s32 chraiLuaChrFreezeOne(s32 chrnum);         /* statue exactly one chr (-1 = none) */
+s32 chraiLuaButtsbot(s32 on);                 /* text mode 3: words become butt */
+s32 chraiLuaIpodAd(s32 on, s32 r, s32 g, s32 b); /* iPod Ad silhouette mode */
+#ifndef PLATFORM_N64
+void luaTexOverrideReset(void);               /* free the pd.tex_override image + restore textures */
+#endif
 s32 chraiLuaBeyblade(s32 on);                 /* Bayblade!: spin every NPC's model yaw */
 s32 chraiLuaDoubleVision(s32 on);             /* One too many: 180-flipped ghost blended over the frame */
 s32 chraiLuaGunLock(s32 on);                  /* Cyclone Frenzy: force secondary + hold fire + no weapon switch */

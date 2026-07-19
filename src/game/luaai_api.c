@@ -288,6 +288,74 @@ static int l_pd_draw_sprite(lua_State *L)
  * the rows (top part shows doubled), so keep both dimensions <= 64 and
  * power-of-two. Oversize still loads but renders partial (a warning is logged).
  * To fill a bigger area, draw a 64x64 source at a larger w/h (draw_image scales). */
+#ifndef PLATFORM_N64
+/* pd.tex_override([name]): replace EVERY game texture's RGB with an external
+ * image (scripts/images/<name>[.png]) via flat-texture mode 3 — the renderer
+ * re-imports the whole texture cache through the override filter (per-pixel
+ * alpha preserved, so cutouts/glyphs keep their shapes). No arg = restore
+ * normal textures and free the image. */
+static u8 *g_LuaTexOverride = NULL;
+
+void luaTexOverrideReset(void)
+{
+	extern int gfx_flattex_mode;
+	extern unsigned char *gfx_flattex_image;
+
+	if (gfx_flattex_mode == 3) {
+		gfx_flattex_mode = 0;
+	}
+	gfx_flattex_image = NULL;
+	if (g_LuaTexOverride) {
+		extImageFree(g_LuaTexOverride);
+		g_LuaTexOverride = NULL;
+	}
+}
+
+static int l_pd_tex_override(lua_State *L)
+{
+	extern int gfx_flattex_mode;
+	extern unsigned char *gfx_flattex_image;
+	extern int gfx_flattex_image_w;
+	extern int gfx_flattex_image_h;
+	const char *name = luaL_optstring(L, 1, NULL);
+	char path[256];
+	const char *dot;
+	u8 *data;
+	u32 w = 0, h = 0;
+
+	luaTexOverrideReset();
+
+	if (name == NULL) {
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+
+	dot = strrchr(name, '.');
+	snprintf(path, sizeof(path), "scripts/images/%s%s", name, dot ? "" : ".png");
+
+	data = extImageLoad(path, &w, &h);
+	if (!data || w == 0 || h == 0) {
+		if (data) extImageFree(data);
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+
+	g_LuaTexOverride = data;
+	gfx_flattex_image = data;
+	gfx_flattex_image_w = (int)w;
+	gfx_flattex_image_h = (int)h;
+	gfx_flattex_mode = 3; // mode change -> gfx_start_frame clears the texture cache
+	lua_pushboolean(L, 1);
+	return 1;
+}
+#else
+static int l_pd_tex_override(lua_State *L)
+{
+	lua_pushboolean(L, 0);
+	return 1;
+}
+#endif
+
 static int l_pd_load_image(lua_State *L)
 {
 #ifndef PLATFORM_N64
@@ -2131,6 +2199,83 @@ static int l_pd_forced_march(lua_State *L)
 	return 1;
 }
 
+/* pd.forced_fire(on) -> bool. Itchy Trigger Finger: trigger held for you. */
+static int l_pd_forced_fire(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaForcedFire(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.hud_off(on) -> bool. No HUD: hide every HUD element. */
+static int l_pd_hud_off(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHudOff(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.gun_fov(deg) -> bool. Viewmodel FOV override; 0 restores. */
+static int l_pd_gun_fov(lua_State *L)
+{
+	f32 deg = (f32)luaL_optnumber(L, 1, 0.0);
+	lua_pushboolean(L, chraiLuaGunFov(deg) != 0);
+	return 1;
+}
+
+/* pd.chr_freeze_one(chrnum | -1) -> bool. Statue exactly one chr. */
+static int l_pd_chr_freeze_one(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_optinteger(L, 1, -1);
+	lua_pushboolean(L, chraiLuaChrFreezeOne(chrnum) != 0);
+	return 1;
+}
+
+/* pd.buttsbot(on) -> bool. Random-but-stable words become butt. */
+static int l_pd_buttsbot(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaButtsbot(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.ipod_ad(on [, r, g, b]) -> bool. Silhouette mode: bright walls, black
+ * chrs, white objects/weapons, white wireframe edges. */
+static int l_pd_ipod_ad(lua_State *L)
+{
+	s32 on = lua_toboolean(L, 1);
+	s32 r = (s32)luaL_optinteger(L, 2, 0);
+	s32 g = (s32)luaL_optinteger(L, 3, 217);
+	s32 b = (s32)luaL_optinteger(L, 4, 140);
+	lua_pushboolean(L, chraiLuaIpodAd(on, r, g, b) != 0);
+	return 1;
+}
+
+/* pd.player_name() -> string. The solo save file's agent name — whatever the
+ * player typed when creating their file ("PD" by default). */
+static int l_pd_player_name(lua_State *L)
+{
+	lua_pushstring(L, g_GameFile.name);
+	return 1;
+}
+
+/* pd.list_images() -> { "gras", "red", ... }. The basenames (no extension) of
+ * every .png in scripts/images/. Nepotism uses this for its random fallback. */
+static int l_pd_list_images(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	static char names[64][64];
+	s32 n = extImageList(names, 64);
+	s32 i;
+
+	lua_createtable(L, n, 0);
+	for (i = 0; i < n; i++) {
+		lua_pushstring(L, names[i]);
+		lua_rawseti(L, -2, i + 1);
+	}
+#else
+	lua_createtable(L, 0, 0);
+#endif
+	return 1;
+}
+
 /* pd.player_pitch([deg]) -> deg | bool. No arg: current view pitch (+up).
  * With arg: set it (clamped +/-90). */
 static int l_pd_player_pitch(lua_State *L)
@@ -2600,6 +2745,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_draw_box);    lua_setfield(L, -2, "draw_box");
 	lua_pushcfunction(L, l_pd_draw_sprite); lua_setfield(L, -2, "draw_sprite");
 	lua_pushcfunction(L, l_pd_load_image);  lua_setfield(L, -2, "load_image");
+	lua_pushcfunction(L, l_pd_tex_override); lua_setfield(L, -2, "tex_override");
 	lua_pushcfunction(L, l_pd_draw_image);  lua_setfield(L, -2, "draw_image");
 	lua_pushcfunction(L, l_pd_draw_text);   lua_setfield(L, -2, "draw_text");
 	lua_pushcfunction(L, l_pd_hud_message); lua_setfield(L, -2, "hud_message");
@@ -2744,6 +2890,14 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_uwuify);        lua_setfield(L, -2, "uwuify");
 	lua_pushcfunction(L, l_pd_piglatin);      lua_setfield(L, -2, "piglatin");
 	lua_pushcfunction(L, l_pd_forced_march);  lua_setfield(L, -2, "forced_march");
+	lua_pushcfunction(L, l_pd_forced_fire);   lua_setfield(L, -2, "forced_fire");
+	lua_pushcfunction(L, l_pd_hud_off);       lua_setfield(L, -2, "hud_off");
+	lua_pushcfunction(L, l_pd_gun_fov);       lua_setfield(L, -2, "gun_fov");
+	lua_pushcfunction(L, l_pd_chr_freeze_one); lua_setfield(L, -2, "chr_freeze_one");
+	lua_pushcfunction(L, l_pd_buttsbot);      lua_setfield(L, -2, "buttsbot");
+	lua_pushcfunction(L, l_pd_ipod_ad);       lua_setfield(L, -2, "ipod_ad");
+	lua_pushcfunction(L, l_pd_player_name);   lua_setfield(L, -2, "player_name");
+	lua_pushcfunction(L, l_pd_list_images);   lua_setfield(L, -2, "list_images");
 	lua_pushcfunction(L, l_pd_beyblade);      lua_setfield(L, -2, "beyblade");
 	lua_pushcfunction(L, l_pd_double_vision); lua_setfield(L, -2, "double_vision");
 	lua_pushcfunction(L, l_pd_weather);       lua_setfield(L, -2, "weather");

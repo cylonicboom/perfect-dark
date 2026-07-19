@@ -243,6 +243,15 @@
 // (applied in gfx_draw_rectangle); force-cleared each gfx_start_frame.
 #define G_HUDOFFSET_EXT              0x4d
 
+// iPod Ad chaos (docs/PORT_CHAOS.md): while the silhouette mode is active, set
+// the flat fill colour used for subsequent depth-tested 3D geometry (the
+// wireframe_color shader stage replaces the surface RGB with it). Emitted
+// around each prop class in propRender (chrs black, objects/weapons white),
+// the viewmodel (white); unbracketed geometry (walls/sky) uses the standing
+// wall default, which gfx_start_frame re-asserts each frame. Reset variant
+// returns to that wall default.
+#define G_FLATFILL_EXT               0x4e
+
 /* G_EXTRAGEOMETRYMODE flags */
 
 #define G_INVERT_CULLING_EXT     0x00000001
@@ -321,6 +330,25 @@
                                                                              \
     _g->words.w0 = _SHIFTL(G_HUDOFFSET_EXT, 24, 8) | _SHIFTL((s16)(x), 0, 16); \
     _g->words.w1 = _SHIFTL((s16)(y), 0, 16);                                  \
+}
+
+// iPod Ad chaos: set the flat fill colour for subsequent 3D geometry (w0 low
+// bit = 1), or reset to the wall default (bit 0). Colour is 0..255 per channel.
+#define gDPFlatFillEXT(pkt, r, g, b)                                    \
+{                                                                       \
+    Gfx* _g = (Gfx*)(pkt);                                              \
+                                                                        \
+    _g->words.w0 = _SHIFTL(G_FLATFILL_EXT, 24, 8) | 1;                  \
+    _g->words.w1 = (((u32)(r) & 0xff) << 16) | (((u32)(g) & 0xff) << 8) \
+            | ((u32)(b) & 0xff);                                        \
+}
+
+#define gDPFlatFillResetEXT(pkt)                       \
+{                                                      \
+    Gfx* _g = (Gfx*)(pkt);                             \
+                                                       \
+    _g->words.w0 = _SHIFTL(G_FLATFILL_EXT, 24, 8);     \
+    _g->words.w1 = 0;                                  \
 }
 
 // NOTE: these will function correctly only if you pass `gdl++` as `pkt`

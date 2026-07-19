@@ -252,6 +252,47 @@ void extImageFree(u8 *data)
 	}
 }
 
+// List .png basenames (without the extension) in scripts/images/ into out[],
+// up to maxout entries; returns the count written. Working-directory relative,
+// same as extImageLoad. Backs pd.list_images (Nepotism's random fallback).
+s32 extImageList(char out[][64], s32 maxout)
+{
+	DIR *dr = opendir("scripts/images");
+	struct dirent *de;
+	s32 count = 0;
+
+	if (!dr) {
+		return 0;
+	}
+
+	while ((de = readdir(dr)) != NULL && count < maxout) {
+		const char *name = de->d_name;
+		size_t len = strlen(name);
+
+		// accept *.png only, case-insensitive on the extension
+		if (len < 5 || len - 4 >= 64) {
+			continue;
+		}
+		if (name[len - 4] != '.'
+				|| (name[len - 3] != 'p' && name[len - 3] != 'P')
+				|| (name[len - 2] != 'n' && name[len - 2] != 'N')
+				|| (name[len - 1] != 'g' && name[len - 1] != 'G')) {
+			continue;
+		}
+
+		// copy the basename without ".png"
+		{
+			size_t base = len - 4;
+			memcpy(out[count], name, base);
+			out[count][base] = '\0';
+		}
+		count++;
+	}
+
+	closedir(dr);
+	return count;
+}
+
 u8 extTexFontID(struct font *font) {
 	if (font == g_FontHandelGothicSm)
 		return FONT_HANDELGOTHICSM;

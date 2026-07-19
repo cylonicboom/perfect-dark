@@ -8813,6 +8813,81 @@ s32 chraiLuaForcedMarch(s32 on)
 	return 1;
 }
 
+// pd.forced_fire(on): "Itchy Trigger Finger" — the trigger is held down for
+// you (bondmove.c movedata choke).
+s32 chraiLuaForcedFire(s32 on)
+{
+	extern s32 g_ChaosForcedFire;
+
+	g_ChaosForcedFire = on ? 1 : 0;
+	return 1;
+}
+
+// pd.hud_off(on): "No HUD" — skip every HUD element render (the seven
+// hudvd-wrapped sites in player.c/lv.c). Chaos overlays still draw.
+s32 chraiLuaHudOff(s32 on)
+{
+	extern s32 g_ChaosHudOff;
+
+	g_ChaosHudOff = on ? 1 : 0;
+	return 1;
+}
+
+// pd.gun_fov(deg): "WAYTOODANK Viewmodel" — override the viewmodel Gun FOV
+// (bondgun.c g_ChaosGunFovOverride); 0 restores the player's configured FOV.
+s32 chraiLuaGunFov(f32 deg)
+{
+	extern f32 g_ChaosGunFovOverride;
+
+	if (deg != 0.0f) {
+		if (deg < 5.0f) {
+			deg = 5.0f;
+		} else if (deg > 165.0f) {
+			deg = 165.0f;
+		}
+	}
+	g_ChaosGunFovOverride = deg;
+	return 1;
+}
+
+// pd.chr_freeze_one(chrnum | -1): "Weeping Skedar" — statue exactly one chr
+// (chr.c anim gate + chrTickShoot fire gate); -1 unfreezes.
+s32 chraiLuaChrFreezeOne(s32 chrnum)
+{
+	extern s32 g_ChaosFreezeChrnum;
+
+	g_ChaosFreezeChrnum = chrnum;
+	return 1;
+}
+
+// pd.buttsbot(on): text mode 3 — random-but-stable words become "butt".
+// Shares the text-mode global with uwuify/piglatin (off zeroes it).
+s32 chraiLuaButtsbot(s32 on)
+{
+	extern s32 g_ChaosUwuMode;
+
+	g_ChaosUwuMode = on ? 3 : 0;
+	return 1;
+}
+
+// pd.ipod_ad(on [, r, g, b]): "iPod Ad" silhouette — walls the given bright
+// colour (default vivid green), chrs black, objects/weapons white, white
+// wireframe edges (the fills are per-prop G_FLATFILL brackets in propRender +
+// player.c; the enable + wall colour sync in bgTickPortals).
+s32 chraiLuaIpodAd(s32 on, s32 r, s32 g, s32 b)
+{
+	extern s32 g_ChaosIpodAd;
+	extern u8 g_ChaosIpodWall[3];
+
+	g_ChaosIpodAd = on ? 1 : 0;
+	if (on) {
+		g_ChaosIpodWall[0] = (u8)(r < 0 ? 0 : r > 255 ? 255 : r);
+		g_ChaosIpodWall[1] = (u8)(g < 0 ? 0 : g > 255 ? 255 : g);
+		g_ChaosIpodWall[2] = (u8)(b < 0 ? 0 : b > 255 ? 255 : b);
+	}
+	return 1;
+}
+
 // pd.player_add_yaw(deg): rotate the local player's view yaw by deg degrees
 // (Speen — spins the actual player: view, aim and movement heading). Additive
 // with normal look input; wrapped 0..360 the same way bondwalk's rotate path
@@ -10845,11 +10920,12 @@ s32 chraiLuaPixelate(s32 w, s32 h, s32 colors)
 
 // pd.screen_fx(bits, on): set/clear retro post-filter effect bits (1 =
 // scanlines, 2 = RGB grille, 4 = CRT curvature, 8 = vignette, 16 = VHS,
-// 32 = underwater wobble). Bits compose, so simultaneous effects stack.
+// 32 = underwater wobble, 1024 = side-by-side eyes). Bits compose, so
+// simultaneous effects stack.
 extern s32 gfx_retro_fx;
 s32 chraiLuaScreenFx(s32 bits, s32 on)
 {
-	bits &= 0x3f;
+	bits &= 0x43f;
 	if (on) {
 		gfx_retro_fx |= bits;
 	} else {
@@ -13546,10 +13622,17 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 
 	// Chaos "Freeze!" (pd.chr_freeze): frozen chrs don't shoot. Pairs with the
 	// anim-advance gate in chr0f0220ec (chr.c) — statues don't pull triggers.
+	// The Weeping Skedar single-chr freeze rides the same gate.
 	{
 		extern s32 g_ChaosChrFreeze;
+		extern s32 g_ChaosFreezeChrnum;
 
 		if (g_ChaosChrFreeze && chrprop && chrprop->type != PROPTYPE_PLAYER) {
+			return;
+		}
+		if (g_ChaosFreezeChrnum >= 0 && chr != NULL
+				&& chr->chrnum == g_ChaosFreezeChrnum
+				&& chrprop && chrprop->type != PROPTYPE_PLAYER) {
 			return;
 		}
 	}

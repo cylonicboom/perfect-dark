@@ -309,6 +309,45 @@ u32 menuSchemeColour(u32 intensity)
 		| ((((rgb >> 8) & 0xff) * intensity / 255) << 16)
 		| (((rgb & 0xff) * intensity / 255) << 8);
 }
+
+// Dedicated per-scheme RADIO/CHECKBOX fill colour, separate from the accent
+// (which drives sliders/dropdowns/headers). The accent is unreadable as a
+// radio fill on several schemes whose accent is very dark (Umber, Midnight,
+// Denim, Matrix) — those sit on a dark body panel too. Every scheme's body
+// background is base*18% = DARK, EXCEPT Missing (white), so bright fills win
+// everywhere but there. Perfect keeps the classic red radio; Redvox57 keeps
+// its purple; Matrix gets a thematic bright green; Missing gets a dark fill
+// for its light panel; the rest take white (max contrast for now). Index
+// order matches the dropdown / schemerows / accents. Returns 0xRRGGBB00 with
+// the alpha left 0 for the caller to OR, like menuSchemeColour.
+u32 menuRadioColour(void)
+{
+	static const u32 radiocolours[] = {
+		0xff0000, // 0 Perfect (classic red)
+		0xffffff, // 1 Shinku (white on dark red)
+		0xffffff, // 2 Complete
+		0x000000, // 3 Missing (dark fill — the only light body panel)
+		0xffffff, // 4 Amber
+		0x7c02f5, // 5 Redvox57 (purple — its scheme accent; left as-is)
+		0xffffff, // 6 Sunburst
+		0xffffff, // 7 Fuchsia
+		0xffffff, // 8 Umber
+		0xffffff, // 9 Midnight
+		0xffffff, // 10 Denim
+		0xffffff, // 11 Frost
+		0xffffff, // 12 Glacier
+		0x00ff00, // 13 Matrix (thematic green, high contrast on black)
+		0xffffff, // 14 Rose
+		0xffffff, // 15 Peach
+	};
+	s32 scheme = menuActiveColourScheme();
+
+	if (scheme < 0 || scheme >= (s32)ARRAYCOUNT(radiocolours)) {
+		scheme = 0;
+	}
+
+	return radiocolours[scheme] << 8;
+}
 #endif
 
 #if VERSION >= VERSION_NTSC_1_0

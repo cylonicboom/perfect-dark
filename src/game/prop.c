@@ -52,6 +52,12 @@
 // Chaos "wireframe enemies" (pd.chr_wireframe): hostile chrs render as
 // polygon outlines via the G_CHRWIREFRAME_EXT bracket in propRender.
 s32 g_ChaosWireframeChrs = 0;
+// Chaos "iPod Ad" (pd.ipod_ad): silhouette mode — walls a bright solid colour,
+// chrs black, objects/weapons white, white wireframe edges. propRender brackets
+// each prop class with a G_FLATFILL_EXT colour scope. g_ChaosIpodWall is the
+// bright wall colour (0..255 RGB), synced to the renderer in bgTickPortals.
+s32 g_ChaosIpodAd = 0;
+u8 g_ChaosIpodWall[3] = { 0, 217, 140 };
 #endif
 
 s16 *g_RoomPropListChunkIndexes;
@@ -645,10 +651,27 @@ Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass)
 	case PROPTYPE_OBJ:
 	case PROPTYPE_DOOR:
 	case PROPTYPE_WEAPON:
+#ifndef PLATFORM_N64
+		// Chaos "iPod Ad": objects/doors/weapons render pure white.
+		if (g_ChaosIpodAd) {
+			gDPFlatFillEXT(gdl++, 255, 255, 255);
+			gdl = objRender(prop, gdl, xlupass);
+			gDPFlatFillResetEXT(gdl++);
+			break;
+		}
+#endif
 		gdl = objRender(prop, gdl, xlupass);
 		break;
 	case PROPTYPE_CHR:
 #ifndef PLATFORM_N64
+		// Chaos "iPod Ad": characters render pure black (silhouettes). Takes
+		// precedence over wireframe-enemies.
+		if (g_ChaosIpodAd) {
+			gDPFlatFillEXT(gdl++, 0, 0, 0);
+			gdl = chrRender(prop, gdl, xlupass);
+			gDPFlatFillResetEXT(gdl++);
+			break;
+		}
 		// Chaos "wireframe enemies" (pd.chr_wireframe): bracket hostile chr
 		// models (their held weapons render as children inside chrRender, so
 		// they wireframe too) in the scoped-wireframe marker. Friendly and

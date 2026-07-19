@@ -243,6 +243,9 @@ s32 g_ChaosQuadTopGuns = 0;
 // doubling so it always wins; existing loaded rounds are untouched until the
 // next reload.
 s32 g_ChaosOneBulletMags = 0;
+// Chaos "WAYTOODANK Viewmodel" (pd.gun_fov): override the viewmodel's Gun FOV
+// in degrees; 0 = off (use the player's configured gunfovy).
+f32 g_ChaosGunFovOverride = 0.0f;
 // Chaos "Pinball rounds" (pd.pinball): fired physics projectiles (rockets,
 // grenade rounds) are converted at launch into the grenade secondary's
 // Proximity Pinball — ballistic, bouncy, proximity-armed. See the conversion
@@ -8571,6 +8574,12 @@ void bgunCreateFx(struct hand *hand, s32 handnum, struct weaponfunc *funcdef, s3
 static inline f32 bgunGetRenderFovY(void)
 {
 	f32 gunfovy = PLAYER_EXTCFG().gunfovy;
+
+	// Chaos "WAYTOODANK Viewmodel": chaos override wins over the config
+	if (g_ChaosGunFovOverride > 0.0f) {
+		gunfovy = g_ChaosGunFovOverride;
+	}
+
 	return gunfovy >= 5.0f ? gunfovy : PLAYER_DEFAULT_FOV;
 }
 
@@ -12126,7 +12135,16 @@ void bgunRender(Gfx **gdlptr)
 	// projection. Skipped during teleport, which forces its own 60 FOV
 	// projection below.
 	f32 gunfovy = PLAYER_EXTCFG().gunfovy;
-	bool usegunfov = gunfovy >= 5.0f
+	bool usegunfov;
+
+	// Chaos "WAYTOODANK Viewmodel" (pd.gun_fov): override the configured
+	// viewmodel FOV (the offsets helper bgunGetRenderFovY applies the same
+	// override so the position compensation stays consistent).
+	if (g_ChaosGunFovOverride > 0.0f) {
+		gunfovy = g_ChaosGunFovOverride;
+	}
+
+	usegunfov = gunfovy >= 5.0f
 			&& g_Vars.currentplayer->teleportstate == TELEPORTSTATE_INACTIVE;
 
 	if (usegunfov) {
@@ -12400,7 +12418,23 @@ void bgunRender(Gfx **gdlptr)
 				modelUpdateRelations(&hand->handmodel);
 
 				renderdata.envcolour = colour;
+#ifndef PLATFORM_N64
+				// Chaos "iPod Ad": the first-person ARMS/HANDS are black (body
+				// part), while the weapon stays white (the outer bracket in
+				// player.c). Restore white after for anything downstream.
+				{
+					extern s32 g_ChaosIpodAd;
+					if (g_ChaosIpodAd) {
+						gDPFlatFillEXT(renderdata.gdl++, 0, 0, 0);
+						modelRender(&renderdata, &hand->handmodel);
+						gDPFlatFillEXT(renderdata.gdl++, 255, 255, 255);
+					} else {
+						modelRender(&renderdata, &hand->handmodel);
+					}
+				}
+#else
 				modelRender(&renderdata, &hand->handmodel);
+#endif
 				renderdata.envcolour = prevcolour;
 			}
 

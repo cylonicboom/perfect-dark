@@ -271,6 +271,8 @@ s32 chraiLuaGiveWeaponToPlayer(s32 weaponnum);/* add a weapon to inventory */
 s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) */
 s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
 s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
+s32 chraiLuaSpawnAllyClone(f32 healthfrac);   /* friendly Jo clone (player body/head), scaled HP; chrnum or -1 */
+s32 chraiLuaChrYscale(s32 chrnum, f32 mult);  /* non-uniform vertical squash (width kept) */
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
  * apLuaPlayerChr() contract as the AP helpers above. */

@@ -1052,6 +1052,21 @@ static int l_pd_spawn_ally(lua_State *L)
 	return 1;
 }
 
+/* pd.spawn_ally_clone([healthfrac]) -> chrnum | nil. A friendly buddy wearing
+ * the player's own body/head (a Jo clone), with health scaled by healthfrac
+ * (default 0.5). Backs the "Me and my son" chaos effect. */
+static int l_pd_spawn_ally_clone(lua_State *L)
+{
+	f32 frac = (f32)luaL_optnumber(L, 1, 0.5);
+	s32 chrnum = chraiLuaSpawnAllyClone(frac);
+	if (chrnum < 0) {
+		lua_pushnil(L);
+	} else {
+		lua_pushinteger(L, chrnum);
+	}
+	return 1;
+}
+
 /* ------------------------------------------------------------------------- *
  * Director menu registry (pd.menu_add / pd.menu_clear + C accessors)
  * ------------------------------------------------------------------------- */
@@ -2102,6 +2117,15 @@ static int l_pd_chr_scale(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_yscale(chrnum, mult) -> bool. Non-uniform vertical squash: scales only
+ * the chr's height, keeping width/depth (mult 0.4 = 40% tall, full width). */
+static int l_pd_chr_yscale(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaChrYscale(chrnum, (f32)luaL_checknumber(L, 2)) != 0);
+	return 1;
+}
+
 /* pd.shake(ticks) -> bool. Explosion-style screen shake for N ticks. */
 static int l_pd_shake(lua_State *L)
 {
@@ -2803,6 +2827,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_mission_complete); lua_setfield(L, -2, "mission_complete");
 	lua_pushcfunction(L, l_pd_invincible);       lua_setfield(L, -2, "invincible");
 	lua_pushcfunction(L, l_pd_spawn_ally);       lua_setfield(L, -2, "spawn_ally");
+	lua_pushcfunction(L, l_pd_spawn_ally_clone); lua_setfield(L, -2, "spawn_ally_clone");
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");
@@ -2892,6 +2917,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_speed);  lua_setfield(L, -2, "player_speed");
 	lua_pushcfunction(L, l_pd_chr_damage);    lua_setfield(L, -2, "chr_damage");
 	lua_pushcfunction(L, l_pd_chr_scale);     lua_setfield(L, -2, "chr_scale");
+	lua_pushcfunction(L, l_pd_chr_yscale);    lua_setfield(L, -2, "chr_yscale");
 	lua_pushcfunction(L, l_pd_shake);         lua_setfield(L, -2, "shake");
 	lua_pushcfunction(L, l_pd_screen_tint);   lua_setfield(L, -2, "screen_tint");
 	lua_pushcfunction(L, l_pd_upside_down);   lua_setfield(L, -2, "upside_down");

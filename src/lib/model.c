@@ -824,6 +824,21 @@ void modelUpdateChrNodeMtx(struct modelrenderdata *arg0, struct model *model, st
 		mtx00015f4c(scale, &sp158);
 	}
 
+#ifndef PLATFORM_N64
+	// Chaos vertical squash (pd.chr_yscale): sp158 is the model->world basis, so
+	// row 1 (m[1][*]) is the world image of the model's local Y axis (its spine).
+	// Scaling only that row compresses/stretches height while leaving width and
+	// depth untouched, and — being at the root — it propagates down the whole
+	// skeleton. Bounded so a stray value can't invert or balloon a chr. Purely
+	// visual; the N64 build never sees this block (yscale is a port-only field).
+	if (model->chr != NULL) {
+		f32 ys = model->chr->yscale;
+		if (ys > 0.0f && ys != 1.0f && ys <= 4.0f) {
+			mtx00015e4c(ys, &sp158);
+		}
+	}
+#endif
+
 	if (sp24c) {
 		mtx00015be4(sp24c, &sp158, mtx);
 	} else {

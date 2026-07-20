@@ -1368,6 +1368,15 @@ struct chrdata {
 	// environment death of that chr. Port-only.
 	s32 lastattackerstamp60;
 
+	// Non-uniform VERTICAL render scale (chaos pd.chr_yscale). 1.0 = normal;
+	// 0.4 = 40% as tall but full width/depth (a squat, wide "Me and my son"
+	// clone). Applied to the chr root matrix's model-Y basis row every frame in
+	// modelUpdateChrNodeMtx, so it squashes the whole skeleton along its spine
+	// without touching the uniform model->scale. Purely visual (hitbox/AI
+	// unchanged). chrInit resets it to 1.0 so recycled chrslots never inherit a
+	// stale squash. Port-only; the N64 build is byte-identical.
+	f32 yscale;
+
 	// Client-side POSE interpolation buffer for a network-replicated chr (Combat
 	// Sim bots now; campaign NPCs once online co-op lands — same model: server
 	// runs the AI, replicates state, client interpolates). Populated from

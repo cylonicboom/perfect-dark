@@ -230,6 +230,16 @@ function, called every frame while active (disco's hue cycle).
   to 4 random chrs), `intruder` (20s stage alarm), `predators` (all chrs
   cloak for 20s), `buddy` (spawn ally), `reinforce` ("Supply drop" — a random
   gun dropped at a random chr).
+- **`me_and_my_son`** ("Me and my son", Chaos Alpha testbed) — a friendly Jo
+  clone (`pd.spawn_ally_clone`, the player's own body/head on TEAM_ALLY) with
+  half HP and a 40%-height / full-width squash (`pd.chr_yscale(c, 0.4)`), so she
+  fights beside you as a squat, wide runt. A death-watch in the main tick
+  (`st.a_son`, modelled on the Weeping Skedar watcher — independent of any effect
+  timer) polls her health; the frame she falls she takes **half of the player's
+  remaining HP** with her (`pd.player_set_health(h * 0.5)`, which floors at 0.01
+  so it can't be the killing blow itself). Alpha for now (needs the two new
+  bindings — a fresh exe): graduate by dropping `alpha=true` / `w=0` and giving
+  it a weight.
 - **Ammo roulette** (`pd.ammo_swap` — every held gun fires another weapon's
   primary rounds, with periodic refills of the borrowed ammo):
   `rocket_rounds` ("Rockets for everyone"), `grenade_rounds` ("Grenade
@@ -488,6 +498,19 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
+### Me and my son (2026-07-20, the friendly-clone bindings)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.spawn_ally_clone([healthfrac])` | `chraiLuaSpawnAllyClone` (chraction.c) | the `chraiLuaSpawnAlly` recipe, but the buddy wears the **player's own body AND head** (a Jo clone) instead of Dark Combat / VD, and her health pool (`chrSetMaxDamage` + `chrAddHealth`, both ×healthfrac) is scaled — default 0.5 = a fragile half-HP clone. Still TEAM_ALLY / SQUADRON_01 / `GAILIST_INIT_DEFAULT_BUDDY`, Falcon 2, `CHRCFLAG_NEVERSLEEP`. Server/solo-side; returns the chrnum or nil |
+| `pd.chr_yscale(chrnum, mult)` | `chr->yscale` (port-only chrdata field) → `modelUpdateChrNodeMtx` (model.c) | **non-uniform** vertical squash/stretch, unlike the uniform `pd.chr_scale`. The chr root matrix `sp158` is the model→world basis, so its **row 1** (`m[1][*]`) is the world image of the model's local Y axis (the spine); scaling only that row (`mtx00015e4c`) compresses height while leaving width/depth untouched, and — being at the root — it propagates down the whole skeleton. `mult 0.4` = 40% tall, full width. Bounded `(0, 4]` on both the setter and the render read (a stray value can't invert or balloon a chr). Purely visual (hitbox/AI unchanged). `chr->yscale` is reset to 1.0 in **`chrInit`** so a recycled chrslot never inherits a stale squash; the whole path is `#ifndef PLATFORM_N64` (the N64 build is byte-identical) |
+
+`chraiLuaChrYscale`'s field is the first port-only chrdata member that the render
+lib (`src/lib/model.c`) reads — `model->chr` is already the established chr
+backpointer at every CHRINFO node, so no new plumbing. The "Me and my son"
+death-watch (`st.a_son`) lives in chaos.lua's main tick, not a C hook, and is
+cleared in `reset_all_modes` alongside `st.a_weep`.
+
 ### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
 
 > The `nap_time` effect was removed from chaos.lua the same day — stage-wide
@@ -611,7 +634,10 @@ Until then, the UDP bridge is the supported route.
 | `scripts/director.lua`, `scripts/ap/test.lua` | group their entries under submenus (`pd.menu_add` 3rd arg) |
 | `scripts/init.lua` | loads chaos.lua |
 | `src/game/luaai_api.c` | the `pd.*` bindings + `luaExtEventPush` ring queue; `pd.chr_weapon`; `pd.menu_add` group arg + `pd.menu_set_label`; registry `group` field |
-| `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon` |
+| `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon`; `chraiLuaSpawnAllyClone` + `chraiLuaChrYscale` (Me and my son) |
+| `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |
+| `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
+| `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |
 | `src/game/mainmenu.c` | `luaDirectorRebuild` builds per-group submenu dialogs (openers at root top) |
 | `src/include/game/luaai.h` | declarations; `LUA_MENU_LABEL`, `LUA_DIRECTOR_MAX_SUBMENUS`, `luaMenuGroup` |
 | `port/src/net/net.c` | `/chaos` console command; `netChaosEventDrain()` UDP listener; `Chaos.EventPort` config |

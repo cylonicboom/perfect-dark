@@ -1128,6 +1128,10 @@ void chrInit(struct prop *prop, u8 *ailist)
 	// port-appended field must be re-initialised here).
 	chr->lastattackerstamp60 = 0;
 
+	// Default the chaos vertical squash to 1.0 (no override) so a recycled
+	// chrslot never renders with a previous chr's pd.chr_yscale still applied.
+	chr->yscale = 1.0f;
+
 	// Clear the netplay pose-snapshot ring. chrInit initialises fields one by
 	// one (no memset), and chr slots are recycled stage-pool memory, so the
 	// port-appended netsnap/netsnaphead otherwise inherit whatever the pool

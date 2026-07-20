@@ -560,6 +560,24 @@ chaos.effects = {
   boom         = { label="Incoming!",         w=5, dur=0, start=function()
                      local c = random_chr(); if c then pd.explosion(c) end end },
   buddy        = { label="Backup arrives",    w=5, dur=0, start=function() pd.spawn_ally() end },
+  -- "Me and my son": a friendly Jo clone fights beside you — but she's a squat,
+  -- full-width runt (40% height) with half the HP, and when she falls she drags
+  -- half of your REMAINING health down with her. The death penalty is watched in
+  -- the main tick (st.a_son), independent of any effect timer, so it fires
+  -- whenever she eventually dies. alpha for now: needs a fresh exe for
+  -- pd.spawn_ally_clone + pd.chr_yscale — graduate by dropping alpha/w=0 and
+  -- giving it a real weight.
+  me_and_my_son = { label="Me and my son", alpha=true, w=0, dur=0,
+                    start=function()
+                      if not pd.spawn_ally_clone or not pd.chr_yscale then
+                        error("needs new exe")
+                      end
+                      local c = pd.spawn_ally_clone(0.5) -- friendly Jo, half HP
+                      if not c then error("no room for a clone here") end
+                      pd.chr_yscale(c, 0.4)              -- 40% tall, full width
+                      st.a_son = { c = c, seen = false }
+                      pd.hud_message("CHAOS: protect your son")
+                    end },
   reinforce    = { label="Supply drop",       w=4, dur=0, start=function()
                      local c = random_chr(); if c then pd.spawn_at_chr(c, GUNS[math.random(#GUNS)]) end end },
   -- request batch 4
@@ -2371,6 +2389,7 @@ local function reset_all_modes()
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
   st.a_fadeout, st.a_sleep, st.a_weep, st.a_itchy = nil
+  st.a_son = nil -- drop the "Me and my son" death-watch on teardown
   if pd.fade then pd.fade(0, 0, 0, 0, 0) end
   if pd.forced_fire then pd.forced_fire(false) end
   if pd.hud_off then pd.hud_off(false) end
@@ -2726,6 +2745,30 @@ pd.on("tick", function()
           pd.chr_freeze_one(-1)
         end
       end
+    end
+  end
+
+  -- "Me and my son": watch the squashed half-HP clone. Once she's been seen
+  -- alive, the frame she dies (health gone / chr removed) she takes half of the
+  -- player's REMAINING health with her — fires once, then the watch clears.
+  -- Runs off st.a_son in the MAIN tick, independent of any effect timer (the
+  -- spawn is a one-off, like the Weeping Skedar above).
+  if st.a_son then
+    local s = st.a_son
+    local hp = pd.chr_health and pd.chr_health(s.c)
+    if hp and hp > 0 then
+      s.seen = true -- confirmed alive; keep watching
+    elseif s.seen then
+      -- she has fallen: bite half the player's remaining HP. player_set_health
+      -- floors at 0.01, so it hurts but can't itself be the killing blow.
+      local h = pd.player_health and pd.player_health()
+      if h and pd.player_set_health then pd.player_set_health(h * 0.5) end
+      pd.hud_message("CHAOS: your son is dead")
+      st.a_son = nil
+    else
+      -- never confirmed alive (spawn glitched / removed same frame): drop the
+      -- watch without penalising the player.
+      st.a_son = nil
     end
   end
 

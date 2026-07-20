@@ -11148,6 +11148,98 @@ s32 chraiLuaSpawnAlly(void)
 	return chr->chrnum;
 }
 
+// pd.spawn_ally_clone([healthfrac]) -> chrnum or -1. The spawn_ally recipe, but
+// the buddy wears the PLAYER's own body AND head — a friendly Jo clone that
+// fights on TEAM_ALLY beside you — and her health pool is scaled by healthfrac
+// (default 0.5 = a fragile half-HP clone). Backs the "Me and my son" chaos
+// effect. Server/solo-side (a net client never spawns AI).
+s32 chraiLuaSpawnAllyClone(f32 healthfrac)
+{
+	struct prop *prop;
+	struct chrdata *chr;
+	struct chrdata *plchr = apLuaPlayerChr();
+	s32 bodynum;
+	s32 headnum;
+	f32 maxdmg;
+
+	if (plchr == NULL || g_NetMode == NETMODE_CLIENT) {
+		return -1;
+	}
+
+	if (healthfrac <= 0.0f) {
+		healthfrac = 0.5f;
+	}
+	if (healthfrac > 1.0f) {
+		healthfrac = 1.0f;
+	}
+
+	// Use the player's own body/head so the clone actually looks like Jo. Force
+	// the body's model file resident first (the spawn path only loads on demand
+	// and bails silently otherwise) — mirrors chraiLuaSpawnBody.
+	bodynum = plchr->bodynum;
+	headnum = plchr->headnum;
+	if (bodynum >= 0 && bodynum < 152) {
+		bodyLoad(bodynum);
+	}
+
+	prop = chrSpawnAtCoord(bodynum, headnum,
+			&g_Vars.currentplayer->prop->pos,
+			g_Vars.currentplayer->prop->rooms,
+			BADDEG2RAD(g_Vars.currentplayer->vv_theta / 2),
+			ailistFindById(GAILIST_INIT_DEFAULT_BUDDY),
+			SPAWNFLAG_ALLOWONSCREEN);
+
+	if (prop == NULL || prop->chr == NULL) {
+		return -1;
+	}
+
+	chr = prop->chr;
+	chr->flags |= CHRFLAG0_SKIPSAFETYCHECKS;
+	chr->team = TEAM_ALLY;
+	chr->squadron = SQUADRON_01;
+	chr->hidden |= CHRHFLAG_DETECTED;
+	chr->voicebox = VOICEBOX_FEMALE;
+	chr->teamscandist = 50;
+	chr->accuracyrating = 100;
+	chr->speedrating = 100;
+	// A standard buddy is maxdamage 4 + 20 armour (~24 effective). Scale the
+	// whole pool by healthfrac so the clone dies that much sooner. chrAddHealth
+	// subtracts from chr->damage (negative damage = armour buffer).
+	maxdmg = 4.0f * healthfrac;
+	if (maxdmg < 1.0f) {
+		maxdmg = 1.0f;
+	}
+	chrSetMaxDamage(chr, maxdmg);
+	chrAddHealth(chr, 20.0f * healthfrac);
+	chr->chrflags |= CHRCFLAG_NEVERSLEEP;
+	chrGiveWeapon(chr, MODEL_CHRFALCON2, WEAPON_FALCON2, 0);
+
+	return chr->chrnum;
+}
+
+// pd.chr_yscale(chrnum, mult): non-uniform VERTICAL squash/stretch. Unlike
+// chr_scale (uniform), this scales only the model's local up axis, so mult 0.4
+// makes a chr 40% as tall while keeping full width/depth (a squat, wide look).
+// Stored on chr->yscale and applied every frame in modelUpdateChrNodeMtx.
+// mult <= 0 resets to 1.0 (no squash); the render side additionally caps it at
+// 4.0. Purely visual (hitbox/AI unchanged). Returns 1 on success, else 0.
+s32 chraiLuaChrYscale(s32 chrnum, f32 mult)
+{
+	struct chrdata *chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL) {
+		return 0;
+	}
+	if (mult <= 0.0f) {
+		mult = 1.0f;
+	}
+	if (mult > 4.0f) {
+		mult = 4.0f;
+	}
+	chr->yscale = mult;
+	return 1;
+}
+
 // ---- Toolkit framework bridges (all-actor iteration + per-chr mutators) ----
 // These back pd.all_chrs / pd.chr_anim / pd.chr_set_shield / pd.chr_alert. They
 // are thin wrappers over existing engine setters so the toolkit is easy to grow:

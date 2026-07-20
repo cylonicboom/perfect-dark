@@ -98,6 +98,15 @@ local function announce(text)
   pd.log("[chaos] " .. text)
 end
 
+-- Beat game: current beat phase in [0,1) (0 = on the beat). Uses the live music
+-- beat when a sequenced track is playing (pd.music_beat), else the effect's own
+-- free-running fallback accumulator (st.a_beat.freephase, advanced in its tick).
+local function beat_phase()
+  local ph = pd.music_beat and pd.music_beat()
+  if ph then return ph end
+  return (st.a_beat and st.a_beat.freephase) or 0
+end
+
 -- ------------------------------------------------------------- effects -----
 -- duration in seconds (0 = instant). start/stop run under pcall.
 -- Weapon/cheat ids from src/include/constants.h.
@@ -484,6 +493,36 @@ chaos.effects = {
                       pd.space_program(true)
                     end,
                     stop=function() if pd.space_program then pd.space_program(false) end end },
+  -- "Beat game": shoot ON the music beat for bonus damage, slightly off for
+  -- normal, badly off and you hurt yourself. Syncs to the live music tempo
+  -- (pd.music_bpm / pd.music_beat) with a 120-BPM visual-metronome fallback when
+  -- no sequenced track is playing. Scored in the weaponfire hook; the pulsing
+  -- HUD is drawn in the alpha overlay hook. Both read beat_phase() off st.a_beat.
+  beat_game    = { label="Beat game", alpha=true, w=0, dur=30,
+                   start=function()
+                     if not pd.music_beat then error("needs new exe") end
+                     st.a_beat = { freephase = 0, bpm = pd.music_bpm and pd.music_bpm() or 0,
+                                   hasmusic = false, hits = 0, misses = 0,
+                                   last = "", lastcol = 0xffffffff, lastt = 0 }
+                     pd.hud_message("CHAOS: shoot ON THE BEAT")
+                   end,
+                   tick=function()
+                     local b = st.a_beat
+                     if not b then return end
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     local bpm = pd.music_bpm and pd.music_bpm() or 0
+                     if pd.music_beat and pd.music_beat() then
+                       b.hasmusic = true
+                       if bpm > 0 then b.bpm = bpm end
+                     else
+                       b.hasmusic = false
+                       if b.bpm <= 0 then b.bpm = 120 end
+                       local tpb = 3600 / b.bpm -- ticks per beat (60 ticks/s * 60)
+                       b.freephase = (b.freephase + dt / tpb) % 1
+                     end
+                     if b.lastt > 0 then b.lastt = b.lastt - dt end
+                   end,
+                   stop=function() st.a_beat = nil end },
   -- "Frag Out": human enemies lob a grenade whenever they'd fire a weapon.
   frag_out     = { label="Frag Out", alpha=true, w=0, dur=20,
                    start=function()
@@ -2550,6 +2589,7 @@ local function reset_all_modes()
   st.a_son = nil -- drop the "Me and my son" death-watch on teardown
   st.a_silo = nil -- drop the Silo Countdown HUD state (stop() restores music)
   st.a_helpson = nil -- drop the Helpful son input FSM
+  st.a_beat = nil -- drop the Beat game state
   if pd.space_program then pd.space_program(false) end
   if pd.frag_out then pd.frag_out(false) end
   if pd.temu_mag then pd.temu_mag(false) end
@@ -3092,6 +3132,25 @@ pd.on("weaponfire", function(weaponnum, playernum)
       st.recoil_kick = true
     end
   end
+  -- Beat game: score the shot against the music beat. weaponnum > 1 skips
+  -- fists/knife (the glass-cannon convention).
+  if st.active.beat_game and st.a_beat and playernum == 0 and weaponnum and weaponnum > 1 then
+    local b = st.a_beat
+    local ph = beat_phase()
+    local dist = math.min(ph, 1 - ph) -- distance to the nearest beat
+    if dist < 0.10 then          -- ON beat: bonus damage to the aim target
+      local c = pd.aim_chr and pd.aim_chr()
+      if c and pd.chr_damage then pd.chr_damage(c, 8) end
+      b.hits = b.hits + 1
+      b.last, b.lastcol, b.lastt = "PERFECT!", 0x40ff40ff, TICKS
+    elseif dist < 0.22 then      -- slightly off: normal, no bonus or penalty
+      b.last, b.lastcol, b.lastt = "on time", 0xffe040ff, TICKS
+    else                         -- OFF beat: the recoil bites back
+      pd.player_damage(1.5)
+      b.misses = b.misses + 1
+      b.last, b.lastcol, b.lastt = "OFF BEAT!", 0xff4040ff, TICKS
+    end
+  end
   -- Russian roulette: the trigger pull IS the spin. Resolve immediately.
   if st.active.russian_roulette and st.a_rr and not st.a_rr.fired
       and playernum == 0 and weaponnum == W.MAGNUM then
@@ -3368,6 +3427,30 @@ pd.on("draw", function()
       col = 0xff4040ff -- ~5Hz red blink at the end
     end
     centered_text(20, text, col)
+  end
+
+  -- Beat game: a pulse that swells + turns green ON the beat, framed by the
+  -- on-beat "hit size" outline; below it the BPM and the last shot's verdict.
+  if st.active.beat_game and st.a_beat then
+    local b = st.a_beat
+    local ph = beat_phase()
+    local prox = 1 - math.min(ph, 1 - ph) / 0.5 -- 1 on the beat, 0 midway between
+    local base, span = 20, 60
+    local w = base + math.floor(span * prox)
+    local h = 8 + math.floor(10 * prox)
+    local a = math.floor(110 + 140 * prox)
+    local onbeat = prox >= 0.80 -- matches the weaponfire dist < 0.10 hit window
+    local col = onbeat and 0x40ff40 or 0x40c0ff
+    pd.draw_box(math.floor((320 - w) / 2), 26, w, h, col * 256 + a)
+    -- fixed outline at the on-beat hit size (fill it = you're on the beat)
+    local hitw = base + math.floor(span * 0.80)
+    pd.draw_box(math.floor((320 - hitw) / 2) - 2, 24, 2, 20, 0xffffff80)
+    pd.draw_box(math.floor((320 + hitw) / 2), 24, 2, 20, 0xffffff80)
+    centered_text(46, string.format("BEAT  %d BPM%s", math.floor((b.bpm or 0) + 0.5),
+                                    b.hasmusic and "" or " (metronome)"), 0xffffffff)
+    if b.lastt and b.lastt > 0 and b.last ~= "" then
+      centered_text(56, b.last, b.lastcol or 0xffffffff)
+    end
   end
 
   -- (lore now opens the real CI Information menu — no popup.)

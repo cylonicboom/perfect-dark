@@ -280,6 +280,9 @@ s32 chraiLuaFragOut(s32 on);                  /* enemies throw grenades instead 
 s32 chraiLuaSpawnSentry(f32 dx, f32 dz);      /* deploy a hostile laptop sentry at an offset */
 void chraiLuaResetSentries(void);             /* drop the sentry pool count (per stage) */
 s32 chraiLuaTemuMag(s32 on);                  /* reload pays full cost but only partly refills */
+f32 chraiLuaMusicBpm(void);                   /* current sequenced-music tempo (BPM), 0 if none */
+f32 chraiLuaMusicBeat(void);                  /* beat phase [0,1), -1 if no sequenced track */
+s32 chraiLuaAimChr(void);                     /* chrnum the player is aiming at, or -1 */
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
  * apLuaPlayerChr() contract as the AP helpers above. */

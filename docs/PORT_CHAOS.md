@@ -345,6 +345,11 @@ function, called every frame while active (disco's hue cycle).
 - **`helpful_son`** (Chaos Alpha testbed) — a toddler on the second pad:
   at random intervals grabs an input for 0.3-0.7s (look sweep / fire / walk /
   weapon fumble).
+- **`beat_game`** (Chaos Alpha testbed) — a rhythm game: shoot ON the music
+  beat for bonus damage, slightly off for normal, badly off and the recoil hurts
+  you. Syncs to the live music tempo (`pd.music_bpm` / `pd.music_beat`) with a
+  120-BPM visual-metronome fallback when no sequenced track plays. Pulsing beat
+  HUD; bonus lands on `pd.aim_chr()`.
 - **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — a
   self-destruct running `chaos.silo_seconds` (default 8 minutes). On start it
   kills the mission music (`pd.stage_music(false)`) and loops `Silo.mp3`
@@ -529,6 +534,16 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
+### Beat game (2026-07-20, music-tempo bindings)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.music_bpm()` | `chraiLuaMusicBpm` → `sndGetMusicBeat` (lib/music.c) | tempo of the current **sequenced** music track in beats/min, or 0 if none is playing. PD's in-game music is N64 sequences (MIDI-like) and the port runs that synth, so tempo is live: the sequence player tracks `uspt` (µs/tick, updated by MIDI tempo meta events), the sequence carries `qnpt` (quarter-notes/tick = 1/division), so `BPM = 60e6 × qnpt / uspt`. `sndGetMusicBeat` scans `g_SeqInstances[]`, preferring the `TRACKTYPE_PRIMARY` track. External `pd.play_file` tracks (raw PCM) carry no tempo → 0 |
+| `pd.music_beat()` | `chraiLuaMusicBeat` → `sndGetMusicBeat` | position within the current beat as `[0,1)` (0 = on the beat), or nil if no sequenced track. Phase = `(seqp->curTime mod µs-per-beat) / µs-per-beat` — `curTime` is the playback position in µs. NOTE: `curTime` is the sequencer's position, which leads the audible output by the output-buffer latency, so it's a touch ahead of what's heard; the effect's on-screen pulse uses the same phase, so players sync to the visual and it stays self-consistent |
+| `pd.aim_chr()` | `chraiLuaAimChr` → `propFindAimingAt` (prop.c) | the chrnum the local player is aiming at (autoaim/crosshair `FINDPROPCONTEXT_QUERY`), or nil. Lets the beat game reward an on-beat shot with bonus damage without touching the fire→damage path |
+
+`beat_game` is pure Lua on top of those: a `weaponfire`-hook scorer + a pulsing HUD, both reading `beat_phase()` (music beat if playing, else a free-running 120-BPM fallback accumulator in `st.a_beat`). On a shot, distance to the nearest beat picks the outcome — `< 0.10` = **on beat**, bonus `pd.chr_damage(pd.aim_chr(), 8)`; `< 0.22` = on time, normal; else = **off beat**, `pd.player_damage(1.5)`. Doing the bonus as a separate `chr_damage` on the aim target (rather than a per-bullet multiplier) keeps it entirely Lua and dodges the fire-vs-hitscan ordering question.
+
 ### Space Program / Frag Out / Sentries Out / Temu Magazine / Helpful son (2026-07-20)
 
 | Binding | Backing | Notes |
@@ -708,6 +723,7 @@ Until then, the UDP bridge is the supported route.
 | `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |
 | `src/game/bondgun.c` | `g_ChaosTemuMag` partial-reload hook in `bgun0f098df8` (Temu Magazine) |
 | `src/game/lv.c` | `lvReset` clears the new chaos globals + `chraiLuaResetSentries` per stage |
+| `src/lib/music.c`, `src/include/lib/music.h` | `sndGetMusicBeat` — reads the sequenced music tempo + beat phase for the beat game |
 | `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
 | `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |
 | `src/game/mainmenu.c` | `luaDirectorRebuild` builds per-group submenu dialogs (openers at root top) |

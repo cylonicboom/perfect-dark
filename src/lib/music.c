@@ -19,6 +19,70 @@ const u8 var70053ca0[] = {0, 0, 0, 0, 0, 5};
 
 s32 g_MusicNextAmbientTick240 = -1;
 
+#ifndef PLATFORM_N64
+// Chaos "beat game" support: report the tempo + beat phase of the currently
+// playing PRIMARY sequenced music track (falls back to any playing track).
+// Returns 1 with *bpm (beats/min) and *phase ([0,1) within the current beat)
+// filled when a sequenced track is playing, else 0 (*bpm 0, *phase -1). The
+// sequence player tracks uspt (microseconds per tick, updated live by MIDI
+// tempo meta events); the sequence's qnpt is quarter-notes-per-tick (1/division)
+// and curTime is the playback position in microseconds — so µs-per-beat =
+// uspt/qnpt, BPM = 60e6/µs-per-beat, and phase = (curTime mod µs-per-beat).
+s32 sndGetMusicBeat(f32 *bpm, f32 *phase)
+{
+	s32 i;
+	s32 best = -1;
+
+	for (i = 0; i < 3; i++) {
+		if (g_SeqInstances[i].seqp == NULL
+				|| n_alCSPGetState(g_SeqInstances[i].seqp) != AL_PLAYING) {
+			continue;
+		}
+		if (best < 0) {
+			best = i;
+		}
+		if (g_SeqChannels[i].tracktype == TRACKTYPE_PRIMARY) {
+			best = i; // prefer the primary (beat-carrying) track
+			break;
+		}
+	}
+
+	if (best >= 0) {
+		struct seqinstance *seq = &g_SeqInstances[best];
+		f32 qnpt = seq->seq.qnpt;   // quarter notes per tick (1/division)
+		s32 uspt = seq->seqp->uspt; // microseconds per tick
+
+		if (qnpt > 0.0f && uspt > 0) {
+			s32 usperbeat = (s32)((f32)uspt / qnpt); // microseconds per beat
+
+			if (usperbeat > 1) {
+				// Integer modulo (curTime + usperbeat are both µs) keeps this off
+				// the FPU / libm; curTime never resets mid-track.
+				s32 rem = seq->seqp->curTime % usperbeat;
+				if (rem < 0) {
+					rem += usperbeat;
+				}
+				if (bpm) {
+					*bpm = 60000000.0f * qnpt / (f32)uspt;
+				}
+				if (phase) {
+					*phase = (f32)rem / (f32)usperbeat;
+				}
+				return 1;
+			}
+		}
+	}
+
+	if (bpm) {
+		*bpm = 0.0f;
+	}
+	if (phase) {
+		*phase = -1.0f;
+	}
+	return 0;
+}
+#endif
+
 s32 musicHandlePlayEvent(struct musicevent *event, s32 result)
 {
 	s32 i;

@@ -2415,6 +2415,39 @@ static int l_pd_temu_mag(lua_State *L)
 	return 1;
 }
 
+/* pd.music_bpm() -> number. Tempo of the current sequenced music track in
+ * beats/min, or 0 if none is playing (menu, or an external pd.play_file track). */
+static int l_pd_music_bpm(lua_State *L)
+{
+	lua_pushnumber(L, chraiLuaMusicBpm());
+	return 1;
+}
+
+/* pd.music_beat() -> number | nil. Position within the current beat as [0,1)
+ * (0 = on the beat); nil if no sequenced track is playing. */
+static int l_pd_music_beat(lua_State *L)
+{
+	f32 phase = chraiLuaMusicBeat();
+	if (phase < 0.0f) {
+		lua_pushnil(L);
+	} else {
+		lua_pushnumber(L, phase);
+	}
+	return 1;
+}
+
+/* pd.aim_chr() -> chrnum | nil. The chr the local player is aiming at. */
+static int l_pd_aim_chr(lua_State *L)
+{
+	s32 chrnum = chraiLuaAimChr();
+	if (chrnum < 0) {
+		lua_pushnil(L);
+	} else {
+		lua_pushinteger(L, chrnum);
+	}
+	return 1;
+}
+
 /* pd.hudvd(on) -> nil. HUDVD chaos: each HUD element group (health, crosshair,
  * ammo, radar, messages, kill-feed) bounces DVD-style in its own random
  * diagonal. Purely cosmetic — aim/hit-detection are untouched. */
@@ -3038,6 +3071,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_frag_out);      lua_setfield(L, -2, "frag_out");
 	lua_pushcfunction(L, l_pd_spawn_sentry);  lua_setfield(L, -2, "spawn_sentry");
 	lua_pushcfunction(L, l_pd_temu_mag);      lua_setfield(L, -2, "temu_mag");
+	lua_pushcfunction(L, l_pd_music_bpm);     lua_setfield(L, -2, "music_bpm");
+	lua_pushcfunction(L, l_pd_music_beat);    lua_setfield(L, -2, "music_beat");
+	lua_pushcfunction(L, l_pd_aim_chr);       lua_setfield(L, -2, "aim_chr");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
 	lua_pushcfunction(L, l_pd_audio_radio);   lua_setfield(L, -2, "audio_radio");

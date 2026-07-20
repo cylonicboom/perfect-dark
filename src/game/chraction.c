@@ -9343,6 +9343,44 @@ s32 chraiLuaStageMusic(s32 on)
 	return 1;
 }
 
+// pd.music_bpm(): tempo of the current sequenced music track in beats/min, or 0
+// if no sequenced track is playing (e.g. the menu, or a pd.play_file MP3, which
+// carries no tempo). Backs the "beat game" chaos effect.
+f32 chraiLuaMusicBpm(void)
+{
+	extern s32 sndGetMusicBeat(f32 *bpm, f32 *phase);
+	f32 bpm = 0.0f;
+	sndGetMusicBeat(&bpm, NULL);
+	return bpm;
+}
+
+// pd.music_beat(): position within the current musical beat as a fraction
+// [0, 1) (0 = on the beat), or -1 if no sequenced track is playing.
+f32 chraiLuaMusicBeat(void)
+{
+	extern s32 sndGetMusicBeat(f32 *bpm, f32 *phase);
+	f32 phase = -1.0f;
+	sndGetMusicBeat(NULL, &phase);
+	return phase;
+}
+
+// pd.aim_chr(): the chrnum the local player is currently aiming at (the
+// autoaim/crosshair target via propFindAimingAt), or -1 if none. Lets the beat
+// game reward an on-beat shot by dealing bonus damage to that chr.
+s32 chraiLuaAimChr(void)
+{
+	struct prop *prop;
+
+	if (apLuaPlayerChr() == NULL) {
+		return -1;
+	}
+	prop = propFindAimingAt(HAND_RIGHT, false, FINDPROPCONTEXT_QUERY);
+	if (prop && prop->type == PROPTYPE_CHR && prop->chr) {
+		return (s32)prop->chr->chrnum;
+	}
+	return -1;
+}
+
 // Chaos Evil-twin/clone registry: chrnums of live twins, used to make them
 // psychosis-immune (a twin damaged by the player must stay hostile, not flip to
 // the psychosised "friendly" AI list — see chaosIsTwin's use in chraiLuaChrDamage).

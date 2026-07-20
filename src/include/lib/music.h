@@ -11,5 +11,8 @@ s32 musicHandleStopAllEvent(s32 result);
 s32 musicHandleSetIntervalEvent(struct musicevent *event, s32 result);
 void musicTickEvents(void);
 void musicTick(void);
+#ifndef PLATFORM_N64
+s32 sndGetMusicBeat(f32 *bpm, f32 *phase); // chaos beat game: tempo + beat phase
+#endif
 
 #endif

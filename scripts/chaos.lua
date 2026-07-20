@@ -895,6 +895,32 @@ chaos.effects = {
                      if pd.vertex_wobble then pd.vertex_wobble(0) end
                      st.a_jelly = nil
                    end },
+  -- "Acid trip": the works — walls and characters MELT (vertex wobble + a
+  -- downward sag droop), the frame smears (hall-of-mirrors, no colour clear),
+  -- and the colours cycle (Prismatic hue field). Melt phase is animated here.
+  acid_trip    = { label="Acid trip", alpha=true, w=0, dur=20,
+                   start=function()
+                     if not pd.vertex_wobble or not pd.hall_of_mirrors then
+                       error("needs new exe")
+                     end
+                     st.a_acid = { phase = 0 }
+                     pd.vertex_wobble(10, 0.025, 0, 16) -- amp, freq, phase, melt sag
+                     pd.hall_of_mirrors(true)           -- HOM trails
+                     if pd.pixelate then pd.pixelate(0, 0, 1005) end -- Prismatic colours
+                   end,
+                   tick=function()
+                     local a = st.a_acid
+                     if not a then return end
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     a.phase = (a.phase + 0.09 * dt) % (2 * math.pi)
+                     pd.vertex_wobble(10, 0.025, a.phase, 16)
+                   end,
+                   stop=function()
+                     if pd.vertex_wobble then pd.vertex_wobble(0) end
+                     if pd.hall_of_mirrors then pd.hall_of_mirrors(false) end
+                     if pd.pixelate then pd.pixelate() end
+                     st.a_acid = nil
+                   end },
   -- "Pirate": eyepatch — black out the left OR right half (random) as a
   -- post-process, so the HUD in that half goes dark too. Picks a side on start,
   -- clears on stop. alpha for now: needs a fresh exe (pd.pirate).
@@ -2612,7 +2638,9 @@ local function reset_all_modes()
   st.a_helpson = nil -- drop the Helpful son input FSM
   st.a_beat = nil -- drop the Beat game state
   st.a_jelly = nil -- drop the Jelly vertex-wobble state
+  st.a_acid = nil -- drop the Acid trip state
   if pd.vertex_wobble then pd.vertex_wobble(0) end -- clear the renderer wobble
+  if pd.hall_of_mirrors then pd.hall_of_mirrors(false) end -- clear HOM trails
   if pd.space_program then pd.space_program(false) end
   if pd.frag_out then pd.frag_out(false) end
   if pd.temu_mag then pd.temu_mag(false) end

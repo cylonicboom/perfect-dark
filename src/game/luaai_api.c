@@ -2448,15 +2448,25 @@ static int l_pd_aim_chr(lua_State *L)
 	return 1;
 }
 
-/* pd.vertex_wobble([amp, freq, phase]) -> bool. "Jelly": deform every vertex in
- * eye space by sines of position. amp world units (0/absent = off), freq radians
- * per world unit, phase the animation angle (advance it each tick). */
+/* pd.vertex_wobble([amp, freq, phase, sag]) -> bool. "Jelly"/"Acid": deform every
+ * vertex in eye space by sines of position. amp world units (0/absent = off),
+ * freq radians per world unit, phase the animation angle (advance it each tick),
+ * sag an extra always-downward melt droop (world units). */
 static int l_pd_vertex_wobble(lua_State *L)
 {
 	f32 amp = (f32)luaL_optnumber(L, 1, 0.0);
 	f32 freq = (f32)luaL_optnumber(L, 2, 0.03);
 	f32 phase = (f32)luaL_optnumber(L, 3, 0.0);
-	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase) != 0);
+	f32 sag = (f32)luaL_optnumber(L, 4, 0.0);
+	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase, sag) != 0);
+	return 1;
+}
+
+/* pd.hall_of_mirrors(on) -> bool. Skip the framebuffer colour clear so the frame
+ * smears (Doom HOM / acid-trip trails). */
+static int l_pd_hall_of_mirrors(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHallOfMirrors(lua_toboolean(L, 1)) != 0);
 	return 1;
 }
 
@@ -3087,6 +3097,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_music_beat);    lua_setfield(L, -2, "music_beat");
 	lua_pushcfunction(L, l_pd_aim_chr);       lua_setfield(L, -2, "aim_chr");
 	lua_pushcfunction(L, l_pd_vertex_wobble); lua_setfield(L, -2, "vertex_wobble");
+	lua_pushcfunction(L, l_pd_hall_of_mirrors); lua_setfield(L, -2, "hall_of_mirrors");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
 	lua_pushcfunction(L, l_pd_audio_radio);   lua_setfield(L, -2, "audio_radio");

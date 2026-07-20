@@ -283,7 +283,8 @@ s32 chraiLuaTemuMag(s32 on);                  /* reload pays full cost but only 
 f32 chraiLuaMusicBpm(void);                   /* current sequenced-music tempo (BPM), 0 if none */
 f32 chraiLuaMusicBeat(void);                  /* beat phase [0,1), -1 if no sequenced track */
 s32 chraiLuaAimChr(void);                     /* chrnum the player is aiming at, or -1 */
-s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase); /* "Jelly" on-the-fly vertex deformation */
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag); /* "Jelly"/"Acid" vertex deformation (+melt sag) */
+s32 chraiLuaHallOfMirrors(s32 on);            /* skip the frame colour clear (HOM trails) */
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
  * apLuaPlayerChr() contract as the AP helpers above. */

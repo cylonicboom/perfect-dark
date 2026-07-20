@@ -11134,7 +11134,8 @@ s32 chraiLuaScreenRoll(f32 deg)
 extern f32 gfx_vtx_wobble_amp;
 extern f32 gfx_vtx_wobble_freq;
 extern f32 gfx_vtx_wobble_phase;
-s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase)
+extern f32 gfx_vtx_wobble_sag;
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag)
 {
 	if (amp < 0.0f) {
 		amp = 0.0f;
@@ -11142,9 +11143,25 @@ s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase)
 	if (amp > 200.0f) {
 		amp = 200.0f; // sanity clamp so a stray value can't fold the scene
 	}
+	if (sag < 0.0f) {
+		sag = 0.0f;
+	}
+	if (sag > 200.0f) {
+		sag = 200.0f;
+	}
 	gfx_vtx_wobble_amp = amp;
 	gfx_vtx_wobble_freq = freq;
 	gfx_vtx_wobble_phase = phase;
+	gfx_vtx_wobble_sag = sag;
+	return 1;
+}
+
+// pd.hall_of_mirrors(on): skip the framebuffer colour clear so the frame smears
+// (Doom HOM / acid-trip trails). Consumed in gfx_pc.cpp; cleared in lvReset.
+extern s32 gfx_hom_mode;
+s32 chraiLuaHallOfMirrors(s32 on)
+{
+	gfx_hom_mode = on ? 1 : 0;
 	return 1;
 }
 

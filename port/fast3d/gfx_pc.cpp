@@ -413,6 +413,15 @@ float gfx_screen_roll = 0.0f;
 float gfx_vtx_wobble_amp = 0.0f;
 float gfx_vtx_wobble_freq = 0.0f;
 float gfx_vtx_wobble_phase = 0.0f;
+// Chaos "Acid Trip" melt: an always-DOWNWARD (eye -Y) undulating droop added on
+// top of the wobble, so walls and characters sag and drip. World units; only
+// applied when the wobble path is active (amp != 0).
+float gfx_vtx_wobble_sag = 0.0f;
+// Chaos "Hall of mirrors" (pd.hall_of_mirrors / Acid Trip): skip the per-frame
+// colour clear of the game framebuffer so un-redrawn pixels smear — the classic
+// Doom HOM / psychedelic trails. Depth still clears, so new geometry draws
+// normally over the smear. Cleared in lvReset.
+int gfx_hom_mode = 0;
 // Chaos screen tint (pd.screen_tint): 0x00RRGGBB, 0 = off. Rides the
 // grayscale shader path (luminance * tint) like the Midas gold mode.
 int gfx_screen_tint = 0;
@@ -1637,6 +1646,13 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             ex += dx;
             ey += dy;
             ez += dz;
+
+            // Acid Trip melt: an always-downward (eye -Y) droop that undulates
+            // across the surface, so geometry sags and drips rather than just
+            // jiggling. (eye +Y is up, so subtract.)
+            if (gfx_vtx_wobble_sag != 0.0f) {
+                ey -= gfx_vtx_wobble_sag * (0.5f + 0.5f * sinf(ex * f * 0.5f + p));
+            }
 
             const float (*P)[4] = rsp.P_matrix;
             x = ex * P[0][0] + ey * P[1][0] + ez * P[2][0] + ew * P[3][0];
@@ -4144,7 +4160,10 @@ extern "C" void gfx_run(Gfx* commands) {
     gfx_rapi->start_frame();
     gfx_rapi->start_draw_to_framebuffer(game_renders_to_framebuffer ? game_framebuffer : 0,
                                         (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
-    gfx_rapi->clear_framebuffer(true, false);
+    // Chaos "Hall of mirrors": skip the colour clear so last frame's pixels
+    // smear where new geometry doesn't overwrite them (depth still clears below
+    // via the dlist, so geometry renders normally over the trails).
+    gfx_rapi->clear_framebuffer(!gfx_hom_mode, false);
     rdp.viewport_or_scissor_changed = true;
     rendering_state.viewport = {};
     rendering_state.scissor = {};

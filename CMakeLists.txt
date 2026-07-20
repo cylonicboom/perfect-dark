@@ -401,6 +401,31 @@ if(NOT EXTRA_LIBRARIES)
 endif()
 list(APPEND LIBS "${EXTRA_LIBRARIES}")
 
+# In-exe crash symbolication (port/src/crash.c).
+#
+# We build with gcc, so the exe carries DWARF that Windows DbgHelp can't read;
+# crash.c used to resolve it by shelling out to addr2line, which only exists on
+# machines with MinGW installed. Players therefore got raw offsets. libbacktrace
+# parses the exe's OWN PE/COFF + DWARF in-process, so a shipped build symbolises
+# its own crash log with no external tool and nothing extra to distribute.
+#
+# Optional: without it crash.c keeps the addr2line fallback verbatim. Link the
+# STATIC archive by name -- plain "backtrace" would resolve to libbacktrace.dll.a
+# and add a runtime DLL to the distribution.
+option(PD_ENABLE_LIBBACKTRACE "In-exe crash symbolication via libbacktrace" ON)
+if(PD_ENABLE_LIBBACKTRACE)
+  find_path(LIBBACKTRACE_INCLUDE_DIR backtrace.h)
+  find_library(LIBBACKTRACE_LIBRARY NAMES libbacktrace.a backtrace)
+  if(LIBBACKTRACE_INCLUDE_DIR AND LIBBACKTRACE_LIBRARY)
+    add_definitions(-DUSE_LIBBACKTRACE=1)
+    include_directories("${LIBBACKTRACE_INCLUDE_DIR}")
+    list(APPEND LIBS "${LIBBACKTRACE_LIBRARY}")
+    message(STATUS "libbacktrace: ${LIBBACKTRACE_LIBRARY} (in-exe crash symbolication)")
+  else()
+    message(STATUS "libbacktrace: not found - crash logs fall back to addr2line")
+  endif()
+endif()
+
 # Controller Pak support
 #   PD_ENABLE_CPAK    - Virtual Pak: live, file-backed N64 Controller Paks (.mpk). No deps.
 #   PD_ENABLE_RAPHNET - physical Controller Pak backup via a Raphnet USB adapter (hidapi).

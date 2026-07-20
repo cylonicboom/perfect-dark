@@ -6,12 +6,32 @@ function + file:line backtraces with one command.
 
 ## The problem it solves
 
-The Windows crash handler (`port/src/crash.c`) resolves symbols in-process via
-addr2line only when `addr2line.exe` is present next to the exe or in an MSYS2
-install. Users we ship builds to have neither, so their `pd.crash.log` contains
-raw module-relative offsets (`#00: 00007ff7...: [base]+00000000000ac20a`).
-Those offsets are only meaningful against the *exact binary* that crashed — and
-the local build dir has usually moved on by the time the report arrives.
+The Windows crash handler (`port/src/crash.c`) symbolises in-process. Since
+2026-07-21 it does so via **libbacktrace linked into the exe** (`USE_LIBBACKTRACE`,
+see below), which needs no external tool — so shipped builds now produce
+symbolised logs on users' machines. It falls back to shelling out to
+`addr2line.exe` when built without libbacktrace.
+
+Even so, the archive below stays essential: **in-exe symbolication only works
+while the exe still carries DWARF**, and it produces nothing for a crash so early
+or so corrupt that the handler can't run. A raw-offset log is only meaningful
+against the *exact binary* that crashed — and the local build dir has usually
+moved on by the time the report arrives.
+
+### In-exe symbolication (libbacktrace)
+
+- Enabled by the CMake option `PD_ENABLE_LIBBACKTRACE` (default ON). Configure
+  prints `libbacktrace: <path> (in-exe crash symbolication)` when it's found,
+  or `not found - crash logs fall back to addr2line` when it isn't. Build dep:
+  `pacman -S mingw-w64-x86_64-libbacktrace`.
+- Linked as the **static** archive (`find_library(... NAMES libbacktrace.a ...)`).
+  Plain `backtrace` resolves to `libbacktrace.dll.a` and would add
+  `libbacktrace-0.dll` to the distribution — the shipped set stays exe +
+  `SDL3.dll` + `zlib1.dll`.
+- Output format is identical to the addr2line path (`      func at file:line`,
+  one line per inline level), so `tools/netsoak.py`-style log parsing and
+  `tools/symbolicate.py` are unaffected.
+- Costs ~60 KB of exe. Requires the shipped exe to be unstripped (ours is).
 
 ## The three pieces
 
@@ -52,6 +72,22 @@ the local build dir has usually moved on by the time the report arrives.
 
 ## Gotchas
 
+- **The Windows loader rewrites `OptionalHeader.ImageBase` in the in-memory PE
+  header** to wherever the module actually landed. So reading `ImageBase` from
+  `GetModuleHandle(NULL)` gives you the *runtime* base, NOT the linker's
+  preferred base — the two look identical in the common case where the module
+  loads unrelocated, and diverge silently under ASLR. Verified with a test exe
+  linked at `0x1a0000000` reporting `0x7ff6ffb30000` in memory. `crash.c` did
+  exactly this and consequently fed addr2line an out-of-range address on every
+  relocated load; the resulting `??` was swallowed by the output filter, so
+  symbols just quietly vanished. `crashGetPreferredImageBase()` now reads the
+  header **from the exe on disk**. Anything needing the preferred base must do
+  the same.
+- **The two symbolisers want opposite conventions.** libbacktrace rebases onto
+  the runtime load address, so hand it the live PC. addr2line wants
+  preferred-base + module offset. Don't "helpfully" retry a miss with the other
+  convention — on a relocated module the wrong address lands in a different
+  function and resolves to a confidently wrong answer.
 - **addr2line treats its address arguments as hex regardless of prefix** — a
   decimal `$((...))` shell expansion silently resolves the wrong address and
   returns `??`. The tool always formats `0x%x`.

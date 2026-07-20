@@ -103,10 +103,18 @@ static const char *crashGetMainExePath(void)
 }
 
 // On Windows, addr2line wants addresses keyed to the binary's *preferred*
-// image base (from the PE header), not the runtime load address. With ASLR
-// the runtime base differs every launch. Read the linker-recorded image
-// base from the in-memory PE header so we can convert a module offset into
-// the address addr2line actually expects.
+// image base (the one the linker recorded), not the runtime load address.
+// With ASLR the runtime base differs every launch.
+//
+// This MUST be read from the exe ON DISK. The obvious shortcut -- reading
+// OptionalHeader.ImageBase out of the in-memory PE header -- silently returns
+// the RUNTIME base instead: when the loader relocates a module it rewrites
+// that field in memory to wherever the module actually landed. Verified with
+// a test exe linked at 0x1a0000000 that reported 0x7ff6ffb30000 in memory.
+// Reading it from memory therefore made this function an expensive way to
+// recompute the module base, and every addr2line lookup on a relocated load
+// (i.e. all of them, ASLR is on) got an out-of-range address and resolved to
+// "??", which the output filter then dropped -- symbols just silently vanished.
 static ULONGLONG crashGetPreferredImageBase(void)
 {
 	static ULONGLONG cached = 0;
@@ -115,19 +123,28 @@ static ULONGLONG crashGetPreferredImageBase(void)
 		return cached;
 	}
 	tried = 1;
-	HMODULE h = GetModuleHandleA(NULL);
-	if (!h) {
+
+	const char *exe = crashGetMainExePath();
+	if (!exe) {
 		return 0;
 	}
-	PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)h;
-	if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+
+	FILE *f = fopen(exe, "rb");
+	if (!f) {
 		return 0;
 	}
-	PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE *)h + dos->e_lfanew);
-	if (nt->Signature != IMAGE_NT_SIGNATURE) {
-		return 0;
+
+	IMAGE_DOS_HEADER dos;
+	IMAGE_NT_HEADERS nt;
+	if (fread(&dos, sizeof(dos), 1, f) == 1
+			&& dos.e_magic == IMAGE_DOS_SIGNATURE
+			&& fseek(f, dos.e_lfanew, SEEK_SET) == 0
+			&& fread(&nt, sizeof(nt), 1, f) == 1
+			&& nt.Signature == IMAGE_NT_SIGNATURE) {
+		cached = nt.OptionalHeader.ImageBase;
 	}
-	cached = nt->OptionalHeader.ImageBase;
+
+	fclose(f);
 	return cached;
 }
 
@@ -211,12 +228,103 @@ static const char *crashFindAddr2Line(void)
 	return NULL;
 }
 
+#ifdef USE_LIBBACKTRACE
+#include <backtrace.h>
+
+// In-exe DWARF reader. Same result as the addr2line shell-out below (function
+// + file:line + inline chain) but resolved in-process against our own PE/COFF
+// debug sections, so a SHIPPED build symbolises its own crash log with no
+// external tool and nothing extra to distribute. Requires the exe to still
+// carry DWARF -- a stripped build resolves nothing here (or anywhere).
+struct crashbtctx {
+	char *msg;
+	DWORD *msglenp;
+	int emitted;
+};
+
+static void crashBtError(void *data, const char *errmsg, int errnum)
+{
+	// Swallowed deliberately: a missing or unreadable debug section just means
+	// this frame stays a raw offset and the addr2line fallback still gets a go.
+	// Nothing useful can be reported from inside an exception filter anyway.
+}
+
+static int crashBtFull(void *data, uintptr_t pc, const char *filename, int lineno, const char *function)
+{
+	struct crashbtctx *ctx = (struct crashbtctx *)data;
+
+	if (function == NULL && filename == NULL) {
+		return 0;
+	}
+
+	DWORD msglen = *ctx->msglenp;
+
+	if (msglen < CRASH_MAX_MSG) {
+		msglen += snprintf(ctx->msg + msglen, CRASH_MAX_MSG - msglen, "      %s at %s:%d\n",
+				function ? function : "??", filename ? filename : "??", lineno);
+		*ctx->msglenp = msglen;
+	}
+
+	ctx->emitted++;
+
+	return 0; // keep walking the inline chain
+}
+
+static struct backtrace_state *crashBtGetState(void)
+{
+	static struct backtrace_state *state = NULL;
+	static int tried = 0;
+
+	if (!tried) {
+		tried = 1;
+		const char *exe = crashGetMainExePath();
+		if (exe) {
+			// threaded=0: by the time the exception filter runs we're the only
+			// thread that matters, and the threaded path only adds atomics.
+			state = backtrace_create_state(exe, 0, crashBtError, NULL);
+		}
+	}
+
+	return state;
+}
+
+// Returns the number of symbol lines emitted (0 = nothing resolved).
+static int crashAppendLibBacktrace(char *msg, DWORD *msglenp, uintptr_t modofs)
+{
+	struct backtrace_state *state = crashBtGetState();
+
+	if (!state) {
+		return 0;
+	}
+
+	struct crashbtctx ctx = { msg, msglenp, 0 };
+
+	// libbacktrace's PE reader rebases onto the module's RUNTIME load address,
+	// so it wants the live address -- the opposite of addr2line, which wants
+	// the linker's preferred base. Confirmed against a test exe linked at
+	// 0x1a0000000 and loaded at 0x7ff6ffb30000: it resolved at the runtime
+	// address. Don't "helpfully" retry with the preferred base if this misses;
+	// on a relocated module that address lands somewhere else entirely and
+	// would resolve to a confidently wrong function.
+	backtrace_pcinfo(state, (uintptr_t)GetModuleHandleA(NULL) + modofs, crashBtFull, crashBtError, &ctx);
+
+	return ctx.emitted;
+}
+#endif
+
 // Try to resolve a main-exe module offset using addr2line. Appends one or
 // more "      function at file:line" lines (one per inline expansion level)
 // into the crash message buffer. Silently no-ops if addr2line isn't on PATH
 // or if the offset can't be resolved (no debug info compiled in).
 static void crashAppendDwarf(char *msg, DWORD *msglenp, uintptr_t modofs)
 {
+#ifdef USE_LIBBACKTRACE
+	// Prefer the in-exe reader; only shell out if it resolved nothing.
+	if (crashAppendLibBacktrace(msg, msglenp, modofs) > 0) {
+		return;
+	}
+#endif
+
 	const char *exe = crashGetMainExePath();
 	const char *a2l = crashFindAddr2Line();
 	if (!exe || !a2l) {
@@ -408,9 +516,18 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo)
 	// Say WHY a dump has raw offsets only, so a pasted crash screen is
 	// diagnosable: without this, "no addr2line found" and "addr2line found
 	// but resolution failed" look identical (both just print no symbol lines).
+#ifdef USE_LIBBACKTRACE
+	// The in-exe reader needs no external tool, so the only way to get raw
+	// offsets now is a build with no readable debug info at all. Don't tell
+	// people to ship addr2line when it isn't what's missing.
+	if (!crashBtGetState() && !crashFindAddr2Line()) {
+		CRASH_MSG("\n(no readable debug info in this build - raw offsets only)\n");
+	}
+#else
 	if (!crashFindAddr2Line()) {
 		CRASH_MSG("\n(addr2line.exe not found - raw offsets only; ship addr2line.exe next to the exe to symbolise)\n");
 	}
+#endif
 
 	CRASH_MSG("\nBACKTRACE:\n");
 

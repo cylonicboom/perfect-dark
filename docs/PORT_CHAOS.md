@@ -329,16 +329,21 @@ function, called every frame while active (disco's hue cycle).
   the Air Force One crash block (`playerSurroundWithExplosions` — staggered
   explosions around the player), then both off. Looks lethal, isn't — to
   you; nearby NPCs genuinely catch the blasts.
-- **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — an
-  8-minute self-destruct. On start it kills the mission music
-  (`pd.stage_music(false)`) and loops `Silo.mp3` (`pd.play_file`,
-  best-effort) underneath, and draws its own centred MM:SS clock (red-flashing
-  in the final 10s). At zero it detonates — `pd.explosions_around` the player
-  (unlike `self_destruct`, **no** invincibility, so it can genuinely kill).
-  Mission-complete or a player restart tears the whole thing down (music
-  restored, track stopped, pending boom cancelled) via `stop()` +
-  `reset_all_modes`. Alpha for now (needs a fresh exe + the `Silo.mp3` asset):
-  graduate by dropping `alpha=true` / `w=0`.
+- **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — a
+  self-destruct running `chaos.silo_seconds` (default 8 minutes). On start it
+  kills the mission music (`pd.stage_music(false)`) and loops `Silo.mp3`
+  (`pd.play_file`, best-effort) underneath, and draws its own centred MM:SS
+  clock (red-flashing in the final 10s). At the **30-second** mark it swaps the
+  track to `Silox.mp3` (the final-stretch music); at zero it detonates —
+  `pd.explosions_around` the player (unlike `self_destruct`, **no**
+  invincibility, so it can genuinely kill). Mission-complete or a player restart
+  tears the whole thing down (music restored, track stopped, pending boom
+  cancelled) via `stop()` + `reset_all_modes`. The length lives in
+  `chaos.silo_seconds` so a test harness can shrink it — `scripts/silo_test.lua`
+  (`/lua silo_test()` or the Chaos Alpha menu's "Silo Countdown (1-min test)")
+  fires it at 60s and restores the 8-minute default. Alpha for now (needs a
+  fresh exe + the `Silo.mp3` / `Silox.mp3` assets): graduate by dropping
+  `alpha=true` / `w=0`.
 - **Visual** (renderer + room lighting; all timed, all local-cosmetic):
   `untextured` ("1996 mode" — every texture white, pure vertex shading),
   `watercolour` (every texture flooded with its own average colour),
@@ -522,17 +527,26 @@ backpointer at every CHRINFO node, so no new plumbing. The "Me and my son"
 death-watch (`st.a_son`) lives in chaos.lua's main tick, not a C hook, and is
 cleared in `reset_all_modes` alongside `st.a_weep`.
 
-**Silo Countdown** (`silo_countdown`) is otherwise pure Lua: a `fixeddur` 480s
-(8-minute) `nobar` effect that on start kills the level music (`pd.stage_music(false)`)
-and loops `Silo.mp3` (`pd.play_file`, best-effort), draws its own centred MM:SS
-clock in the alpha HUD hook off `st.a_silo` (red-flashing in the final 10s), and
-at zero fires `pd.explosions_around` with `st.a_boom_off` (the same short-burst
-detonation the countdown/SPEED payoffs use — shut off by the main tick, so the
-effect's own `stop()` never has to). `stop()` stops the track and restores the
-music but deliberately leaves the boom alone; a mission-complete or player
-restart routes through `reset_all_modes`, which runs `stop()` **and** clears the
-pending boom (`explosions_around(false)` + `a_boom_off = nil`), so the timer and
-detonation vanish together.
+**Silo Countdown** (`silo_countdown`) is otherwise pure Lua: a `fixeddur`
+`nobar` effect whose length is `chaos.silo_seconds` (default 480s / 8 minutes,
+via a `dur` function so a test harness can shrink it). On start it kills the
+level music (`pd.stage_music(false)`) and loops `Silo.mp3` (`pd.play_file`,
+best-effort), and draws its own centred MM:SS clock in the alpha HUD hook off
+`st.a_silo` (red-flashing in the final 10s). Its tick swaps `Silo.mp3` for
+`Silox.mp3` once at the 30-second mark (`play_file` replaces the current external
+track), and at zero fires `pd.explosions_around` with `st.a_boom_off` (the same
+short-burst detonation the countdown/SPEED payoffs use — shut off by the main
+tick, so the effect's own `stop()` never has to). `stop()` stops the track and
+restores the music but deliberately leaves the boom alone; a mission-complete or
+player restart routes through `reset_all_modes`, which runs `stop()` **and**
+clears the pending boom (`explosions_around(false)` + `a_boom_off = nil`), so the
+timer and detonation vanish together.
+
+`scripts/silo_test.lua` (loaded by `init.lua` after chaos.lua) is a test harness:
+`silo_test()` saves `chaos.silo_seconds`, sets it to 60, triggers the effect
+(so `start()`/`dur()` capture the 60s), then restores the default — a one-minute
+run that leaves the real 8-minute effect untouched. Exposed as `/lua silo_test()`
+and a "Silo Countdown (1-min test)" entry in the Chaos Alpha menu.
 
 ### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
 
@@ -658,7 +672,9 @@ Until then, the UDP bridge is the supported route.
 | `scripts/init.lua` | loads chaos.lua |
 | `src/game/luaai_api.c` | the `pd.*` bindings + `luaExtEventPush` ring queue; `pd.chr_weapon`; `pd.menu_add` group arg + `pd.menu_set_label`; registry `group` field |
 | `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon`; `chraiLuaSpawnAllyClone` + `chraiLuaChrYscale` (Me and my son); `chraiLuaStageMusic` (Silo Countdown) |
-| `scripts/sounds/chaos/README.md` | documents the `Silo.mp3` external track (not shipped) |
+| `scripts/silo_test.lua` | Silo Countdown 1-minute test harness (`silo_test()` + Chaos Alpha menu entry) |
+| `scripts/init.lua` | loads `silo_test.lua` after chaos.lua |
+| `scripts/sounds/chaos/README.md` | documents the `Silo.mp3` / `Silox.mp3` external tracks (not shipped) |
 | `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |
 | `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
 | `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |

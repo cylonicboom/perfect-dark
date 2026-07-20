@@ -40,6 +40,11 @@ load("scripts/ap/client.lua")
 -- docs/PORT_CHAOS.md.
 load("scripts/chaos.lua")
 
+-- Silo Countdown test harness: /lua silo_test() fires the Silo Countdown chaos
+-- effect with a 1-minute timer (instead of 8) so it can be tested quickly. Must
+-- load AFTER chaos.lua. See scripts/silo_test.lua.
+load("scripts/silo_test.lua")
+
 -- Live octree-culling stats overlay (testing the outdoor-room octree). Shows
 -- top-right only while an octree room is rendering. Comment out to hide.
 load("scripts/octree_overlay.lua")

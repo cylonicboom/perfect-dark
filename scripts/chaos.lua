@@ -24,6 +24,12 @@
 
 chaos = chaos or {}
 
+-- Silo Countdown length in seconds (default 8 minutes). Exposed on the chaos
+-- table so a test harness can shrink it without editing this file — e.g.
+-- scripts/silo_test.lua sets chaos.silo_seconds = 60 so you don't have to wait
+-- the full 8 minutes to test the 30s-mark Silox.mp3 swap + the detonation.
+chaos.silo_seconds = chaos.silo_seconds or 480
+
 local TICKS = 60 -- pd "tick" event runs at the sim rate
 
 -- DVD screensaver palette: bright RGBA words cycled on every wall bounce.
@@ -1347,30 +1353,41 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() pd.alarm(false); st.a_cd = nil end },
-  -- "Silo Countdown": an 8-minute self-destruct. Kills the level music, plays
-  -- Silo.mp3 (scripts/sounds/chaos/Silo.mp3, looped) underneath, and shows a big
-  -- centred MM:SS timer (drawn in the alpha HUD hook off st.a_silo). At zero it
-  -- detonates — explosions_around the player, shut off ~3s later by the main
-  -- tick's a_boom_off handler. stop() (natural expiry, /chaos off, re-trigger)
-  -- stops the track and restores the level music WITHOUT touching the boom; a
-  -- mission-complete or player restart routes through reset_all_modes, which
-  -- runs stop() AND cancels the pending boom — so the timer/boom vanish cleanly.
-  -- alpha for now: needs a fresh exe (pd.stage_music) + the Silo.mp3 asset.
-  silo_countdown = { label="Silo Countdown", alpha=true, w=0,
-                     fixeddur=true, dur=480, nobar=true, -- 8 min; draws its own HUD
+  -- "Silo Countdown": a self-destruct (chaos.silo_seconds, default 8 min). Kills
+  -- the level music, plays Silo.mp3 (scripts/sounds/chaos/Silo.mp3, looped)
+  -- underneath, and shows a big centred MM:SS timer (drawn in the alpha HUD hook
+  -- off st.a_silo). At the 30s mark it swaps to Silox.mp3 (the final-stretch
+  -- track); at zero it detonates — explosions_around the player, shut off ~3s
+  -- later by the main tick's a_boom_off handler. stop() (natural expiry,
+  -- /chaos off, re-trigger) stops the track and restores the level music WITHOUT
+  -- touching the boom; a mission-complete or player restart routes through
+  -- reset_all_modes, which runs stop() AND cancels the pending boom — so the
+  -- timer/boom vanish cleanly. Duration comes from chaos.silo_seconds so a test
+  -- harness can shrink it (scripts/silo_test.lua sets 60s). alpha for now: needs
+  -- a fresh exe (pd.stage_music) + the Silo.mp3 / Silox.mp3 assets.
+  silo_countdown = { label="Silo Countdown", alpha=true, w=0, nobar=true,
+                     fixeddur=true, dur=function() return chaos.silo_seconds or 480 end,
                      start=function()
                        if not pd.stage_music then error("needs new exe") end
-                       st.a_silo = { left = 480 * TICKS, fired = false }
+                       local secs = chaos.silo_seconds or 480
+                       st.a_silo = { left = secs * TICKS, fired = false, finalmusic = false }
                        pd.stage_music(false) -- silence the mission track
                        -- best-effort: Silo.mp3 looped underneath. The countdown +
                        -- detonation still run if the asset is missing (just silent).
                        pd.play_file("scripts/sounds/chaos/Silo.mp3", true)
-                       pd.hud_message("CHAOS: SILO SELF-DESTRUCT ARMED — 8:00")
+                       pd.hud_message(string.format("CHAOS: SILO SELF-DESTRUCT ARMED — %d:%02d",
+                                                    math.floor(secs / 60), secs % 60))
                      end,
                      tick=function(left)
                        local s = st.a_silo
                        if not s then return end
                        s.left = left -- feed the HUD readout
+                       -- final-stretch music: at 30s to go, swap Silo.mp3 for
+                       -- Silox.mp3 (play_file replaces the current external track).
+                       if not s.finalmusic and left <= 30 * TICKS then
+                         s.finalmusic = true
+                         pd.play_file("scripts/sounds/chaos/Silox.mp3", true)
+                       end
                        if not s.fired and left <= 8 then -- last few ticks = zero
                          s.fired = true
                          pd.hud_message("CHAOS: DETONATION")

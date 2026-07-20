@@ -185,6 +185,11 @@ extern unsigned char gfx_upsidedown_mode;
 // Chaos screen roll ("Speen", gfx_pc.cpp, C++ float == f32). Gates dlcache
 // off while active (the cached replay's uMVP is not rotated).
 extern f32 gfx_screen_roll;
+// Chaos "Jelly" vertex wobble (gfx_pc.cpp). The per-vertex displacement runs on
+// the CPU vertex path, which cached rooms (GPU replay of recorded verts) never
+// re-run — so gate dlcache off while active or the world would stay rigid while
+// props wobble (same reasoning as shiny mode).
+extern f32 gfx_vtx_wobble_amp;
 // Chaos "iPod Ad" silhouette (gfx_pc.cpp, C++ int == s32). Synced from
 // g_ChaosIpodAd; the flat-fill scope colours are per-prop display-list opcodes.
 // Gates dlcache off (cached replay bypasses the per-prop G_FLATFILL brackets).
@@ -4341,6 +4346,7 @@ Gfx *bgRenderRoomPass(Gfx *gdl, s32 roomnum, struct roomblock *block, bool arg3)
 		// verts) never re-run - rooms would stay matte while props shine.
 		if (g_DlCacheEnabled && !gfx_wireframe_mode && !gfx_shiny_mode && !gfx_upsidedown_mode
 				&& gfx_screen_roll == 0.0f && !gfx_silhouette
+				&& gfx_vtx_wobble_amp == 0.0f
 				&& !gfx_rt_fullbright_active
 				&& (g_Rooms[roomnum].flags & ROOMFLAG_HASDYNTEX) == 0) {
 			// Bracket the leaf for GPU-resident display-list caching. The renderer

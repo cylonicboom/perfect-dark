@@ -319,6 +319,7 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosGameOverStatus;  // chaos Game over? Unknown/Missing override
 	extern s32 g_ChaosBeyblade;        // chaos Bayblade! NPC spin
 	extern f32 gfx_screen_roll;        // chaos Speen view roll (renderer float)
+	extern f32 gfx_vtx_wobble_amp;     // chaos "Jelly" vertex wobble (renderer float)
 	extern s32 g_ChaosOneBulletMags;   // chaos One Bullet Mags
 	extern s32 g_ChaosForcedMarch;     // chaos Forced March
 	extern s32 g_ChaosForcedFire;      // chaos Itchy Trigger Finger
@@ -368,6 +369,7 @@ void lvReset(s32 stagenum)
 	g_ChaosGameOverStatus = 0;  // chaos Game over? status override
 	g_ChaosBeyblade = 0;
 	gfx_screen_roll = 0.0f;
+	gfx_vtx_wobble_amp = 0.0f;
 	g_ChaosOneBulletMags = 0;
 	g_ChaosForcedMarch = 0;
 	g_ChaosForcedFire = 0;

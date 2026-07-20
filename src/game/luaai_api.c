@@ -2448,6 +2448,18 @@ static int l_pd_aim_chr(lua_State *L)
 	return 1;
 }
 
+/* pd.vertex_wobble([amp, freq, phase]) -> bool. "Jelly": deform every vertex in
+ * eye space by sines of position. amp world units (0/absent = off), freq radians
+ * per world unit, phase the animation angle (advance it each tick). */
+static int l_pd_vertex_wobble(lua_State *L)
+{
+	f32 amp = (f32)luaL_optnumber(L, 1, 0.0);
+	f32 freq = (f32)luaL_optnumber(L, 2, 0.03);
+	f32 phase = (f32)luaL_optnumber(L, 3, 0.0);
+	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase) != 0);
+	return 1;
+}
+
 /* pd.hudvd(on) -> nil. HUDVD chaos: each HUD element group (health, crosshair,
  * ammo, radar, messages, kill-feed) bounces DVD-style in its own random
  * diagonal. Purely cosmetic — aim/hit-detection are untouched. */
@@ -3074,6 +3086,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_music_bpm);     lua_setfield(L, -2, "music_bpm");
 	lua_pushcfunction(L, l_pd_music_beat);    lua_setfield(L, -2, "music_beat");
 	lua_pushcfunction(L, l_pd_aim_chr);       lua_setfield(L, -2, "aim_chr");
+	lua_pushcfunction(L, l_pd_vertex_wobble); lua_setfield(L, -2, "vertex_wobble");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
 	lua_pushcfunction(L, l_pd_audio_radio);   lua_setfield(L, -2, "audio_radio");

@@ -11126,6 +11126,28 @@ s32 chraiLuaScreenRoll(f32 deg)
 	return 1;
 }
 
+// pd.vertex_wobble(amp, freq, phase): "Jelly" — true on-the-fly vertex
+// deformation. amp (world units) drives the eye-space displacement (0/absent =
+// off); freq (radians per world unit) sets the ripple wavelength; phase is the
+// animation angle, advanced by the caller each tick. Consumed in gfx_sp_vertex;
+// gates dlcache off (bg.c) while amp != 0.
+extern f32 gfx_vtx_wobble_amp;
+extern f32 gfx_vtx_wobble_freq;
+extern f32 gfx_vtx_wobble_phase;
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase)
+{
+	if (amp < 0.0f) {
+		amp = 0.0f;
+	}
+	if (amp > 200.0f) {
+		amp = 200.0f; // sanity clamp so a stray value can't fold the scene
+	}
+	gfx_vtx_wobble_amp = amp;
+	gfx_vtx_wobble_freq = freq;
+	gfx_vtx_wobble_phase = phase;
+	return 1;
+}
+
 // pd.beyblade(on): "Bayblade!" — every non-player chr's model yaw spins at
 // ~2 rev/s (absolute frame-derived stomp in chr0f0220ec, chr.c, so AI facing
 // writes can't unwind it). Purely visual: AI, movement and aim keep running.

@@ -874,6 +874,27 @@ chaos.effects = {
   peephole     = { label="Peephole",          w=3, dur=20,
                    start=function() pd.lens(1.4) end,
                    stop=function() pd.lens() end },
+  -- "Jelly": true on-the-fly VERTEX deformation (not a post-process) — the whole
+  -- scene wobbles like jelly. The renderer displaces every vertex in eye space by
+  -- sines of position (pd.vertex_wobble); this tick just advances the phase so it
+  -- ripples. amp/freq are tuned here so they can be tweaked without a rebuild.
+  jelly        = { label="Jelly", alpha=true, w=0, dur=20,
+                   start=function()
+                     if not pd.vertex_wobble then error("needs new exe") end
+                     st.a_jelly = { phase = 0 }
+                     pd.vertex_wobble(12, 0.03, 0)
+                   end,
+                   tick=function()
+                     local j = st.a_jelly
+                     if not j then return end
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     j.phase = (j.phase + 0.12 * dt) % (2 * math.pi)
+                     pd.vertex_wobble(12, 0.03, j.phase)
+                   end,
+                   stop=function()
+                     if pd.vertex_wobble then pd.vertex_wobble(0) end
+                     st.a_jelly = nil
+                   end },
   -- "Pirate": eyepatch — black out the left OR right half (random) as a
   -- post-process, so the HUD in that half goes dark too. Picks a side on start,
   -- clears on stop. alpha for now: needs a fresh exe (pd.pirate).
@@ -2590,6 +2611,8 @@ local function reset_all_modes()
   st.a_silo = nil -- drop the Silo Countdown HUD state (stop() restores music)
   st.a_helpson = nil -- drop the Helpful son input FSM
   st.a_beat = nil -- drop the Beat game state
+  st.a_jelly = nil -- drop the Jelly vertex-wobble state
+  if pd.vertex_wobble then pd.vertex_wobble(0) end -- clear the renderer wobble
   if pd.space_program then pd.space_program(false) end
   if pd.frag_out then pd.frag_out(false) end
   if pd.temu_mag then pd.temu_mag(false) end

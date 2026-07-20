@@ -400,6 +400,19 @@ bool gfx_upsidedown_mode = false;
 // bg.c gates dlcache off (cached replay's uMVP is not rotated). 2D texrects
 // (HUD/text) don't pass through gfx_sp_vertex and stay upright.
 float gfx_screen_roll = 0.0f;
+// Chaos "Jelly" vertex wobble (pd.vertex_wobble): a TRUE on-the-fly vertex
+// deformation (not a post-process). Each vertex is transported to EYE space,
+// displaced along all three axes by sines of its position, then projected — so
+// the whole scene ripples like jelly at a coherent WORLD-unit wavelength no
+// matter how big or small each model's own vertex coords are (a fixed frequency
+// in model space would look like fine noise on large room meshes and a gentle
+// sway on small props). UI (G_NOMIRROR_EXT) is exempt. Animated by advancing the
+// phase from Lua each tick (the speen pattern). bg.c gates the display-list
+// cache off while amp != 0 so cached room geometry re-runs this CPU vertex path
+// and wobbles too. amp is in world units, freq in radians per world unit.
+float gfx_vtx_wobble_amp = 0.0f;
+float gfx_vtx_wobble_freq = 0.0f;
+float gfx_vtx_wobble_phase = 0.0f;
 // Chaos screen tint (pd.screen_tint): 0x00RRGGBB, 0 = off. Rides the
 // grayscale shader path (luminance * tint) like the Midas gold mode.
 int gfx_screen_tint = 0;
@@ -1601,10 +1614,41 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
 
-        float x = v->v[0] * rsp.MP_matrix[0][0] + v->v[1] * rsp.MP_matrix[1][0] + v->v[2] * rsp.MP_matrix[2][0] + rsp.MP_matrix[3][0];
-        float y = v->v[0] * rsp.MP_matrix[0][1] + v->v[1] * rsp.MP_matrix[1][1] + v->v[2] * rsp.MP_matrix[2][1] + rsp.MP_matrix[3][1];
-        float z = v->v[0] * rsp.MP_matrix[0][2] + v->v[1] * rsp.MP_matrix[1][2] + v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
-        float w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
+        float x, y, z, w;
+
+        // Chaos "Jelly" vertex wobble: split the combined model->clip transform
+        // into model->eye (displace) ->clip so the ripple lives in world-scale
+        // eye space. Gated so the normal single-mul fast path is untouched when
+        // off. UI drawn as 3D geometry (G_NOMIRROR_EXT) is left rigid.
+        if (gfx_vtx_wobble_amp != 0.0f && rsp.modelview_matrix_stack_size > 0
+                && !(rsp.extra_geometry_mode & G_NOMIRROR_EXT)) {
+            const float (*mv)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+            float ex = v->v[0] * mv[0][0] + v->v[1] * mv[1][0] + v->v[2] * mv[2][0] + mv[3][0];
+            float ey = v->v[0] * mv[0][1] + v->v[1] * mv[1][1] + v->v[2] * mv[2][1] + mv[3][1];
+            float ez = v->v[0] * mv[0][2] + v->v[1] * mv[1][2] + v->v[2] * mv[2][2] + mv[3][2];
+            float ew = v->v[0] * mv[0][3] + v->v[1] * mv[1][3] + v->v[2] * mv[2][3] + mv[3][3];
+
+            // each axis ripples on the sines of the OTHER two (computed from the
+            // undistorted eye position so the field stays smooth, not fed back)
+            const float a = gfx_vtx_wobble_amp, f = gfx_vtx_wobble_freq, p = gfx_vtx_wobble_phase;
+            const float dx = a * sinf(ey * f + p);
+            const float dy = a * sinf(ez * f + p * 1.3f);
+            const float dz = a * sinf(ex * f + p * 0.7f);
+            ex += dx;
+            ey += dy;
+            ez += dz;
+
+            const float (*P)[4] = rsp.P_matrix;
+            x = ex * P[0][0] + ey * P[1][0] + ez * P[2][0] + ew * P[3][0];
+            y = ex * P[0][1] + ey * P[1][1] + ez * P[2][1] + ew * P[3][1];
+            z = ex * P[0][2] + ey * P[1][2] + ez * P[2][2] + ew * P[3][2];
+            w = ex * P[0][3] + ey * P[1][3] + ez * P[2][3] + ew * P[3][3];
+        } else {
+            x = v->v[0] * rsp.MP_matrix[0][0] + v->v[1] * rsp.MP_matrix[1][0] + v->v[2] * rsp.MP_matrix[2][0] + rsp.MP_matrix[3][0];
+            y = v->v[0] * rsp.MP_matrix[0][1] + v->v[1] * rsp.MP_matrix[1][1] + v->v[2] * rsp.MP_matrix[2][1] + rsp.MP_matrix[3][1];
+            z = v->v[0] * rsp.MP_matrix[0][2] + v->v[1] * rsp.MP_matrix[1][2] + v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
+            w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
+        }
 
         x = gfx_adjust_x_for_aspect_ratio(x, w);
 

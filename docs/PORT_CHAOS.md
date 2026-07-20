@@ -333,6 +333,10 @@ function, called every frame while active (disco's hue cycle).
   the left or right half of the screen (random per fire) as a post-process, so
   the HUD in that half goes dark too (`pd.pirate(1|2)`; cleared with
   `pd.pirate(0)`). Timed like the other visual effects.
+- **`jelly`** ("Jelly", Chaos Alpha testbed) — true on-the-fly **vertex
+  deformation**: the whole scene wobbles like jelly (`pd.vertex_wobble`, an
+  eye-space per-vertex displacement in the renderer — not a post-process). The
+  effect just advances the ripple phase each tick.
 - **`space_program`** (Chaos Alpha testbed) — every player bullet is a
   one-hit kill that launches the victim with massive knockback (`pd.space_program`).
 - **`frag_out`** (Chaos Alpha testbed) — human enemies throw a grenade
@@ -534,6 +538,12 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
+### Jelly (2026-07-20, on-the-fly vertex deformation)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.vertex_wobble([amp, freq, phase])` | `chraiLuaVertexWobble` → `gfx_vtx_wobble_*` → `gfx_sp_vertex` (gfx_pc.cpp) | a **true per-vertex deformation**, not a post-process. The port transforms vertices on the CPU in `gfx_sp_vertex`, so the effect splits the usual combined model→clip multiply into **model→eye (displace) →clip**: each vertex is moved in **eye space** by sines of its own position (`ex += amp·sin(ey·freq+phase)`, etc.), then projected. Eye space (world-scale, camera-relative) is the key — a fixed frequency there gives a coherent ripple across the whole scene regardless of each model's local vertex magnitude (model-space would be fine noise on big room meshes, a faint sway on small props). `amp` world units (0/absent = off, clamped ≤200), `freq` radians/world-unit, `phase` advanced by the caller each tick (the speen pattern). UI drawn as 3D (`G_NOMIRROR_EXT`) is exempt; the path is gated so the normal single-multiply fast path is untouched when off. **Gates the display-list cache off** (`bg.c`, alongside speen/shiny) so cached room geometry re-runs the CPU vertex path and wobbles too; cleared in `lvReset`. The `jelly` effect just advances the phase |
+
 ### Beat game (2026-07-20, music-tempo bindings)
 
 | Binding | Backing | Notes |
@@ -724,6 +734,7 @@ Until then, the UDP bridge is the supported route.
 | `src/game/bondgun.c` | `g_ChaosTemuMag` partial-reload hook in `bgun0f098df8` (Temu Magazine) |
 | `src/game/lv.c` | `lvReset` clears the new chaos globals + `chraiLuaResetSentries` per stage |
 | `src/lib/music.c`, `src/include/lib/music.h` | `sndGetMusicBeat` — reads the sequenced music tempo + beat phase for the beat game |
+| `port/fast3d/gfx_pc.cpp` | `gfx_sp_vertex` eye-space per-vertex "Jelly" wobble (`gfx_vtx_wobble_*`); `src/game/bg.c` gates dlcache off, `lv.c` clears it per stage |
 | `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
 | `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |
 | `src/game/mainmenu.c` | `luaDirectorRebuild` builds per-group submenu dialogs (openers at root top) |

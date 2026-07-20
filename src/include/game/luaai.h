@@ -271,7 +271,7 @@ s32 chraiLuaGiveWeaponToPlayer(s32 weaponnum);/* add a weapon to inventory */
 s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) */
 s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
 s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
-s32 chraiLuaSpawnAllyClone(f32 healthfrac);   /* friendly Jo clone (player body/head), scaled HP; chrnum or -1 */
+s32 chraiLuaSpawnAllyClone(f32 healthfrac, f32 yscale);   /* friendly Jo clone (player body/head), scaled HP + vertical squash; chrnum or -1 */
 s32 chraiLuaChrYscale(s32 chrnum, f32 mult);  /* non-uniform vertical squash (width kept) */
 s32 chraiLuaStageMusic(s32 on);               /* stop / restart the current stage's music */
 s32 chraiLuaPirate(s32 side);                 /* black out one screen half (post-process; 1=L, 2=R, 0=off) */
@@ -283,7 +283,7 @@ s32 chraiLuaTemuMag(s32 on);                  /* reload pays full cost but only 
 f32 chraiLuaMusicBpm(void);                   /* current sequenced-music tempo (BPM), 0 if none */
 f32 chraiLuaMusicBeat(void);                  /* beat phase [0,1), -1 if no sequenced track */
 s32 chraiLuaAimChr(void);                     /* chrnum the player is aiming at, or -1 */
-s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag); /* "Jelly"/"Acid" vertex deformation (+melt sag) */
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync); /* "Jelly"/"Acid" vertex deformation (+melt sag, +per-vertex rate spread) */
 s32 chraiLuaHallOfMirrors(s32 on);            /* skip the frame colour clear (HOM trails) */
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
@@ -305,6 +305,7 @@ f32 chraiLuaPlayerYaw(void);                  /* look yaw degrees (spin task sen
 s32 chraiLuaPlayerCrouch(void);               /* 0 stand / 1 duck / 2 squat */
 s32 chraiLuaHasWeapon(s32 weaponnum);         /* weapon in player inventory */
 s32 chraiLuaPlaySound(s32 sfxnum);            /* one-shot local sound */
+s32 chraiLuaMetronomeClick(void);            /* Beat game click at half music volume */
 s32 chraiLuaSetAlarm(s32 on);                 /* stage alarm on/off (server-side) */
 s32 chraiLuaBoost(f32 secs);                  /* Speed Pill boost for N secs (<=0 cancels) */
 s32 chraiLuaPlayerSetHealth(f32 frac);        /* health 0.01..1 (never kills) */
@@ -328,7 +329,7 @@ s32 chraiLuaDamageScale(f32 frac);            /* scale all chr/player damage; 1 
 s32 chraiLuaZoomScale(f32 mult);              /* scale weapon aim-zoom FOV; >1 zooms OUT */
 s32 chraiLuaGunSound(s32 weaponnum);          /* all guns fire with this weapon's shoot sound; 0 = off */
 s32 chraiLuaMute(s32 on);                     /* master audio mute */
-s32 chraiLuaPlayFile(const char *path, s32 loop); /* play an external WAV/MP3 through the device stream */
+s32 chraiLuaPlayFile(const char *path, s32 loop, s32 followMusic); /* play an external WAV/MP3 through the device stream (followMusic: scale by the music volume) */
 void chraiLuaStopFile(void);                  /* stop the pd.play_file sound */
 s32 chraiLuaWeaponRename(s32 weaponnum, const char *name); /* relabel a weapon (nil restores) */
 s32 chraiLuaChrSpeed(f32 mult);               /* scale all non-player chr anim/movement speed; 1 = off */

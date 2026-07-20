@@ -1370,12 +1370,25 @@ struct chrdata {
 
 	// Non-uniform VERTICAL render scale (chaos pd.chr_yscale). 1.0 = normal;
 	// 0.4 = 40% as tall but full width/depth (a squat, wide "Me and my son"
-	// clone). Applied to the chr root matrix's model-Y basis row every frame in
-	// modelUpdateChrNodeMtx, so it squashes the whole skeleton along its spine
-	// without touching the uniform model->scale. Purely visual (hitbox/AI
-	// unchanged). chrInit resets it to 1.0 so recycled chrslots never inherit a
-	// stale squash. Port-only; the N64 build is byte-identical.
+	// clone). Applied every frame in modelUpdateChrNodeMtx by scaling the chr
+	// root matrix's world-Y column about the GROUND plane (chrinfo.ground), so
+	// the feet stay planted while the height shrinks (scaling the model-Y basis
+	// row instead pivots at the pelvis and lifts her off the floor). Leaves the
+	// uniform model->scale alone. NOTE: that C node-updater is
+	// bypassed by the asm matrix builder (modelasm00018680) for normal chrs, so
+	// modelSetMatrices force-selects the C path when yscale != 1.0 (mirrors the
+	// pd.t_pose fix) — without that the squash silently no-ops. Purely visual
+	// (hitbox/AI unchanged). chrInit resets it to 1.0 so recycled chrslots never
+	// inherit a stale squash. Port-only; the N64 build is byte-identical.
 	f32 yscale;
+
+	// Accumulated chaos UNIFORM-scale multiplier (chaos pd.chr_scale — "Attack of
+	// the giants" / "Ant farm"). 1.0 = none. Distinct from model->scale, which
+	// also carries the body's BASE scale (already grounded by the engine): this
+	// tracks only the runtime chaos delta so modelUpdateChrNodeMtx can re-anchor
+	// just that delta to the ground plane (feet stay planted) without disturbing
+	// base-scaled bodies. chrInit resets it to 1.0. Port-only.
+	f32 groundmult;
 
 	// Client-side POSE interpolation buffer for a network-replicated chr (Combat
 	// Sim bots now; campaign NPCs once online co-op lands — same model: server

@@ -417,6 +417,13 @@ float gfx_vtx_wobble_phase = 0.0f;
 // top of the wobble, so walls and characters sag and drip. World units; only
 // applied when the wobble path is active (amp != 0).
 float gfx_vtx_wobble_sag = 0.0f;
+// Chaos vertex-wobble per-vertex RATE spread (0 = every vertex advances in
+// lockstep, the original travelling-wave look). When > 0, each vertex is given a
+// stable hash of its model position and its animation phase is both scaled
+// (advances faster/slower) and statically offset by that hash — so different
+// vertices flow at different rates and reach their warped state at different
+// times, an organic melt rather than a coherent ripple. Only read when amp != 0.
+float gfx_vtx_wobble_desync = 0.0f;
 // Chaos "Hall of mirrors" (pd.hall_of_mirrors / Acid Trip): skip the per-frame
 // colour clear of the game framebuffer so un-redrawn pixels smear — the classic
 // Doom HOM / psychedelic trails. Depth still clears, so new geometry draws
@@ -1639,7 +1646,21 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
 
             // each axis ripples on the sines of the OTHER two (computed from the
             // undistorted eye position so the field stays smooth, not fed back)
-            const float a = gfx_vtx_wobble_amp, f = gfx_vtx_wobble_freq, p = gfx_vtx_wobble_phase;
+            const float a = gfx_vtx_wobble_amp, f = gfx_vtx_wobble_freq;
+            float p = gfx_vtx_wobble_phase;
+
+            // Per-vertex rate spread: hash the (camera-stable) model position to a
+            // stable [0,1) value and let it scale + offset this vertex's phase, so
+            // vertices flow at different speeds and arrive out of step. desync 0
+            // leaves p untouched (original lockstep travelling wave).
+            if (gfx_vtx_wobble_desync != 0.0f) {
+                float h = v->v[0] * 12.9898f + v->v[1] * 78.233f + v->v[2] * 37.719f;
+                float r = sinf(h) * 43758.5453f;
+                r -= floorf(r); // [0,1)
+                p = gfx_vtx_wobble_phase * (1.0f + (r - 0.5f) * gfx_vtx_wobble_desync)
+                    + r * 6.2831853f * gfx_vtx_wobble_desync;
+            }
+
             const float dx = a * sinf(ey * f + p);
             const float dy = a * sinf(ez * f + p * 1.3f);
             const float dz = a * sinf(ex * f + p * 0.7f);

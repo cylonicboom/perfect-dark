@@ -22,7 +22,7 @@ void audioEndFrame(void);
 // - audioSetPitch: granular pitch shift at constant tempo, rate 0.25..4,
 //   1 = off (pd.audio_pitch)
 void audioSetMuted(s32 on);
-s32 audioPlayExternal(const char *path, s32 loop);
+s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic);
 void audioStopExternal(void);
 void audioSetCrush(s32 step, s32 bits);
 void audioSetRadio(s32 on);

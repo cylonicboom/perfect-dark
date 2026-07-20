@@ -321,6 +321,7 @@ void lvReset(s32 stagenum)
 	extern f32 gfx_screen_roll;        // chaos Speen view roll (renderer float)
 	extern f32 gfx_vtx_wobble_amp;     // chaos "Jelly" vertex wobble (renderer float)
 	extern f32 gfx_vtx_wobble_sag;     // chaos "Acid Trip" melt sag (renderer float)
+	extern f32 gfx_vtx_wobble_desync;  // chaos vertex-wobble per-vertex rate spread
 	extern s32 gfx_hom_mode;           // chaos "Hall of mirrors" no-clear trails
 	extern s32 g_ChaosOneBulletMags;   // chaos One Bullet Mags
 	extern s32 g_ChaosForcedMarch;     // chaos Forced March
@@ -373,7 +374,12 @@ void lvReset(s32 stagenum)
 	gfx_screen_roll = 0.0f;
 	gfx_vtx_wobble_amp = 0.0f;
 	gfx_vtx_wobble_sag = 0.0f;
+	gfx_vtx_wobble_desync = 0.0f;
 	gfx_hom_mode = 0;
+	{
+		extern s32 g_MusicSuppressed; // chaos Silo music-off latch (music.c)
+		g_MusicSuppressed = 0;        // never carry a silence latch across stages
+	}
 	g_ChaosOneBulletMags = 0;
 	g_ChaosForcedMarch = 0;
 	g_ChaosForcedFire = 0;

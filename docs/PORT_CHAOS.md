@@ -359,19 +359,19 @@ function, called every frame while active (disco's hue cycle).
   120-BPM visual-metronome fallback when no sequenced track plays. Pulsing beat
   HUD; bonus lands on `pd.aim_chr()`.
 - **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — a
-  self-destruct running `chaos.silo_seconds` (default 8 minutes). On start it
-  kills the mission music (`pd.stage_music(false)`) and loops `Silo.mp3`
-  (`pd.play_file`, best-effort) underneath, and draws its own centred MM:SS
-  clock (red-flashing in the final 10s). At the **30-second** mark it swaps the
-  track to `Silox.mp3` (the final-stretch music); at zero it detonates —
-  `pd.explosions_around` the player (unlike `self_destruct`, **no**
+  self-destruct running `chaos.silo_seconds` (default 8:30). On start it
+  kills the mission music (`pd.stage_music(false)`) and plays `Silo.mp3` once
+  (`pd.play_file`, best-effort, no loop) underneath — the final-stretch music is baked
+  into that single track now, so there is **no** mid-countdown swap — and draws
+  its own centred MM:SS clock (red-flashing in the final 10s); at zero it
+  detonates — `pd.explosions_around` the player (unlike `self_destruct`, **no**
   invincibility, so it can genuinely kill). Mission-complete or a player restart
   tears the whole thing down (music restored, track stopped, pending boom
   cancelled) via `stop()` + `reset_all_modes`. The length lives in
   `chaos.silo_seconds` so a test harness can shrink it — `scripts/silo_test.lua`
   (`/lua silo_test()` or the Chaos Alpha menu's "Silo Countdown (1-min test)")
-  fires it at 60s and restores the 8-minute default. Alpha for now (needs a
-  fresh exe + the `Silo.mp3` / `Silox.mp3` assets): graduate by dropping
+  fires it at 60s and restores the default. Alpha for now (needs a
+  fresh exe + the `Silo.mp3` asset): graduate by dropping
   `alpha=true` / `w=0`.
 - **Visual** (renderer + room lighting; all timed, all local-cosmetic):
   `untextured` ("1996 mode" — every texture white, pure vertex shading),
@@ -546,7 +546,7 @@ cleared in lvReset like batch 2.
 
 | Binding | Backing | Notes |
 |---|---|---|
-| `pd.vertex_wobble([amp, freq, phase, sag])` | `chraiLuaVertexWobble` → `gfx_vtx_wobble_*` → `gfx_sp_vertex` (gfx_pc.cpp) | a **true per-vertex deformation**, not a post-process. The port transforms vertices on the CPU in `gfx_sp_vertex`, so the effect splits the usual combined model→clip multiply into **model→eye (displace) →clip**: each vertex is moved in **eye space** by sines of its own position (`ex += amp·sin(ey·freq+phase)`, etc.), then projected. Eye space (world-scale, camera-relative) is the key — a fixed frequency there gives a coherent ripple across the whole scene regardless of each model's local vertex magnitude (model-space would be fine noise on big room meshes, a faint sway on small props). `amp` world units (0/absent = off, clamped ≤200), `freq` radians/world-unit, `phase` advanced by the caller each tick (the speen pattern), `sag` an extra always-**downward** eye-Y droop for the Acid Trip **melt** (walls + characters sag/drip). UI drawn as 3D (`G_NOMIRROR_EXT`) is exempt; the path is gated so the normal single-multiply fast path is untouched when off. **Gates the display-list cache off** (`bg.c`, alongside speen/shiny) so cached room geometry re-runs the CPU vertex path and wobbles too; cleared in `lvReset`. `jelly` advances the phase; `acid_trip` adds `sag` |
+| `pd.vertex_wobble([amp, freq, phase, sag, desync])` | `chraiLuaVertexWobble` → `gfx_vtx_wobble_*` → `gfx_sp_vertex` (gfx_pc.cpp) | a **true per-vertex deformation**, not a post-process. The port transforms vertices on the CPU in `gfx_sp_vertex`, so the effect splits the usual combined model→clip multiply into **model→eye (displace) →clip**: each vertex is moved in **eye space** by sines of its own position (`ex += amp·sin(ey·freq+phase)`, etc.), then projected. Eye space (world-scale, camera-relative) is the key — a fixed frequency there gives a coherent ripple across the whole scene regardless of each model's local vertex magnitude (model-space would be fine noise on big room meshes, a faint sway on small props). `amp` world units (0/absent = off, clamped ≤200), `freq` radians/world-unit, `phase` advanced by the caller each tick (the speen pattern), `sag` an extra always-**downward** eye-Y droop for the Acid Trip **melt** (walls + characters sag/drip), `desync` (0 = lockstep, clamped ≤4) a **per-vertex rate spread**: each vertex hashes its (camera-stable) model position to a stable [0,1) value that both scales and statically offsets its `phase`, so different vertices flow at different speeds and arrive out of step (an organic melt, not a coherent travelling wave). UI drawn as 3D (`G_NOMIRROR_EXT`) is exempt; the path is gated so the normal single-multiply fast path is untouched when off. **Gates the display-list cache off** (`bg.c`, alongside speen/shiny) so cached room geometry re-runs the CPU vertex path and wobbles too; cleared in `lvReset`. `jelly`/`acid_trip` drive an **ease-in/out envelope** (`vwobble_prog` in chaos.lua: `sin(prog·π)` over the effect's life) and morph amp/freq/sag across `prog` between two states so the scene flows OUT to a warped state and gently back to NORMAL rather than snapping |
 | `pd.hall_of_mirrors(on)` | `chraiLuaHallOfMirrors` → `gfx_hom_mode` → `gfx_pc.cpp` frame clear | skip the game framebuffer's per-frame **colour** clear so un-redrawn pixels smear — the Doom Hall-of-Mirrors / acid trails. Depth still clears (via the dlist), so new geometry renders normally over the smear. Cleared in `lvReset`. (How much shows depends on how much of the frame the scene redraws — motion edges trail heavily) |
 
 `acid_trip` combines these with the existing **Prismatic** hue field (`pd.pixelate(0,0,1005)`, the retro post-filter's screen-space multi-rate hue rotate) for the trippy colours: melt (`vertex_wobble` + `sag`) + trails (`hall_of_mirrors`) + colour cycle.
@@ -578,7 +578,8 @@ Helpful son is pure Lua (needs only existing `pd.player_add_yaw` / `pd.player_pi
 |---|---|---|
 | `pd.spawn_ally_clone([healthfrac])` | `chraiLuaSpawnAllyClone` (chraction.c) | the `chraiLuaSpawnAlly` recipe, but the buddy wears the **player's own body AND head** (a Jo clone) instead of Dark Combat / VD, and her health pool (`chrSetMaxDamage` + `chrAddHealth`, both ×healthfrac) is scaled — default 0.5 = a fragile half-HP clone. Still TEAM_ALLY / SQUADRON_01 / `GAILIST_INIT_DEFAULT_BUDDY`, Falcon 2, `CHRCFLAG_NEVERSLEEP`. Server/solo-side; returns the chrnum or nil |
 | `pd.chr_yscale(chrnum, mult)` | `chr->yscale` (port-only chrdata field) → `modelUpdateChrNodeMtx` (model.c) | **non-uniform** vertical squash/stretch, unlike the uniform `pd.chr_scale`. The chr root matrix `sp158` is the model→world basis, so its **row 1** (`m[1][*]`) is the world image of the model's local Y axis (the spine); scaling only that row (`mtx00015e4c`) compresses height while leaving width/depth untouched, and — being at the root — it propagates down the whole skeleton. `mult 0.4` = 40% tall, full width. Bounded `(0, 4]` on both the setter and the render read (a stray value can't invert or balloon a chr). Purely visual (hitbox/AI unchanged). `chr->yscale` is reset to 1.0 in **`chrInit`** so a recycled chrslot never inherits a stale squash; the whole path is `#ifndef PLATFORM_N64` (the N64 build is byte-identical) |
-| `pd.stage_music(on)` | `chraiLuaStageMusic` (chraction.c) → `musicStop` / `musicSetStageAndStartMusic` (music.c) | stop (`on=false`) or restart (`on=true`) the **current stage's** music. Unlike `pd.song` — which layers a menu track over the *paused* stage music — this genuinely silences the level track, then re-derives primary + ambient from `g_Vars.stagenum` on restore. Backs Silo Countdown (kills the mission music, plays `Silo.mp3` via `pd.play_file` underneath) |
+| `pd.stage_music(on)` | `chraiLuaStageMusic` (chraction.c) → `musicStop` / `musicSetStageAndStartMusic` (music.c) | stop (`on=false`) or restart (`on=true`) the **current stage's** music. Unlike `pd.song` — which layers a menu track over the *paused* stage music — this genuinely silences the level track, then re-derives primary + ambient from `g_Vars.stagenum` on restore. Backs Silo Countdown (kills the mission music, plays `Silo.mp3` via `pd.play_file` underneath). **`on=false` also sets the port-only `g_MusicSuppressed` latch** (music.c), which early-returns every music-restart path (`musicStartPrimary`/`Ambient`/`Nrg`/`TrackAsMenu`) — without this, closing the pause menu after triggering the effect calls `musicEndMenu → musicStartPrimary` and the game music creeps back. `on=true` clears the latch before restarting; `lvReset` force-clears it each stage load so it can never stick silent. The latch does **not** touch `g_MusicVolume`, so a `follow_music` `play_file` track is unaffected |
+| `pd.play_file(path, [loop], [follow_music])` | `chraiLuaPlayFile` → `audioPlayExternal` (audio.c) | play an external WAV/MP3 (`SDL_LoadWAV`/minimp3, detected by content) mixed into the device stream. `loop` rewinds instead of freeing. `follow_music` scales the track by the in-game **music-volume** slider (`optionsGetMusicVolume`, 0..0x5000, applied as an 8.8 fixed-point gain in the ext-mix loop) so it ducks/mutes with the player's music setting — default **off** (full volume, e.g. the Ring Ring ringtone). A `follow_music` track also **pauses with the game**: while `lvIsPaused()` the ext-mix block is skipped so the track goes silent AND its `extSoundPos` doesn't advance, resuming cleanly when you leave the menu (non-`follow_music` tracks keep playing). Silo Countdown passes `true` so `Silo.mp3` honours the music slider, is suppressed alongside the sequenced music, and pauses in the menu |
 | `pd.pirate(side)` | `chraiLuaPirate` (chraction.c) → `gfx_retro_fx` bits 0x800/0x1000 → the shared retro post-filter (`gfx_retro_common.h`) | "Pirate" eyepatch: black out the **left** (`side=1`) or **right** (`side=2`) half of the *finished frame* top-to-bottom; `0`/absent = off. Being a post-process over the composited frame, it covers the **HUD** in that half too. The shader keys on the RAW screen UV (`vUV.x`) before any warp, so the masked half is fixed in screen space; `x` is unaffected by the GL/SDL_GPU y-flip, so both backends agree. Only one side is set at a time |
 
 `chraiLuaChrYscale`'s field is the first port-only chrdata member that the render
@@ -588,13 +589,16 @@ death-watch (`st.a_son`) lives in chaos.lua's main tick, not a C hook, and is
 cleared in `reset_all_modes` alongside `st.a_weep`.
 
 **Silo Countdown** (`silo_countdown`) is otherwise pure Lua: a `fixeddur`
-`nobar` effect whose length is `chaos.silo_seconds` (default 480s / 8 minutes,
+`nobar` effect whose length is `chaos.silo_seconds` (default 510s / 8:30,
 via a `dur` function so a test harness can shrink it). On start it kills the
-level music (`pd.stage_music(false)`) and loops `Silo.mp3` (`pd.play_file`,
-best-effort), and draws its own centred MM:SS clock in the alpha HUD hook off
-`st.a_silo` (red-flashing in the final 10s). Its tick swaps `Silo.mp3` for
-`Silox.mp3` once at the 30-second mark (`play_file` replaces the current external
-track), and at zero fires `pd.explosions_around` with `st.a_boom_off` (the same
+level music (`pd.stage_music(false)`, which also latches `g_MusicSuppressed` so
+the music can't creep back when the pause menu closes) and plays `Silo.mp3` once
+(`pd.play_file(path, false, true)` — loop off, and the `true` `follow_music` arg
+makes the track honour the player's music-volume slider instead of blasting at full), and draws
+its own centred MM:SS clock in the alpha HUD hook off `st.a_silo` (red-flashing
+in the final 10s). The final-stretch music is baked into `Silo.mp3` now, so there
+is no mid-countdown track swap; at zero the tick
+fires `pd.explosions_around` with `st.a_boom_off` (the same
 short-burst detonation the countdown/SPEED payoffs use — shut off by the main
 tick, so the effect's own `stop()` never has to). `stop()` stops the track and
 restores the music but deliberately leaves the boom alone; a mission-complete or
@@ -605,8 +609,18 @@ timer and detonation vanish together.
 `scripts/silo_test.lua` (loaded by `init.lua` after chaos.lua) is a test harness:
 `silo_test()` saves `chaos.silo_seconds`, sets it to 60, triggers the effect
 (so `start()`/`dur()` capture the 60s), then restores the default — a one-minute
-run that leaves the real 8-minute effect untouched. Exposed as `/lua silo_test()`
+run that leaves the real effect untouched. Exposed as `/lua silo_test()`
 and a "Silo Countdown (1-min test)" entry in the Chaos Alpha menu.
+
+> **GOTCHA — no non-ASCII in `pd.hud_message` text.** This build's HUD font is
+> ASCII-only; any byte `>= 0x80` (a UTF-8 em-dash `—`, accents, emoji) is routed
+> by the text renderer into the JPN multibyte glyph path (`langGetJpnCharPixels`,
+> lang.c), whose cache table `g_JpnCacheCacheItems` is **NULL** in a non-JPN ROM →
+> null-deref crash in `hudmsgsRender`. An em-dash in the Silo armed-message caused
+> exactly this (2026-07-20). `l_pd_hud_message` (luaai_api.c) now **scrubs high
+> bytes to `?`** as a safety net — important because the `say <text>` chat
+> passthrough pipes arbitrary chat text straight into `hud_message` — but effect
+> strings should still use plain ASCII (`-`, not `—`) so nothing shows as `?`.
 
 ### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
 
@@ -734,7 +748,7 @@ Until then, the UDP bridge is the supported route.
 | `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon`; `chraiLuaSpawnAllyClone` + `chraiLuaChrYscale` (Me and my son); `chraiLuaStageMusic` (Silo Countdown) |
 | `scripts/silo_test.lua` | Silo Countdown 1-minute test harness (`silo_test()` + Chaos Alpha menu entry) |
 | `scripts/init.lua` | loads `silo_test.lua` after chaos.lua |
-| `scripts/sounds/chaos/README.md` | documents the `Silo.mp3` / `Silox.mp3` external tracks (not shipped) |
+| `scripts/sounds/chaos/README.md` | documents the `Silo.mp3` external track (not shipped) |
 | `port/fast3d/gfx_retro_common.h` | Pirate half-screen blackout bits (0x800/0x1000) in the shared retro post-filter body |
 | `port/src/dedicated_stubs.c` | headless no-op stubs for `inputSetChaosInvertLook` / `inputSetChaosInputDelay` / `inputLastSourceWasPad` (pre-existing dedicated-server link break) |
 | `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |

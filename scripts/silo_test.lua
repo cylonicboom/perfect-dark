@@ -1,11 +1,11 @@
 -- Silo Countdown TEST HARNESS
 --
 -- The real "Silo Countdown" chaos effect runs for chaos.silo_seconds (default
--- 8 minutes). This harness fires it with a 1-MINUTE timer so you can test the
--- whole sequence — the MM:SS clock, the 30-second Silox.mp3 swap, and the
--- detonation — without waiting eight minutes. It restores the 8-minute default
--- immediately after firing, so the normal effect is left unchanged (the running
--- timer already captured the 60s at trigger time).
+-- 8:30). This harness fires it with a 1-MINUTE timer so you can test the whole
+-- sequence — the MM:SS clock and the detonation — without waiting the full
+-- countdown. It restores the default immediately after firing, so the normal
+-- effect is left unchanged (the running timer already captured the 60s at
+-- trigger time).
 --
 -- Use it via:
 --   ~ console:   /lua silo_test()

@@ -4542,7 +4542,19 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			&& !chrIsDead(chr)) {
 		damage = chrGetMaxDamage(chr) + chrGetShield(chr) + 100.0f;
 		if (chr->model) {
-			chrYeetFromPos(chr, &aprop->pos, 900.0f);
+			f32 horiz;
+
+			chrYeetFromPos(chr, &aprop->pos, 450.0f);
+
+			// chrYeetFromPos only sets a near-horizontal knockback (attacker and
+			// victim stand at similar heights, so dist.y ~ 0). Add an UPWARD kick
+			// sized to that horizontal launch so victims rocket skyward as well as
+			// back — a "space program" ~45deg arc (+Y is up; gravity turns it into
+			// an arc). Self-calibrating off the yeet's own magnitude, so halving
+			// the launch force above halves the up-boost proportionally too.
+			horiz = sqrtf(chr->fallspeed.x * chr->fallspeed.x
+					+ chr->fallspeed.z * chr->fallspeed.z);
+			chr->fallspeed.y += horiz * 1.25f;
 		}
 	}
 
@@ -8557,6 +8569,20 @@ s32 chraiLuaPlaySound(s32 sfxnum)
 	return 1;
 }
 
+// pd.metronome_click(): a short click for the "Beat game" metronome, played at
+// HALF the in-game music volume. optionsGetMusicVolume is the music-slider level
+// (0..0x5000); map it onto the SFX full-volume scale (0..0x7fff = AL_VOL_FULL) and
+// halve, so at max music the click is half of full SFX (clearly audible) and it
+// scales down with the player's music setting.
+s32 chraiLuaMetronomeClick(void)
+{
+	extern u16 optionsGetMusicVolume(void);
+	s32 vol = (s32)optionsGetMusicVolume() * 0x7fff / 0x5000 / 2;
+
+	sndStart(var80095200, (s16)SFX_MENU_FOCUS, NULL, vol, -1, -1, -1, -1);
+	return 1;
+}
+
 // pd.explosion_at(x, y, z [, type]): detonate at an arbitrary position,
 // attributed to the local player. Rooms are portal-walked from the player's
 // (known-valid) rooms to the real floor room at the target — the same
@@ -9335,9 +9361,17 @@ s32 chraiLuaPlaySong(s32 slot)
 // underneath. Restart re-derives primary + ambient from the live stage number.
 s32 chraiLuaStageMusic(s32 on)
 {
+	extern s32 g_MusicSuppressed;
 	if (on) {
+		// Clear the suppress latch BEFORE restarting so the start paths aren't
+		// blocked by their own guard.
+		g_MusicSuppressed = 0;
 		musicSetStageAndStartMusic(g_Vars.stagenum);
 	} else {
+		// Latch music off, then stop what's playing. The latch blocks every
+		// restart path (musicEndMenu on pause-menu close, NRG combat re-trigger,
+		// ambient) for the whole effect, so the game music can't creep back.
+		g_MusicSuppressed = 1;
 		musicStop();
 	}
 	return 1;
@@ -10264,6 +10298,7 @@ s32 chraiLuaSpawnSentry(f32 dx, f32 dz)
 	u16 floorcol;
 	s32 floorroom;
 	struct modelrodata_bbox *bbox;
+	struct coord mountnormal;
 
 	if (plchr == NULL || g_NetMode != NETMODE_NONE) {
 		return 0;
@@ -10275,23 +10310,95 @@ s32 chraiLuaSpawnSentry(f32 dx, f32 dz)
 	gun = &g_ChaosSentries[g_ChaosSentryCount];
 	obj = &gun->base;
 
-	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
-	pos.y = g_Vars.currentplayer->prop->pos.y;
-	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
-	mtx4LoadIdentity(&mtx);
 	roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms);
+	mtx4LoadIdentity(&mtx);
+	mountnormal.x = 0.0f;
+	mountnormal.y = 1.0f;
+	mountnormal.z = 0.0f;
 
-	// Floor-snap the offset spot to the real floor room + height (portal-walk
-	// from the player's rooms), like chraiLuaSpawnBody.
+	// Cast a ray from the player toward this ring direction (with a random
+	// vertical tilt, so some rays find the FLOOR/CEILING and others WALLS) and
+	// mount the sentry flush on the first surface hit, oriented to its normal —
+	// like a deployed laptop sentry. If the ray hits nothing (open direction),
+	// fall back to floor-snapping at the ring offset.
+	{
+		struct coord raystart, rayend, dir, n;
+		f32 m, vy;
+
+		m = sqrtf(dx * dx + dz * dz);
+		if (m < 1.0f) {
+			m = 1.0f;
+		}
+		dir.x = dx / m;
+		dir.z = dz / m;
+		vy = ((s32)(rngRandom() % 2001) - 1000) * 0.0012f; // ~[-1.2, 1.2] vertical tilt
+		dir.y = vy;
+		m = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+		dir.x /= m;
+		dir.y /= m;
+		dir.z /= m;
+
+		raystart.x = g_Vars.currentplayer->prop->pos.x;
+		raystart.y = g_Vars.currentplayer->prop->pos.y + 100.0f;
+		raystart.z = g_Vars.currentplayer->prop->pos.z;
+		rayend.x = raystart.x + dir.x * 2500.0f;
+		rayend.y = raystart.y + dir.y * 2500.0f;
+		rayend.z = raystart.z + dir.z * 2500.0f;
+
+		if (cdExamLos08(&raystart, seedrooms, &rayend, CDTYPE_BG, GEOFLAG_BLOCK_SHOOT) == CDRESULT_COLLISION) {
+			struct coord right, fwd, ref;
+
+			cdGetPos(&pos, __LINE__, "chraction.c"); // surface hit point
+			cdGetObstacleNormal(&n);
+
+			m = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+			if (m < 0.0001f) {
+				n.x = 0.0f; n.y = 1.0f; n.z = 0.0f;
+			} else {
+				n.x /= m; n.y /= m; n.z /= m;
+			}
+			// Point the normal back toward the room (opposite the ray) so the
+			// sentry mounts ON the surface, not buried in it.
+			if (n.x * dir.x + n.y * dir.y + n.z * dir.z > 0.0f) {
+				n.x = -n.x; n.y = -n.y; n.z = -n.z;
+			}
+
+			// Orthonormal basis with local Y (the autogun's up/mount axis) = normal,
+			// so its base sits against the surface and it points into the room.
+			if (fabsf(n.y) < 0.99f) {
+				ref.x = 0.0f; ref.y = 1.0f; ref.z = 0.0f;
+			} else {
+				ref.x = 1.0f; ref.y = 0.0f; ref.z = 0.0f;
+			}
+			right.x = ref.y * n.z - ref.z * n.y;
+			right.y = ref.z * n.x - ref.x * n.z;
+			right.z = ref.x * n.y - ref.y * n.x;
+			m = sqrtf(right.x * right.x + right.y * right.y + right.z * right.z);
+			right.x /= m; right.y /= m; right.z /= m;
+			fwd.x = right.y * n.z - right.z * n.y;
+			fwd.y = right.z * n.x - right.x * n.z;
+			fwd.z = right.x * n.y - right.y * n.x;
+
+			mtx.m[0][0] = right.x; mtx.m[0][1] = right.y; mtx.m[0][2] = right.z;
+			mtx.m[1][0] = n.x;     mtx.m[1][1] = n.y;     mtx.m[1][2] = n.z;
+			mtx.m[2][0] = fwd.x;   mtx.m[2][1] = fwd.y;   mtx.m[2][2] = fwd.z;
+			mountnormal = n;
+		} else {
+			// No surface hit: floor-snap at the ring offset (original behaviour).
+			pos.x = g_Vars.currentplayer->prop->pos.x + dx;
+			pos.y = g_Vars.currentplayer->prop->pos.y;
+			pos.z = g_Vars.currentplayer->prop->pos.z + dz;
 #if VERSION >= VERSION_NTSC_1_0
-	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol, NULL);
+			floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol, NULL);
 #else
-	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol);
+			floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol);
 #endif
-	if (floorroom > 0) {
-		pos.y = floory;
-		seedrooms[0] = floorroom;
-		seedrooms[1] = -1;
+			if (floorroom > 0) {
+				pos.y = floory;
+				seedrooms[0] = floorroom;
+				seedrooms[1] = -1;
+			}
+		}
 	}
 
 	// Build the autogun object template (the laptopDeploy defaultobj recipe).
@@ -10304,15 +10411,22 @@ s32 chraiLuaSpawnSentry(f32 dx, f32 dz)
 	obj->modelnum = MODEL_CHRAUTOGUN;
 	obj->pad = -1;
 	obj->flags = 0;
-	obj->realrot[0][0] = 1;
-	obj->realrot[1][1] = 1;
-	obj->realrot[2][2] = 1;
+	// Orient the object to the mount surface (identity = upright on a floor).
+	obj->realrot[0][0] = mtx.m[0][0]; obj->realrot[0][1] = mtx.m[0][1]; obj->realrot[0][2] = mtx.m[0][2];
+	obj->realrot[1][0] = mtx.m[1][0]; obj->realrot[1][1] = mtx.m[1][1]; obj->realrot[1][2] = mtx.m[1][2];
+	obj->realrot[2][0] = mtx.m[2][0]; obj->realrot[2][1] = mtx.m[2][1]; obj->realrot[2][2] = mtx.m[2][2];
 	obj->maxdamage = 1000;
 	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
 	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
 	obj->floorcol = 0x0fff;
 
-	if (!setupLoadModeldef(MODEL_CHRAUTOGUN)) {
+	// setupLoadModeldef returns true only when it actually LOADS the modeldef and
+	// false when it's already resident — NOT a success/failure flag (all canonical
+	// callers ignore it). Treating false as failure meant only the FIRST sentry
+	// spawned; the rest found the model already loaded and bailed. Load (if needed)
+	// then check the modeldef is actually available.
+	setupLoadModeldef(MODEL_CHRAUTOGUN);
+	if (g_ModelStates[MODEL_CHRAUTOGUN].modeldef == NULL) {
 		return 0;
 	}
 	if (objInitWithModelDef(obj, g_ModelStates[MODEL_CHRAUTOGUN].modeldef) == NULL || obj->model == NULL) {
@@ -10338,24 +10452,43 @@ s32 chraiLuaSpawnSentry(f32 dx, f32 dz)
 	gun->target = NULL;
 	gun->nextchrtest = 0;
 	gun->ammoquantity = 255;
-	gun->targetteam = plchr->team; // hostile to the player (team-bit match scan)
+	// Hostile to the player. The autogun target scan (autogunTick) only runs when
+	// targetteam != 0 (else the gun sits idle), and matches victims by team bits
+	// when MP teams are on — so prefer the player's own team, but fall back to
+	// "all teams" (0xffff) when the player's team is 0 (offline Combat Sim with
+	// teams off), which keeps the scan alive and, with teams off, targets everyone.
+	gun->targetteam = plchr->team ? plchr->team : 0xffff;
 	gun->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
 	if (gun->beam) {
 		gun->beam->age = -1;
 	}
 
-	// Place on the floor (lift by the scaled bbox min) and register into the
-	// active/rendered prop list — the setup.c object recipe's final step.
+	// Seat the base flush on the mount surface: push the origin out along the
+	// surface normal by the model's base offset (bbox->ymin, the local mount axis).
+	// For a floor (normal = +Y) this is exactly the old floor lift; for a wall or
+	// ceiling it lifts along that surface's normal instead of world-down.
 	bbox = modelFindBboxRodata(obj->model);
 	{
 		struct coord placepos;
-		placepos.x = pos.x;
-		placepos.y = pos.y - objGetRotatedLocalYMinByMtx4(bbox, &mtx) * obj->model->scale;
-		placepos.z = pos.z;
+		f32 lift = bbox->ymin * obj->model->scale;
+		placepos.x = pos.x - lift * mountnormal.x;
+		placepos.y = pos.y - lift * mountnormal.y;
+		placepos.z = pos.z - lift * mountnormal.z;
+		// Bake model->scale into the rotation before func0f06a580 copies it into
+		// realrot — the autogun BASE renders straight from realrot with NO
+		// model->scale (objInitMatrices), while the turret DOES get it
+		// (autogunInitMatrices), so without this the base is huge next to a
+		// normal turret. This mirrors the real laptop throw (bgun0f09ebcc).
+		mtx00015f04(obj->model->scale, &mtx);
 		func0f06a580(obj, &placepos, &mtx, seedrooms);
 	}
 	if (obj->prop) {
 		obj->prop->forcetick = true; // tick + fire even while off-screen
+		// No owning player. In MP the autogun scan SKIPS its owner player
+		// (objGetOwnerPlayerNum), which defaults to 0 = the human player (slot 0),
+		// so without this the sentry never targets you. -2 makes it report -1
+		// (owned by nobody), so every player/bot is a valid target.
+		obj->prop->ownerplayernum = -2;
 		propActivate(obj->prop);
 		propEnable(obj->prop);
 	}
@@ -10941,7 +11074,7 @@ s32 chraiLuaGunSound(s32 weaponnum)
 
 // pd.mute(on) / pd.play_file(path): port audio layer (port/src/audio.c).
 extern void audioSetMuted(s32 on);
-extern s32 audioPlayExternal(const char *path, s32 loop);
+extern s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic);
 extern void audioStopExternal(void);
 s32 chraiLuaMute(s32 on)
 {
@@ -10949,9 +11082,9 @@ s32 chraiLuaMute(s32 on)
 	return 1;
 }
 
-s32 chraiLuaPlayFile(const char *path, s32 loop)
+s32 chraiLuaPlayFile(const char *path, s32 loop, s32 followMusic)
 {
-	return audioPlayExternal(path, loop);
+	return audioPlayExternal(path, loop, followMusic);
 }
 
 // pd.stop_file(): stop the external sound started by pd.play_file (e.g. the
@@ -11057,14 +11190,16 @@ s32 chraiLuaChrScale(s32 chrnum, f32 mult)
 	}
 	if (mult < 0.05f) mult = 0.05f;
 	if (mult > 8.0f) mult = 8.0f;
-	// A chr body is sized by BOTH the model scale (the root/basis, applied in
-	// the matrix builder) and the anim scale (the per-bone translations — what
-	// actually spreads the skeleton). body.c sets both at spawn, so scale both
-	// here or the limbs stay put and the size barely changes.
-	modelSetScale(chr->model, chr->model->scale * mult);
-	if (chr->model->anim != NULL) {
-		modelSetAnimScale(chr->model, chr->model->anim->animscale * mult);
-	}
+	// Cosmetic uniform resize done ENTIRELY in the render matrix
+	// (modelUpdateChrNodeMtx scales the composed root->world matrix by groundmult,
+	// pivoting X/Z on the chr's vertical axis and Y on the GROUND so the feet stay
+	// planted). This replaces the old model->scale + animscale approach, whose
+	// pelvis-pivot skeleton spread floated/sank the feet. Collision/eye height keep
+	// their original values. Accumulate so a caller's inverse-mult undo divides it
+	// back toward 1.0; clamp the running value. chrInit resets it on a recycled slot.
+	chr->groundmult *= mult;
+	if (chr->groundmult < 0.05f) chr->groundmult = 0.05f;
+	if (chr->groundmult > 8.0f) chr->groundmult = 8.0f;
 	return 1;
 }
 
@@ -11135,7 +11270,8 @@ extern f32 gfx_vtx_wobble_amp;
 extern f32 gfx_vtx_wobble_freq;
 extern f32 gfx_vtx_wobble_phase;
 extern f32 gfx_vtx_wobble_sag;
-s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag)
+extern f32 gfx_vtx_wobble_desync;
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync)
 {
 	if (amp < 0.0f) {
 		amp = 0.0f;
@@ -11149,10 +11285,17 @@ s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag)
 	if (sag > 200.0f) {
 		sag = 200.0f;
 	}
+	if (desync < 0.0f) {
+		desync = 0.0f;
+	}
+	if (desync > 4.0f) {
+		desync = 4.0f; // beyond this the phase spread just looks like noise
+	}
 	gfx_vtx_wobble_amp = amp;
 	gfx_vtx_wobble_freq = freq;
 	gfx_vtx_wobble_phase = phase;
 	gfx_vtx_wobble_sag = sag;
+	gfx_vtx_wobble_desync = desync;
 	return 1;
 }
 
@@ -11459,7 +11602,7 @@ s32 chraiLuaSpawnAlly(void)
 // fights on TEAM_ALLY beside you — and her health pool is scaled by healthfrac
 // (default 0.5 = a fragile half-HP clone). Backs the "Me and my son" chaos
 // effect. Server/solo-side (a net client never spawns AI).
-s32 chraiLuaSpawnAllyClone(f32 healthfrac)
+s32 chraiLuaSpawnAllyClone(f32 healthfrac, f32 yscale)
 {
 	struct prop *prop;
 	struct chrdata *chr;
@@ -11519,6 +11662,18 @@ s32 chraiLuaSpawnAllyClone(f32 healthfrac)
 	chrAddHealth(chr, 20.0f * healthfrac);
 	chr->chrflags |= CHRCFLAG_NEVERSLEEP;
 	chrGiveWeapon(chr, MODEL_CHRFALCON2, WEAPON_FALCON2, 0);
+
+	// Apply the vertical squash HERE, directly on the chr we just spawned, rather
+	// than leaving it to a follow-up pd.chr_yscale(chrnum, ...) — that has to
+	// re-find the chr by the returned chrnum, and the squat "Me and my son" clone
+	// was rendering full height because that separate set wasn't landing. Same
+	// clamp/semantics as chraiLuaChrYscale; <= 0 or 1.0 leaves the default.
+	if (yscale > 0.0f && yscale != 1.0f) {
+		if (yscale > 4.0f) {
+			yscale = 4.0f;
+		}
+		chr->yscale = yscale;
+	}
 
 	return chr->chrnum;
 }
@@ -14119,9 +14274,27 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 		}
 
 		if (shotdue) {
-			f32 roty = chrGetAimAngle(chr);
-			f32 rotx = chrGetPitchAngle(chr);
-			bool extracdtypes = isaibot ? CDTYPE_PLAYERS : 0;
+			f32 roty;
+			f32 rotx;
+			bool extracdtypes;
+
+#ifndef PLATFORM_N64
+			// Chaos "Frag Out": at the moment a human enemy would fire, lob a
+			// grenade instead. Hooked HERE — the real fire chokepoint that runs for
+			// both aibot simulants and campaign guards — rather than the AI-list
+			// grenade command (0x1b), which most enemies (and all bots) never run,
+			// so the old hook did nothing in Combat Sim. chrConsiderGrenadeThrow
+			// does the LOS check, equips a grenade if needed, and throws; on success
+			// the chr switches to the throw action, so the firing-anim flags stop
+			// and throws pace themselves by the throw animation. Skip the bullet.
+			if (g_ChaosFragOut && chrConsiderGrenadeThrow(chr, attackflags, 0)) {
+				return;
+			}
+#endif
+
+			roty = chrGetAimAngle(chr);
+			rotx = chrGetPitchAngle(chr);
+			extracdtypes = isaibot ? CDTYPE_PLAYERS : 0;
 
 			firingthisframe = true;
 

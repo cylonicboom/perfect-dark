@@ -690,6 +690,28 @@ void __n_CSPHandleMIDIMsg(N_ALCSPlayer *seqp, N_ALEvent *event)
 			ALFlagFailIf(!sound, seqp->debugFlags & NO_SOUND_ERR_MASK,
 					ERR_ALSEQP_NO_SOUND);
 
+#ifndef PLATFORM_N64
+			// Beat-game sync: anchor the beat phase to the KICK drum. Percussion
+			// instruments root ONE sample per key (keyMin == keyMax); melodic ones
+			// span key ranges. The kick is the lowest-key drum, learned live
+			// (g_SndBeatKickKey, reset per track). Record its sequence time so
+			// sndGetMusicBeat can phase-lock to the real drum instead of the
+			// arbitrary track-start reference.
+			{
+				extern s32 g_SndBeatAnchorTime;
+				extern void *g_SndBeatAnchorSeqp;
+				extern s32 g_SndBeatKickKey;
+
+				if (sound && sound->keyMap
+						&& sound->keyMap->keyMin == sound->keyMap->keyMax
+						&& (s32)key <= g_SndBeatKickKey) {
+					g_SndBeatKickKey = (s32)key;
+					g_SndBeatAnchorTime = seqp->curTime;
+					g_SndBeatAnchorSeqp = (void *)seqp;
+				}
+			}
+#endif
+
 			config.priority = chanstate->priority;
 			config.fxBus = chanstate->unk0b;
 			config.unityPitch = 0;

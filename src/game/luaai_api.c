@@ -491,6 +491,22 @@ static int l_pd_hud_message(lua_State *L)
 		n = sizeof(buf) - 2;
 	}
 	memcpy(buf, text, n);
+
+	// This build's HUD font is ASCII-only. Any byte >= 0x80 is routed by the text
+	// renderer into the JPN multibyte glyph path (langGetJpnCharPixels), whose
+	// cache table (g_JpnCacheCacheItems) is NULL in a non-JPN ROM -> null deref
+	// crash. Chaos feeds arbitrary text here (effect strings with em-dashes, the
+	// `say` chat passthrough), so scrub high bytes to '?' before it reaches the
+	// hudmsg queue.
+	{
+		size_t i;
+		for (i = 0; i < n; i++) {
+			if ((u8)buf[i] >= 0x80) {
+				buf[i] = '?';
+			}
+		}
+	}
+
 	if (n == 0 || buf[n - 1] != '\n') {
 		buf[n++] = '\n';
 	}
@@ -1052,13 +1068,16 @@ static int l_pd_spawn_ally(lua_State *L)
 	return 1;
 }
 
-/* pd.spawn_ally_clone([healthfrac]) -> chrnum | nil. A friendly buddy wearing
- * the player's own body/head (a Jo clone), with health scaled by healthfrac
- * (default 0.5). Backs the "Me and my son" chaos effect. */
+/* pd.spawn_ally_clone([healthfrac], [yscale]) -> chrnum | nil. A friendly buddy
+ * wearing the player's own body/head (a Jo clone), with health scaled by
+ * healthfrac (default 0.5). yscale applies a vertical squash directly at spawn
+ * (0/absent/1 = normal; 0.4 = the squat "Me and my son" clone). Backs that
+ * chaos effect. */
 static int l_pd_spawn_ally_clone(lua_State *L)
 {
 	f32 frac = (f32)luaL_optnumber(L, 1, 0.5);
-	s32 chrnum = chraiLuaSpawnAllyClone(frac);
+	f32 yscale = (f32)luaL_optnumber(L, 2, 0.0);
+	s32 chrnum = chraiLuaSpawnAllyClone(frac, yscale);
 	if (chrnum < 0) {
 		lua_pushnil(L);
 	} else {
@@ -1301,6 +1320,14 @@ static int l_pd_cheat_active(lua_State *L)
 static int l_pd_sound(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaPlaySound((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.metronome_click() -> bool. A short click at half the music volume (Beat
+ * game metronome). */
+static int l_pd_metronome_click(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaMetronomeClick() != 0);
 	return 1;
 }
 
@@ -1890,13 +1917,16 @@ static int l_pd_mute(lua_State *L)
 	return 1;
 }
 
-/* pd.play_file(path) -> bool. Play an external WAV (e.g.
- * scripts/sounds/chaos/ring.wav) through the device stream. */
+/* pd.play_file(path, [loop], [follow_music]) -> bool. Play an external WAV/MP3
+ * (e.g. scripts/sounds/chaos/ring.wav) through the device stream. follow_music
+ * scales the track by the in-game music volume slider (so it ducks/mutes with
+ * the player's music setting) — default off (full volume, e.g. the ringtone). */
 static int l_pd_play_file(lua_State *L)
 {
 	const char *path = luaL_checkstring(L, 1);
-	s32 loop = lua_toboolean(L, 2); /* pd.play_file(path, loop) */
-	lua_pushboolean(L, chraiLuaPlayFile(path, loop) != 0);
+	s32 loop = lua_toboolean(L, 2);         /* pd.play_file(path, loop) */
+	s32 followMusic = lua_toboolean(L, 3);  /* pd.play_file(path, loop, follow_music) */
+	lua_pushboolean(L, chraiLuaPlayFile(path, loop, followMusic) != 0);
 	return 1;
 }
 
@@ -2448,17 +2478,20 @@ static int l_pd_aim_chr(lua_State *L)
 	return 1;
 }
 
-/* pd.vertex_wobble([amp, freq, phase, sag]) -> bool. "Jelly"/"Acid": deform every
- * vertex in eye space by sines of position. amp world units (0/absent = off),
- * freq radians per world unit, phase the animation angle (advance it each tick),
- * sag an extra always-downward melt droop (world units). */
+/* pd.vertex_wobble([amp, freq, phase, sag, desync]) -> bool. "Jelly"/"Acid":
+ * deform every vertex in eye space by sines of position. amp world units
+ * (0/absent = off), freq radians per world unit, phase the animation angle
+ * (advance it each tick), sag an extra always-downward melt droop (world units),
+ * desync a per-vertex rate spread (0 = lockstep; higher = vertices flow at
+ * different speeds and arrive out of step). */
 static int l_pd_vertex_wobble(lua_State *L)
 {
 	f32 amp = (f32)luaL_optnumber(L, 1, 0.0);
 	f32 freq = (f32)luaL_optnumber(L, 2, 0.03);
 	f32 phase = (f32)luaL_optnumber(L, 3, 0.0);
 	f32 sag = (f32)luaL_optnumber(L, 4, 0.0);
-	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase, sag) != 0);
+	f32 desync = (f32)luaL_optnumber(L, 5, 0.0);
+	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase, sag, desync) != 0);
 	return 1;
 }
 
@@ -2954,6 +2987,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_cheat);         lua_setfield(L, -2, "cheat");
 	lua_pushcfunction(L, l_pd_cheat_active);  lua_setfield(L, -2, "cheat_active");
 	lua_pushcfunction(L, l_pd_sound);         lua_setfield(L, -2, "sound");
+	lua_pushcfunction(L, l_pd_metronome_click); lua_setfield(L, -2, "metronome_click");
 	lua_pushcfunction(L, l_pd_take_weapon);   lua_setfield(L, -2, "take_weapon");
 	lua_pushcfunction(L, l_pd_weapon_held);   lua_setfield(L, -2, "weapon_held");
 	lua_pushcfunction(L, l_pd_switch_weapon); lua_setfield(L, -2, "switch_weapon");

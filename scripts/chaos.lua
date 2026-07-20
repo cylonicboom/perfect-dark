@@ -24,11 +24,11 @@
 
 chaos = chaos or {}
 
--- Silo Countdown length in seconds (default 8 minutes). Exposed on the chaos
+-- Silo Countdown length in seconds (default 8:30). Exposed on the chaos
 -- table so a test harness can shrink it without editing this file — e.g.
 -- scripts/silo_test.lua sets chaos.silo_seconds = 60 so you don't have to wait
--- the full 8 minutes to test the 30s-mark Silox.mp3 swap + the detonation.
-chaos.silo_seconds = chaos.silo_seconds or 480
+-- the full countdown to test the detonation.
+chaos.silo_seconds = chaos.silo_seconds or 510
 
 local TICKS = 60 -- pd "tick" event runs at the sim rate
 
@@ -218,6 +218,20 @@ local function arm_all_effect(label, weight, pick)
       saved = {}
     end,
   }
+end
+
+-- Shared envelope for the vertex-deform effects (Jelly / Acid trip). Turns the
+-- effect's "ticks remaining" (passed to every tick) into a 0..1 progress plus an
+-- ease-in/ease-out amplitude, so the scene GENTLY flows OUT to a warped state and
+-- back to NORMAL over the effect's life instead of snapping. `state.total` latches
+-- the full length on the first tick (left only ever decreases). Callers morph
+-- their own params (amp/freq/sag) across prog to travel between two states, and
+-- pass a desync so different vertices flow at different rates (renderer side).
+local function vwobble_prog(state, left)
+  if not state.total or left > state.total then state.total = left end
+  local prog = 1 - left / (state.total > 0 and state.total or 1)
+  if prog < 0 then prog = 0 elseif prog > 1 then prog = 1 end
+  return prog, math.sin(prog * math.pi) -- prog 0→1, envelope 0→1→0
 end
 
 chaos.effects = {
@@ -520,6 +534,49 @@ chaos.effects = {
                        local tpb = 3600 / b.bpm -- ticks per beat (60 ticks/s * 60)
                        b.freephase = (b.freephase + dt / tpb) % 1
                      end
+                     -- Metronome: click once per beat, on the downbeat (the phase
+                     -- wrapping ~1 -> ~0). Played at half the music volume C-side.
+                     local ph = beat_phase()
+                     if b.lastph and (b.lastph - ph) > 0.5 and pd.metronome_click then
+                       pd.metronome_click()
+                     end
+                     b.lastph = ph
+                     -- Score on the fire PRESS (one shot's worth per trigger pull,
+                     -- NOT per round of a burst/auto weapon), and penalise holding
+                     -- the trigger down. FIRE = 0x2000; melee (wep <= 1) is skipped.
+                     local FIRE = 0x2000
+                     local held = pd.buttons and pd.buttons() or 0
+                     local pressed = pd.buttons_pressed and pd.buttons_pressed() or 0
+                     local wep = pd.weapon_held and pd.weapon_held() or 2
+                     local firing = (held & FIRE) ~= 0
+                     if wep and wep > 1 and (pressed & FIRE) ~= 0 then
+                       local dist = math.min(ph, 1 - ph)
+                       if dist < 0.10 then          -- ON beat: bonus to the aim target
+                         local c = pd.aim_chr and pd.aim_chr()
+                         if c and pd.chr_damage then pd.chr_damage(c, 8) end
+                         b.hits = b.hits + 1
+                         b.last, b.lastcol, b.lastt = "PERFECT!", 0x40ff40ff, TICKS
+                       elseif dist < 0.15 then      -- safe window (30% of the beat)
+                         b.last, b.lastcol, b.lastt = "on time", 0xffe040ff, TICKS
+                       else                         -- OFF beat: the recoil bites back
+                         pd.player_damage(1.5)
+                         b.misses = b.misses + 1
+                         b.last, b.lastcol, b.lastt = "OFF BEAT!", 0xff4040ff, TICKS
+                       end
+                       b.holdt = 0
+                       b.held_pen = false
+                     elseif wep and wep > 1 and firing then
+                       -- trigger still held (burst/auto continuing): don't re-score,
+                       -- but punish spraying past ~0.4s.
+                       b.holdt = (b.holdt or 0) + dt
+                       if b.holdt > TICKS * 0.4 and not b.held_pen then
+                         pd.player_damage(2)
+                         b.misses = b.misses + 1
+                         b.held_pen = true
+                         b.last, b.lastcol, b.lastt = "DON'T HOLD!", 0xff4040ff, TICKS
+                       end
+                     end
+                     if not firing then b.holdt = 0; b.held_pen = false end
                      if b.lastt > 0 then b.lastt = b.lastt - dt end
                    end,
                    stop=function() st.a_beat = nil end },
@@ -596,8 +653,18 @@ chaos.effects = {
                            if pd.forced_fire then pd.forced_fire(true) end
                          elseif r == 3 then   -- walk forward
                            if pd.forced_march then pd.forced_march(true) end
-                         else                 -- fumble to a random weapon
-                           if pd.switch_weapon then pd.switch_weapon(GUNS[math.random(#GUNS)]) end
+                         else                 -- fumble to a random weapon the
+                           -- player actually OWNS (switch_weapon force-equips, so
+                           -- picking blindly from GUNS conjured guns they don't have)
+                           if pd.switch_weapon and pd.has_weapon then
+                             local owned = {}
+                             for _, w in ipairs(GUNS) do
+                               if pd.has_weapon(w) then owned[#owned + 1] = w end
+                             end
+                             if #owned > 0 then
+                               pd.switch_weapon(owned[math.random(#owned)])
+                             end
+                           end
                          end
                        end
                      end
@@ -709,9 +776,10 @@ chaos.effects = {
                       if not pd.spawn_ally_clone or not pd.chr_yscale then
                         error("needs new exe")
                       end
-                      local c = pd.spawn_ally_clone(0.5) -- friendly Jo, half HP
+                      -- half HP + 40% height applied AT spawn (the follow-up
+                      -- pd.chr_yscale(chrnum,...) wasn't landing on the clone).
+                      local c = pd.spawn_ally_clone(0.5, 0.4)
                       if not c then error("no room for a clone here") end
-                      pd.chr_yscale(c, 0.4)              -- 40% tall, full width
                       st.a_son = { c = c, seen = false }
                       pd.hud_message("CHAOS: protect your son")
                     end },
@@ -881,15 +949,22 @@ chaos.effects = {
   jelly        = { label="Jelly", alpha=true, w=0, dur=20,
                    start=function()
                      if not pd.vertex_wobble then error("needs new exe") end
-                     st.a_jelly = { phase = 0 }
-                     pd.vertex_wobble(12, 0.03, 0)
+                     st.a_jelly = {}
+                     pd.vertex_wobble(0, 0.045, 0, 0, 0.6) -- 0 amp: the tick eases it in
                    end,
-                   tick=function()
+                   tick=function(left)
                      local j = st.a_jelly
                      if not j then return end
-                     local dt = pd.lvupdate and pd.lvupdate() or 1
-                     j.phase = (j.phase + 0.12 * dt) % (2 * math.pi)
-                     pd.vertex_wobble(12, 0.03, j.phase)
+                     -- No fast phase spin (that oscillated back through home every
+                     -- ~1s = the "wiggle/snap"). Instead flow ONCE over the whole
+                     -- effect: an eased amplitude that grows, holds, then recedes to
+                     -- normal, while the field slowly SWEEPS from state A to state B.
+                     local prog, env = vwobble_prog(j, left)
+                     local warp  = math.min(1, env * 1.6)     -- plateau: hold near full mid-effect
+                     local amp   = 14 * warp                  -- 0 → full → 0
+                     local freq  = 0.045 - 0.015 * prog       -- wavelength morphs A → B
+                     local phase = 3.0 * math.pi * prog       -- slow one-way sweep (~1.5 turns)
+                     pd.vertex_wobble(amp, freq, phase, 0, 0.6) -- desync: per-vertex rate + offset
                    end,
                    stop=function()
                      if pd.vertex_wobble then pd.vertex_wobble(0) end
@@ -903,17 +978,24 @@ chaos.effects = {
                      if not pd.vertex_wobble or not pd.hall_of_mirrors then
                        error("needs new exe")
                      end
-                     st.a_acid = { phase = 0 }
-                     pd.vertex_wobble(10, 0.025, 0, 16) -- amp, freq, phase, melt sag
-                     pd.hall_of_mirrors(true)           -- HOM trails
+                     st.a_acid = {}
+                     pd.vertex_wobble(0, 0.030, 0, 0, 0.75) -- 0 amp/sag: tick eases it in
+                     pd.hall_of_mirrors(true)               -- HOM trails
                      if pd.pixelate then pd.pixelate(0, 0, 1005) end -- Prismatic colours
                    end,
-                   tick=function()
+                   tick=function(left)
                      local a = st.a_acid
                      if not a then return end
-                     local dt = pd.lvupdate and pd.lvupdate() or 1
-                     a.phase = (a.phase + 0.09 * dt) % (2 * math.pi)
-                     pd.vertex_wobble(10, 0.025, a.phase, 16)
+                     -- Melt ONCE over the effect (no fast spin = no wiggle/snap):
+                     -- wobble + downward drip grow in, hold, then ease home, while
+                     -- the field slowly sweeps between two states. Ragged per-vertex.
+                     local prog, env = vwobble_prog(a, left)
+                     local warp  = math.min(1, env * 1.6)   -- plateau near full mid-effect
+                     local amp   = 11 * warp
+                     local freq  = 0.032 - 0.012 * prog     -- wavelength morphs A → B
+                     local phase = 3.0 * math.pi * prog     -- slow one-way sweep
+                     local sag   = 22 * warp                -- drip grows in, holds, eases out
+                     pd.vertex_wobble(amp, freq, phase, sag, 0.75)
                    end,
                    stop=function()
                      if pd.vertex_wobble then pd.vertex_wobble(0) end
@@ -1087,9 +1169,9 @@ chaos.effects = {
 -- ===================================================== CHAOS ALPHA ==========
 -- Former new-suggestion testbed (2026-07-12 Discord batch). GRADUATED
 -- 2026-07-19: everything here is now in the main rotation/vote slate (see the
--- registration loop after the table) — only image_test remains alpha-only.
--- New experimental effects can still land here first: mark them by name in
--- the registration loop to keep them out of the rotation while testing.
+-- registration loop after the table). New experimental effects can still land
+-- here first: mark them by name in the ALPHA_ONLY table to keep them out of the
+-- rotation while testing.
 W.PSYCHOSIS = 0x2c
 local CLASSICS = { 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b } -- PP9i..RCP45
 local GOGGLES  = { W.NIGHTVISION, W.XRAY, W.IR, W.CLOAK }
@@ -1214,20 +1296,6 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() st.a_bloop = nil end },
-  -- Image loader test: loads scripts/images/test.png and cycles it through
-  -- center / scroll / resize / spin (10s each) with a phase label. Proves the
-  -- pd.load_image + pd.draw_image hook end to end. (Not a "real" effect.)
-  image_test = { label="Image test", fixeddur=true, dur=40,
-                 start=function()
-                   if not pd.load_image then error("needs new exe") end
-                   local h = pd.load_image("test.png")          -- 64x64 (reliable max)
-                   if not h then error("scripts/images/test.png missing") end
-                   st.a_imgtest = { handle = h, t = 0 }
-                 end,
-                 tick=function()
-                   if st.a_imgtest then st.a_imgtest.t = st.a_imgtest.t + (pd.lvupdate and pd.lvupdate() or 1) end
-                 end,
-                 stop=function() st.a_imgtest = nil end },
   -- DVD screensaver meme: the logo bounces around the screen, changing colour
   -- on every wall hit. A perfect corner hit (both walls the same frame) is
   -- celebrated on-screen — and, like the meme, almost never happens.
@@ -1540,41 +1608,36 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() pd.alarm(false); st.a_cd = nil end },
-  -- "Silo Countdown": a self-destruct (chaos.silo_seconds, default 8 min). Kills
+  -- "Silo Countdown": a self-destruct (chaos.silo_seconds, default 8:30). Kills
   -- the level music, plays Silo.mp3 (scripts/sounds/chaos/Silo.mp3, looped)
-  -- underneath, and shows a big centred MM:SS timer (drawn in the alpha HUD hook
-  -- off st.a_silo). At the 30s mark it swaps to Silox.mp3 (the final-stretch
-  -- track); at zero it detonates — explosions_around the player, shut off ~3s
-  -- later by the main tick's a_boom_off handler. stop() (natural expiry,
-  -- /chaos off, re-trigger) stops the track and restores the level music WITHOUT
-  -- touching the boom; a mission-complete or player restart routes through
-  -- reset_all_modes, which runs stop() AND cancels the pending boom — so the
-  -- timer/boom vanish cleanly. Duration comes from chaos.silo_seconds so a test
-  -- harness can shrink it (scripts/silo_test.lua sets 60s). alpha for now: needs
-  -- a fresh exe (pd.stage_music) + the Silo.mp3 / Silox.mp3 assets.
+  -- underneath — the final-stretch music is baked into that track now, so there's
+  -- no mid-countdown swap — and shows a big centred MM:SS timer (drawn in the
+  -- alpha HUD hook off st.a_silo); at zero it detonates — explosions_around the
+  -- player, shut off ~3s later by the main tick's a_boom_off handler. stop()
+  -- (natural expiry, /chaos off, re-trigger) stops the track and restores the
+  -- level music WITHOUT touching the boom; a mission-complete or player restart
+  -- routes through reset_all_modes, which runs stop() AND cancels the pending
+  -- boom — so the timer/boom vanish cleanly. Duration comes from
+  -- chaos.silo_seconds so a test harness can shrink it (scripts/silo_test.lua
+  -- sets 60s). alpha for now: needs a fresh exe (pd.stage_music) + Silo.mp3.
   silo_countdown = { label="Silo Countdown", alpha=true, w=0, nobar=true,
-                     fixeddur=true, dur=function() return chaos.silo_seconds or 480 end,
+                     fixeddur=true, dur=function() return chaos.silo_seconds or 510 end,
                      start=function()
                        if not pd.stage_music then error("needs new exe") end
-                       local secs = chaos.silo_seconds or 480
-                       st.a_silo = { left = secs * TICKS, fired = false, finalmusic = false }
+                       local secs = chaos.silo_seconds or 510
+                       st.a_silo = { left = secs * TICKS, fired = false }
                        pd.stage_music(false) -- silence the mission track
-                       -- best-effort: Silo.mp3 looped underneath. The countdown +
-                       -- detonation still run if the asset is missing (just silent).
-                       pd.play_file("scripts/sounds/chaos/Silo.mp3", true)
-                       pd.hud_message(string.format("CHAOS: SILO SELF-DESTRUCT ARMED — %d:%02d",
+                       -- best-effort: Silo.mp3 plays ONCE (no loop) at the player's
+                       -- music-volume setting (2nd arg loop=false, 3rd = follow music
+                       -- slider). The countdown + detonation still run if it's missing.
+                       pd.play_file("scripts/sounds/chaos/Silo.mp3", false, true)
+                       pd.hud_message(string.format("CHAOS: SILO SELF-DESTRUCT ARMED - %d:%02d",
                                                     math.floor(secs / 60), secs % 60))
                      end,
                      tick=function(left)
                        local s = st.a_silo
                        if not s then return end
                        s.left = left -- feed the HUD readout
-                       -- final-stretch music: at 30s to go, swap Silo.mp3 for
-                       -- Silox.mp3 (play_file replaces the current external track).
-                       if not s.finalmusic and left <= 30 * TICKS then
-                         s.finalmusic = true
-                         pd.play_file("scripts/sounds/chaos/Silox.mp3", true)
-                       end
                        if not s.fired and left <= 8 then -- last few ticks = zero
                          s.fired = true
                          pd.hud_message("CHAOS: DETONATION")
@@ -2310,18 +2373,6 @@ local alpha_effects = {
                  end,
                  stop=function() pd.forced_march(false) end },
 
-  -- Texture override test: EVERY texture in the game becomes test.png for
-  -- 20 seconds, then everything restores (the renderer re-imports the whole
-  -- texture cache through the override filter both ways). The validator for
-  -- pd.tex_override — alpha-only, like image_test.
-  texture_test = { label="Texture test", fixeddur=true, dur=20,
-                 start=function()
-                   if not pd.tex_override then error("needs new exe") end
-                   if not pd.tex_override("test.png") then
-                     error("scripts/images/test.png missing")
-                   end
-                 end,
-                 stop=function() pd.tex_override() end },
   -- Nepotism: the whole world gets skinned with an image related to you.
   -- First tries to match your agent name — an image whose name is a PREFIX
   -- of your (lowercased, alphanumeric-only) name, longest match first, down
@@ -2564,11 +2615,9 @@ local alpha_effects = {
 -- listed effects live only in the Chaos Alpha folder + /chaos trigger, never
 -- the random rotation. Delete a name to graduate it.
 local ALPHA_ONLY = {
-  image_test=1, -- the image-hook validator, not a real effect
   -- (SA-inspired batch graduated to the main pool 2026-07-19 after testing;
   -- mitosis removed outright — spawn-at-corpse never worked.)
   -- (SA/HL2 wave 2 graduated to the main pool 2026-07-19 after testing.)
-  texture_test=1, -- the pd.tex_override validator, not a real effect
 }
 for name, e in pairs(alpha_effects) do
   if ALPHA_ONLY[name] then
@@ -2706,7 +2755,7 @@ local function reset_all_modes()
   -- Chaos Alpha state (belt and braces — each effect's stop() already ran).
   if pd.explosions_around then pd.explosions_around(false) end
   st.a_boom_off = nil
-  st.a_bloop, st.a_twoh, st.a_imgtest = nil
+  st.a_bloop, st.a_twoh = nil
   st.a_ltk, st.a_run, st.a_cap, st.a_rr = nil
   st.a_classic, st.a_angst, st.a_phone, st.a_count = nil
   st.a_objf, st.a_thief, st.a_cd, st.a_roll = nil
@@ -3183,25 +3232,9 @@ pd.on("weaponfire", function(weaponnum, playernum)
       st.recoil_kick = true
     end
   end
-  -- Beat game: score the shot against the music beat. weaponnum > 1 skips
-  -- fists/knife (the glass-cannon convention).
-  if st.active.beat_game and st.a_beat and playernum == 0 and weaponnum and weaponnum > 1 then
-    local b = st.a_beat
-    local ph = beat_phase()
-    local dist = math.min(ph, 1 - ph) -- distance to the nearest beat
-    if dist < 0.10 then          -- ON beat: bonus damage to the aim target
-      local c = pd.aim_chr and pd.aim_chr()
-      if c and pd.chr_damage then pd.chr_damage(c, 8) end
-      b.hits = b.hits + 1
-      b.last, b.lastcol, b.lastt = "PERFECT!", 0x40ff40ff, TICKS
-    elseif dist < 0.22 then      -- slightly off: normal, no bonus or penalty
-      b.last, b.lastcol, b.lastt = "on time", 0xffe040ff, TICKS
-    else                         -- OFF beat: the recoil bites back
-      pd.player_damage(1.5)
-      b.misses = b.misses + 1
-      b.last, b.lastcol, b.lastt = "OFF BEAT!", 0xff4040ff, TICKS
-    end
-  end
+  -- Beat game is scored on the fire-button PRESS in its own tick (so a burst/auto
+  -- weapon counts as one shot per pull, and holding is penalised), not per shot
+  -- here — see the beat_game effect's tick.
   -- Russian roulette: the trigger pull IS the spin. Resolve immediately.
   if st.active.russian_roulette and st.a_rr and not st.a_rr.fired
       and playernum == 0 and weaponnum == W.MAGNUM then
@@ -3349,31 +3382,6 @@ pd.on("draw", function()
         pd.draw_sprite(s.tex, s.x, s.y, s.w, s.h, 0x000000 * 256 + a) -- black + fade alpha
       end
     end
-  end
-
-  -- Image loader test: center -> scroll -> resize -> spin, 10s per phase.
-  if st.active.image_test and st.a_imgtest and pd.draw_image then
-    local it = st.a_imgtest
-    local t = it.t
-    local cx, cy, w, h, angle = 160, 120, 96, 96, 0
-    local phase = math.floor(t / (10 * TICKS)) % 4
-    local label
-    if phase == 0 then
-      label = "CENTER"
-    elseif phase == 1 then
-      cx = 160 + math.floor(90 * math.cos(t / 30))
-      cy = 120 + math.floor(60 * math.sin(t / 30))
-      label = "SCROLL"
-    elseif phase == 2 then
-      local s = 48 + math.floor(60 * (1 + math.sin(t / 24)))
-      w, h = s, s
-      label = "RESIZE"
-    else
-      angle = (t * 3) % 360
-      label = "SPIN"
-    end
-    pd.draw_image(it.handle, cx, cy, w, h, angle)
-    centered_text(26, "IMAGE TEST 64x64: " .. label, 0xffe040ff)
   end
 
   -- DVD screensaver: bouncing tinted logo + the rare perfect-corner payoff.

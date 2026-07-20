@@ -825,16 +825,42 @@ void modelUpdateChrNodeMtx(struct modelrenderdata *arg0, struct model *model, st
 	}
 
 #ifndef PLATFORM_N64
-	// Chaos vertical squash (pd.chr_yscale): sp158 is the model->world basis, so
-	// row 1 (m[1][*]) is the world image of the model's local Y axis (its spine).
-	// Scaling only that row compresses/stretches height while leaving width and
-	// depth untouched, and — being at the root — it propagates down the whole
-	// skeleton. Bounded so a stray value can't invert or balloon a chr. Purely
-	// visual; the N64 build never sees this block (yscale is a port-only field).
+	// Chaos chr sizing pivots at the model root (the animated pelvis, mid-body):
+	// a giant's feet sink into the floor, an ant/squashed clone floats. Re-anchor
+	// the vertical so the FEET stay on the GROUND. sp158 is the model->world
+	// matrix and rwdata->chrinfo.ground is the world floor Y (chrinfo.pos.y =
+	// ground + offset). Purely visual; the N64 build never sees this block.
 	if (model->chr != NULL) {
-		f32 ys = model->chr->yscale;
-		if (ys > 0.0f && ys != 1.0f && ys <= 4.0f) {
-			mtx00015e4c(ys, &sp158);
+		f32 groundy = rwdata->chrinfo.ground;
+
+		// (a) Chaos uniform sizing (pd.chr_scale — "Attack of the giants" / "Ant
+		// farm"): a true uniform resize done entirely HERE on the composed
+		// root->world matrix, so every bone/vertex scales by exactly `gm` no matter
+		// how the skeleton was built (this is why it can't be done via model->scale
+		// + animscale, whose pelvis-pivot spread floats/sinks the feet). X and Z
+		// scale about the chr's own vertical axis (m[3][0]/m[3][2] are the pivot,
+		// left unchanged); Y scales about the GROUND plane so the feet stay planted.
+		// groundmult is the chaos-only multiplier (base body scale is left to the
+		// engine), so base-scaled bodies are untouched.
+		f32 gm = model->chr->groundmult;
+		if (gm > 0.0f && gm != 1.0f) {
+			sp158.m[0][0] *= gm; sp158.m[1][0] *= gm; sp158.m[2][0] *= gm;
+			sp158.m[0][2] *= gm; sp158.m[1][2] *= gm; sp158.m[2][2] *= gm;
+			sp158.m[0][1] *= gm; sp158.m[1][1] *= gm; sp158.m[2][1] *= gm;
+			sp158.m[3][1] = gm * sp158.m[3][1] + groundy * (1.0f - gm);
+		}
+
+		// (b) Non-uniform vertical squash (pd.chr_yscale — "Me and my son"): scale
+		// the world-Y column about the ground, worldY' = ground + ys*(worldY -
+		// ground). Bounded so a stray value can't invert or balloon.
+		{
+			f32 ys = model->chr->yscale;
+			if (ys > 0.0f && ys != 1.0f && ys <= 4.0f) {
+				sp158.m[0][1] *= ys;
+				sp158.m[1][1] *= ys;
+				sp158.m[2][1] *= ys;
+				sp158.m[3][1] = ys * sp158.m[3][1] + groundy * (1.0f - ys);
+			}
 		}
 	}
 #endif
@@ -1575,8 +1601,20 @@ void modelSetMatrices(struct modelrenderdata *renderdata, struct model *model)
 		// (modelasm00018680) reads anim rotations directly, bypassing
 		// animGetRotTranslateScale where the T-pose zeroing lives. Force the
 		// reference C path while it's active so bind-pose zeroing takes effect.
+		//
+		// Same story for the chr GROUND-anchored sizing in modelUpdateChrNodeMtx
+		// (pd.chr_yscale "Me and my son", and the pd.chr_scale foot-snap for
+		// "Attack of the giants" / "Ant farm"): those blocks live on the C path
+		// only, so the asm builder skips them and the chr renders un-grounded
+		// (full height / sunken / floating). Force the C path for any chr with a
+		// non-1 yscale OR a non-1 chaos groundmult. Gate on groundmult (the chaos
+		// delta), NOT model->scale — base-scaled bodies keep the fast asm path and
+		// their vanilla grounding. unk01 == 1 marks a chr model (chr.c sets it,
+		// objs set 0), so the model->chr union is safe to read.
 		extern s32 g_ChaosTPose;
-		if (g_ChaosTPose) {
+		if (g_ChaosTPose
+				|| (model->unk01 == 1 && model->chr != NULL
+						&& (model->chr->yscale != 1.0f || model->chr->groundmult != 1.0f))) {
 			modelUpdateMatrices(renderdata, model);
 			return;
 		}

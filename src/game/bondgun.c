@@ -1331,22 +1331,37 @@ void bgun0f098df8(s32 weaponfunc, struct handweaponinfo *info, struct hand *hand
 			{
 				s32 loaded = amount;
 #ifndef PLATFORM_N64
-				// Chaos "Temu Magazine": pay the full reserve cost (amount) but
-				// only actually chamber a random ~34-100% of it — reloading no
-				// longer guarantees a full magazine. amount >= 2 keeps single-
-				// shell / incremental reloads (amount == 1) working normally, and
-				// loaded is floored at 1 so a reload never wastes everything.
-				// Local player only (remote pawns must reload for real).
+				// Chaos "Temu Magazine": a knockoff mag. Every reload pays for a
+				// WHOLE magazine (clipsize) from the reserve — the price of a fresh
+				// full mag, NOT just the rounds that fit — but the mag only actually
+				// holds a random 1-100% of capacity, and slotting it REPLACES the
+				// current clip (so a bad mag can leave you with fewer rounds than you
+				// had). amount >= 2 keeps single-shell / incremental reloads normal;
+				// local player only (remote pawns must reload for real).
 				if (g_ChaosTemuMag && amount >= 2 && !g_Vars.currentplayer->isremote) {
-					loaded = amount * (34 + (s32)(rngRandom() % 67)) / 100;
+					s32 clipsize = hand->clipsizes[ammoindex];
+					s32 reserve = g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]];
+					s32 cost = clipsize;
+
+					if (cost > reserve) {
+						cost = reserve; // can't pay more than you hold
+					}
+					loaded = clipsize * (1 + (s32)(rngRandom() % 100)) / 100;
 					if (loaded < 1) {
 						loaded = 1;
 					}
-				}
+					if (loaded > cost) {
+						loaded = cost; // can't chamber more than you paid for
+					}
+					hand->loadedammo[ammoindex] = loaded; // fresh mag replaces the clip
+					g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] -= cost;
+				} else
 #endif
-				hand->loadedammo[ammoindex] += loaded;
+				{
+					hand->loadedammo[ammoindex] += loaded;
+					g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] -= amount;
+				}
 			}
-			g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] -= amount;
 
 			if (info->definition->ammos[ammoindex]->flags & AMMOFLAG_NORESERVE) {
 				g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] = 0;

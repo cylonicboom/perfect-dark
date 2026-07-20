@@ -1132,6 +1132,9 @@ void chrInit(struct prop *prop, u8 *ailist)
 	// chrslot never renders with a previous chr's pd.chr_yscale still applied.
 	chr->yscale = 1.0f;
 
+	// Same for the chaos uniform-scale groundmult (giants/ants foot-snap).
+	chr->groundmult = 1.0f;
+
 	// Clear the netplay pose-snapshot ring. chrInit initialises fields one by
 	// one (no memset), and chr slots are recycled stage-pool memory, so the
 	// port-appended netsnap/netsnaphead otherwise inherit whatever the pool

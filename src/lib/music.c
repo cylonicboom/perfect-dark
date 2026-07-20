@@ -28,6 +28,15 @@ s32 g_MusicNextAmbientTick240 = -1;
 // tempo meta events); the sequence's qnpt is quarter-notes-per-tick (1/division)
 // and curTime is the playback position in microseconds — so µs-per-beat =
 // uspt/qnpt, BPM = 60e6/µs-per-beat, and phase = (curTime mod µs-per-beat).
+// Beat-game drum anchor: the sequence player (__n_CSPHandleMIDIMsg) records the
+// sequence time of each KICK hit — the lowest-key percussion note, learned live
+// (g_SndBeatKickKey, reset per track by musicStartPrimary) — so the phase below
+// can lock to the actual audible drum instead of the arbitrary track-start
+// reference, which could sit up to half a beat off.
+s32 g_SndBeatAnchorTime = 0;
+void *g_SndBeatAnchorSeqp = NULL;
+s32 g_SndBeatKickKey = 127;
+
 s32 sndGetMusicBeat(f32 *bpm, f32 *phase)
 {
 	s32 i;
@@ -56,9 +65,14 @@ s32 sndGetMusicBeat(f32 *bpm, f32 *phase)
 			s32 usperbeat = (s32)((f32)uspt / qnpt); // microseconds per beat
 
 			if (usperbeat > 1) {
-				// Integer modulo (curTime + usperbeat are both µs) keeps this off
-				// the FPU / libm; curTime never resets mid-track.
-				s32 rem = seq->seqp->curTime % usperbeat;
+				// Phase-lock to the actual KICK drum: measure from the last kick
+				// hit on THIS track (recorded by the sequence player) so phase 0
+				// lands on the drum, not the track-start reference. Falls back to
+				// the reference until this track has produced a kick. Integer
+				// modulo (both µs) keeps this off the FPU / libm; curTime never
+				// resets mid-track.
+				s32 anchor = (g_SndBeatAnchorSeqp == (void *)seq->seqp) ? g_SndBeatAnchorTime : 0;
+				s32 rem = (seq->seqp->curTime - anchor) % usperbeat;
 				if (rem < 0) {
 					rem += usperbeat;
 				}

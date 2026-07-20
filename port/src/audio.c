@@ -15,6 +15,15 @@
 // Forward-decl only: avoid pulling net/net.h -> types.h, which redefines
 // `bool` and would clash with SDL's <stdbool.h>.
 extern s32 g_NetDedicatedMode;
+// Game-side music volume (src/game/options.c). Forward-declared to avoid pulling
+// the game headers here. Range is 0..0x5000 (the NTSC music-slider max); used to
+// scale a pd.play_file track that opts into following the in-game music volume.
+extern u16 optionsGetMusicVolume(void);
+#define AUDIO_MUSICVOL_MAX 0x5000
+// Game pause state (src/game/lv.c). Declared s32 to match the decompiled build's
+// 4-byte `bool` ABI. A pd.play_file music track (followMusic) holds its position
+// and goes silent while the game is paused, so it resumes cleanly from the menu.
+extern s32 lvIsPaused(void);
 
 #ifndef DEDICATED_SERVER
 static SDL_AudioStream *stream;
@@ -33,6 +42,7 @@ static u8 *extSound = NULL;
 static u32 extSoundLen = 0;
 static u32 extSoundPos = 0;
 static s32 extLoop = 0; // pd.play_file(path, loop): rewind instead of freeing
+static s32 extFollowMusic = 0; // pd.play_file(...,follow): scale by music volume
 static s16 *mixBuf = NULL;
 static u32 mixBufCap = 0;
 // - bitcrush (pd.audio_crush): sample-and-hold every crushStep'th stereo
@@ -398,10 +408,11 @@ static s32 audioLoadMp3(const char *path, Uint8 **outdata, int *outlen, SDL_Audi
 }
 #endif
 
-s32 audioPlayExternal(const char *path, s32 loop)
+s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic)
 {
 #ifdef DEDICATED_SERVER
 	(void)loop;
+	(void)followMusic;
 	return 0;
 #else
 	SDL_AudioSpec srcspec;
@@ -446,6 +457,7 @@ s32 audioPlayExternal(const char *path, s32 loop)
 	extSoundLen = (u32)convlen;
 	extSoundPos = 0;
 	extLoop = loop ? 1 : 0;
+	extFollowMusic = followMusic ? 1 : 0;
 	return 1;
 #endif
 }
@@ -455,6 +467,7 @@ void audioStopExternal(void)
 {
 #ifndef DEDICATED_SERVER
 	extLoop = 0;
+	extFollowMusic = 0;
 	if (extSound) {
 		SDL_free(extSound);
 		extSound = NULL;
@@ -562,11 +575,26 @@ void audioEndFrame(void)
 					}
 
 					// mix the external sound (already device-spec s16 stereo);
-					// muted mutes it too
-					if (!audioMuted && extSound && extSoundPos < extSoundLen) {
+					// muted mutes it too. A followMusic track (Silo.mp3) also
+					// pauses with the game: while paused we skip the mix AND the
+					// position advance below, so it holds and resumes from the menu.
+					if (!audioMuted && extSound && extSoundPos < extSoundLen
+							&& !(extFollowMusic && lvIsPaused())) {
 						const s16 *ext = (const s16 *)(extSound + extSoundPos);
 						u32 bytes = extSoundLen - extSoundPos;
 						u32 i, n;
+						// 8.8 fixed-point gain: 256 = unity. When the track opts
+						// into following the in-game music volume, scale by the
+						// current music slider (0..0x5000) so it ducks/mutes with
+						// the player's music setting instead of blasting at full.
+						s32 gain256 = 256;
+
+						if (extFollowMusic) {
+							s32 mv = (s32)optionsGetMusicVolume();
+							gain256 = (mv * 256) / AUDIO_MUSICVOL_MAX;
+							if (gain256 > 256) gain256 = 256;
+							if (gain256 < 0) gain256 = 0;
+						}
 
 						if (bytes > nextSize) {
 							bytes = nextSize;
@@ -574,7 +602,7 @@ void audioEndFrame(void)
 						n = bytes / sizeof(s16);
 
 						for (i = 0; i < n; i++) {
-							s32 s = (s32)mixBuf[i] + (s32)ext[i];
+							s32 s = (s32)mixBuf[i] + (((s32)ext[i] * gain256) >> 8);
 							if (s > 32767) s = 32767;
 							if (s < -32768) s = -32768;
 							mixBuf[i] = (s16)s;

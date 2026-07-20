@@ -329,6 +329,10 @@ function, called every frame while active (disco's hue cycle).
   the Air Force One crash block (`playerSurroundWithExplosions` — staggered
   explosions around the player), then both off. Looks lethal, isn't — to
   you; nearby NPCs genuinely catch the blasts.
+- **`pirate`** ("Pirate", Chaos Alpha testbed) — an eyepatch: blacks out
+  the left or right half of the screen (random per fire) as a post-process, so
+  the HUD in that half goes dark too (`pd.pirate(1|2)`; cleared with
+  `pd.pirate(0)`). Timed like the other visual effects.
 - **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — a
   self-destruct running `chaos.silo_seconds` (default 8 minutes). On start it
   kills the mission music (`pd.stage_music(false)`) and loops `Silo.mp3`
@@ -513,13 +517,14 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
-### Me and my son / Silo Countdown (2026-07-20, new-effect bindings)
+### Me and my son / Silo Countdown / Pirate (2026-07-20, new-effect bindings)
 
 | Binding | Backing | Notes |
 |---|---|---|
 | `pd.spawn_ally_clone([healthfrac])` | `chraiLuaSpawnAllyClone` (chraction.c) | the `chraiLuaSpawnAlly` recipe, but the buddy wears the **player's own body AND head** (a Jo clone) instead of Dark Combat / VD, and her health pool (`chrSetMaxDamage` + `chrAddHealth`, both ×healthfrac) is scaled — default 0.5 = a fragile half-HP clone. Still TEAM_ALLY / SQUADRON_01 / `GAILIST_INIT_DEFAULT_BUDDY`, Falcon 2, `CHRCFLAG_NEVERSLEEP`. Server/solo-side; returns the chrnum or nil |
 | `pd.chr_yscale(chrnum, mult)` | `chr->yscale` (port-only chrdata field) → `modelUpdateChrNodeMtx` (model.c) | **non-uniform** vertical squash/stretch, unlike the uniform `pd.chr_scale`. The chr root matrix `sp158` is the model→world basis, so its **row 1** (`m[1][*]`) is the world image of the model's local Y axis (the spine); scaling only that row (`mtx00015e4c`) compresses height while leaving width/depth untouched, and — being at the root — it propagates down the whole skeleton. `mult 0.4` = 40% tall, full width. Bounded `(0, 4]` on both the setter and the render read (a stray value can't invert or balloon a chr). Purely visual (hitbox/AI unchanged). `chr->yscale` is reset to 1.0 in **`chrInit`** so a recycled chrslot never inherits a stale squash; the whole path is `#ifndef PLATFORM_N64` (the N64 build is byte-identical) |
 | `pd.stage_music(on)` | `chraiLuaStageMusic` (chraction.c) → `musicStop` / `musicSetStageAndStartMusic` (music.c) | stop (`on=false`) or restart (`on=true`) the **current stage's** music. Unlike `pd.song` — which layers a menu track over the *paused* stage music — this genuinely silences the level track, then re-derives primary + ambient from `g_Vars.stagenum` on restore. Backs Silo Countdown (kills the mission music, plays `Silo.mp3` via `pd.play_file` underneath) |
+| `pd.pirate(side)` | `chraiLuaPirate` (chraction.c) → `gfx_retro_fx` bits 0x800/0x1000 → the shared retro post-filter (`gfx_retro_common.h`) | "Pirate" eyepatch: black out the **left** (`side=1`) or **right** (`side=2`) half of the *finished frame* top-to-bottom; `0`/absent = off. Being a post-process over the composited frame, it covers the **HUD** in that half too. The shader keys on the RAW screen UV (`vUV.x`) before any warp, so the masked half is fixed in screen space; `x` is unaffected by the GL/SDL_GPU y-flip, so both backends agree. Only one side is set at a time |
 
 `chraiLuaChrYscale`'s field is the first port-only chrdata member that the render
 lib (`src/lib/model.c`) reads — `model->chr` is already the established chr
@@ -675,6 +680,8 @@ Until then, the UDP bridge is the supported route.
 | `scripts/silo_test.lua` | Silo Countdown 1-minute test harness (`silo_test()` + Chaos Alpha menu entry) |
 | `scripts/init.lua` | loads `silo_test.lua` after chaos.lua |
 | `scripts/sounds/chaos/README.md` | documents the `Silo.mp3` / `Silox.mp3` external tracks (not shipped) |
+| `port/fast3d/gfx_retro_common.h` | Pirate half-screen blackout bits (0x800/0x1000) in the shared retro post-filter body |
+| `port/src/dedicated_stubs.c` | headless no-op stubs for `inputSetChaosInvertLook` / `inputSetChaosInputDelay` / `inputLastSourceWasPad` (pre-existing dedicated-server link break) |
 | `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |
 | `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
 | `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |

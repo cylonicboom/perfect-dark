@@ -35,6 +35,12 @@
  *                  aspect ratio — each eye is the whole scene uniformly
  *                  scaled to 50%, letterboxed with black above and below
  *                  (image occupies the middle half of the screen height).
+ *                  2048 = black the LEFT half of the screen top-to-bottom,
+ *                  4096 = black the RIGHT half (Chaos "Pirate" eyepatch). Both
+ *                  key on the RAW screen UV (vUV.x) before any warp so the
+ *                  masked half is fixed in screen space, and — a post-process
+ *                  over the finished frame — cover the HUD too. x is unaffected
+ *                  by the GL/SDL_GPU y-flip, so left is left in both backends.
  *   float uWarp    fisheye lens strength (0 = off; CRT adds its own +0.12)
  *   float uAspect  framebuffer w/h (for circular radial warp)
  *   float uTime    seconds, for the animated effects (VHS jitter, wobble)
@@ -49,6 +55,8 @@
 #define RETRO_GLSL_BODY \
     "void main() {\n" \
     "    vec2 uv = vUV;\n" \
+    "    if ((uFx & 2048) != 0 && vUV.x < 0.5) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
+    "    if ((uFx & 4096) != 0 && vUV.x >= 0.5) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
     "    if ((uFx & 64) != 0) { uv = vec2(1.0) - uv; }\n" \
     "    if ((uFx & 1024) != 0) {\n" \
     "        if (uv.y < 0.25 || uv.y > 0.75) {\n" \

@@ -2372,6 +2372,15 @@ static int l_pd_screen_fx(lua_State *L)
 	return 1;
 }
 
+/* pd.pirate(side) -> bool. "Pirate" eyepatch: black out one half of the finished
+ * frame (HUD included, as a post-process). side 1 = left, 2 = right, 0/absent =
+ * off. */
+static int l_pd_pirate(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPirate((s32)luaL_optinteger(L, 1, 0)) != 0);
+	return 1;
+}
+
 /* pd.hudvd(on) -> nil. HUDVD chaos: each HUD element group (health, crosshair,
  * ammo, radar, messages, kill-feed) bounces DVD-style in its own random
  * diagonal. Purely cosmetic — aim/hit-detection are untouched. */
@@ -2990,6 +2999,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_screen_fx);     lua_setfield(L, -2, "screen_fx");
 	lua_pushcfunction(L, l_pd_hudvd);         lua_setfield(L, -2, "hudvd");
 	lua_pushcfunction(L, l_pd_crt);           lua_setfield(L, -2, "crt");
+	lua_pushcfunction(L, l_pd_pirate);        lua_setfield(L, -2, "pirate");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
 	lua_pushcfunction(L, l_pd_audio_radio);   lua_setfield(L, -2, "audio_radio");

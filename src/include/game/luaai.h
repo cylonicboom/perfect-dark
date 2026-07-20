@@ -274,6 +274,7 @@ s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy
 s32 chraiLuaSpawnAllyClone(f32 healthfrac);   /* friendly Jo clone (player body/head), scaled HP; chrnum or -1 */
 s32 chraiLuaChrYscale(s32 chrnum, f32 mult);  /* non-uniform vertical squash (width kept) */
 s32 chraiLuaStageMusic(s32 on);               /* stop / restart the current stage's music */
+s32 chraiLuaPirate(s32 side);                 /* black out one screen half (post-process; 1=L, 2=R, 0=off) */
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
  * apLuaPlayerChr() contract as the AP helpers above. */

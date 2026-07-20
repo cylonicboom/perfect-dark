@@ -743,6 +743,15 @@ chaos.effects = {
   peephole     = { label="Peephole",          w=3, dur=20,
                    start=function() pd.lens(1.4) end,
                    stop=function() pd.lens() end },
+  -- "Pirate": eyepatch — black out the left OR right half (random) as a
+  -- post-process, so the HUD in that half goes dark too. Picks a side on start,
+  -- clears on stop. alpha for now: needs a fresh exe (pd.pirate).
+  pirate       = { label="Pirate", alpha=true, w=0, dur=20,
+                   start=function()
+                     if not pd.pirate then error("needs new exe") end
+                     pd.pirate(math.random(1, 2)) -- 1 = left half, 2 = right half
+                   end,
+                   stop=function() if pd.pirate then pd.pirate(0) end end },
   underwater   = { label="Submerged",         w=3, dur=25,
                    start=function() pd.screen_fx(32, true); pd.audio_reverb(0.35) end,
                    stop=function() pd.screen_fx(32, false); pd.audio_reverb() end },
@@ -2485,6 +2494,7 @@ local function reset_all_modes()
   if pd.screen_tint then pd.screen_tint() end
   if pd.pixelate then pd.pixelate() end -- also clears the hue-rotate / virtualboy colour modes
   if pd.screen_fx then pd.screen_fx(0x43f, false) end -- incl. the 1024 side-by-side bit
+  if pd.pirate then pd.pirate(0) end -- clear the Pirate half-screen blackout bits
   if pd.lens then pd.lens() end
   if pd.audio_crush then pd.audio_crush() end
   if pd.audio_radio then pd.audio_radio(false) end

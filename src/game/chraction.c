@@ -10949,6 +10949,21 @@ s32 chraiLuaScreenFx(s32 bits, s32 on)
 	return 1;
 }
 
+// pd.pirate(side): "Pirate" eyepatch — black out one half of the finished frame
+// (post-process retro-fx bits 0x800 = left, 0x1000 = right), so the HUD in that
+// half goes dark too. side 1 = left, 2 = right, anything else = off. Only one
+// side is ever set at a time.
+s32 chraiLuaPirate(s32 side)
+{
+	gfx_retro_fx &= ~(0x800 | 0x1000); // clear both pirate bits first
+	if (side == 1) {
+		gfx_retro_fx |= 0x800;  // black the LEFT half
+	} else if (side == 2) {
+		gfx_retro_fx |= 0x1000; // black the RIGHT half
+	}
+	return 1;
+}
+
 // pd.lens(k): fisheye lens warp on the rendered frame — centre magnified,
 // corners pinned. 0 = off; negative = pincushion (clamped shy of the pole).
 extern f32 gfx_retro_warp;

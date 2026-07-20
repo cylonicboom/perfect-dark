@@ -57,6 +57,7 @@
 
 #ifndef PLATFORM_N64
 #include "console.h"          /* conPrintf (port) */
+#include "fs.h"               /* fsFileOpenRead/Write (pd.persist_* disk backing) */
 #endif
 
 /* ------------------------------------------------------------------------- *
@@ -523,10 +524,19 @@ static int l_pd_hud_message(lua_State *L)
  * change -- mission load, return to the main menu -- so script globals do NOT
  * survive a reload (luaai.c luaaiExecute). This tiny C-owned table lives
  * outside the lua_State, so a script (e.g. the AP test harness check board) can
- * persist state across that teardown. Session-only; not written to disk.
+ * persist state across that teardown.
+ *
+ * Backed by a plain "key=value" text file in the save dir (next to pd.ini), so
+ * settings also survive QUITTING THE GAME. That's what makes the Chaos menu
+ * toggles stick: chaos.lua already writes every menu-adjustable setting through
+ * here (chaos_enabled / chaos_interval / chaos_effectdur / chaos_votetime /
+ * chaos_disabled), it just had nowhere durable to put them.
  * ------------------------------------------------------------------------- */
 #define LUA_PERSIST_MAX 32
+#define LUA_PERSIST_FILE "$S/lua_persist.txt"
+#define LUA_PERSIST_MAXLINE 2048
 static struct luapersist { char *key; char *val; } g_LuaPersist[LUA_PERSIST_MAX];
+static s32 g_LuaPersistLoaded = 0;
 
 static char *luaApiStrDup(const char *s)
 {
@@ -538,16 +548,66 @@ static char *luaApiStrDup(const char *s)
 	return p;
 }
 
-/* pd.persist_set(key, value): a nil/absent value clears the key. */
-static int l_pd_persist_set(lua_State *L)
+/*
+ * Write the whole table out. Called after any change, so a crash can never lose
+ * more than the entry being written. The file is tiny (a few hundred bytes) and
+ * changes at most a few times a minute, so a full rewrite is cheaper than
+ * tracking dirty entries.
+ */
+static void luaApiPersistSave(void)
 {
-	const char *key = luaL_checkstring(L, 1);
-	const char *val = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+#ifndef PLATFORM_N64
+	FILE *f;
+	s32 i;
+
+	/* don't write a file until we've read the existing one -- that would
+	 * truncate the user's saved settings with a half-populated table */
+	if (!g_LuaPersistLoaded) {
+		return;
+	}
+
+	f = fsFileOpenWrite(LUA_PERSIST_FILE);
+	if (!f) {
+		return;
+	}
+
+	fprintf(f, "# Perfect Dark - persistent script settings (pd.persist_set).\n");
+	fprintf(f, "# Rewritten by the game whenever a setting changes.\n");
+
+	for (i = 0; i < LUA_PERSIST_MAX; i++) {
+		const char *key = g_LuaPersist[i].key;
+		const char *val = g_LuaPersist[i].val;
+
+		if (!key || !val) {
+			continue;
+		}
+
+		/* The format has no escaping: a newline anywhere, or an '=' in the
+		 * key, would produce a file we'd read back as something else. Values
+		 * may contain '=' -- the reader splits on the FIRST one. */
+		if (strchr(key, '\n') || strchr(key, '\r') || strchr(key, '=')
+				|| strchr(val, '\n') || strchr(val, '\r')) {
+			continue;
+		}
+
+		fprintf(f, "%s=%s\n", key, val);
+	}
+
+	fsFileFree(f);
+#endif
+}
+
+/* Store a value without touching the file. Returns 1 if anything changed. */
+static s32 luaApiPersistStore(const char *key, const char *val)
+{
 	s32 i;
 	s32 slot = -1;
 
 	for (i = 0; i < LUA_PERSIST_MAX; i++) {
 		if (g_LuaPersist[i].key && strcmp(g_LuaPersist[i].key, key) == 0) {
+			if (val && g_LuaPersist[i].val && strcmp(g_LuaPersist[i].val, val) == 0) {
+				return 0; /* unchanged -- skip the rewrite */
+			}
 			free(g_LuaPersist[i].val);
 			g_LuaPersist[i].val = NULL;
 			if (val) {
@@ -556,7 +616,7 @@ static int l_pd_persist_set(lua_State *L)
 				free(g_LuaPersist[i].key);
 				g_LuaPersist[i].key = NULL;
 			}
-			return 0;
+			return 1;
 		}
 		if (slot < 0 && !g_LuaPersist[i].key) {
 			slot = i;
@@ -566,7 +626,75 @@ static int l_pd_persist_set(lua_State *L)
 	if (val && slot >= 0) {
 		g_LuaPersist[slot].key = luaApiStrDup(key);
 		g_LuaPersist[slot].val = luaApiStrDup(val);
+		return 1;
 	}
+
+	return 0;
+}
+
+/*
+ * Read the file once, on first use. Scripts call pd.persist_get while building
+ * their state (chaos.lua does it at construction), so this runs before any
+ * script can observe the store.
+ */
+static void luaApiPersistEnsureLoaded(void)
+{
+#ifndef PLATFORM_N64
+	char line[LUA_PERSIST_MAXLINE];
+	FILE *f;
+#endif
+
+	if (g_LuaPersistLoaded) {
+		return;
+	}
+
+	/* set BEFORE parsing: luaApiPersistStore must not recurse back in here,
+	 * and a missing file is a successful "loaded nothing" */
+	g_LuaPersistLoaded = 1;
+
+#ifndef PLATFORM_N64
+	f = fsFileOpenRead(LUA_PERSIST_FILE);
+	if (!f) {
+		return;
+	}
+
+	while (fgets(line, sizeof(line), f)) {
+		char *eq;
+		size_t len = strlen(line);
+
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+			line[--len] = '\0';
+		}
+
+		if (line[0] == '\0' || line[0] == '#') {
+			continue;
+		}
+
+		eq = strchr(line, '=');
+		if (!eq) {
+			continue;
+		}
+
+		*eq = '\0';
+		luaApiPersistStore(line, eq + 1);
+	}
+
+	fsFileFree(f);
+#endif
+}
+
+/* pd.persist_set(key, value): a nil/absent value clears the key. */
+static int l_pd_persist_set(lua_State *L)
+{
+	const char *key = luaL_checkstring(L, 1);
+	const char *val = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+
+	luaApiPersistEnsureLoaded();
+
+	if (luaApiPersistStore(key, val)) {
+		luaApiPersistSave();
+	}
+
 	return 0;
 }
 
@@ -575,6 +703,8 @@ static int l_pd_persist_get(lua_State *L)
 {
 	const char *key = luaL_checkstring(L, 1);
 	s32 i;
+
+	luaApiPersistEnsureLoaded();
 
 	for (i = 0; i < LUA_PERSIST_MAX; i++) {
 		if (g_LuaPersist[i].key && strcmp(g_LuaPersist[i].key, key) == 0) {

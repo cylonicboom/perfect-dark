@@ -115,6 +115,35 @@ slate is drawn. A Twitch/YouTube bot only has to forward chat "1"/"2"/"3"
 messages as `vote N` datagrams to the UDP ingress; the slate panel is what
 viewers read on stream. `votetime 0` returns to the solo drumbeat.
 
+## Where settings are saved (`$S/lua_persist.txt`, 2026-07-21)
+
+`pd.persist_set` / `pd.persist_get` (the C-owned KV in `luaai_api.c` that
+outlives the per-stage `lua_State` teardown) is **backed by a text file in the
+save dir**, next to `pd.ini` — so chaos settings survive quitting the game, not
+just a stage load. Before this the store was RAM-only and every menu toggle was
+forgotten on exit.
+
+```
+# Perfect Dark - persistent script settings (pd.persist_set).
+# Rewritten by the game whenever a setting changes.
+chaos_disabled=disco,jelly,superhot
+chaos_effectdur=60
+chaos_enabled=1
+chaos_interval=20
+```
+
+- `chaos.lua` needed **no changes** — it already routed every menu-adjustable
+  setting through `persist()` / `persist_disabled()`. Keys: `chaos_enabled`,
+  `chaos_interval`, `chaos_effectdur`, `chaos_votetime`, `chaos_disabled`
+  (comma-separated OFF list), `chaos_recent` (non-repeat queue).
+- Loaded once, lazily, on the first `persist_get`/`persist_set` — which happens
+  while `chaos.lua` builds its state, so scripts always see saved values.
+- Rewritten in full after any *changed* value (unchanged writes are skipped).
+  Delete the file to reset every script setting to defaults.
+- **No escaping**: entries whose key contains `=` or whose key/value contains a
+  newline are dropped on write. Values may contain `=` (the reader splits on the
+  first one). Store 32 keys max (`LUA_PERSIST_MAX`); scripts currently use 6.
+
 ## Frequency & duration (configurable)
 
 Two global knobs, both persisted (`pd.persist`) and adjustable from the console

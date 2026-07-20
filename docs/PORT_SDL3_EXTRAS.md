@@ -213,3 +213,41 @@ click deactivates the game.
   controller-only players keep a free cursor.
 - Set `Input.MouseGrab=0` in pd.ini to restore the old unconfined cursor.
 - Dedicated build unaffected (input.c excluded there).
+
+### 2026-07-21 — confinement now follows Mouse Lock Mode
+
+As first shipped, the grab ignored lock state entirely, so the cursor stayed
+trapped in the window in menus and while paused. Separately, `MLOCK_ON` broke
+menu mouse input outright: menus release the pointer via
+`inputAutoLockMouse(false)`, which only acted when the mode was `MLOCK_AUTO`,
+so under ON relative mouse mode was never released and the menu got no
+absolute cursor. Both are fixed by making the dropdown govern **both** halves:
+
+| Mode | Gameplay | Menu / paused |
+|---|---|---|
+| Off | free cursor | free cursor, may leave window |
+| Auto | aim lock + confine | free cursor, **may leave window** |
+| On | aim lock + confine | free cursor, confined to window |
+
+Menu mouse works in all three modes; On differs from Auto purely by keeping
+the cursor inside the window once a menu releases it.
+
+Implementation notes:
+
+- New `mouseWantLock` records whether the GAME wants the pointer (set by
+  `inputAutoLockMouse`, i.e. `menuClose`/`menuStop` → true,
+  `menuPushRootDialog` → false). It's tracked in **every** mode — that's what
+  lets ON distinguish "in a menu" from "in gameplay". It **defaults to true**:
+  booting to the main menu clears it, but booting straight into a stage
+  (`--level`) never passes through a menu, and a false default would leave
+  that session's pointer permanently unclaimed.
+- `inputApplyMousePolicy()` is the single choke point — it sets relative
+  capture (`mouseEnabled && mode != OFF && mouseWantLock`) and then the grab.
+  Call it instead of poking `inputLockMouse` directly.
+- `inputSetMouseLockMode` re-applies the policy rather than forcing a lock;
+  forcing it is what let selecting "Always On" steal the cursor from the very
+  menu you were changing the setting in.
+- The idle-cursor-hide timer in `inputUpdateMouse` widened from
+  `mode == AUTO` to `mode != OFF`, since ON now also releases the pointer for
+  menus and would otherwise park a cursor on screen forever.
+- `Input.MouseGrab` remains a master off switch layered on top.

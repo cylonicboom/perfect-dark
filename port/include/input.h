@@ -259,7 +259,12 @@ void inputSetMouseLockMode(s32 lockmode);
 void inputSetChaosDeadzone(s32 dz);
 s32 inputLastSourceWasPad(void); // chaos Button Thief: 1 = gamepad, 0 = kb/mouse
 
-// same as inputLockMouse but works only if mouse is enabled and lockmode == MLOCK_AUTO
+// Tell the input layer whether the GAME wants the pointer: true when gameplay
+// resumes, false when a menu or the pause screen opens. Records the intent in
+// every lock mode and re-applies both relative capture and window confinement
+// per Mouse Lock Mode (OFF never takes the pointer; AUTO also releases the
+// window confinement for menus; ON keeps the cursor confined but still hands
+// menus a usable cursor). Returns whether the pointer is under game control.
 s32 inputAutoLockMouse(s32 wantlock);
 
 // show/hide mouse cursor; if mouse lock is on the cursor is always hidden

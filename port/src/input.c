@@ -158,6 +158,18 @@ static s32 mouseWheel = 0;
 static s32 mouseLocked = 0;
 static s32 mouseLockMode = MLOCK_AUTO;
 static s32 mouseGrab = 1;
+// Does the GAME currently want the pointer? Set true when gameplay resumes
+// (menuClose / menuStop) and false when a menu or the pause screen opens
+// (menuPushRootDialog). Tracked for every lock mode -- it used to be implicit
+// in mouseLocked, which meant MLOCK_ON (where nothing ever unlocked) could
+// never tell "in a menu" from "in gameplay" and so kept relative mouse mode on
+// through menus, leaving them with no usable cursor.
+//
+// Defaults to true, i.e. "gameplay until told otherwise": booting to the main
+// menu clears it via menuPushRootDialog, but booting STRAIGHT into a stage
+// (--level) never passes through a menu at all, and defaulting to false would
+// leave that session with the pointer permanently unclaimed.
+static s32 mouseWantLock = 1;
 static u64 mouseCursorTime = 0;
 static s32 mouseShowCursor = 1;
 
@@ -578,19 +590,49 @@ static inline void inputInitAllControllers(void)
 	}
 }
 
-// Confine the OS cursor to the window while it has focus (Input.MouseGrab).
-// This is the free-cursor half of "mouse lock when the window is active":
-// relative mouse mode already contains the cursor during gameplay, but in
-// menus the cursor is free and can wander onto another monitor, where a
-// click deactivates the game. SDL manages the grab per-focus (released on
-// focus loss, re-applied on regain); the explicit FOCUS_GAINED re-assert
-// below covers boot order and any state SDL dropped while unfocused.
+// Confine the OS cursor to the window while it has focus. Relative mouse mode
+// already contains the cursor during gameplay; this is the free-cursor half,
+// stopping a menu cursor from wandering onto another monitor where a click
+// deactivates the game. SDL manages the grab per-focus (released on focus
+// loss, re-applied on regain); the explicit FOCUS_GAINED re-assert below
+// covers boot order and any state SDL dropped while unfocused.
+//
+// Confinement follows Mouse Lock Mode, so menus can hand the cursor back to
+// the desktop: OFF never confines, ON confines at all times, AUTO confines
+// only while the game holds the pointer (so menus and pause let the cursor
+// leave the window). Input.MouseGrab remains a master off switch.
 static void inputApplyMouseGrab(void)
 {
 	SDL_Window *wnd = (SDL_Window *)videoGetWindowHandle();
-	if (wnd) {
-		SDL_SetWindowMouseGrab(wnd, mouseGrab && mouseEnabled);
+	if (!wnd) {
+		return;
 	}
+
+	s32 confine;
+
+	switch (mouseLockMode) {
+	case MLOCK_OFF:
+		confine = 0;
+		break;
+	case MLOCK_ON:
+		confine = 1;
+		break;
+	default:
+		confine = mouseWantLock;
+		break;
+	}
+
+	SDL_SetWindowMouseGrab(wnd, mouseGrab && mouseEnabled && confine);
+}
+
+// Bring both halves of the mouse state in line with the current mode. Relative
+// aim capture is taken only when the game actually wants the pointer, in EVERY
+// mode except OFF -- including ON, which differs from AUTO purely by keeping
+// the cursor confined to the window once a menu releases it.
+static void inputApplyMousePolicy(void)
+{
+	inputLockMouse(mouseEnabled && mouseLockMode != MLOCK_OFF && mouseWantLock);
+	inputApplyMouseGrab();
 }
 
 // NOTE: must return SDL3's real 1-byte bool, spelled _Bool here because
@@ -601,10 +643,7 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
 			// window became active: re-assert cursor confinement and, if the
 			// game holds the mouse (gameplay), relative capture
-			inputApplyMouseGrab();
-			if (mouseLocked) {
-				inputLockMouse(1);
-			}
+			inputApplyMousePolicy();
 			break;
 		case SDL_EVENT_GAMEPAD_ADDED:
 			// NOTE: in SDL3 `which` is an instance ID, not a device index
@@ -908,13 +947,10 @@ s32 inputInit(void)
 		inputSetDefaultKeyBinds(i, 0);
 	}
 
-	if (mouseLockMode != MLOCK_AUTO) {
-		inputLockMouse(mouseLockMode);
-	}
-
 	// videoInit ran just before us, so the window exists; the FOCUS_GAINED
-	// watcher keeps this asserted from here on
-	inputApplyMouseGrab();
+	// watcher keeps this asserted from here on. Starts from the "gameplay"
+	// default, which the main menu clears the moment it opens.
+	inputApplyMousePolicy();
 
 	// update the axis maps
 	// NOTE: by default sticks get swapped for 1.2: "right stick" here means left stick on your controller
@@ -1215,9 +1251,11 @@ static inline void inputUpdateMouse(void)
 	mouseX = mx;
 	mouseY = my;
 
-	// if MLOCK_AUTO is enabled, disable cursor if mouse is unlocked
-	// and we haven't moved it for a few seconds
-	if (mouseLockMode == MLOCK_AUTO && !mouseLocked) {
+	// hide the cursor if the mouse is unlocked and we haven't moved it for a
+	// few seconds. Covers MLOCK_ON too now that it releases the pointer for
+	// menus -- gating this on AUTO alone would leave an idle cursor parked on
+	// screen forever in ON. MLOCK_OFF keeps the cursor permanently visible.
+	if (mouseLockMode != MLOCK_OFF && !mouseLocked) {
 		if (abs(mouseDX) > CURSOR_HIDE_THRESHOLD || abs(mouseDY) > CURSOR_HIDE_THRESHOLD) {
 			if (!mouseShowCursor) {
 				inputMouseShowCursor(1);
@@ -1721,20 +1759,19 @@ s32 inputMouseIsEnabled(void)
 void inputMouseEnable(s32 enabled)
 {
 	mouseEnabled = !!enabled;
-	if (!mouseEnabled && mouseLockMode != MLOCK_ON && mouseLocked) {
-		inputLockMouse(0);
-	}
-	// grab follows mouseEnabled so controller-only players keep a free cursor
-	inputApplyMouseGrab();
+	// both halves follow mouseEnabled so controller-only players keep a free,
+	// unconfined cursor
+	inputApplyMousePolicy();
 }
 
 s32 inputAutoLockMouse(s32 wantlock)
 {
-	if (mouseEnabled && mouseLockMode == MLOCK_AUTO) {
-		inputLockMouse(wantlock);
-		return 1;
-	}
-	return 0;
+	// Record the game's intent for every mode -- MLOCK_ON needs it too, to
+	// know a menu is open and hand back a usable cursor (while still keeping
+	// that cursor inside the window).
+	mouseWantLock = !!wantlock;
+	inputApplyMousePolicy();
+	return mouseEnabled && mouseLockMode != MLOCK_OFF;
 }
 
 void inputMouseShowCursor(s32 show)
@@ -1758,11 +1795,11 @@ s32 inputGetMouseLockMode(void)
 void inputSetMouseLockMode(s32 lockmode)
 {
 	mouseLockMode = lockmode;
-	if (lockmode == MLOCK_ON) {
-		inputLockMouse(1);
-	} else {
-		inputLockMouse(0);
-	}
+	// Re-apply rather than force a lock state: the mode says what to do with
+	// the pointer, mouseWantLock says whether the game is currently asking for
+	// it. Forcing MLOCK_ON to lock here is what stole the cursor from the very
+	// menu the player was changing the setting in.
+	inputApplyMousePolicy();
 }
 
 const char *inputGetContKeyName(u32 ck)

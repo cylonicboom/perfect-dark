@@ -450,9 +450,11 @@ void luaPossessApplyCamera(void); /* point the render camera at the fly pose */
  * Lua Director dialog (mainmenu.c) reads these accessors to render + dispatch.
  * Defined in luaai_api.c.
  * ------------------------------------------------------------------------- */
-#define LUA_MENU_MAX 256           /* max Director entries (shared with mainmenu.c); sized for
-                                      chaos's per-effect Test triggers (~74) AND on/off toggles
-                                      (~74) plus the director/AP toolkits — the dialog smooth-scrolls */
+#define LUA_MENU_MAX 640           /* max Director entries (shared with mainmenu.c); sized for
+                                      chaos's per-effect Test triggers (~220) AND on/off toggles
+                                      (~220) plus the director/AP toolkits — the dialog smooth-scrolls.
+                                      Raised 256->640: the on/off list is registered LAST, so once the
+                                      registry filled it silently truncated to a handful of toggles. */
 #define LUA_MENU_LABEL 40          /* per-entry label / group buffer size (shared) */
 s32 luaMenuCount(void);            /* number of registered Director entries */
 const char *luaMenuLabel(s32 i);   /* label of entry i ("" if out of range) */

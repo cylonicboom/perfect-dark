@@ -2660,6 +2660,19 @@ for name, e in pairs(chaos.effects) do
   end
 end
 
+-- Graduate the recent testbed effects into the main pool: clear their alpha flag
+-- and give them a draw weight so they sit in the Test categories, the random
+-- rotation, and the on/off list like every other effect (no separate Alpha area).
+for _, n in ipairs({ "space_program", "beat_game", "frag_out", "sentries_out",
+    "temu_mag", "helpful_son", "me_and_my_son", "jelly", "acid_trip", "pirate",
+    "silo_countdown" }) do
+  local e = chaos.effects[n]
+  if e then
+    e.alpha = nil
+    if not e.w or e.w == 0 then e.w = 2 end
+  end
+end
+
 -- ------------------------------------------------------------- engine ------
 local function stop_effect(name)
   local e = chaos.effects[name]
@@ -3641,6 +3654,8 @@ if pd.menu_add then
       dutch_angle=1, blind=1, fading_out=1, sleepy=1, virtualboy=1,
       buttsbot=1, no_hud=1, waytoodank=1, rainbow_world=1, prismatic=1,
       ipod_ad=1, nepotism=1,
+      -- session graduates (2026-07-20)
+      jelly=1, acid_trip=1, pirate=1,
     } },
     { title = "Test: Cheats", set = {
       fists=1, slomo=1, dkmode=1, smalljo=1, smallchars=1, goldeneye=1,
@@ -3654,6 +3669,8 @@ if pd.menu_add then
       -- graduated alpha batch
       estus=1, new_glasses=1, psychosis=1, mine_trio=1, quad_laser=1,
       mediguns=1, tank=1, double_lx=1, two_handed=1, quad_handed=1,
+      -- session graduates (2026-07-20)
+      me_and_my_son=1,
     } },
     { title = "Test: Lethal", set = {
       self_destruct=1, misfire=1, weapon_jam=1, vampire=1, plague=1,
@@ -3670,6 +3687,8 @@ if pd.menu_add then
       no_shooting=1, pacifist=1, slow_bleed=1, death_chance=1, note_7=1,
       heavy_recoil=1,
       itchy_trigger=1, weeping=1,
+      -- session graduates (2026-07-20)
+      space_program=1, frag_out=1, sentries_out=1, silo_countdown=1, beat_game=1,
     } },
   }
   local CATCHALL = "Test: Weapons & World"
@@ -3685,29 +3704,13 @@ if pd.menu_add then
     pd.menu_add(e.label or n, function() chaos.trigger(n, "test", 30) end, cat_of(n))
   end
 
-  -- Chaos Alpha (testbed): select to fire for a fixed 30s (fixeddur effects keep
-  -- their own length); never in the random rotation. Sorted into their own
-  -- "Alpha: ..." sibling folders (same shape as the Test categories); names not
-  -- listed fall into "Alpha: Weapons & World". Folders are root-level siblings —
-  -- never nested (the menu engine crashes at 3-deep scroll stacks).
-  local ALPHA_CATS = {
-    { title = "Alpha: Visual & Audio", set = { jelly=1, acid_trip=1, pirate=1 } },
-    { title = "Alpha: Companions",     set = { me_and_my_son=1, helpful_son=1 } },
-    { title = "Alpha: Lethal",         set = {
-      space_program=1, frag_out=1, sentries_out=1, silo_countdown=1, beat_game=1,
-    } },
-  }
-  local ALPHA_CATCHALL = "Alpha: Weapons & World"
-  local function cat_of_alpha(n)
-    for _, c in ipairs(ALPHA_CATS) do
-      if c.set[n] then return c.title end
-    end
-    return ALPHA_CATCHALL
-  end
+  -- (The former testbed effects have graduated into the Test categories above and
+  -- the on/off list below — there is no separate Alpha area anymore. anames is
+  -- normally empty; register any stragglers in a plain "Chaos Alpha" folder.)
   for _, name in ipairs(anames) do
     local n = name
     local e = chaos.effects[n]
-    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, cat_of_alpha(n))
+    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, "Chaos Alpha")
   end
 
   -- Effect on/off list (adds/removes each from the random rotation), alphabetical.

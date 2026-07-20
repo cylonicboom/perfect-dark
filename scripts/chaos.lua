@@ -476,6 +476,98 @@ chaos.effects = {
                        pd.one_punch(false)
                        pd.cheat(CHEAT.FISTS, false)
                      end },
+  -- "Space Program": every bullet is a one-hit kill that launches the victim
+  -- with massive knockback (one_punch, but for guns). See pd.space_program.
+  space_program = { label="Space Program", alpha=true, w=0, dur=20,
+                    start=function()
+                      if not pd.space_program then error("needs new exe") end
+                      pd.space_program(true)
+                    end,
+                    stop=function() if pd.space_program then pd.space_program(false) end end },
+  -- "Frag Out": human enemies lob a grenade whenever they'd fire a weapon.
+  frag_out     = { label="Frag Out", alpha=true, w=0, dur=20,
+                   start=function()
+                     if not pd.frag_out then error("needs new exe") end
+                     pd.frag_out(true)
+                   end,
+                   stop=function() if pd.frag_out then pd.frag_out(false) end end },
+  -- "Sentries Out": 2-8 hostile laptop sentry guns spawn in a ring around the
+  -- player at random offsets. Instant (they stay until destroyed / stage end).
+  sentries_out = { label="Sentries Out", alpha=true, w=0, dur=0,
+                   start=function()
+                     if not pd.spawn_sentry then error("needs new exe") end
+                     local n = math.random(2, 8)
+                     local spawned = 0
+                     for i = 1, n do
+                       local a = (i / n) * 2 * math.pi + math.random() * 0.6
+                       local d = math.random(150, 400)
+                       if pd.spawn_sentry(math.sin(a) * d, math.cos(a) * d) then
+                         spawned = spawned + 1
+                       end
+                     end
+                     if spawned == 0 then error("no room for sentries here") end
+                   end },
+  -- "Temu Magazine": reloads pay the full ammo cost but only partly refill the
+  -- clip (a knockoff mag). See pd.temu_mag.
+  temu_mag     = { label="Temu Magazine", alpha=true, w=0, dur=25,
+                   start=function()
+                     if not pd.temu_mag then error("needs new exe") end
+                     pd.temu_mag(true)
+                   end,
+                   stop=function() if pd.temu_mag then pd.temu_mag(false) end end },
+  -- "Helpful son": a toddler on the second controller. At random intervals he
+  -- grabs an input for 0.3-0.7s — a look sweep, holds fire, walks forward, or
+  -- fumbles to a random weapon. Runs a small FSM off st.a_helpson.
+  helpful_son  = { label="Helpful son", alpha=true, w=0, dur=25,
+                   start=function()
+                     if not pd.player_add_yaw then error("needs new exe") end
+                     st.a_helpson = { acting = false, next = 0, t = 0, act = nil, yaw = 0, pitch = 0 }
+                   end,
+                   tick=function()
+                     local h = st.a_helpson
+                     if not h then return end
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     if h.acting then
+                       h.t = h.t - dt
+                       if h.act == "look" then
+                         pd.player_add_yaw(h.yaw)
+                         if h.pitch ~= 0 and pd.player_pitch then
+                           local p = pd.player_pitch() or 0
+                           pd.player_pitch(math.max(-70, math.min(70, p + h.pitch)))
+                         end
+                       end
+                       if h.t <= 0 then
+                         if pd.forced_fire then pd.forced_fire(false) end
+                         if pd.forced_march then pd.forced_march(false) end
+                         h.acting = false
+                         h.next = math.random(30, 120) -- 0.5-2.0s until the next grab
+                       end
+                     else
+                       h.next = h.next - dt
+                       if h.next <= 0 then
+                         h.acting = true
+                         h.t = math.random(18, 42) -- 0.3-0.7s (60 ticks/s)
+                         h.act = nil; h.yaw = 0; h.pitch = 0
+                         local r = math.random(1, 4)
+                         if r == 1 then       -- move the look in a random direction
+                           h.act = "look"
+                           h.yaw = math.random(-14, 14)
+                           h.pitch = math.random(-4, 4)
+                         elseif r == 2 then   -- hold fire
+                           if pd.forced_fire then pd.forced_fire(true) end
+                         elseif r == 3 then   -- walk forward
+                           if pd.forced_march then pd.forced_march(true) end
+                         else                 -- fumble to a random weapon
+                           if pd.switch_weapon then pd.switch_weapon(GUNS[math.random(#GUNS)]) end
+                         end
+                       end
+                     end
+                   end,
+                   stop=function()
+                     if pd.forced_fire then pd.forced_fire(false) end
+                     if pd.forced_march then pd.forced_march(false) end
+                     st.a_helpson = nil
+                   end },
   -- the Air Force One crash block: explosions everywhere, but you're covered
   self_destruct  = { label="SELF-DESTRUCT SEQUENCE", w=3, dur=8,
                      start=function()
@@ -2457,8 +2549,13 @@ local function reset_all_modes()
   st.a_fadeout, st.a_sleep, st.a_weep, st.a_itchy = nil
   st.a_son = nil -- drop the "Me and my son" death-watch on teardown
   st.a_silo = nil -- drop the Silo Countdown HUD state (stop() restores music)
+  st.a_helpson = nil -- drop the Helpful son input FSM
+  if pd.space_program then pd.space_program(false) end
+  if pd.frag_out then pd.frag_out(false) end
+  if pd.temu_mag then pd.temu_mag(false) end
   if pd.fade then pd.fade(0, 0, 0, 0, 0) end
   if pd.forced_fire then pd.forced_fire(false) end
+  if pd.forced_march then pd.forced_march(false) end
   if pd.hud_off then pd.hud_off(false) end
   if pd.gun_fov then pd.gun_fov(0) end
   if pd.chr_freeze_one then pd.chr_freeze_one(-1) end

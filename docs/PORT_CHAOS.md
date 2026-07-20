@@ -333,6 +333,18 @@ function, called every frame while active (disco's hue cycle).
   the left or right half of the screen (random per fire) as a post-process, so
   the HUD in that half goes dark too (`pd.pirate(1|2)`; cleared with
   `pd.pirate(0)`). Timed like the other visual effects.
+- **`space_program`** (Chaos Alpha testbed) — every player bullet is a
+  one-hit kill that launches the victim with massive knockback (`pd.space_program`).
+- **`frag_out`** (Chaos Alpha testbed) — human enemies throw a grenade
+  whenever they'd fire a weapon (`pd.frag_out`).
+- **`sentries_out`** (Chaos Alpha testbed) — 2-8 hostile laptop sentry guns
+  spawn in a ring around the player at random offsets (`pd.spawn_sentry`); they
+  stay until destroyed or the stage ends.
+- **`temu_mag`** (Chaos Alpha testbed) — reloading pays the full ammo cost
+  but only partly refills the magazine (`pd.temu_mag`).
+- **`helpful_son`** (Chaos Alpha testbed) — a toddler on the second pad:
+  at random intervals grabs an input for 0.3-0.7s (look sweep / fire / walk /
+  weapon fumble).
 - **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — a
   self-destruct running `chaos.silo_seconds` (default 8 minutes). On start it
   kills the mission music (`pd.stage_music(false)`) and loops `Silo.mp3`
@@ -517,6 +529,17 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
+### Space Program / Frag Out / Sentries Out / Temu Magazine / Helpful son (2026-07-20)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.space_program(on)` | `g_ChaosSpaceProgram` → `chrDamage` (chraction.c) | the `one_punch` block, but for GUN shots: any player bullet on an NPC becomes `maxdamage + shield + 100` (a one-hit kill through armour) and `chrYeetFromPos(..., 900)` launches the corpse — ~3.5× one_punch's fling. Boosted before the `SVC_CHR_DAMAGE` broadcast so net clients agree; NPC victims only |
+| `pd.frag_out(on)` | `g_ChaosFragOut` → `chrConsiderGrenadeThrow` (chraction.c) | human enemies lob a grenade whenever they'd fire: the chaos branch skips the `grenadeprob` roll and drops the min engagement range 200→100 (a small standoff so they don't point-blank themselves). The function's existing "no grenade in hand" path hands them one (`chrGiveWeapon(MODEL_CHRGRENADE)`, invisible), so any gun guard becomes grenade-happy |
+| `pd.spawn_sentry(dx, dz)` | `chraiLuaSpawnSentry` (chraction.c) → `OBJTYPE_AUTOGUN` | deploy a hostile laptop sentry (`MODEL_CHRAUTOGUN`) at the player + horizontal offset, floor-snapped. Field values (aim range/speed, full rotation, beam) mirror `laptopDeploy`, but storage is our own `g_ChaosSentries[8]` pool (the engine's `g_ThrownLaptops` is per-player/slot-limited) so several coexist. `targetteam = player's team` — the autogun's target scan (`chr->team & targetteam`) then selects the player, i.e. unfriendly. `forcetick` so they fire off-screen. Count reset per stage in `chraiLuaResetSentries` (lvReset); solo only |
+| `pd.temu_mag(on)` | `g_ChaosTemuMag` → `bgun0f098df8` reload (bondgun.c) | a knockoff magazine: a reload still deducts the FULL `amount` from the reserve, but only chambers a random ~34-100% of it (`loaded`), so reloading no longer tops you off. Guarded `amount >= 2` (single-shell/incremental reloads unaffected) and `loaded >= 1` (never wastes everything); local player only |
+
+Helpful son is pure Lua (needs only existing `pd.player_add_yaw` / `pd.player_pitch` / `pd.forced_fire` / `pd.forced_march` / `pd.switch_weapon`): a per-tick FSM in the effect (`st.a_helpson`) that, at random 0.5-2s intervals, grabs one input for 0.3-0.7s — a look sweep, held fire, forward walk, or a fumble to a random weapon.
+
 ### Me and my son / Silo Countdown / Pirate (2026-07-20, new-effect bindings)
 
 | Binding | Backing | Notes |
@@ -683,6 +706,8 @@ Until then, the UDP bridge is the supported route.
 | `port/fast3d/gfx_retro_common.h` | Pirate half-screen blackout bits (0x800/0x1000) in the shared retro post-filter body |
 | `port/src/dedicated_stubs.c` | headless no-op stubs for `inputSetChaosInvertLook` / `inputSetChaosInputDelay` / `inputLastSourceWasPad` (pre-existing dedicated-server link break) |
 | `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |
+| `src/game/bondgun.c` | `g_ChaosTemuMag` partial-reload hook in `bgun0f098df8` (Temu Magazine) |
+| `src/game/lv.c` | `lvReset` clears the new chaos globals + `chraiLuaResetSentries` per stage |
 | `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
 | `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |
 | `src/game/mainmenu.c` | `luaDirectorRebuild` builds per-group submenu dialogs (openers at root top) |

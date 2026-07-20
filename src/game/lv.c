@@ -331,6 +331,10 @@ void lvReset(s32 stagenum)
 	extern void inputSetChaosInputDelay(s32 frames);// chaos Stadia Mode
 	extern void luaTexOverrideReset(void);          // chaos texture override
 	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
+	extern s32 g_ChaosSpaceProgram;    // chaos Space Program (gun one-hit-kill launcher)
+	extern s32 g_ChaosFragOut;         // chaos Frag Out (enemies throw grenades)
+	extern s32 g_ChaosTemuMag;         // chaos Temu Magazine (partial reload)
+	extern void chraiLuaResetSentries(void); // chaos Sentries Out (per-stage count reset)
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
 	netDemoStop();     // demo: close any open recording on stage load (port-only)
@@ -376,6 +380,10 @@ void lvReset(s32 stagenum)
 	inputSetChaosInvertLook(0);
 	inputSetChaosInputDelay(0);
 	inputSetChaosDeadzone(0);
+	g_ChaosSpaceProgram = 0;
+	g_ChaosFragOut = 0;
+	g_ChaosTemuMag = 0;
+	chraiLuaResetSentries();
 #endif
 
 	var80084014 = false;

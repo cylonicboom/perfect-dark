@@ -75,6 +75,13 @@
 // unarmed strike in chrDamage is lethal + launches the victim. Defined here
 // (not in the pd helper block below) because chrDamage reads it first.
 s32 g_ChaosOnePunch = 0;
+// Chaos "Space Program" (pd.space_program): like one_punch but for GUN shots —
+// every player bullet is a one-hit kill through armour and launches the victim
+// with massive knockback. Read in chrDamage next to one_punch.
+s32 g_ChaosSpaceProgram = 0;
+// Chaos "Frag Out" (pd.frag_out): human enemies lob a grenade whenever they
+// would fire — chrConsiderGrenadeThrow skips its probability/range gates.
+s32 g_ChaosFragOut = 0;
 // Chaos "Paintball" (pd.damage_scale): multiplies every chrDamage amount.
 // 1.0 = off. Applied in chrDamage before the net broadcast.
 f32 g_ChaosDamageScale = 1.0f;
@@ -4524,6 +4531,21 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		}
 	}
 
+	// Chaos "Space Program" (pd.space_program): the one_punch treatment for GUN
+	// shots — any player bullet is lethal through armour and launches the victim
+	// with MASSIVE knockback (the fling force is ~3.5x one_punch's). NPC victims
+	// only; boosted before the SVC_CHR_DAMAGE broadcast so net clients agree.
+	if (g_ChaosSpaceProgram && g_NetMode != NETMODE_CLIENT
+			&& gset && gset->weaponnum != WEAPON_UNARMED && gset->weaponnum != WEAPON_NONE
+			&& aprop && aprop->type == PROPTYPE_PLAYER
+			&& vprop && vprop->type == PROPTYPE_CHR
+			&& !chrIsDead(chr)) {
+		damage = chrGetMaxDamage(chr) + chrGetShield(chr) + 100.0f;
+		if (chr->model) {
+			chrYeetFromPos(chr, &aprop->pos, 900.0f);
+		}
+	}
+
 	// Chaos "Paintball" damage scale (pd.damage_scale): scale ALL chr/player
 	// damage. Applied before the SVC_CHR_DAMAGE broadcast so net clients
 	// replay the same scaled hit.
@@ -8082,11 +8104,27 @@ bool chrTryStartAlarm(struct chrdata *chr, s32 pad_id)
 bool chrConsiderGrenadeThrow(struct chrdata *chr, u32 attackflags, u32 entityid)
 {
 	bool done = false;
+	bool wantthrow;
 
-	if (CHRRACE(chr) == RACE_HUMAN &&
-			chr->grenadeprob > (rngRandom() % 255) &&
-			chrGetDistanceToTarget(chr) > 200 &&
-			chrIsReadyForOrders(chr)) {
+#ifndef PLATFORM_N64
+	// Chaos "Frag Out" (pd.frag_out): any human that could open fire lobs a
+	// grenade instead — skip the grenadeprob roll and drop the min engagement
+	// range (still keep a small standoff so they don't nuke themselves at
+	// point-blank). The block below hands them a grenade if they lack one.
+	if (g_ChaosFragOut) {
+		wantthrow = CHRRACE(chr) == RACE_HUMAN
+				&& chrGetDistanceToTarget(chr) > 100
+				&& chrIsReadyForOrders(chr);
+	} else
+#endif
+	{
+		wantthrow = CHRRACE(chr) == RACE_HUMAN
+				&& chr->grenadeprob > (rngRandom() % 255)
+				&& chrGetDistanceToTarget(chr) > 200
+				&& chrIsReadyForOrders(chr);
+	}
+
+	if (wantthrow) {
 		struct prop *target = chrGetTargetProp(chr);
 		struct coord pos;
 
@@ -9966,6 +10004,26 @@ s32 chraiLuaOnePunch(s32 on)
 	return 1;
 }
 
+// pd.space_program(on): every player bullet becomes a one-hit-kill launcher
+// (chrDamage reads g_ChaosSpaceProgram). Like one_punch, but for guns.
+s32 chraiLuaSpaceProgram(s32 on)
+{
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	g_ChaosSpaceProgram = on ? 1 : 0;
+	return 1;
+}
+
+// pd.frag_out(on): human enemies throw grenades whenever they would fire
+// (chrConsiderGrenadeThrow reads g_ChaosFragOut). No player pawn needed to clear
+// it, so an /chaos off from the hub still turns it back off.
+s32 chraiLuaFragOut(s32 on)
+{
+	g_ChaosFragOut = on ? 1 : 0;
+	return 1;
+}
+
 // Chaos FOV multiplier (playermgr.c, playermgrSetFovY).
 extern f32 g_ChaosFovMult;
 
@@ -10133,6 +10191,138 @@ s32 chraiLuaSpawnBike(void)
 	propEnable(obj->prop);
 
 	g_ChaosBikeSpawned = 1;
+	return 1;
+}
+
+// Chaos "Sentries Out": free-standing hostile laptop sentry guns. Storage is our
+// own pool (the engine's g_ThrownLaptops is per-player and slot-limited), so we
+// can drop up to CHAOS_MAX_SENTRIES of them. Reset per stage in chraiLuaResetSentries.
+#define CHAOS_MAX_SENTRIES 8
+static struct autogunobj g_ChaosSentries[CHAOS_MAX_SENTRIES];
+static s32 g_ChaosSentryCount = 0;
+
+void chraiLuaResetSentries(void)
+{
+	// A stage unload recycles the prop/model pools, so the objects are already
+	// gone — just drop our count so the next stage can spawn a fresh batch.
+	g_ChaosSentryCount = 0;
+}
+
+// pd.spawn_sentry(dx, dz) -> bool. Deploy a laptop sentry gun (MODEL_CHRAUTOGUN,
+// OBJTYPE_AUTOGUN) at the player's position plus a horizontal offset, floor-
+// snapped, hostile to the PLAYER (targetteam = the player's team, which is how
+// the autogun's target scan selects who to shoot). The laptop-sentry field
+// values (aim range/speed, full rotation) mirror laptopDeploy; storage is our
+// own pool so several can coexist. Solo only; returns 1 on success.
+s32 chraiLuaSpawnSentry(f32 dx, f32 dz)
+{
+	struct chrdata *plchr = apLuaPlayerChr();
+	struct autogunobj *gun;
+	struct defaultobj *obj;
+	struct coord pos;
+	Mtxf mtx;
+	RoomNum seedrooms[8];
+	f32 floory;
+	u16 floorcol;
+	s32 floorroom;
+	struct modelrodata_bbox *bbox;
+
+	if (plchr == NULL || g_NetMode != NETMODE_NONE) {
+		return 0;
+	}
+	if (g_ChaosSentryCount >= CHAOS_MAX_SENTRIES) {
+		return 0;
+	}
+
+	gun = &g_ChaosSentries[g_ChaosSentryCount];
+	obj = &gun->base;
+
+	pos.x = g_Vars.currentplayer->prop->pos.x + dx;
+	pos.y = g_Vars.currentplayer->prop->pos.y;
+	pos.z = g_Vars.currentplayer->prop->pos.z + dz;
+	mtx4LoadIdentity(&mtx);
+	roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms);
+
+	// Floor-snap the offset spot to the real floor room + height (portal-walk
+	// from the player's rooms), like chraiLuaSpawnBody.
+#if VERSION >= VERSION_NTSC_1_0
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol, NULL);
+#else
+	floorroom = cdFindFloorRoomYColourFlagsAtPos(&pos, seedrooms, &floory, &floorcol);
+#endif
+	if (floorroom > 0) {
+		pos.y = floory;
+		seedrooms[0] = floorroom;
+		seedrooms[1] = -1;
+	}
+
+	// Build the autogun object template (the laptopDeploy defaultobj recipe).
+	{
+		static const struct autogunobj zerogun; // BSS zero template
+		*gun = zerogun;
+	}
+	obj->extrascale = 256;
+	obj->type = OBJTYPE_AUTOGUN;
+	obj->modelnum = MODEL_CHRAUTOGUN;
+	obj->pad = -1;
+	obj->flags = 0;
+	obj->realrot[0][0] = 1;
+	obj->realrot[1][1] = 1;
+	obj->realrot[2][2] = 1;
+	obj->maxdamage = 1000;
+	obj->shadecol[0] = obj->shadecol[1] = obj->shadecol[2] = 0xff;
+	obj->nextcol[0] = obj->nextcol[1] = obj->nextcol[2] = 0xff;
+	obj->floorcol = 0x0fff;
+
+	if (!setupLoadModeldef(MODEL_CHRAUTOGUN)) {
+		return 0;
+	}
+	if (objInitWithModelDef(obj, g_ModelStates[MODEL_CHRAUTOGUN].modeldef) == NULL || obj->model == NULL) {
+		return 0;
+	}
+
+	// Autogun runtime state (setupCreateAutogun + laptopDeploy values). The
+	// beam is the aiming laser; MEMPOOL_STAGE is freed with the stage.
+	gun->targetpad = -1;
+	gun->aimdist = 5000.0f;
+	gun->maxspeed = PALUPF(0.0697f);
+	gun->ymaxleft = 12.56f;
+	gun->ymaxright = -12.56f;
+	gun->firecount = 0;
+	gun->lastseebond60 = -1;
+	gun->lastaimbond60 = -1;
+	gun->allowsoundframe = -1;
+	gun->yrot = gun->yspeed = gun->yzero = 0;
+	gun->xrot = gun->xspeed = gun->xzero = 0;
+	gun->barrelspeed = gun->barrelrot = 0;
+	gun->firing = false;
+	gun->shotbondsum = 0;
+	gun->target = NULL;
+	gun->nextchrtest = 0;
+	gun->ammoquantity = 255;
+	gun->targetteam = plchr->team; // hostile to the player (team-bit match scan)
+	gun->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
+	if (gun->beam) {
+		gun->beam->age = -1;
+	}
+
+	// Place on the floor (lift by the scaled bbox min) and register into the
+	// active/rendered prop list — the setup.c object recipe's final step.
+	bbox = modelFindBboxRodata(obj->model);
+	{
+		struct coord placepos;
+		placepos.x = pos.x;
+		placepos.y = pos.y - objGetRotatedLocalYMinByMtx4(bbox, &mtx) * obj->model->scale;
+		placepos.z = pos.z;
+		func0f06a580(obj, &placepos, &mtx, seedrooms);
+	}
+	if (obj->prop) {
+		obj->prop->forcetick = true; // tick + fire even while off-screen
+		propActivate(obj->prop);
+		propEnable(obj->prop);
+	}
+
+	g_ChaosSentryCount++;
 	return 1;
 }
 
@@ -10533,6 +10723,15 @@ extern s32 g_ChaosAmmoCost;
 s32 chraiLuaAmmoCost(s32 mult)
 {
 	g_ChaosAmmoCost = mult < 1 ? 1 : mult;
+	return 1;
+}
+
+// pd.temu_mag(on): reloads pay full price but only partially refill the clip
+// (bondgun.c reload site reads g_ChaosTemuMag).
+extern s32 g_ChaosTemuMag;
+s32 chraiLuaTemuMag(s32 on)
+{
+	g_ChaosTemuMag = on ? 1 : 0;
 	return 1;
 }
 

@@ -250,6 +250,10 @@ static bool bgunWeaponIsJammable(s32 weaponnum)
 // Chaos "Inflated bullets" (pd.ammo_cost): each shot spends this many rounds
 // from the clip (1 = normal); topped up at the same decrement site.
 s32 g_ChaosAmmoCost = 1;
+// Chaos "Temu Magazine" (pd.temu_mag): a knockoff mag — a reload still costs the
+// FULL amount from the reserve, but only chambers a random fraction of it, so
+// reloading no longer tops you off. Applied in bgun0f098df8; local player only.
+s32 g_ChaosTemuMag = 0;
 // Chaos "Quad handed" (pd.double_shots): every fire event takes twice the
 // shots (with dual-wield that's four barrels' worth); ammo drains to match.
 s32 g_ChaosDoubleShots = 0;
@@ -1324,7 +1328,24 @@ void bgun0f098df8(s32 weaponfunc, struct handweaponinfo *info, struct hand *hand
 			}
 #endif
 
-			hand->loadedammo[ammoindex] += amount;
+			{
+				s32 loaded = amount;
+#ifndef PLATFORM_N64
+				// Chaos "Temu Magazine": pay the full reserve cost (amount) but
+				// only actually chamber a random ~34-100% of it — reloading no
+				// longer guarantees a full magazine. amount >= 2 keeps single-
+				// shell / incremental reloads (amount == 1) working normally, and
+				// loaded is floored at 1 so a reload never wastes everything.
+				// Local player only (remote pawns must reload for real).
+				if (g_ChaosTemuMag && amount >= 2 && !g_Vars.currentplayer->isremote) {
+					loaded = amount * (34 + (s32)(rngRandom() % 67)) / 100;
+					if (loaded < 1) {
+						loaded = 1;
+					}
+				}
+#endif
+				hand->loadedammo[ammoindex] += loaded;
+			}
 			g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] -= amount;
 
 			if (info->definition->ammos[ammoindex]->flags & AMMOFLAG_NORESERVE) {

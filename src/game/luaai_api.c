@@ -2381,6 +2381,40 @@ static int l_pd_pirate(lua_State *L)
 	return 1;
 }
 
+/* pd.space_program(on) -> bool. Every player bullet is a one-hit kill that
+ * launches the victim with massive knockback (one_punch for guns). */
+static int l_pd_space_program(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSpaceProgram(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.frag_out(on) -> bool. Human enemies throw a grenade whenever they would
+ * fire a weapon. */
+static int l_pd_frag_out(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaFragOut(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.spawn_sentry(dx, dz) -> bool. Deploy a hostile laptop sentry gun at the
+ * player's position plus a horizontal offset (floor-snapped). */
+static int l_pd_spawn_sentry(lua_State *L)
+{
+	f32 dx = (f32)luaL_optnumber(L, 1, 0.0);
+	f32 dz = (f32)luaL_optnumber(L, 2, 0.0);
+	lua_pushboolean(L, chraiLuaSpawnSentry(dx, dz) != 0);
+	return 1;
+}
+
+/* pd.temu_mag(on) -> bool. Reloading pays the full ammo cost but only partly
+ * refills the magazine (random fraction). */
+static int l_pd_temu_mag(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTemuMag(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.hudvd(on) -> nil. HUDVD chaos: each HUD element group (health, crosshair,
  * ammo, radar, messages, kill-feed) bounces DVD-style in its own random
  * diagonal. Purely cosmetic — aim/hit-detection are untouched. */
@@ -3000,6 +3034,10 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_hudvd);         lua_setfield(L, -2, "hudvd");
 	lua_pushcfunction(L, l_pd_crt);           lua_setfield(L, -2, "crt");
 	lua_pushcfunction(L, l_pd_pirate);        lua_setfield(L, -2, "pirate");
+	lua_pushcfunction(L, l_pd_space_program); lua_setfield(L, -2, "space_program");
+	lua_pushcfunction(L, l_pd_frag_out);      lua_setfield(L, -2, "frag_out");
+	lua_pushcfunction(L, l_pd_spawn_sentry);  lua_setfield(L, -2, "spawn_sentry");
+	lua_pushcfunction(L, l_pd_temu_mag);      lua_setfield(L, -2, "temu_mag");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");
 	lua_pushcfunction(L, l_pd_audio_crush);   lua_setfield(L, -2, "audio_crush");
 	lua_pushcfunction(L, l_pd_audio_radio);   lua_setfield(L, -2, "audio_radio");

@@ -90,6 +90,26 @@ local function persist()
   end
 end
 
+-- Non-repeat queue: the last N fired effects (N = min(RECENT_MAX, enabled-1)) are
+-- HARD-banned from the random draw, so nothing repeats until N other effects have
+-- fired. Kept in the C-side SESSION store (pd.persist), which lives OUTSIDE the
+-- lua_State — so the queue survives the per-stage Lua teardown (mission restart /
+-- return to menu) but is wiped on a game restart (fresh process). It is also
+-- cleared explicitly when Chaos is disabled (see chaos.handle "off").
+local RECENT_MAX = 50
+local function recent_load()
+  local q = {}
+  local s = pd.persist_get and pd.persist_get("chaos_recent")
+  if s and s ~= "" then
+    for name in s:gmatch("[^,]+") do q[#q + 1] = name end
+  end
+  return q
+end
+local function recent_save()
+  if pd.persist_set then pd.persist_set("chaos_recent", table.concat(st.recent, ",")) end
+end
+st.recent = recent_load()
+
 local function announce(text)
   -- Weapon-pickup-style toast in the bottom-left. Rendered by the draw hook
   -- with a box sized to HUG the text (the engine hudmsg box is a full
@@ -2828,28 +2848,48 @@ function chaos.trigger(name, who, dur_override)
     if effect_enabled(n) and not en.alpha then enabled_count = enabled_count + 1 end
   end
   st.cooldown[name] = math.max(1, enabled_count - 1)
+  -- Hard non-repeat queue: remember this effect so it can't be drawn again until
+  -- N others have fired. N is capped at enabled_count - 1 so at least one effect is
+  -- always pickable (a small enabled list can't ban itself into a dead end). Move
+  -- an existing entry to the front rather than duplicating, then trim the oldest.
+  local qmax = math.min(RECENT_MAX, math.max(1, enabled_count - 1))
+  for i = #st.recent, 1, -1 do
+    if st.recent[i] == name then table.remove(st.recent, i) end
+  end
+  st.recent[#st.recent + 1] = name
+  while #st.recent > qmax do table.remove(st.recent, 1) end
+  recent_save()
   return true
 end
 
 local function pick_random()
-  local pool, total = {}, 0
-  for name, e in pairs(chaos.effects) do
-    if effect_enabled(name) and not e.alpha then
-      -- Full base weight when rested; heavily reduced right after firing, easing
-      -- back as the cooldown ages down over subsequent effects (never zero, so a
-      -- repeat is merely unlikely and unfired effects dominate the draw).
-      local cd = st.cooldown[name] or 0
-      local w = (e.w or 1) / (1 + cd)
-      total = total + w
-      pool[#pool + 1] = { name = name, acc = total }
+  -- Hard non-repeat: the last-N fired effects are banned from the draw entirely.
+  local banned = {}
+  for _, n in ipairs(st.recent) do banned[n] = true end
+  -- Two passes: the first honours the ban; the second (only reached if the ban
+  -- left nothing pickable, e.g. the enabled list shrank below the queue length)
+  -- ignores it so chaos never stalls.
+  for pass = 1, 2 do
+    local pool, total = {}, 0
+    for name, e in pairs(chaos.effects) do
+      if effect_enabled(name) and not e.alpha and (pass == 2 or not banned[name]) then
+        -- Full base weight when rested; heavily reduced right after firing, easing
+        -- back as the cooldown ages down over subsequent effects.
+        local cd = st.cooldown[name] or 0
+        local w = (e.w or 1) / (1 + cd)
+        total = total + w
+        pool[#pool + 1] = { name = name, acc = total }
+      end
+    end
+    if total > 0 then
+      local r = math.random() * total
+      for _, p in ipairs(pool) do
+        if r <= p.acc then return p.name end
+      end
+      return pool[#pool].name
     end
   end
-  if total <= 0 then return nil end
-  local r = math.random() * total
-  for _, p in ipairs(pool) do
-    if r <= p.acc then return p.name end
-  end
-  return pool[#pool] and pool[#pool].name or nil
+  return nil
 end
 
 function chaos.set_seed(n)
@@ -2886,7 +2926,10 @@ function chaos.handle(source, text)
     persist(); announce("enabled")
     if st.votetime > 0 then st.votetimer = st.votetime * TICKS; pick_candidates() end
   elseif cmd == "off" then
-    st.enabled = false; stop_all(); persist(); announce("disabled")
+    -- Disabling Chaos clears the non-repeat queue (a fresh session starts with a
+    -- clean slate). A game restart wipes it too (pd.persist is process-only);
+    -- returning to the menu or restarting a mission does NOT.
+    st.enabled = false; stop_all(); st.recent = {}; recent_save(); persist(); announce("disabled")
   elseif cmd == "toggle" then
     chaos.handle(source, st.enabled and "off" or "on")
   elseif cmd == "status" then
@@ -3642,13 +3685,29 @@ if pd.menu_add then
     pd.menu_add(e.label or n, function() chaos.trigger(n, "test", 30) end, cat_of(n))
   end
 
-  -- Chaos Alpha: the new-suggestion testbed (see the CHAOS ALPHA block above).
-  -- Same shape as Chaos Test — select to fire for a fixed 30s (fixeddur effects
-  -- keep their own length) — but these are never in the random rotation.
+  -- Chaos Alpha (testbed): select to fire for a fixed 30s (fixeddur effects keep
+  -- their own length); never in the random rotation. Sorted into their own
+  -- "Alpha: ..." sibling folders (same shape as the Test categories); names not
+  -- listed fall into "Alpha: Weapons & World". Folders are root-level siblings —
+  -- never nested (the menu engine crashes at 3-deep scroll stacks).
+  local ALPHA_CATS = {
+    { title = "Alpha: Visual & Audio", set = { jelly=1, acid_trip=1, pirate=1 } },
+    { title = "Alpha: Companions",     set = { me_and_my_son=1, helpful_son=1 } },
+    { title = "Alpha: Lethal",         set = {
+      space_program=1, frag_out=1, sentries_out=1, silo_countdown=1, beat_game=1,
+    } },
+  }
+  local ALPHA_CATCHALL = "Alpha: Weapons & World"
+  local function cat_of_alpha(n)
+    for _, c in ipairs(ALPHA_CATS) do
+      if c.set[n] then return c.title end
+    end
+    return ALPHA_CATCHALL
+  end
   for _, name in ipairs(anames) do
     local n = name
     local e = chaos.effects[n]
-    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, "Chaos Alpha")
+    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, cat_of_alpha(n))
   end
 
   -- Effect on/off list (adds/removes each from the random rotation), alphabetical.

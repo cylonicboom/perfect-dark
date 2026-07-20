@@ -1347,6 +1347,46 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() pd.alarm(false); st.a_cd = nil end },
+  -- "Silo Countdown": an 8-minute self-destruct. Kills the level music, plays
+  -- Silo.mp3 (scripts/sounds/chaos/Silo.mp3, looped) underneath, and shows a big
+  -- centred MM:SS timer (drawn in the alpha HUD hook off st.a_silo). At zero it
+  -- detonates — explosions_around the player, shut off ~3s later by the main
+  -- tick's a_boom_off handler. stop() (natural expiry, /chaos off, re-trigger)
+  -- stops the track and restores the level music WITHOUT touching the boom; a
+  -- mission-complete or player restart routes through reset_all_modes, which
+  -- runs stop() AND cancels the pending boom — so the timer/boom vanish cleanly.
+  -- alpha for now: needs a fresh exe (pd.stage_music) + the Silo.mp3 asset.
+  silo_countdown = { label="Silo Countdown", alpha=true, w=0,
+                     fixeddur=true, dur=480, nobar=true, -- 8 min; draws its own HUD
+                     start=function()
+                       if not pd.stage_music then error("needs new exe") end
+                       st.a_silo = { left = 480 * TICKS, fired = false }
+                       pd.stage_music(false) -- silence the mission track
+                       -- best-effort: Silo.mp3 looped underneath. The countdown +
+                       -- detonation still run if the asset is missing (just silent).
+                       pd.play_file("scripts/sounds/chaos/Silo.mp3", true)
+                       pd.hud_message("CHAOS: SILO SELF-DESTRUCT ARMED — 8:00")
+                     end,
+                     tick=function(left)
+                       local s = st.a_silo
+                       if not s then return end
+                       s.left = left -- feed the HUD readout
+                       if not s.fired and left <= 8 then -- last few ticks = zero
+                         s.fired = true
+                         pd.hud_message("CHAOS: DETONATION")
+                         if pd.explosions_around then
+                           pd.explosions_around(true)
+                           st.a_boom_off = 3 * TICKS -- main tick shuts it off
+                         else
+                           pd.explosion()
+                         end
+                       end
+                     end,
+                     stop=function()
+                       if pd.stop_file then pd.stop_file() end
+                       if pd.stage_music then pd.stage_music(true) end -- restore music
+                       st.a_silo = nil
+                     end },
   -- CAPTCHA: prove you're human — a random verification task (shots, door,
   -- crouch, spin, or just pressing FIRE). Complete it and the window closes;
   -- run out of time and the failed check hurts.
@@ -2390,6 +2430,7 @@ local function reset_all_modes()
   st.a_bleed, st.a_shot, st.a_note7 = nil
   st.a_fadeout, st.a_sleep, st.a_weep, st.a_itchy = nil
   st.a_son = nil -- drop the "Me and my son" death-watch on teardown
+  st.a_silo = nil -- drop the Silo Countdown HUD state (stop() restores music)
   if pd.fade then pd.fade(0, 0, 0, 0, 0) end
   if pd.forced_fire then pd.forced_fire(false) end
   if pd.hud_off then pd.hud_off(false) end
@@ -3191,6 +3232,18 @@ pd.on("draw", function()
     popup_card(string.format("END USER LICENSE AGREEMENT  (%d/3)", pg),
         pages[pg],
         st.a_eula.task and task_label(st.a_eula.task) or "FIRE to accept this page")
+  end
+
+  -- Silo Countdown: a big centred MM:SS self-destruct clock; flashes red in the
+  -- final 10 seconds.
+  if st.active.silo_countdown and st.a_silo then
+    local secs = math.max(0, math.ceil(st.a_silo.left / TICKS))
+    local text = string.format("SILO  %d:%02d", math.floor(secs / 60), secs % 60)
+    local col = 0xffe040ff
+    if secs <= 10 and math.floor(st.a_silo.left / 6) % 2 == 0 then
+      col = 0xff4040ff -- ~5Hz red blink at the end
+    end
+    centered_text(20, text, col)
   end
 
   -- (lore now opens the real CI Information menu — no popup.)

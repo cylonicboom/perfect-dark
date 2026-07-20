@@ -329,6 +329,16 @@ function, called every frame while active (disco's hue cycle).
   the Air Force One crash block (`playerSurroundWithExplosions` — staggered
   explosions around the player), then both off. Looks lethal, isn't — to
   you; nearby NPCs genuinely catch the blasts.
+- **`silo_countdown`** ("Silo Countdown", Chaos Alpha testbed) — an
+  8-minute self-destruct. On start it kills the mission music
+  (`pd.stage_music(false)`) and loops `Silo.mp3` (`pd.play_file`,
+  best-effort) underneath, and draws its own centred MM:SS clock (red-flashing
+  in the final 10s). At zero it detonates — `pd.explosions_around` the player
+  (unlike `self_destruct`, **no** invincibility, so it can genuinely kill).
+  Mission-complete or a player restart tears the whole thing down (music
+  restored, track stopped, pending boom cancelled) via `stop()` +
+  `reset_all_modes`. Alpha for now (needs a fresh exe + the `Silo.mp3` asset):
+  graduate by dropping `alpha=true` / `w=0`.
 - **Visual** (renderer + room lighting; all timed, all local-cosmetic):
   `untextured` ("1996 mode" — every texture white, pure vertex shading),
   `watercolour` (every texture flooded with its own average colour),
@@ -498,18 +508,31 @@ Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
 cleared in lvReset like batch 2.
 
-### Me and my son (2026-07-20, the friendly-clone bindings)
+### Me and my son / Silo Countdown (2026-07-20, new-effect bindings)
 
 | Binding | Backing | Notes |
 |---|---|---|
 | `pd.spawn_ally_clone([healthfrac])` | `chraiLuaSpawnAllyClone` (chraction.c) | the `chraiLuaSpawnAlly` recipe, but the buddy wears the **player's own body AND head** (a Jo clone) instead of Dark Combat / VD, and her health pool (`chrSetMaxDamage` + `chrAddHealth`, both ×healthfrac) is scaled — default 0.5 = a fragile half-HP clone. Still TEAM_ALLY / SQUADRON_01 / `GAILIST_INIT_DEFAULT_BUDDY`, Falcon 2, `CHRCFLAG_NEVERSLEEP`. Server/solo-side; returns the chrnum or nil |
 | `pd.chr_yscale(chrnum, mult)` | `chr->yscale` (port-only chrdata field) → `modelUpdateChrNodeMtx` (model.c) | **non-uniform** vertical squash/stretch, unlike the uniform `pd.chr_scale`. The chr root matrix `sp158` is the model→world basis, so its **row 1** (`m[1][*]`) is the world image of the model's local Y axis (the spine); scaling only that row (`mtx00015e4c`) compresses height while leaving width/depth untouched, and — being at the root — it propagates down the whole skeleton. `mult 0.4` = 40% tall, full width. Bounded `(0, 4]` on both the setter and the render read (a stray value can't invert or balloon a chr). Purely visual (hitbox/AI unchanged). `chr->yscale` is reset to 1.0 in **`chrInit`** so a recycled chrslot never inherits a stale squash; the whole path is `#ifndef PLATFORM_N64` (the N64 build is byte-identical) |
+| `pd.stage_music(on)` | `chraiLuaStageMusic` (chraction.c) → `musicStop` / `musicSetStageAndStartMusic` (music.c) | stop (`on=false`) or restart (`on=true`) the **current stage's** music. Unlike `pd.song` — which layers a menu track over the *paused* stage music — this genuinely silences the level track, then re-derives primary + ambient from `g_Vars.stagenum` on restore. Backs Silo Countdown (kills the mission music, plays `Silo.mp3` via `pd.play_file` underneath) |
 
 `chraiLuaChrYscale`'s field is the first port-only chrdata member that the render
 lib (`src/lib/model.c`) reads — `model->chr` is already the established chr
 backpointer at every CHRINFO node, so no new plumbing. The "Me and my son"
 death-watch (`st.a_son`) lives in chaos.lua's main tick, not a C hook, and is
 cleared in `reset_all_modes` alongside `st.a_weep`.
+
+**Silo Countdown** (`silo_countdown`) is otherwise pure Lua: a `fixeddur` 480s
+(8-minute) `nobar` effect that on start kills the level music (`pd.stage_music(false)`)
+and loops `Silo.mp3` (`pd.play_file`, best-effort), draws its own centred MM:SS
+clock in the alpha HUD hook off `st.a_silo` (red-flashing in the final 10s), and
+at zero fires `pd.explosions_around` with `st.a_boom_off` (the same short-burst
+detonation the countdown/SPEED payoffs use — shut off by the main tick, so the
+effect's own `stop()` never has to). `stop()` stops the track and restores the
+music but deliberately leaves the boom alone; a mission-complete or player
+restart routes through `reset_all_modes`, which runs `stop()` **and** clears the
+pending boom (`explosions_around(false)` + `a_boom_off = nil`), so the timer and
+detonation vanish together.
 
 ### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
 
@@ -634,7 +657,8 @@ Until then, the UDP bridge is the supported route.
 | `scripts/director.lua`, `scripts/ap/test.lua` | group their entries under submenus (`pd.menu_add` 3rd arg) |
 | `scripts/init.lua` | loads chaos.lua |
 | `src/game/luaai_api.c` | the `pd.*` bindings + `luaExtEventPush` ring queue; `pd.chr_weapon`; `pd.menu_add` group arg + `pd.menu_set_label`; registry `group` field |
-| `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon`; `chraiLuaSpawnAllyClone` + `chraiLuaChrYscale` (Me and my son) |
+| `src/game/chraction.c` | `chraiLua*` helpers; `chraiLuaTeleportToChr` (offset + object-safe + model-less), `chraiLuaChrGiveWeapon` (guard + bot paths), `chraiLuaChrWeapon`; `chraiLuaSpawnAllyClone` + `chraiLuaChrYscale` (Me and my son); `chraiLuaStageMusic` (Silo Countdown) |
+| `scripts/sounds/chaos/README.md` | documents the `Silo.mp3` external track (not shipped) |
 | `src/lib/model.c` | `modelUpdateChrNodeMtx` applies the port-only `chr->yscale` vertical squash to the root matrix's model-Y row (`pd.chr_yscale`) |
 | `src/game/chr.c` | `chrInit` resets the new port-only `chr->yscale` to 1.0 (recycled-chrslot rule) |
 | `src/include/types.h` | port-only `f32 chrdata.yscale` (non-uniform vertical render scale) |

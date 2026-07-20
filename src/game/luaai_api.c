@@ -2600,6 +2600,15 @@ static int l_pd_song(lua_State *L)
 	return 1;
 }
 
+/* pd.stage_music(on) -> bool. Stop (on=false) or restart (on=true) the current
+ * stage's music. Backs Silo Countdown, which kills the level track and plays its
+ * own external file underneath. */
+static int l_pd_stage_music(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaStageMusic(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.spawn_body(bodynum [, weaponnum, dx, dz, sunglasses]) -> chrnum | -1.
  * Spawn a hostile chr of the given body at the player plus a horizontal
  * offset. sunglasses=true forces the head's shades variant (Terminator). */
@@ -2961,6 +2970,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_knife_lock);    lua_setfield(L, -2, "knife_lock");
 	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");
 	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");
+	lua_pushcfunction(L, l_pd_stage_music);   lua_setfield(L, -2, "stage_music");
 	lua_pushcfunction(L, l_pd_spawn_body);    lua_setfield(L, -2, "spawn_body");
 	lua_pushcfunction(L, l_pd_body_snatch);   lua_setfield(L, -2, "body_snatch");
 	lua_pushcfunction(L, l_pd_body_unsnatch); lua_setfield(L, -2, "body_unsnatch");

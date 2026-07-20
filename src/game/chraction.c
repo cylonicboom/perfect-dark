@@ -9290,6 +9290,21 @@ s32 chraiLuaPlaySong(s32 slot)
 	return 1;
 }
 
+// pd.stage_music(on): stop (on=false) or restart (on=true) the CURRENT stage's
+// music. Unlike pd.song, which layers a menu track over the paused stage music,
+// this genuinely silences the level track — for the Silo Countdown effect, which
+// plays its own external track (pd.play_file) with the mission music killed
+// underneath. Restart re-derives primary + ambient from the live stage number.
+s32 chraiLuaStageMusic(s32 on)
+{
+	if (on) {
+		musicSetStageAndStartMusic(g_Vars.stagenum);
+	} else {
+		musicStop();
+	}
+	return 1;
+}
+
 // Chaos Evil-twin/clone registry: chrnums of live twins, used to make them
 // psychosis-immune (a twin damaged by the player must stay hostile, not flip to
 // the psychosised "friendly" AI list — see chaosIsTwin's use in chraiLuaChrDamage).

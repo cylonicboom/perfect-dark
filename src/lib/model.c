@@ -4267,6 +4267,18 @@ void modelInit(struct model *model, struct modeldef *modeldef, u32 *rwdatas, boo
 	// pointers into the hit-trace paths (crash ledger #25). NULL it here so
 	// "matrices == NULL" is a meaningful not-yet-built test everywhere.
 	model->matrices = NULL;
+
+	// Same story for unk01 / the chr|obj union: the original only ever writes
+	// them where a model is bound to a chr (chr.c, unk01 = 1) or an obj
+	// (propobj.c, unk01 = 0). Every other model -- the player bondhead model,
+	// gun/hand models, menu models, the stack-local model in gunfx.c -- leaves
+	// both as whatever was previously in that memory. That was harmless while
+	// nothing read them unconditionally, but modelSetMatrices now tests
+	// "unk01 == 1 && chr != NULL" for the chaos T-pose / chr-scale path, so a
+	// stale unk01 of 1 next to a garbage union pointer crashes on the yscale
+	// read (bheadReset from lvReset, faulting at 0xffffffffffffffff).
+	model->unk01 = 0;
+	model->chr = NULL;
 #endif
 
 	node = modeldef->rootnode;

@@ -563,9 +563,10 @@ centred card in the alpha draw hook, `pd.button_block` keeps FIRE/AIM from
 shooting while `pd.buttons_pressed` reads the answer, and the effect ends
 early by **returning true from its tick** (the expiry loop treats that as
 expire-now; never call `stop_effect` from inside a tick — the loop would
-re-add the key it just removed mid-`pairs`, which is undefined). Schedule 1
-rides the pre-existing `pd.possess_spawn`/`pd.unpossess` (returns nil on
-failure, not -1). The **category folders** are sibling test submenus (Test:
+re-add the key it just removed mid-`pairs`, which is undefined). ("Schedule 1"
+rode the pre-existing `pd.possess_spawn`/`pd.unpossess` — returns nil on
+failure, not -1 — but was removed 2026-07-21; the bindings stay, and
+`scripts/director.lua` still drives them.) The **category folders** are sibling test submenus (Test:
 Visual & Audio / Cheats / Helpful / Lethal / Weapons & World) driven by one
 `CATS` name table in the menu block — root-level siblings because 3-deep
 scrollable menus crash the engine. `g_ChaosWireframeChrs`/`g_ChaosDoubleShots`
@@ -692,7 +693,8 @@ Two hard-won facts about that chain:
 Combat Sim player slots — the co-op plan's linchpin problem; Terminator is the
 approximation), player-2 pad swap (a correct swap must remap the whole VK_JOY
 bind layer; kb/mouse users can't test it), drug-spy body swap (the body-snatch
-gunmem tarpit — Schedule 1 possesses a drone instead), A51 interceptor
+gunmem tarpit — the "Schedule 1" drone-possession stand-in was removed
+2026-07-21), A51 interceptor
 (dropship model is cutscene-scale; the dD chopper covers the idea).
 
 Renderer notes: the flat-texture filter lives at the single

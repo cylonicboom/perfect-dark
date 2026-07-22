@@ -96,7 +96,7 @@ end
 -- lua_State — so the queue survives the per-stage Lua teardown (mission restart /
 -- return to menu) but is wiped on a game restart (fresh process). It is also
 -- cleared explicitly when Chaos is disabled (see chaos.handle "off").
-local RECENT_MAX = 50
+local RECENT_MAX = 100
 local function recent_load()
   local q = {}
   local s = pd.persist_get and pd.persist_get("chaos_recent")
@@ -190,13 +190,13 @@ local function play_ring(loop)
   local first = math.random(6)
   for k = 0, 5 do
     local i = (first + k - 1) % 6 + 1
-    if pd.play_file("scripts/sounds/chaos/ring" .. i .. ".wav", loop)
-        or pd.play_file("scripts/sounds/chaos/ring" .. i .. ".mp3", loop) then
+    if pd.play_file("scripts/sounds/chaos/ring" .. i .. ".wav", loop, true)
+        or pd.play_file("scripts/sounds/chaos/ring" .. i .. ".mp3", loop, true) then
       return true
     end
   end
-  return (pd.play_file("scripts/sounds/chaos/ring.wav", loop)
-      or pd.play_file("scripts/sounds/chaos/ring.mp3", loop)) and true or false
+  return (pd.play_file("scripts/sounds/chaos/ring.wav", loop, true)
+      or pd.play_file("scripts/sounds/chaos/ring.mp3", loop, true)) and true or false
 end
 
 -- hue (0..359) -> r, g, b in 0..255, full saturation/value (disco lights)
@@ -1402,8 +1402,8 @@ local alpha_effects = {
                  start=function()
                    if not pd.beyblade then error("needs new exe") end
                    pd.beyblade(true)
-                   local _ = pd.play_file("scripts/sounds/chaos/beyblade.wav")
-                         or pd.play_file("scripts/sounds/chaos/beyblade.mp3")
+                   local _ = pd.play_file("scripts/sounds/chaos/beyblade.wav", false, true)
+                         or pd.play_file("scripts/sounds/chaos/beyblade.mp3", false, true)
                  end,
                  stop=function()
                    pd.beyblade(false)
@@ -1417,8 +1417,8 @@ local alpha_effects = {
                  dur=function() return 1 + math.floor(st.effectdur / 10) end,
                  start=function()
                    if not pd.player_add_yaw then error("needs new exe") end
-                   local _ = pd.play_file("scripts/sounds/chaos/speen.wav")
-                         or pd.play_file("scripts/sounds/chaos/speen.mp3")
+                   local _ = pd.play_file("scripts/sounds/chaos/speen.wav", false, true)
+                         or pd.play_file("scripts/sounds/chaos/speen.mp3", false, true)
                  end,
                  tick=function(left)
                    local dt = pd.lvupdate and pd.lvupdate() or 1
@@ -1437,8 +1437,8 @@ local alpha_effects = {
                    -- snap — the main tick runs st.pitch_anim to completion
                    st.pitch_anim = { from = pd.player_pitch(), to = 65,
                                      t = 0, len = 18 }
-                   local _ = pd.play_file("scripts/sounds/chaos/banana.wav")
-                         or pd.play_file("scripts/sounds/chaos/banana.mp3")
+                   local _ = pd.play_file("scripts/sounds/chaos/banana.wav", false, true)
+                         or pd.play_file("scripts/sounds/chaos/banana.mp3", false, true)
                  end },
   -- Do a Barrel Roll: the whole view rolls through exactly ONE 360 (about a
   -- second), then rights itself. The Speen spiritual sibling, renderer-side
@@ -1449,8 +1449,8 @@ local alpha_effects = {
                    st.a_roll = 0
                    -- the clip likely outlives the 1s roll — let it play out
                    -- (no stop_file in stop), it's the whole joke
-                   local _ = pd.play_file("scripts/sounds/chaos/barrelroll.wav")
-                         or pd.play_file("scripts/sounds/chaos/barrelroll.mp3")
+                   local _ = pd.play_file("scripts/sounds/chaos/barrelroll.wav", false, true)
+                         or pd.play_file("scripts/sounds/chaos/barrelroll.mp3", false, true)
                  end,
                  tick=function(left)
                    local dt = pd.lvupdate and pd.lvupdate() or 1
@@ -1851,8 +1851,8 @@ local alpha_effects = {
   estus      = { label="Estus flask", fixeddur=true, dur=8,
                  start=function()
                    pd.player_speed(0.05)
-                   local _ = pd.play_file("scripts/sounds/chaos/estus.wav")
-                         or pd.play_file("scripts/sounds/chaos/estus.mp3")
+                   local _ = pd.play_file("scripts/sounds/chaos/estus.wav", false, true)
+                         or pd.play_file("scripts/sounds/chaos/estus.mp3", false, true)
                  end,
                  tick=function(left)
                    if left % 30 == 0 then
@@ -2192,14 +2192,6 @@ local alpha_effects = {
                    if not pd.spawn_chopper then error("needs new exe") end
                    if not pd.spawn_chopper(1, 1024) then error("no room for an interceptor") end
                  end },
-  -- Schedule 1: you turn into the drug spy for a while (free-fly drone; your
-  -- body waits where you left it).
-  schedule_1 = { label="Schedule 1", fixeddur=true, dur=20,
-                 start=function()
-                   if not pd.possess_spawn then error("needs new exe") end
-                   if not pd.possess_spawn(0x6c) then error("possession failed") end -- BODY_EYESPY
-                 end,
-                 stop=function() if pd.unpossess then pd.unpossess() end end },
 
   -- ===== SA-inspired batch (2026-07-19, zolika1351 GTA:SA chaos list) =====
   -- All held in the ALPHA_ONLY test area until runtime-proven.

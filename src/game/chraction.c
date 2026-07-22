@@ -3756,6 +3756,17 @@ void chrYeetFromPos(struct chrdata *chr, struct coord *exppos, f32 force)
 			angleindex = 0;
 		}
 
+#ifndef PLATFORM_N64
+		// Port: extreme face-vs-explosion geometry can drive angletoexplosion negative
+		// (latangle - faceangle can fall below -TAU after the wrap), giving a negative
+		// angleindex. The >= 8 clamp above never covered that, so g_YeetAnimIndexesByRaceAngle
+		// gets read out of bounds, handing back a garbage `indexes` pointer that is then
+		// dereferenced -> crash (read at 0xffff...). Clamp the low end too.
+		if (angleindex < 0) {
+			angleindex = 0;
+		}
+#endif
+
 		subindex = rngRandom() % g_YeetAnimIndexesByRaceAngle[race][angleindex].count;
 
 		if (race == RACE_HUMAN) {

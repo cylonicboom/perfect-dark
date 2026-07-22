@@ -31,7 +31,17 @@
 #define MAX_SEQ_SIZE_4MB 1024 * 14
 #define MAX_SEQ_SIZE_8MB 1024 * 18
 
+#ifndef PLATFORM_N64
+// Port: this must stay >= sndpconfig.maxSounds (the simultaneous-SFX cap, raised
+// to 64 for positional netplay + chaos audio down in sndInit). Each concurrently
+// playing SFX pins its cache slot via sndAddRef; if more distinct sounds play at
+// once than there are slots, the eviction scan in sndLoadSound finds none free,
+// leaves oldestindex at -1, and the u16 cacheindex wraps to 0xffff -> OOB writes
+// across g_SndCache (crash). N64 keeps 45 (its maxSounds is 20, always < 45).
+#define NUM_CACHE_SLOTS 72
+#else
 #define NUM_CACHE_SLOTS 45
+#endif
 #define NUM_KEYTHINGS 9
 
 struct sndcache {
@@ -1366,6 +1376,39 @@ ALSound *sndLoadSound(s16 soundnum)
 #endif
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// Port: if every cache slot is refcounted (many concurrent/positional sounds at
+		// once, e.g. up to 8 remote players firing + chaos SFX), the loop above never
+		// finds a free slot and leaves oldestindex at -1. Assigning that to the u16
+		// cacheindex wraps it to 0xffff, and sndLoad{Envelope,Wavetable,Keymap,...} then
+		// do wild OOB writes into g_SndCache (crash: write far past the struct). Fall back
+		// to evicting the globally-oldest slot regardless of refcount — stomping a
+		// still-playing sound is a momentary audio glitch, not a crash.
+		if (oldestindex == -1) {
+			oldestage = 0;
+
+			for (i = 0; i < NUM_CACHE_SLOTS; i++) {
+#if VERSION >= VERSION_NTSC_1_0
+				if (g_SndCache.ages[i] > oldestage) {
+					oldestage = g_SndCache.ages[i];
+					oldestindex = i;
+				}
+#else
+				s32 age = g_Vars.updateframe - g_SndCache.ages[i] + 1;
+
+				if (age > oldestage) {
+					oldestage = age;
+					oldestindex = i;
+				}
+#endif
+			}
+
+			if (oldestindex == -1) {
+				oldestindex = 0;
+			}
+		}
+#endif
 
 		cacheindex = oldestindex;
 

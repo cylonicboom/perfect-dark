@@ -12276,6 +12276,23 @@ void bgunRender(Gfx **gdlptr)
 
 		weaponnum = bgunGetWeaponNum2(i);
 
+#ifndef PLATFORM_N64
+		// `matrices` is NULL until a model's first render-prep: modelInit NULLs
+		// it (see the note there), and only bgun0f0a5550 rebuilds it for the
+		// hand -- under its own `hand->visible` test, and only once the gun has
+		// finished loading. bgunTickMasterLoad re-runs modelInit on BOTH hand
+		// gun models when a new gun is loaded and can return before that
+		// render-prep runs, so a frame can reach the renderer with `visible`
+		// still set from the previous frame and no matrices behind it. The
+		// mtxF2LBulk below then walked a NULL pointer (0xc0000005 read at 0,
+		// Combat Sim, 2026-07-21). Treat "no matrices" as not visible for this
+		// frame -- the block below is the whole of the hand's rendering, so
+		// this is exactly the `visible == false` path.
+		if (hand->visible && hand->gunmodel.matrices == NULL) {
+			continue;
+		}
+#endif
+
 		if (hand->visible) {
 			gdl = beamRender(gdl, &hand->beam, 0, 0);
 
@@ -12379,9 +12396,20 @@ void bgunRender(Gfx **gdlptr)
 				if (rocketmodel && rocketmodel->definition) {
 					sp94 = true;
 
-					modelRender(&renderdata, rocketmodel);
+#ifndef PLATFORM_N64
+					// Same not-yet-render-prepped case as the hand guard at the
+					// top of this loop: a rocket prop's matrices are allocated
+					// by propobj's render pass, so one held in the launcher may
+					// never have been prepped. Skip the draw, but still let the
+					// firedrocket handoff below run -- gating that on the
+					// matrices would strand hand->rocket forever.
+					if (rocketmodel->matrices)
+#endif
+					{
+						modelRender(&renderdata, rocketmodel);
 
-					mtxF2LBulk(rocketmodel->matrices, rocketmodel->definition->nummatrices);
+						mtxF2LBulk(rocketmodel->matrices, rocketmodel->definition->nummatrices);
+					}
 
 					if (hand->firedrocket) {
 						hand->rocket = NULL;

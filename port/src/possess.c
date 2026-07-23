@@ -227,6 +227,16 @@ void luaPossessApplyCamera(void)
 	pl->cam_look = g_Possess.look;
 	pl->cam_up = g_Possess.up;
 	playerSetCamPropertiesWithoutRoom(&campos, &g_Possess.up, &g_Possess.look, pl->cam_room);
+
+	// playerAllocateMatrices reads camGetMtxF1754() (the perspective matrix,
+	// currentplayer->mtxf1754), which lvRender only populates later in the frame.
+	// On the first possession frame — or right after a stage change — it can
+	// still be NULL and mtx4MultMtx4 would deref 0. Skip until it's set; the pose
+	// above is already recorded for lvRender to consume. Mirrors the spectator.c
+	// deferral (see spectator.c playerAllocateMatrices note).
+	if (pl->mtxf1754 == NULL) {
+		return;
+	}
 	playerAllocateMatrices(&pl->cam_pos, &pl->cam_look, &pl->cam_up);
 }
 

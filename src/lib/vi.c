@@ -236,6 +236,13 @@ void viReset(s32 stagenum)
 	fb0 = (u8 *) g_FrameBuffers[0];
 	fb1 = (u8 *) g_FrameBuffers[1];
 
+#ifndef PLATFORM_N64
+	// Stage-pool OOM: the mempAlloc above returned NULL (it already logs the
+	// failed allocation naming this caller), so ptr aligned down to ~0. Writing
+	// the clear loop would fault at address 0 — skip it and fail soft on the
+	// exhausted stage instead of a raw access violation. N64 keeps the original.
+	if (ptr)
+#endif
 	for (i = 0; i < fbsize; i++) {
 		fb0[i] = 0;
 		fb1[i] = 0;

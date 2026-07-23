@@ -893,6 +893,20 @@ s32 chraiLuaRunSynthetic(u32 opcode, const u8 *operands, u32 n)
 	g_Vars.ailist = buf;
 	g_Vars.aioffset = 0;
 
+	// Terminate the single-command buffer with CMD_END. Branch-on-success
+	// handlers (aiFaceEntity/aiTryModifyAttack) call chraiGoToLabel, which scans
+	// forward for a CMD_LABEL/CMD_END. Without a terminator the zeroed tail reads
+	// as command type 0 (never a stop), so the scan walks off buf[] into stack
+	// garbage and faults. The jump target it computes is discarded anyway (we
+	// restore aioffset below), so a stop-at-buffer terminator is all we need.
+	{
+		u32 len = chraiGetCommandLength(buf, 0);
+		if (len + 1 < sizeof(buf)) {
+			buf[len] = (CMD_END >> 8) & 0xff;
+			buf[len + 1] = CMD_END & 0xff;
+		}
+	}
+
 	if (type >= 0 && type < ARRAYCOUNT(g_CommandPointers)) {
 		ret = g_CommandPointers[type]() ? 1 : 0;
 	}

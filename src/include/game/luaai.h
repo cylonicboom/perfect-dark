@@ -320,6 +320,8 @@ s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum); /* replace an NPC's held w
 s32 chraiLuaChrWeapon(s32 chrnum); /* the NPC's current weaponnum (-1 if invalid) */
 f32 chraiLuaPlayerHealth(void);               /* current health fraction 0..1 */
 f32 chraiLuaPlayerShield(void);               /* current shield fraction 0..1 */
+s32 chraiLuaPlayerReloading(void);            /* either hand mid-reload */
+s32 chraiLuaPlayerActivate(void);             /* use/activate button held this frame */
 s32 chraiLuaPlayerDamage(f32 amount);         /* hurt the local player via the real damage path */
 s32 chraiLuaWeaponJam(s32 on);                /* trigger pulls dry-fire, no shot, no ammo */
 s32 chraiLuaPlayerFreeze(s32 on);             /* root the local player (look/fire still live) */

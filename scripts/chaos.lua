@@ -1759,6 +1759,125 @@ local function draw_disc(cx, cy, r, color)
   end
 end
 
+-- ---- Simon Says --------------------------------------------------------------
+-- A command drill. Each prompt names an action; if it's prefixed "Simon Says"
+-- you must DO it within a few seconds, else a penalty. If it is NOT (a trap:
+-- blank first line) you must NOT do it while it's shown, else the same penalty.
+-- A 2s leeway per prompt keeps a mid-motion action from biting instantly.
+local SIMON_ACTIONS = {
+  { key = "shoot",  label = "Shoot!" },
+  { key = "crouch", label = "Crouch!" },
+  { key = "move",   label = "Move!" },
+  { key = "spin",   label = "Spin around!" },
+  { key = "reload", label = "Reload!" },
+  { key = "door",   label = "Open a door!" },
+}
+local SIMON_SAYS_SECS = 4    -- window to obey a "Simon Says" command
+local SIMON_TRAP_SECS = 4    -- how long a trap prompt lingers
+local SIMON_GRACE     = 2    -- seconds of leeway before a penalty can bite
+local SIMON_MOVE2     = 40 * 40 -- squared world-unit distance that counts as "moved"
+local SIMON_SPIN      = 300  -- accumulated |yaw| degrees that counts as "spun"
+
+-- Snapshot the player's pose for delta-based detection (move / spin).
+local function simon_snapshot(a)
+  local x, _, z = pd.player_pos(0)
+  a.px, a.pz = x or 0, z or 0
+  a.prevyaw = pd.player_yaw() or 0
+  a.spin = 0
+  a.fired = false
+end
+
+-- Apply a random Simon penalty: damage, lose the held weapon, or lose all ammo.
+local function simon_penalty(msg)
+  local pick = math.random(3)
+  if pick == 2 then
+    local w = pd.weapon_held and pd.weapon_held()
+    if w and w > 1 then pd.take_weapon(w) else pd.player_damage(1.0) end
+  elseif pick == 3 then
+    pd.strip_ammo()
+  else
+    pd.player_damage(1.0)
+  end
+  local a = st.a_simon
+  if a then a.flasht, a.flashmsg, a.flashcol = 70, msg, 0xff5050ff end
+end
+
+local function simon_ok(text)
+  local a = st.a_simon
+  if a then a.flasht, a.flashmsg, a.flashcol = 40, text, 0x40ff40ff end
+end
+
+-- Start a fresh prompt.
+local function simon_next(a, left)
+  local act = SIMON_ACTIONS[math.random(#SIMON_ACTIONS)]
+  a.cmd, a.label = act.key, act.label
+  a.says = math.random(100) <= 60 -- 60% real commands, 40% traps
+  a.shown = left
+  a.rearmed = false
+  a.deadline = left - (a.says and SIMON_SAYS_SECS or SIMON_TRAP_SECS) * TICKS
+  simon_snapshot(a)
+end
+
+-- Is the current action being performed (relative to the last snapshot)?
+local function simon_detect(a)
+  local c = a.cmd
+  if c == "shoot" then return a.fired == true
+  elseif c == "crouch" then return (pd.player_crouch() or 0) > 0
+  elseif c == "reload" then return pd.player_reloading and pd.player_reloading()
+  elseif c == "door" then return pd.player_activate and pd.player_activate()
+  elseif c == "move" then
+    local x, _, z = pd.player_pos(0)
+    if not x then return false end
+    local dx, dz = x - a.px, z - a.pz
+    return dx * dx + dz * dz >= SIMON_MOVE2
+  elseif c == "spin" then return (a.spin or 0) >= SIMON_SPIN
+  end
+  return false
+end
+
+local function simon_tick(left)
+  local a = st.a_simon
+  if not a then return end
+  if a.flasht and a.flasht > 0 then a.flasht = a.flasht - 1 end
+
+  -- accumulate absolute yaw travel for the "spin" detector (handle wrap)
+  local yaw = pd.player_yaw() or a.prevyaw or 0
+  if a.prevyaw then
+    local d = yaw - a.prevyaw
+    while d > 180 do d = d - 360 end
+    while d < -180 do d = d + 360 end
+    a.spin = (a.spin or 0) + (d < 0 and -d or d)
+  end
+  a.prevyaw = yaw
+
+  if not a.cmd then simon_next(a, left); return end
+
+  local elapsed = a.shown - left
+
+  -- Trap leeway: re-snapshot at the 2s mark so only action AFTER the grace
+  -- window is judged (a mid-motion input when the prompt appears is forgiven).
+  if not a.says and not a.rearmed and elapsed >= SIMON_GRACE * TICKS then
+    simon_snapshot(a)
+    a.rearmed = true
+  end
+
+  if a.says then
+    -- must DO it before the deadline
+    if simon_detect(a) then
+      simon_ok("OK!"); simon_next(a, left)
+    elseif left <= a.deadline then
+      simon_penalty("Too slow! Simon said: " .. a.label); simon_next(a, left)
+    end
+  else
+    -- TRAP: must NOT do it (only judged after the 2s leeway)
+    if a.rearmed and simon_detect(a) then
+      simon_penalty("Simon didn't say: " .. a.label); simon_next(a, left)
+    elseif left <= a.deadline then
+      simon_ok("Good - ignored it"); simon_next(a, left)
+    end
+  end
+end
+
 local alpha_effects = {
   -- Hurricane v2: much smaller gust force, repeated through the effect, plus
   -- storm weather for the duration. (Faster weather animation needs C.)
@@ -3170,6 +3289,22 @@ local alpha_effects = {
                   end
                 end,
                 stop=function() st.a_touch = nil end },
+
+  -- Simon Says: a command drill for the whole timer. "Simon Says <action>!"
+  -- (both lines) = DO it within a few seconds or take a random penalty (damage /
+  -- lose held weapon / lose all ammo). A trap prompt shows only the action on the
+  -- SECOND line (blank first line) — do it while it's up and you take the same
+  -- penalty; ignore it to pass. A 2s leeway per prompt keeps a mid-motion input
+  -- from biting instantly. Detectors: shoot (weaponfire), crouch, move, spin,
+  -- reload + open-a-door (new-exe pd.player_reloading / pd.player_activate).
+  simon = { label="Simon Says", dur=1,
+            start=function()
+              if not pd.player_activate then error("needs new exe") end
+              st.a_simon = { cmd = nil, prevyaw = pd.player_yaw() or 0, flasht = 0 }
+              pd.hud_message("CHAOS: Simon Says...")
+            end,
+            tick=function(left) simon_tick(left) end,
+            stop=function() st.a_simon = nil end },
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -3229,7 +3364,7 @@ for _, n in ipairs({
     "armor_guard", "headshots_only", "ice_floor",
     "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
     "killstreak", "boss_fight", "laugh_track",
-    "worst_day", "supersonic", "touch_cal",
+    "worst_day", "supersonic", "touch_cal", "simon",
 }) do
   local e = chaos.effects[n]
   if e then
@@ -3371,6 +3506,7 @@ local function reset_all_modes()
   st.a_bloop, st.a_twoh = nil
   st.a_ltk, st.a_run, st.a_cap, st.a_rr = nil
   st.a_touch = nil -- Touchscreen Calibration target drill
+  st.a_simon = nil -- Simon Says command drill
   st.a_classic, st.a_angst, st.a_phone, st.a_count = nil
   st.a_objf, st.a_thief, st.a_cd, st.a_roll = nil
   st.a_quiz, st.a_eula, st.a_quad = nil
@@ -3895,6 +4031,8 @@ end)
 
 -- Misfire: the next shot fired after arming blows up in the player's face.
 pd.on("weaponfire", function(weaponnum, playernum)
+  -- Simon Says: note the local player fired this frame (the "shoot" detector).
+  if st.active.simon and st.a_simon and playernum == 0 then st.a_simon.fired = true end
   if st.misfire_armed then
     st.misfire_armed = false
     pd.player_damage(1.5)
@@ -4219,6 +4357,17 @@ pd.on("draw", function()
     end
     centered_text(18, "TOUCHSCREEN CALIBRATION", 0xffffffff)
     centered_text(28, "hits " .. a.hits .. "/5   misses " .. a.misses .. " (warn 2 / dmg 3+)", 0xffd040ff)
+  end
+
+  -- Simon Says: objective-toast-style prompt in the middle of the screen. Traps
+  -- (non-"Simon Says") deliberately leave the first line blank.
+  if st.active.simon and st.a_simon and st.a_simon.cmd then
+    local a = st.a_simon
+    centered_text(96, a.says and "Simon Says" or "", 0xffe040ff)
+    centered_text(108, a.label, a.says and 0xffffffff or 0xff8080ff)
+    if a.flasht and a.flasht > 0 and a.flashmsg then
+      centered_text(124, a.flashmsg, a.flashcol or 0xffffffff)
+    end
   end
 
   -- CAPTCHA: the verification demand + the live task instruction.

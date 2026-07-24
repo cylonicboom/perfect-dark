@@ -1985,6 +1985,21 @@ static int l_pd_player_shield(lua_State *L)
 	return 1;
 }
 
+/* pd.player_reloading() -> bool. True while the current gun is reloading. */
+static int l_pd_player_reloading(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerReloading() != 0);
+	return 1;
+}
+
+/* pd.player_activate() -> bool. True this frame if the use/activate button is
+ * held (opening a door / interacting). */
+static int l_pd_player_activate(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaPlayerActivate() != 0);
+	return 1;
+}
+
 /* pd.player_damage(amount) -> bool. Hurt the local player through the real
  * damage path; ~1.0 is roughly one gunshot. */
 static int l_pd_player_damage(lua_State *L)
@@ -3484,6 +3499,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_weapon);    lua_setfield(L, -2, "chr_weapon");
 	lua_pushcfunction(L, l_pd_player_health); lua_setfield(L, -2, "player_health");
 	lua_pushcfunction(L, l_pd_player_shield); lua_setfield(L, -2, "player_shield");
+	lua_pushcfunction(L, l_pd_player_reloading); lua_setfield(L, -2, "player_reloading");
+	lua_pushcfunction(L, l_pd_player_activate); lua_setfield(L, -2, "player_activate");
 	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
 	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
 	lua_pushcfunction(L, l_pd_force_secondary); lua_setfield(L, -2, "force_secondary");

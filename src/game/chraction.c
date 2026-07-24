@@ -11069,6 +11069,26 @@ f32 chraiLuaPlayerShield(void)
 	return playerGetShieldFrac();
 }
 
+/ pd.player_reloading(): true while either hand is in the reload state.
+s32 chraiLuaPlayerReloading(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return (g_Vars.currentplayer->hands[HAND_RIGHT].state == HANDSTATE_RELOAD
+			|| g_Vars.currentplayer->hands[HAND_LEFT].state == HANDSTATE_RELOAD) ? 1 : 0;
+}
+
+/ pd.player_activate(): true this frame if the use/activate button is held
+// (opening a door / interacting). Mirrors lv.c's JO_ACTION_ACTIVATE test.
+s32 chraiLuaPlayerActivate(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_ACTIVATE) ? 1 : 0;
+}
+
 // pd.player_damage(amount): hurt the local player through the real damage
 // path (shield first, damage flash/sound, death) — ~1.0 is roughly one
 // gunshot. Attacker is NULL (environment), so a death reads as a suicide.

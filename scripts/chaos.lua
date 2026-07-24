@@ -1028,6 +1028,33 @@ chaos.effects = {
                      pd.room_tint()
                      pd.doors_all(true) -- never leave the player slammed in
                    end },
+  -- Licence to Probe: every guard gets a random Bond tuxedo body and a Maian
+  -- alien head (chr_set_body). Instant + permanent for the mission (no original
+  -- to restore to); solo/missions only (Combat Sim returns 0).
+  licence_probe= { label="Licence to Probe", w=3, dur=0,
+                   start=function()
+                     if not pd.chr_set_body then error("needs new exe") end
+                     local TUX = { 0x00, 0x90 } -- BODY_DJBOND, BODY_CARREVENINGSUIT
+                     local n = 0
+                     for _, c in ipairs(pd.all_chrs() or {}) do
+                       if pd.chr_set_body(c, TUX[math.random(#TUX)], 0x29) then -- HEAD_MAIAN_S
+                         n = n + 1
+                       end
+                     end
+                     if n == 0 then error("no chrs / combat sim") end
+                   end },
+  -- Chaos Weapon Spread: every gun's spread (and matching crosshair bloom) is
+  -- multiplied by a value that reshuffles every ~1.5s — from laser-accurate to
+  -- shotgun-wild. Reaper gets even sillier.
+  weapon_spread= { label="Chaos Weapon Spread", w=3, dur=20,
+                   start=function()
+                     if not pd.spread then error("needs new exe") end
+                     pd.spread(math.random() * 4)
+                   end,
+                   tick=function(left)
+                     if left % 90 == 0 then pd.spread(math.random() * 4) end
+                   end,
+                   stop=function() if pd.spread then pd.spread(1) end end },
   take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
                    start=function() pd.player_freeze(true) end,
                    stop=function() pd.player_freeze(false) end },

@@ -8928,6 +8928,18 @@ s32 chraiLuaNoReload(s32 on)
 	return 1;
 }
 
+// pd.spread(mult): "Chaos Weapon Spread" — scale every weapon's shot spread +
+// crosshair bloom (bondgun.c g_ChaosSpreadMult). 1 = normal; clamped sane.
+s32 chraiLuaSpread(f32 mult)
+{
+	extern f32 g_ChaosSpreadMult;
+
+	if (mult < 0.0f) mult = 0.0f;
+	if (mult > 20.0f) mult = 20.0f;
+	g_ChaosSpreadMult = mult;
+	return 1;
+}
+
 // pd.hud_off(on): "No HUD" — skip every HUD element render (the seven
 // hudvd-wrapped sites in player.c/lv.c). Chaos overlays still draw.
 s32 chraiLuaHudOff(s32 on)

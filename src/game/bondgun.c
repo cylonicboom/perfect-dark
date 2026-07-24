@@ -6044,6 +6044,13 @@ void bgun0f0a0c44(s32 handnum, struct coord *arg1, struct coord *arg2)
 	cam0f0b4c3c(g_Vars.currentplayer->hands[handnum].crosspos, arg2, 1);
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Chaos Weapon Spread" (pd.spread): scales every weapon's shot spread
+// (and the matching crosshair bloom) by this factor. 1 = normal, 0 = laser,
+// large = wild. The effect randomises it; reset to 1 per stage in lv.c.
+f32 g_ChaosSpreadMult = 1.0f;
+#endif
+
 void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2d, s32 handnum, bool dorandom)
 {
 	f32 crosspos[2];
@@ -6056,6 +6063,9 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	if (func != NULL && (func->type & 0xff) == INVENTORYFUNCTYPE_SHOOT) {
 		struct weaponfunc_shoot *shootfunc = (struct weaponfunc_shoot *) func;
 		spread = shootfunc->spread;
+#ifndef PLATFORM_N64
+		spread *= g_ChaosSpreadMult;
+#endif
 	}
 
 	if (weaponHasAimFlag(bgunGetWeaponNum2(handnum), INVAIMFLAG_ACCURATESINGLESHOT)
@@ -6149,6 +6159,9 @@ void bgunCalculateBotShotSpread(struct coord *arg0, s32 weaponnum, s32 funcnum, 
 		if (funcdef && (funcdef->type & 0xff) == INVENTORYFUNCTYPE_SHOOT) {
 			struct weaponfunc_shoot *shootfunc = (struct weaponfunc_shoot *)funcdef;
 			spread = shootfunc->spread;
+#ifndef PLATFORM_N64
+			spread *= g_ChaosSpreadMult;
+#endif
 		}
 	}
 

@@ -355,6 +355,7 @@ s32 chraiLuaForcedFire(s32 on);               /* trigger held down for you */
 s32 chraiLuaRapidFire(s32 on);                /* semi-autos fire as fast as automatics while held */
 s32 chraiLuaForcedCrouch(s32 on);             /* stance pinned to a crouch */
 s32 chraiLuaNoReload(s32 on);                 /* all reload transitions refused */
+s32 chraiLuaSpread(f32 mult);                 /* scale weapon shot spread */
 s32 chraiLuaHudOff(s32 on);                   /* hide every HUD element */
 s32 chraiLuaGunFov(f32 deg);                  /* viewmodel FOV override (0 restores) */
 s32 chraiLuaChrFreezeOne(s32 chrnum);         /* statue exactly one chr (-1 = none) */

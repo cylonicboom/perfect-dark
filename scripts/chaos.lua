@@ -3023,17 +3023,16 @@ local alpha_effects = {
                    st.a_phone = nil
                  end },
 
-  -- Worst Day of Your Life So Far: the nuclear escalator. Rips out the interval
-  -- timer and stacks a fresh random effect every couple of seconds — and NOTHING
-  -- wears off. The pile only grows until you restart or complete the mission
-  -- (reset_all_modes clears the flag; a manual /chaos off cancels it too). It has
-  -- no effect of its own — start() just flips st.worst_day, which rewires the
-  -- drumbeat + expiry in the tick handler.
+  -- Worst Day of Your Life So Far: the slow-burn escalator. Effects keep firing
+  -- at the NORMAL frequency timer, but NOTHING wears off — the pile just grows
+  -- roll after roll until you restart or complete the mission (reset_all_modes
+  -- clears the flag; a manual /chaos off cancels it too). It has no effect of its
+  -- own — start() just flips st.worst_day, which makes the expiry loop pin every
+  -- timed effect instead of counting it down.
   worst_day = { label="Worst Day of Your Life So Far",
                 start=function()
                   st.worst_day = true
-                  st.worst_timer = 0 -- stack the first effect on the next tick
-                  st.enabled = true  -- force the system on so the drumbeat runs
+                  st.enabled = true -- force the system on so the drumbeat runs
                 end },
 }
 
@@ -3247,7 +3246,7 @@ local function reset_all_modes()
   if pd.uwuify then pd.uwuify(false) end -- zeroes the shared text mode (covers piglatin)
   if pd.forced_march then pd.forced_march(false) end
   st.home_marked = false -- re-mark the start point on the next stage entered
-  st.worst_day = nil; st.worst_timer = nil -- "Worst Day" ends on restart/completion
+  st.worst_day = nil -- "Worst Day" ends on restart/completion
   -- Batch-2 C globals (new-exe bindings; guarded so old exes still run).
   if pd.force_secondary then pd.force_secondary(false) end
   if pd.button_block then pd.button_block(0) end
@@ -3697,19 +3696,9 @@ pd.on("tick", function()
   -- expiry above already ran so manual test effects stay on their own timers.
   if not st.enabled then return end
 
-  -- Worst Day of Your Life So Far: the interval timer is gone. Stack a fresh
-  -- random effect on a fast fixed cadence (they never wear off — see the expiry
-  -- loop above), overriding both the normal drumbeat and vote mode. pick_random
-  -- skips alpha/disabled effects, so it can't re-draw Worst Day itself.
-  if st.worst_day then
-    st.worst_timer = (st.worst_timer or 0) - dt
-    if st.worst_timer <= 0 then
-      st.worst_timer = 2 * TICKS -- one new effect every ~2s
-      local name = pick_random()
-      if name then chaos.trigger(name, "worst day") end
-    end
-    return
-  end
+  -- Worst Day of Your Life So Far keeps the NORMAL frequency timer (and vote
+  -- mode) below — it only changes the expiry loop above so nothing wears off, so
+  -- effects pile up at the usual cadence instead of clearing between rolls.
 
   -- vote mode: chat picks from the 3-candidate slate; the winner fires when
   -- the window closes (ties / no votes -> random candidate, chaos must flow).

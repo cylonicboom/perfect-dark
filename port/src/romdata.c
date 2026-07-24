@@ -729,6 +729,16 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 	const u32 stockDataOfs = g_StockTexDataOfs;
 	const u32 stockCount = (g_StockTexCopyOfs - stockListOfs) / 8;
 
+	// Sanity: the stock texture offsets must sit inside the base ROM. If they
+	// don't (a bad capture), the correlation below would read a wild address —
+	// bail gracefully so the swap keeps geometry and leaves textures base.
+	if (stockListOfs >= g_RomFileSize || stockDataOfs >= g_RomFileSize
+			|| g_StockTexCopyOfs > g_RomFileSize || stockCount == 0) {
+		sysLogPrintf(LOG_WARNING, "chain ROM: base texture offsets invalid (list 0x%x data 0x%x copy 0x%x rom 0x%x); overlay textures disabled",
+			stockListOfs, stockDataOfs, g_StockTexCopyOfs, g_RomFileSize);
+		return;
+	}
+
 	// vote for the texturesdata base by correlating texture bytes with the base
 	// ROM. A texture-REPLACING total conversion (e.g. a Mario pack) shares few
 	// textures with the base, so sample MANY textures to catch the ones it kept
@@ -748,6 +758,11 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 		const u32 cNext = romdataTexListDofs(rom, bestOfs, n + 1);
 		if (sThis >= sNext || cThis >= cNext) {
 			continue; // no data for this texture in one of the ROMs
+		}
+		// bounds-guard the base-ROM pattern read (a bad offset or an out-of-range
+		// dataoffset would make pat wild and crash the memchr below)
+		if ((u64)stockDataOfs + sThis + CORR_PATLEN > g_RomFileSize) {
+			continue;
 		}
 
 		const u8 *pat = g_RomFile + stockDataOfs + sThis;
@@ -1005,6 +1020,21 @@ static void romdataChainImportHeadsAndBodies(void)
 		tabOfs, numBodies, tabMatches, filesKept);
 }
 
+// A segment's ->data is a raw ROM offset before romdataInitSegment resolves it,
+// and a pointer into g_RomFile after. Return the raw offset either way, so a
+// capture taken at the wrong moment can't feed a truncated pointer to the
+// texture correlator (which then reads a wild address).
+static u32 romdataSegRawOfs(const u8 *segdata)
+{
+	const uintptr_t p = (uintptr_t)segdata;
+	const uintptr_t base = (uintptr_t)g_RomFile;
+
+	if (g_RomFile && p >= base && p < base + g_RomFileSize) {
+		return (u32)(p - base);
+	}
+	return (u32)p;
+}
+
 s32 romdataInit(void)
 {
 	const char *altRomName = sysArgGetString("--rom-file");
@@ -1017,10 +1047,12 @@ s32 romdataInit(void)
 	// Capture the stock texture-segment offsets NOW, while ->data is still the
 	// raw ROM offset (the resolution loop below turns it into a pointer). The
 	// chain/overlay texture relocator uses these as offsets for its correlation
-	// search against the base ROM.
-	g_StockTexListOfs = (u32)(uintptr_t)romdataGetSeg("textureslist")->data;
-	g_StockTexDataOfs = (u32)(uintptr_t)romdataGetSeg("texturesdata")->data;
-	g_StockTexCopyOfs = (u32)(uintptr_t)romdataGetSeg("copyright")->data;
+	// search against the base ROM. Be robust: if ->data already points INTO
+	// g_RomFile (resolved), convert it back to an offset — a raw pointer used as
+	// an offset makes the correlation read a wild address and crash.
+	g_StockTexListOfs = romdataSegRawOfs(romdataGetSeg("textureslist")->data);
+	g_StockTexDataOfs = romdataSegRawOfs(romdataGetSeg("texturesdata")->data);
+	g_StockTexCopyOfs = romdataSegRawOfs(romdataGetSeg("copyright")->data);
 
 	// optional chain-loaded second ROM: a whole pre-modded PD ROM whose data
 	// (assets + setup files carrying action blocks) backs the MOD_CHAINROM slot.

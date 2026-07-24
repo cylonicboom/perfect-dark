@@ -4,7 +4,6 @@
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h> // model-swap overlay ROM auto-load (scan scripts/chaos/rom)
-#include <sys/stat.h> // stat() for the overlay-ROM folder scan
 #include <PR/ultratypes.h>
 #include "lib/rzip.h"
 #include "romdata.h"
@@ -1043,10 +1042,12 @@ s32 romdataLoadModelRom(const char *path)
 		}
 
 		while ((de = readdir(dr)) != NULL) {
+			// cand is built from the SAME resolved dir opendir walked; fsFileSize
+			// treats this ./- or absolute path consistently (no CWD-vs-search
+			// mismatch), so listing and sizing agree.
 			char cand[FS_MAXPATH + 1];
-			struct stat st;
 			snprintf(cand, sizeof(cand), "%s/%s", dirfull, de->d_name);
-			if (stat(cand, &st) == 0 && st.st_size >= (off_t)ROMDATA_ROM_SIZE) {
+			if (fsFileSize(cand) >= (s32)ROMDATA_ROM_SIZE) {
 				snprintf(filepath, sizeof(filepath), "%s", cand);
 				break;
 			}

@@ -745,7 +745,12 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 	// (HUD/effects/fonts), and reject any base whose data region would overlap
 	// the textureslist — those are coincidental false matches (the base's own
 	// texturesdata sits before the list, so base + size must fit before it).
-	enum { CORR_SAMPLES = 256, CORR_PATLEN = 16, CORR_MAXCAND = 64, CORR_MAXHITS = 16, CORR_MINVOTES = 2 };
+	// MINVOTES=1: a 16-byte exact match (128 bits) at a geometrically-valid base
+	// is astronomically unlikely to be a coincidence, so one surviving texture is
+	// enough to anchor the data base. A texture-replacing conversion (Mario) may
+	// keep only a handful byte-identical, and the geometric filter already
+	// rejects impossible bases.
+	enum { CORR_SAMPLES = 256, CORR_PATLEN = 16, CORR_MAXCAND = 64, CORR_MAXHITS = 16, CORR_MINVOTES = 1 };
 	struct { u32 base; u32 votes; } cand[CORR_MAXCAND];
 	u32 numCand = 0;
 

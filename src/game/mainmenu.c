@@ -5497,10 +5497,11 @@ static void luaDirectorFillByKind(struct menuitem *dst, s32 regidx)
 // dialogdef pointer is never mistaken for a function.
 static void luaDirectorFillOpener(struct menuitem *dst, s32 subidx)
 {
+	// Regular font (no BIGFONT) so the sub-folder openers match the checkbox /
+	// slider widget rows around them instead of towering over them.
 	dst->type = MENUITEMTYPE_SELECTABLE;
 	dst->param = 0;
-	dst->flags = MENUITEMFLAG_SELECTABLE_OPENSDIALOG
-			| MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
+	dst->flags = MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT;
 	dst->param2 = (uintptr_t)g_LuaSubmenuTitles[subidx];
 	dst->param3 = 0;
 	dst->handler =

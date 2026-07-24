@@ -79,6 +79,11 @@ static u32 chainDataSegSize;
 s32 g_ModelRomActive = 0;                     // overlay ROM loaded, base slot still active
 s32 g_ModelSwapActive = 0;                    // sourcing flagged models from the overlay now
 u8 g_ModelSwapFiles[ROMDATA_MAX_FILES] = { 0 }; // per-file: 1 = redirect to the overlay when active
+// Diagnostics: bumped each time the redirect actually serves overlay bytes, and
+// each time it was armed for a file but couldn't (chain name miss / null data).
+// The model-swap toggle logs + zeroes these so we can tell if the swap took.
+s32 g_ModelSwapRedirects = 0;
+s32 g_ModelSwapMisses = 0;
 
 static u8 *romDataSeg;
 static u32 romDataSegSize;
@@ -1184,11 +1189,15 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 	if (!out && g_ModelSwapActive && g_ModelRomActive && g_ModelSwapFiles[fileNum]) {
 		const s32 cn = romdataChainFileGetNumForName(fileSlots[g_ModNum][fileNum].name);
 		if (cn > 0 && fileSlots[MOD_CHAINROM][cn].data) {
+			g_ModelSwapRedirects++;
 			if (outSize) {
 				*outSize = fileSlots[MOD_CHAINROM][cn].size;
 			}
 			return fileSlots[MOD_CHAINROM][cn].data;
 		}
+		// armed but couldn't serve: the overlay lacks this name, or its slot
+		// has no data. Count it so the swap toggle can report the miss.
+		g_ModelSwapMisses++;
 	}
 
 	if (!out) {

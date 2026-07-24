@@ -181,6 +181,10 @@ bool bodyLoad(s32 bodynum)
 extern s32 g_ModelRomActive;   // an overlay ROM (--model-rom) is loaded
 extern s32 g_ModelSwapActive;  // character models sourced from the overlay now
 extern u8 g_ModelSwapFiles[];  // per-file: redirect this file to the overlay
+extern s32 g_ModelSwapRedirects; // # overlay serves this toggle (diagnostics)
+extern s32 g_ModelSwapMisses;    // # armed-but-couldn't-serve (diagnostics)
+extern s32 romdataChainFileGetNumForName(const char *name);
+extern const char *romdataFileGetName(s32 fileNum);
 
 // A chr's held items (weapons_held[0]=right gun, [1]=left gun, [2]=hat) are
 // child props whose model is ATTACHED to the chr's body model — attachedtomodel
@@ -239,12 +243,13 @@ static void modelSwapReattachHeld(struct chrdata *chr)
 // then free the old model the same way chr death does. Corpses and the player
 // are skipped. Called at effect toggle from the Lua tick (after tick, before
 // render), which is a safe boundary.
-static void modelSwapRebuildLiveChrs(void)
+static s32 modelSwapRebuildLiveChrs(void)
 {
 	s32 i;
+	s32 rebuilt = 0;
 
 	if (g_ChrSlots == NULL) {
-		return;
+		return 0;
 	}
 
 	for (i = 0; i < g_NumChrSlots; i++) {
@@ -302,9 +307,12 @@ static void modelSwapRebuildLiveChrs(void)
 			}
 
 			modelmgrFreeModel(old);
+			rebuilt++;
 		}
 		// if neu is NULL (out of model slots / missing file) keep the old model
 	}
+
+	return rebuilt;
 }
 
 // Turn the Chaos character-model swap on/off. Flags every character body/head
@@ -342,6 +350,10 @@ void modelSwapSetActive(bool on)
 	g_ModelSwapActive = on ? 1 : 0;
 
 	if (changed) {
+		s32 rebuilt;
+		s32 probefile;
+		s32 probecn;
+
 		// Drop the shared modeldef cache + the file cache so the next load
 		// re-reads the (now redirected) file data.
 		for (i = 0; g_HeadsAndBodies[i].filenum; i++) {
@@ -352,8 +364,22 @@ void modelSwapSetActive(bool on)
 			}
 		}
 
+		// Diagnostics: zero the redirect counters so they reflect just this
+		// toggle's rebuild loads, then probe whether the first body file even
+		// resolves to a same-named file in the overlay ROM.
+		g_ModelSwapRedirects = 0;
+		g_ModelSwapMisses = 0;
+		probefile = g_HeadsAndBodies[0].filenum;
+		probecn = romdataChainFileGetNumForName(romdataFileGetName(probefile));
+
 		// Immediately swap everyone already on screen.
-		modelSwapRebuildLiveChrs();
+		rebuilt = modelSwapRebuildLiveChrs();
+
+		sysLogPrintf(LOG_NOTE,
+				"modelswap: %s romactive=%d chrs=%d rebuilt=%d redirects=%d misses=%d probe(file=%d '%s' -> chain=%d)",
+				on ? "ON" : "OFF", g_ModelRomActive, g_NumChrSlots, rebuilt,
+				g_ModelSwapRedirects, g_ModelSwapMisses,
+				probefile, romdataFileGetName(probefile), probecn);
 	}
 }
 

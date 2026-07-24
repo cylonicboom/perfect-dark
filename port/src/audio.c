@@ -34,15 +34,37 @@ static u32 nextSize = 0;
 // - audioMuted (pd.mute): the outgoing device buffer is replaced with silence
 //   at the single push point in audioEndFrame — a true master mute (SFX +
 //   music) with no interaction with the persisted volume settings.
-// - extSound (pd.play_file): a one-shot external WAV, pre-converted to the
-//   device spec at load, additively mixed into the outgoing buffer until it
-//   runs out. Used for the Ring Ring effect's Discord ringtone.
+// - external voices (pd.play_file): one-shot external WAV/MP3s, pre-converted to
+//   the device spec at load, additively mixed into the outgoing buffer until
+//   they run out. A pool (extVoices[]) so several overlap. Used for the Ring
+//   Ring ringtone and the Mario/Sonic meme SFX.
 static s32 audioMuted = 0;
-static u8 *extSound = NULL;
-static u32 extSoundLen = 0;
-static u32 extSoundPos = 0;
-static s32 extLoop = 0; // pd.play_file(path, loop): rewind instead of freeing
-static s32 extFollowMusic = 0; // pd.play_file(...,follow): scale by music volume
+// External one-shot voices (pd.play_file). Formerly a single buffer where a new
+// play stopped the old; now a small pool so several can overlap (e.g. a meme
+// SFX layered over the phone ringtone). A new play takes a free slot; if all are
+// busy the oldest (slot 0) is recycled. audioStopExternal frees them all.
+#define EXT_VOICES 8
+struct extvoice {
+	u8 *data;         // device-spec s16 stereo PCM (SDL_malloc'd); NULL = free
+	u32 len;          // bytes
+	u32 pos;          // bytes consumed
+	s32 loop;         // rewind instead of freeing at end
+	s32 followMusic;  // scale by music volume + pause with the game
+};
+static struct extvoice extVoices[EXT_VOICES];
+
+#ifndef DEDICATED_SERVER
+static s32 extAnyActive(void)
+{
+	s32 i;
+	for (i = 0; i < EXT_VOICES; i++) {
+		if (extVoices[i].data && extVoices[i].pos < extVoices[i].len) {
+			return 1;
+		}
+	}
+	return 0;
+}
+#endif
 static s16 *mixBuf = NULL;
 static u32 mixBufCap = 0;
 // - bitcrush (pd.audio_crush): sample-and-hold every crushStep'th stereo
@@ -449,15 +471,21 @@ s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic)
 
 	SDL_free(srcdata);
 
-	if (extSound) {
-		SDL_free(extSound);
+	{
+		s32 slot = -1, i;
+		for (i = 0; i < EXT_VOICES; i++) {
+			if (extVoices[i].data == NULL) { slot = i; break; }
+		}
+		if (slot < 0) {
+			slot = 0; // all busy: recycle the oldest slot
+			SDL_free(extVoices[0].data);
+		}
+		extVoices[slot].data = conv;
+		extVoices[slot].len = (u32)convlen;
+		extVoices[slot].pos = 0;
+		extVoices[slot].loop = loop ? 1 : 0;
+		extVoices[slot].followMusic = followMusic ? 1 : 0;
 	}
-
-	extSound = conv;
-	extSoundLen = (u32)convlen;
-	extSoundPos = 0;
-	extLoop = loop ? 1 : 0;
-	extFollowMusic = followMusic ? 1 : 0;
 	return 1;
 #endif
 }
@@ -466,12 +494,15 @@ s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic)
 void audioStopExternal(void)
 {
 #ifndef DEDICATED_SERVER
-	extLoop = 0;
-	extFollowMusic = 0;
-	if (extSound) {
-		SDL_free(extSound);
-		extSound = NULL;
-		extSoundLen = extSoundPos = 0;
+	s32 i;
+	for (i = 0; i < EXT_VOICES; i++) {
+		if (extVoices[i].data) {
+			SDL_free(extVoices[i].data);
+			extVoices[i].data = NULL;
+		}
+		extVoices[i].len = extVoices[i].pos = 0;
+		extVoices[i].loop = 0;
+		extVoices[i].followMusic = 0;
 	}
 #endif
 }
@@ -561,7 +592,7 @@ void audioEndFrame(void)
 			const s32 pitching = audioPitchRate != 1.0f;
 			const s32 fxactive = crushing || pitching || audioRadioOn || audioRevOn || audioReverbWet > 0.0f;
 
-			if (audioMuted || fxactive || (extSound && extSoundPos < extSoundLen)) {
+			if (audioMuted || fxactive || extAnyActive()) {
 				if (mixBufCap < nextSize) {
 					mixBuf = (s16 *)SDL_realloc(mixBuf, nextSize);
 					mixBufCap = mixBuf ? nextSize : 0;
@@ -574,41 +605,52 @@ void audioEndFrame(void)
 						SDL_memcpy(mixBuf, nextBuf, nextSize);
 					}
 
-					// mix the external sound (already device-spec s16 stereo);
-					// muted mutes it too. A followMusic track (Silo.mp3) also
-					// pauses with the game: while paused we skip the mix AND the
-					// position advance below, so it holds and resumes from the menu.
-					if (!audioMuted && extSound && extSoundPos < extSoundLen
-							&& !(extFollowMusic && lvIsPaused())) {
-						const s16 *ext = (const s16 *)(extSound + extSoundPos);
-						u32 bytes = extSoundLen - extSoundPos;
-						u32 i, n;
-						// 8.8 fixed-point gain: 256 = unity. When the track opts
-						// into following the in-game music volume, scale by the
-						// current music slider (0..0x5000) so it ducks/mutes with
-						// the player's music setting instead of blasting at full.
-						s32 gain256 = 256;
+					// mix every active external voice (already device-spec s16
+					// stereo); muted mutes them all. A followMusic voice (Silo.mp3)
+					// pauses with the game: while paused we skip its mix AND its
+					// position advance, so it holds and resumes from the menu.
+					if (!audioMuted) {
+						s32 vi;
+						for (vi = 0; vi < EXT_VOICES; vi++) {
+							struct extvoice *v = &extVoices[vi];
+							const s16 *ext;
+							u32 bytes, i, n;
+							// 8.8 fixed-point gain: 256 = unity. followMusic voices
+							// scale by the current music slider (0..0x5000) so they
+							// duck/mute with the player's music setting.
+							s32 gain256 = 256;
 
-						if (extFollowMusic) {
-							s32 mv = (s32)optionsGetMusicVolume();
-							gain256 = (mv * 256) / AUDIO_MUSICVOL_MAX;
-							if (gain256 > 256) gain256 = 256;
-							if (gain256 < 0) gain256 = 0;
+							if (!v->data || v->pos >= v->len) {
+								continue;
+							}
+							if (v->followMusic && lvIsPaused()) {
+								continue;
+							}
+
+							ext = (const s16 *)(v->data + v->pos);
+							bytes = v->len - v->pos;
+
+							if (v->followMusic) {
+								s32 mv = (s32)optionsGetMusicVolume();
+								gain256 = (mv * 256) / AUDIO_MUSICVOL_MAX;
+								if (gain256 > 256) gain256 = 256;
+								if (gain256 < 0) gain256 = 0;
+							}
+
+							if (bytes > nextSize) {
+								bytes = nextSize;
+							}
+							n = bytes / sizeof(s16);
+
+							for (i = 0; i < n; i++) {
+								s32 s = (s32)mixBuf[i] + (((s32)ext[i] * gain256) >> 8);
+								if (s > 32767) s = 32767;
+								if (s < -32768) s = -32768;
+								mixBuf[i] = (s16)s;
+							}
+
+							v->pos += bytes;
 						}
-
-						if (bytes > nextSize) {
-							bytes = nextSize;
-						}
-						n = bytes / sizeof(s16);
-
-						for (i = 0; i < n; i++) {
-							s32 s = (s32)mixBuf[i] + (((s32)ext[i] * gain256) >> 8);
-							if (s > 32767) s = 32767;
-							if (s < -32768) s = -32768;
-							mixBuf[i] = (s16)s;
-						}
-
-						extSoundPos += bytes;
 					}
 
 					// effect chain (after the ext mix so one-shots are
@@ -656,13 +698,19 @@ void audioEndFrame(void)
 				}
 			}
 
-			if (extSound && extSoundPos >= extSoundLen) {
-				if (extLoop) {
-					extSoundPos = 0; // seamless-ish loop: rewind, keep the buffer
-				} else {
-					SDL_free(extSound);
-					extSound = NULL;
-					extSoundLen = extSoundPos = 0;
+			{
+				s32 vi;
+				for (vi = 0; vi < EXT_VOICES; vi++) {
+					struct extvoice *v = &extVoices[vi];
+					if (v->data && v->pos >= v->len) {
+						if (v->loop) {
+							v->pos = 0; // seamless-ish loop: rewind, keep the buffer
+						} else {
+							SDL_free(v->data);
+							v->data = NULL;
+							v->len = v->pos = 0;
+						}
+					}
 				}
 			}
 

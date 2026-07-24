@@ -1722,7 +1722,7 @@ local function touch_targets()
   local x0, y0, x1, y1
   if pd.aim_bounds then x0, y0, x1, y1 = pd.aim_bounds() end
   if not x0 then return TOUCH_FALLBACK end
-  local LO, HI = 0.20, 0.80
+  local LO, HI = 0.25, 0.75
   local function r(v) return math.floor(v + 0.5) end
   local xa, xb = r(x0 + LO * (x1 - x0)), r(x0 + HI * (x1 - x0))
   local ya, yb = r(y0 + LO * (y1 - y0)), r(y0 + HI * (y1 - y0))

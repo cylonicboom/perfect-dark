@@ -2444,6 +2444,28 @@ static int l_pd_chr_armor(lua_State *L)
 	return 1;
 }
 
+/* pd.headshots_only(on) -> bool. No Damage Except Headshots (local player). */
+static int l_pd_headshots_only(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHeadshotsOnly(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.drop_weapon(weaponnum) -> bool. Drop a player weapon as a collectable
+ * pickup + remove it from inventory (Sonic Mode toss). */
+static int l_pd_drop_weapon(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaDropWeapon((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.haunt(force) -> count. Hurl up to a few LOS-visible props at the player. */
+static int l_pd_haunt(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaHaunt((f32)luaL_optnumber(L, 1, 200.0)));
+	return 1;
+}
+
 /* pd.hud_off(on) -> bool. No HUD: hide every HUD element. */
 static int l_pd_hud_off(lua_State *L)
 {
@@ -3247,6 +3269,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_no_reload);     lua_setfield(L, -2, "no_reload");
 	lua_pushcfunction(L, l_pd_spread);        lua_setfield(L, -2, "spread");
 	lua_pushcfunction(L, l_pd_chr_armor);     lua_setfield(L, -2, "chr_armor");
+	lua_pushcfunction(L, l_pd_headshots_only); lua_setfield(L, -2, "headshots_only");
+	lua_pushcfunction(L, l_pd_drop_weapon);   lua_setfield(L, -2, "drop_weapon");
+	lua_pushcfunction(L, l_pd_haunt);         lua_setfield(L, -2, "haunt");
 	lua_pushcfunction(L, l_pd_hud_off);       lua_setfield(L, -2, "hud_off");
 	lua_pushcfunction(L, l_pd_gun_fov);       lua_setfield(L, -2, "gun_fov");
 	lua_pushcfunction(L, l_pd_chr_freeze_one); lua_setfield(L, -2, "chr_freeze_one");

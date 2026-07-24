@@ -5107,6 +5107,22 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			s32 prevplayernum = g_Vars.currentplayernum;
 			setCurrentPlayerNum(playermgrGetPlayerNumByProp(vprop));
 
+#ifndef PLATFORM_N64
+			// Chaos "No Damage Except Headshots" (pd.headshots_only): zero every
+			// non-head hit on the local human. Zeroing damage lets the damage>0
+			// guard below fall through; makedizzy=false drops the blur/dizzy accum
+			// for the ignored hit. Note kill-plane/forced kills bypass chrDamage
+			// entirely, so this doesn't make the player unkillable.
+			{
+				extern s32 g_ChaosHeadshotsOnly;
+				if (g_ChaosHeadshotsOnly && !g_Vars.currentplayer->isremote
+						&& hitpart != HITPART_HEAD) {
+					damage = 0;
+					makedizzy = false;
+				}
+			}
+#endif
+
 			if (g_Vars.normmplayerisrunning) {
 				damage /= mpHandicapToDamageScale(g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].handicap);
 			}
@@ -8960,6 +8976,83 @@ s32 chraiLuaChrArmor(s32 chrnum, f32 amount)
 	}
 	chrAddHealth(chr, amount);
 	return 1;
+}
+
+// pd.headshots_only(on): "No Damage Except Headshots" — chrDamage zeroes every
+// non-head hit on the local human (bondmove.c g_ChaosHeadshotsOnly).
+s32 chraiLuaHeadshotsOnly(s32 on)
+{
+	extern s32 g_ChaosHeadshotsOnly;
+
+	g_ChaosHeadshotsOnly = on ? 1 : 0;
+	return 1;
+}
+
+// pd.drop_weapon(weaponnum): drop one of the player's weapons as a collectable
+// floor pickup (weaponCreateForPlayerDrop = the engine's blessed objDrop +
+// netSyncPropSpawn path) AND remove it from inventory so it isn't duplicated.
+// Used by "Sonic Mode" to toss the arsenal so it can be re-collected.
+s32 chraiLuaDropWeapon(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	weaponCreateForPlayerDrop(weaponnum);
+	invRemoveItemByNum(weaponnum);
+	if (bgunGetWeaponNum(HAND_RIGHT) == weaponnum) {
+		bgunCycleBack();
+	}
+	return 1;
+}
+
+// pd.haunt(force): "Paranormal Activity" prop-throw — hurl up to a few pushable
+// props that have a clear line of sight to the player AT the player (with a
+// slight upward arc). Only the blessed objApplyMomentum mutation is used (it
+// self-broadcasts SVC_PROP_MOVE and never touches the prop list), so it can't
+// corrupt activeprops. Server-authoritative.
+s32 chraiLuaHaunt(f32 force)
+{
+	struct prop *prop;
+	struct prop *plprop;
+	s32 thrown = 0;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	plprop = g_Vars.currentplayer->prop;
+	if (plprop == NULL) {
+		return 0;
+	}
+
+	for (prop = g_Vars.activeprops; prop && thrown < 3; prop = prop->next) {
+		if ((prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON) && prop->obj) {
+			struct defaultobj *obj = prop->obj;
+			struct coord speed;
+			f32 dx, dy, dz, dist;
+
+			if ((obj->hidden & OBJHFLAG_MOUNTED) || (obj->hidden & OBJHFLAG_GRABBED)
+					|| !(obj->flags3 & OBJFLAG3_PUSHABLE)) {
+				continue;
+			}
+			dx = plprop->pos.x - prop->pos.x;
+			dy = plprop->pos.y - prop->pos.y;
+			dz = plprop->pos.z - prop->pos.z;
+			dist = sqrtf(dx * dx + dy * dy + dz * dz);
+			if (dist < 1.0f || dist > 2000.0f) {
+				continue;
+			}
+			if (!cdTestLos05(&prop->pos, prop->rooms, &plprop->pos, plprop->rooms,
+					CDTYPE_BG, GEOFLAG_BLOCK_SIGHT)) {
+				continue;
+			}
+			speed.x = dx / dist * force * 0.05f;
+			speed.y = dy / dist * force * 0.05f + force * 0.02f; // arc up a touch
+			speed.z = dz / dist * force * 0.05f;
+			objApplyMomentum(obj, &speed, 0.0f, false, true);
+			thrown++;
+		}
+	}
+	return thrown;
 }
 
 // pd.hud_off(on): "No HUD" — skip every HUD element render (the seven

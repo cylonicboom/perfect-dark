@@ -150,6 +150,15 @@ local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHA
 -- equals its hex-suffix sound id). Used by Giggle Bomb.
 local SFX_MAIAN_ARGH = { 0x05df, 0x05e0, 0x05e1 }
 
+-- Play a one-shot external sound file from scripts/sounds/chaos/ (drop a
+-- <name>.wav or <name>.mp3 in). Non-looping, does NOT follow music. Used by the
+-- Mario/Sonic meme SFX (mariobig/mariosmall/sonicdrop).
+local function play_sound(name)
+  if not pd.play_file then return false end
+  return (pd.play_file("scripts/sounds/chaos/" .. name .. ".wav", false, false)
+      or pd.play_file("scripts/sounds/chaos/" .. name .. ".mp3", false, false)) and true or false
+end
+
 -- Non-gameplay stages where Chaos must stay dormant: the Carrington Institute
 -- main-menu hub plus the title / boot / credits menus (src/include/constants.h).
 -- Chaos only fires in real missions / Combat Sim. (STAGE_CITRAINING is the hub
@@ -909,7 +918,10 @@ chaos.effects = {
   -- die. Hits are detected as drops in player health (shield-first damage may
   -- mask a hit — same limitation as Enemy LTK).
   mario_mode   = { label="Mario Mode",        w=3, dur=1,
-                   start=function() st.a_mario = { h = pd.player_health(), hits = 0 } end,
+                   start=function()
+                     st.a_mario = { h = pd.player_health(), hits = 0 }
+                     play_sound("mariobig") -- you start big
+                   end,
                    tick=function()
                      local m = st.a_mario
                      if not m then return end
@@ -920,6 +932,7 @@ chaos.effects = {
                          pd.player_damage(100)
                        else
                          pd.cheat(CHEAT.SMALLJO, true)
+                         play_sound("mariosmall") -- shrink
                          pd.hud_message("CHAOS: it's-a small time!")
                        end
                      end
@@ -929,41 +942,41 @@ chaos.effects = {
                      st.a_mario = nil
                      pd.cheat(CHEAT.SMALLJO, false)
                    end },
-  -- Sonic Mode: get shot once and you lose your whole arsenal; get shot again
-  -- and you die. v1 stows the weapons (restored on stop) rather than tossing
-  -- them as collectable pickups — the physical throw-and-recollect needs a new
-  -- weapon-pickup spawn binding (take_weapon only deletes). So there's nothing
-  -- to recollect yet, and the second hit is always lethal.
+  -- Sonic Mode: get shot and your whole arsenal scatters on the floor as
+  -- collectable pickups (drop_weapon = the engine's real drop path, so you can
+  -- run back over a gun to re-arm). Get shot again WITHOUT having re-collected a
+  -- weapon and you die; recollect one and a fresh hit just scatters them again.
   sonic_mode   = { label="Sonic Mode",        w=3, dur=1,
-                   start=function() st.a_sonic = { h = pd.player_health(), hits = 0 } end,
+                   start=function() st.a_sonic = { h = pd.player_health(), armed = true } end,
                    tick=function()
                      local s = st.a_sonic
                      if not s then return end
                      local h = pd.player_health()
                      if h and s.h and h < s.h - 0.005 then
-                       s.hits = s.hits + 1
-                       if s.hits >= 2 then
-                         pd.player_damage(100)
+                       -- do you currently hold/own any real weapon?
+                       local hasweapon = false
+                       for _, w in ipairs(GUNS) do
+                         if pd.has_weapon and pd.has_weapon(w) then hasweapon = true break end
+                       end
+                       if not hasweapon and not s.armed then
+                         pd.player_damage(100) -- shot again while disarmed -> dead
                        else
-                         s.weps = {}
+                         -- scatter every owned weapon as a re-collectable pickup
+                         local any = false
                          for _, w in ipairs(GUNS) do
-                           if pd.has_weapon and pd.has_weapon(w) then
-                             s.weps[#s.weps + 1] = w
-                             pd.take_weapon(w)
+                           if pd.has_weapon and pd.has_weapon(w) and pd.drop_weapon then
+                             if pd.drop_weapon(w) then any = true end
                            end
                          end
-                         pd.switch_weapon(W.UNARMED)
+                         if pd.switch_weapon then pd.switch_weapon(W.UNARMED) end
+                         s.armed = false
+                         play_sound("sonicdrop")
                          pd.hud_message("CHAOS: you lost your rings!")
                        end
                      end
                      s.h = h
                    end,
-                   stop=function()
-                     if st.a_sonic and st.a_sonic.weps then
-                       for _, w in ipairs(st.a_sonic.weps) do pd.give_weapon(w) end
-                     end
-                     st.a_sonic = nil
-                   end },
+                   stop=function() st.a_sonic = nil end },
   -- Camper's Paradise: crossing into a new room bleeds 5% of current health
   -- (roomenter hook); standing still in one spot for ~2s slowly regens. Rewards
   -- turtling, punishes roaming.
@@ -1022,6 +1035,8 @@ chaos.effects = {
                          pd.room_tint()
                        end
                      end
+                     -- hurl nearby props at the player (LOS-checked in C)
+                     if left % 120 == 0 and pd.haunt then pd.haunt(220) end
                    end,
                    stop=function()
                      st.a_para = nil
@@ -1067,6 +1082,15 @@ chaos.effects = {
                      end
                      if n == 0 then error("no chrs") end
                    end },
+  -- No Damage Except Headshots: only head hits hurt you (chrDamage zeroes the
+  -- rest). Kill-planes/forced kills still apply, so it isn't full invincibility.
+  headshots_only = { label="Headshots Only",  w=3, dur=20,
+                   start=function()
+                     if not pd.headshots_only then error("needs new exe") end
+                     pd.headshots_only(true)
+                     pd.hud_message("CHAOS: only headshots hurt now")
+                   end,
+                   stop=function() if pd.headshots_only then pd.headshots_only(false) end end },
   -- Terminator Vision: the whole screen goes red (full-screen tint, no IR
   -- border). Cosmetic overlay only.
   terminator_vision = { label="Terminator Vision", w=3, dur=20,

@@ -230,7 +230,11 @@ static inline void romdataWrongRomError(const char *fmt, ...)
 // a warning for the chain ROM, since a modded ROM / total conversion may carry
 // a changed title or cart id while keeping the 32MB stock layout. the size and
 // 1173-compression checks still apply to both (the loader assumes both).
-static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 **outSeg, u32 *outSegSize, bool requireHeader)
+// Returns true on success. When `fatal` is false (the boot-time model-swap
+// overlay auto-load), any problem logs a warning, frees what it allocated, and
+// returns false instead of aborting — a bad/incompatible overlay ROM must never
+// brick boot. `fatal` true (base ROM, --mod-rom) keeps the hard-error behaviour.
+static bool romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 **outSeg, u32 *outSegSize, bool requireHeader, bool fatal)
 {
 	sysLogPrintf(LOG_NOTE, "ROM file: %s", name);
 
@@ -238,12 +242,21 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 	u8 *rom = fsFileLoad(name, &romSize);
 
 	if (!rom) {
-		sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", name, fsFullPath(""));
+		if (fatal) {
+			sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", name, fsFullPath(""));
+		}
+		sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: could not open %s", name);
+		return false;
 	}
 
 	// zips are not guaranteed to start with PK, but might as well at least try
 	if (romSize > 2 && (!memcmp(rom, "PK", 2) || !memcmp(rom, "Rar", 3) || !memcmp(rom, "7z", 2))) {
-		romdataWrongRomError("Your ROM is in an archive file. Please extract it.");
+		if (fatal) {
+			romdataWrongRomError("Your ROM is in an archive file. Please extract it.");
+		}
+		sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: %s is an archive, skipping", name);
+		sysMemFree(rom);
+		return false;
 	}
 
 	if (requireHeader) {
@@ -256,9 +269,14 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 		// ROM past the stock 32MB (appended model/texture data). Accept anything
 		// at least stock-sized; reject only a truncated ROM. The data segment and
 		// file table are still read at their stock offsets below, so a mod that
-		// RELOCATED those will fail the 1173 check with a clear message.
+		// RELOCATED those will fail the 1173 check (skipped gracefully here).
 		if (romSize < ROMDATA_ROM_SIZE) {
-			romdataWrongRomError("ROM too small: expected at least %u, got: %u.", ROMDATA_ROM_SIZE, romSize);
+			if (fatal) {
+				romdataWrongRomError("ROM too small: expected at least %u, got: %u.", ROMDATA_ROM_SIZE, romSize);
+			}
+			sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: %s too small (%u), skipping", name, romSize);
+			sysMemFree(rom);
+			return false;
 		} else if (romSize != ROMDATA_ROM_SIZE) {
 			sysLogPrintf(LOG_WARNING, "chain/overlay ROM is %u bytes (stock %u) — expanded mod, loading anyway", romSize, ROMDATA_ROM_SIZE);
 		}
@@ -276,34 +294,55 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 
 	u8 *zipped = rom + ROMDATA_DATA_OFS;
 	if (!rzipIs1173(zipped)) {
-		romdataWrongRomError("Data segment is not 1173-compressed.");
+		if (fatal) {
+			romdataWrongRomError("Data segment is not 1173-compressed.");
+		}
+		sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: %s data segment not 1173-compressed at 0x%x (relocated/incompatible layout) — skipping overlay", name, ROMDATA_DATA_OFS);
+		sysMemFree(rom);
+		return false;
 	}
 
 	const u32 dataSegLen = ((u32)zipped[2] << 16) | ((u32)zipped[3] << 8) | (u32)zipped[4];
 	if (dataSegLen < ROMDATA_FILES_OFS) {
-		romdataWrongRomError("Data segment too small (%u), need at least %u.", dataSegLen, ROMDATA_FILES_OFS);
+		if (fatal) {
+			romdataWrongRomError("Data segment too small (%u), need at least %u.", dataSegLen, ROMDATA_FILES_OFS);
+		}
+		sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: %s data segment too small (%u), skipping", name, dataSegLen);
+		sysMemFree(rom);
+		return false;
 	}
 
 	u8 *dataSeg = sysMemAlloc(dataSegLen);
 	if (!dataSeg) {
-		sysFatalError("Could not allocate %u bytes for data segment.", dataSegLen);
+		if (fatal) {
+			sysFatalError("Could not allocate %u bytes for data segment.", dataSegLen);
+		}
+		sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: could not alloc %u for data seg, skipping", dataSegLen);
+		sysMemFree(rom);
+		return false;
 	}
 
 	u8 scratch[5 * 1024];
 	if (rzipInflate(zipped, dataSeg, scratch) < 0) {
-		free(dataSeg);
-		sysFatalError("Could not inflate data segment.");
+		sysMemFree(dataSeg);
+		if (fatal) {
+			sysFatalError("Could not inflate data segment.");
+		}
+		sysLogPrintf(LOG_WARNING, "romdataLoadRomFile: could not inflate %s data seg, skipping", name);
+		sysMemFree(rom);
+		return false;
 	}
 
 	*outRom = rom;
 	*outSize = romSize;
 	*outSeg = dataSeg;
 	*outSegSize = dataSegLen;
+	return true;
 }
 
 static inline void romdataLoadRom(void)
 {
-	romdataLoadRomFile(g_RomName, &g_RomFile, &g_RomFileSize, &romDataSeg, &romDataSegSize, true);
+	romdataLoadRomFile(g_RomName, &g_RomFile, &g_RomFileSize, &romDataSeg, &romDataSegSize, true, true);
 }
 
 static inline void romdataUpdateSegStartEnd(struct romfile* seg)
@@ -895,7 +934,7 @@ s32 romdataInit(void)
 	// are version-specific). the engine code stays this build.
 	const char *chainRomName = sysArgGetString("--mod-rom");
 	if (chainRomName) {
-		romdataLoadRomFile(chainRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false);
+		romdataLoadRomFile(chainRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false, true);
 		g_ChainRomActive = 1;
 		g_ModNum = MOD_CHAINROM;
 		sysLogPrintf(LOG_NOTE, "romdataInit: chain ROM active (MOD_CHAINROM): %s", chainRomName);
@@ -1011,7 +1050,12 @@ s32 romdataLoadModelRom(const char *path)
 	}
 
 	sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: loading model overlay ROM: %s", filepath);
-	romdataLoadRomFile(filepath, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false);
+	// graceful (fatal=false): an incompatible/relocated mod ROM logs + skips
+	// rather than bricking boot.
+	if (!romdataLoadRomFile(filepath, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false, false)) {
+		sysLogPrintf(LOG_WARNING, "romdataLoadModelRom: %s could not be loaded as an overlay (see above); model swap disabled", filepath);
+		return 0;
+	}
 	romdataInitChainFiles();
 	g_ModelRomActive = 1;
 	return 1;

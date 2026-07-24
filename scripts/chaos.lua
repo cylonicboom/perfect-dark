@@ -1055,6 +1055,35 @@ chaos.effects = {
                      if left % 90 == 0 then pd.spread(math.random() * 4) end
                    end,
                    stop=function() if pd.spread then pd.spread(1) end end },
+  -- Terminator Vision: the whole screen goes red (full-screen tint, no IR
+  -- border). Cosmetic overlay only.
+  terminator_vision = { label="Terminator Vision", w=3, dur=20,
+                   start=function() pd.screen_tint(255, 40, 40) end,
+                   stop=function() pd.screen_tint() end },
+  -- DJ: the music pitch rides your movement speed — stand still and it drags,
+  -- sprint and it races. Speed is sampled from player-position deltas and
+  -- smoothed so the pitch glides. (Divisor is tunable if it feels off.)
+  dj_mode      = { label="DJ",                w=3, dur=1,
+                   start=function() st.a_dj = { sm = 0 } end,
+                   tick=function()
+                     local d = st.a_dj
+                     if not d then return end
+                     local x, y, z = pd.player_pos(0)
+                     local sp = 0
+                     if x and d.x then
+                       local dx, dz = x - d.x, z - d.z
+                       sp = math.sqrt(dx * dx + dz * dz)
+                     end
+                     d.x, d.z = x, z
+                     d.sm = d.sm * 0.8 + sp * 0.2
+                     if pd.audio_pitch then
+                       pd.audio_pitch(0.85 + math.min(1, d.sm / 12) * 0.75)
+                     end
+                   end,
+                   stop=function()
+                     st.a_dj = nil
+                     if pd.audio_pitch then pd.audio_pitch() end
+                   end },
   take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
                    start=function() pd.player_freeze(true) end,
                    stop=function() pd.player_freeze(false) end },
@@ -2939,6 +2968,7 @@ local function reset_all_modes()
   st.a_camp = nil           -- Camper's Paradise stillness tracker
   st.a_dmgfloor = nil       -- Random Damage Floors per-room hot/cold map
   st.a_para = nil           -- Paranormal Activity door/light phase (stop() restores)
+  st.a_dj = nil             -- DJ speed-to-pitch tracker (stop() restores pitch)
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil

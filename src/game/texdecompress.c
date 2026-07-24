@@ -21,6 +21,19 @@ struct texpool g_TexSharedPool;
 struct texcacheitem g_TexCacheItems[150];
 s32 g_TexCacheCount;
 s32 g_TexNumToLoad;
+
+#ifndef PLATFORM_N64
+// Chaos model-swap texture overlay (see port/src/romdata.c). While a swapped
+// character model's textures load (g_ModelSwapTexActive), texLoad resolves
+// global texture numbers against the overlay ROM's own texture table + data
+// instead of the base game's, so the swapped model draws the overlay's skins.
+// The swapped models load into a private pool, so the base game's cached
+// textures don't alias these.
+extern struct texture *g_ModelSwapTexList;
+extern s32 g_ModelSwapTexCount;
+extern u8 *g_ModelSwapTexData;
+extern s32 g_ModelSwapTexActive;
+#endif
 u8 *g_TexBitstring;
 u32 g_TexAccumValue;
 s32 g_TexAccumNumBits;
@@ -2264,8 +2277,21 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 			osWritebackDCacheAll();
 			osInvalDCache(alignedcompbuffer, DCACHE_SIZE);
 
-			thisoffset = g_Textures[g_TexNumToLoad].dataoffset;
-			nextoffset = g_Textures[g_TexNumToLoad + 1].dataoffset;
+#ifndef PLATFORM_N64
+			// Chaos model-swap: while a swapped model's textures load, resolve
+			// this global texture number against the overlay ROM's table + data
+			// (a private pool keeps it from aliasing the base game's cache).
+			// Fall back to the base texture if the overlay lacks this number.
+			const bool texoverlay = g_ModelSwapTexActive && g_ModelSwapTexList != NULL
+					&& g_ModelSwapTexData != NULL
+					&& (s32)(g_TexNumToLoad + 1) < g_ModelSwapTexCount;
+			struct texture *textbl = texoverlay ? g_ModelSwapTexList : g_Textures;
+#else
+			struct texture *textbl = g_Textures;
+#endif
+
+			thisoffset = textbl[g_TexNumToLoad].dataoffset;
+			nextoffset = textbl[g_TexNumToLoad + 1].dataoffset;
 
 			if (thisoffset == nextoffset && g_TexNumToLoad < NUM_TEXTURES) {
 				// The texture has no data
@@ -2277,6 +2303,14 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 			}
 
 #ifndef PLATFORM_N64
+			// overlay path: read straight from the overlay's texturesdata (no
+			// loose-file replacement — that's keyed to base texture numbers).
+			if (texoverlay) {
+				dmaExec(alignedcompbuffer,
+						(romptr_t)(uintptr_t)g_ModelSwapTexData + (thisoffset & 0xfffffff8),
+						((uintptr_t) (nextoffset - thisoffset) + 0x1f) >> 4 << 4);
+				compptr = (u8 *) alignedcompbuffer + (thisoffset & 7);
+			} else
 			// try to load external replacement if present
 			if (modTextureLoad(g_TexNumToLoad, alignedcompbuffer, 4096) > 0) {
 				compptr = alignedcompbuffer;

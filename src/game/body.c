@@ -15,6 +15,7 @@
 #include "bss.h"
 #include "lib/memp.h"
 #include "lib/model.h"
+#include "game/texdecompress.h" // texInitPool for the model-swap private tex pool
 #include "lib/mema.h"
 #include "lib/rng.h"
 #include "lib/mtx.h"
@@ -186,6 +187,20 @@ extern s32 g_ModelSwapMisses;    // # armed-but-couldn't-serve (diagnostics)
 extern s32 romdataChainFileGetNumForName(const char *name);
 extern const char *romdataFileGetName(s32 fileNum);
 
+// Model-swap texture overlay (port/src/romdata.c). g_ModelSwapTexList != NULL
+// once the overlay ROM's texture table was located; g_ModelSwapTexActive gates
+// texLoad's per-number redirect AND the private-pool selection in modeldefLoad.
+extern struct texture *g_ModelSwapTexList;
+extern s32 g_ModelSwapTexActive;
+
+// Private texture pool for swapped models: overlay textures load here (once,
+// shared across all swapped models) so they don't alias the base game's cached
+// textures in g_TexSharedPool. Referenced by modeldefLoad. Allocated per swap-on
+// from MEMPOOL_STAGE (bounded per-toggle leak, freed at stage end).
+struct texpool g_ModelSwapTexPool;
+static bool g_ModelSwapTexPoolReady = false;
+#define MODELSWAP_TEXPOOL_BYTES (6 * 1024 * 1024)
+
 // # of live chrs whose overlay body/head produced no modeldef this rebuild
 // (they keep the base model). Reported by the model-swap toggle log.
 static s32 g_ModelSwapNullLoads = 0;
@@ -281,6 +296,8 @@ static s32 modelSwapRebuildLiveChrs(void)
 		pos.z = chr->prop->pos.z;
 		roomsCopy(chr->prop->rooms, rooms);
 
+		// bodyAllocateModel brackets the overlay-texture redirect itself (so
+		// respawns get it too), so no bracketing is needed here.
 		neu = bodyAllocateModel(chr->bodynum, chr->headnum, 0);
 		if (neu) {
 			chr0f020b14(chr->prop, neu, &pos, rooms, faceangle, NULL);
@@ -362,6 +379,18 @@ void modelSwapSetActive(bool on)
 		s32 rebuilt;
 		s32 probefile;
 		s32 probecn;
+
+		// Ensure the private overlay-texture pool exists (allocated once, from
+		// PERMANENT memory so it survives stage changes and acts as a persistent
+		// overlay-texture cache). If it can't be had, texturing stays base and
+		// only geometry swaps.
+		if (on && g_ModelSwapTexList != NULL && !g_ModelSwapTexPoolReady) {
+			u8 *poolmem = mempAlloc(ALIGN16(MODELSWAP_TEXPOOL_BYTES), MEMPOOL_PERMANENT);
+			if (poolmem) {
+				texInitPool(&g_ModelSwapTexPool, poolmem, MODELSWAP_TEXPOOL_BYTES);
+				g_ModelSwapTexPoolReady = true;
+			}
+		}
 
 		// Drop the shared modeldef cache + the file cache so the next load
 		// re-reads the (now redirected) file data.
@@ -584,6 +613,15 @@ struct model *bodyAllocateModel(s32 bodynum, s32 headnum, u32 spawnflags)
 	}
 
 #ifndef PLATFORM_N64
+	// Chaos model-swap: this is the single choke point every character body/head
+	// load passes through (initial spawn, respawn, and the live rebuild), so
+	// bracket the overlay-texture redirect here — swapped models draw the
+	// overlay's textures from the private pool for their whole lifetime, not just
+	// on the toggle. Gated on the pool + overlay table being ready; otherwise
+	// geometry swaps and textures stay base. World/gun textures don't pass
+	// through here, so they're unaffected.
+	bool texswap = (g_ModelSwapActive && g_ModelSwapTexPoolReady && g_ModelSwapTexList != NULL);
+
 	// A model whose definition (or its contents) is bad crashes far away from
 	// here — chrAllocate -> chrSetLookAngle -> modelSetChrRotY read-at-0 on a
 	// headless server at match start (timing/pressure-dependent, 2026-06-10;
@@ -594,7 +632,11 @@ struct model *bodyAllocateModel(s32 bodynum, s32 headnum, u32 spawnflags)
 	// skipping the chr. The model slot is deliberately leaked (freeing a
 	// half-built model walks its definition); this is a crash-grade event,
 	// once-per-incident, and the slot returns at stage end.
+	if (texswap) {
+		g_ModelSwapTexActive = 1;
+	}
 	model = body0f02d338(bodynum, headnum, NULL, NULL, sunglasses, varyheight);
+	g_ModelSwapTexActive = 0;
 
 	if (model && (model->definition == NULL || model->definition->rootnode == NULL)) {
 		sysLogPrintf(LOG_ERROR,

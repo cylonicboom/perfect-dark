@@ -17,6 +17,13 @@ extern s32 g_ModelSwapActive;
 extern u8 g_ModelSwapFiles[];
 extern s32 g_ModelSwapRedirects; // # of times the redirect served overlay bytes
 extern s32 g_ModelSwapMisses;    // # of times it was armed but couldn't serve
+// Overlay TEXTURE table/data (built when the overlay ROM loads) + the flag that
+// gates per-number texture redirection while a swapped model's textures load.
+struct texture;
+extern struct texture *g_ModelSwapTexList; // overlay texture table (dataoffsets)
+extern s32 g_ModelSwapTexCount;            // entries in g_ModelSwapTexList
+extern u8 *g_ModelSwapTexData;             // overlay texturesdata base
+extern s32 g_ModelSwapTexActive;           // set only while a swapped model loads
 s32 romdataChainFileGetNumForName(const char *name);
 s32 romdataLoadModelRom(const char *path); // path = ROM file or dir to scan; 1 = loaded
 

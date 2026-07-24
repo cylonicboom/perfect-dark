@@ -203,6 +203,20 @@ struct modeldef *modeldefLoad(u16 fileid, u8 *dst, s32 size, struct texpool *arg
 	}
 #endif
 
+#ifndef PLATFORM_N64
+	// Chaos model-swap: route a swapped character model's textures into the
+	// private swap pool (see body.c / texdecompress.c) so the overlay's textures
+	// load fresh instead of hitting the base game's shared-pool cache.
+	{
+		extern s32 g_ModelSwapTexActive;
+		extern struct texpool g_ModelSwapTexPool;
+
+		if (arg3 == NULL && g_ModelSwapTexActive) {
+			arg3 = &g_ModelSwapTexPool;
+		}
+	}
+#endif
+
 	modelPromoteTypeToPointer(modeldef);
 	modelPromoteOffsetsToPointers(modeldef, 0x5000000, (uintptr_t) modeldef);
 	modeldef0f1a7560(modeldef, fileid, 0x5000000, modeldef, arg3, dst == NULL);

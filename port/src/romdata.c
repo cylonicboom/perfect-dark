@@ -85,6 +85,20 @@ u8 g_ModelSwapFiles[ROMDATA_MAX_FILES] = { 0 }; // per-file: 1 = redirect to the
 s32 g_ModelSwapRedirects = 0;
 s32 g_ModelSwapMisses = 0;
 
+// Model-swap TEXTURE overlay. Character models reference most of their skin
+// textures by a GLOBAL texture number into the shared texturesdata pool (only
+// some textures are embedded in the model file), so swapping the model geometry
+// alone leaves the base game's textures on it. These capture the overlay ROM's
+// own texture table + data so texLoad can serve overlay textures BY NUMBER while
+// a swapped model loads (g_ModelSwapTexActive), without touching the base game's
+// textures. g_ModelSwapTexList is a byte-swapped copy of the overlay's
+// textureslist (per-texture dataoffset); g_ModelSwapTexData points at the
+// overlay's texturesdata (the per-texture compressed blobs, indexed by offset).
+struct texture *g_ModelSwapTexList = NULL;
+s32 g_ModelSwapTexCount = 0;
+u8 *g_ModelSwapTexData = NULL;
+s32 g_ModelSwapTexActive = 0; // set only while a swapped model's textures load
+
 static u8 *romDataSeg;
 static u32 romDataSegSize;
 
@@ -621,7 +635,12 @@ static inline u32 romdataTexListDofs(const u8 *rom, u32 listOfs, u32 n)
 // texture's first bytes from the base ROM and search for them in the chain
 // ROM; every hit votes for an implied base offset, majority wins. on an
 // unmodified ROM all of this reproduces the stock offsets exactly.
-static void romdataChainRelocateTexSegments(void)
+// applyGlobal=true (--mod-rom): repoint the GLOBAL texture segments at the chain
+// ROM so the whole game uses its textures. applyGlobal=false (model-swap
+// overlay): leave the base segments alone and instead capture the located
+// textureslist/texturesdata into the g_ModelSwapTex* overlay so only swapped
+// models draw from them.
+static void romdataChainRelocateTexSegments(bool applyGlobal)
 {
 	const u8 *rom = chainRomFile;
 	u32 bestOfs = 0, bestCount = 0, bestTerm = 0;
@@ -749,11 +768,38 @@ static void romdataChainRelocateTexSegments(void)
 	sysLogPrintf(LOG_NOTE, "chain ROM: textureslist at 0x%x (%u entries), texturesdata at 0x%x size 0x%x (%u votes; stock 0x%x/0x%x)",
 		bestOfs, bestCount, dataOfs, bestTerm, dataVotes, stockListOfs, stockDataOfs);
 
-	segData->data = (u8 *)(uintptr_t)dataOfs;
-	segData->size = bestTerm;
-	segList->data = (u8 *)(uintptr_t)bestOfs;
-	segList->size = bestCount * 8;
-	segCopy->data = (u8 *)(uintptr_t)(bestOfs + bestCount * 8); // keeps its stock size; only the start moves
+	if (applyGlobal) {
+		segData->data = (u8 *)(uintptr_t)dataOfs;
+		segData->size = bestTerm;
+		segList->data = (u8 *)(uintptr_t)bestOfs;
+		segList->size = bestCount * 8;
+		segCopy->data = (u8 *)(uintptr_t)(bestOfs + bestCount * 8); // keeps its stock size; only the start moves
+		return;
+	}
+
+	// model-swap overlay: build a private byte-swapped copy of the chain ROM's
+	// textureslist (same transform as preprocessTexturesList) and remember where
+	// its texturesdata starts. texLoad reads these by number for swapped models.
+	{
+		struct texture *list = sysMemAlloc(bestCount * sizeof(struct texture));
+		if (!list) {
+			sysLogPrintf(LOG_WARNING, "model-swap: could not alloc %u-entry overlay texture table", bestCount);
+			return;
+		}
+		memset(list, 0, bestCount * sizeof(struct texture));
+		for (u32 i = 0; i < bestCount; ++i) {
+			// each list entry is 8 bytes; the 24-bit dataoffset lives in the low
+			// 3 bytes of the first big-endian word (bytes 1-3), bytes 4-7 are 0
+			// (see preprocessTexturesList / the signature scan above). Only the
+			// dataoffset matters for loading pixels; leave the rest zeroed.
+			const u8 *e = rom + bestOfs + i * 8;
+			list[i].dataoffset = ((u32)e[1] << 16) | ((u32)e[2] << 8) | e[3];
+		}
+		g_ModelSwapTexList = list;
+		g_ModelSwapTexCount = (s32)bestCount;
+		g_ModelSwapTexData = chainRomFile + dataOfs;
+		sysLogPrintf(LOG_NOTE, "model-swap: overlay texture table ready (%u entries, data at 0x%x)", bestCount, dataOfs);
+	}
 }
 
 // import the chain ROM's own stage table from its inflated data segment.
@@ -950,7 +996,7 @@ s32 romdataInit(void)
 	if (g_ChainRomActive) {
 		segRomBase = chainRomFile;
 		segRomBaseSize = chainRomFileSize;
-		romdataChainRelocateTexSegments();
+		romdataChainRelocateTexSegments(true);
 	} else {
 		segRomBase = g_RomFile;
 		segRomBaseSize = g_RomFileSize;
@@ -1074,6 +1120,11 @@ s32 romdataLoadModelRom(const char *path)
 		return 0;
 	}
 	romdataInitChainFiles();
+	// Locate the overlay's texture table + data (without repointing the base
+	// game's texture segments) so swapped models can draw overlay textures by
+	// number. Best-effort: if it can't be found, geometry still swaps and
+	// textures stay base (logged inside).
+	romdataChainRelocateTexSegments(false);
 	g_ModelRomActive = 1;
 	return 1;
 }

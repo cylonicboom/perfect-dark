@@ -964,6 +964,70 @@ chaos.effects = {
                      end
                      st.a_sonic = nil
                    end },
+  -- Camper's Paradise: crossing into a new room bleeds 5% of current health
+  -- (roomenter hook); standing still in one spot for ~2s slowly regens. Rewards
+  -- turtling, punishes roaming.
+  campers      = { label="Camper's Paradise", w=3, dur=1,
+                   start=function() st.a_camp = { still = 0 } end,
+                   tick=function()
+                     local c = st.a_camp
+                     if not c then return end
+                     local x, y, z = pd.player_pos(0)
+                     if x and c.x then
+                       local dx, dz = x - c.x, z - c.z
+                       if (dx * dx + dz * dz) > (20 * 20) then
+                         c.still = 0
+                       else
+                         c.still = c.still + (pd.lvupdate and pd.lvupdate() or 1)
+                       end
+                     end
+                     c.x, c.z = x, z
+                     if c.still > 120 then
+                       local h = pd.player_health()
+                       if h and h < 1 then pd.player_set_health(math.min(1, h + 0.0015)) end
+                     end
+                   end,
+                   stop=function() st.a_camp = nil end },
+  -- Random Damage Floors: each room is randomly assigned "hot" the first time
+  -- you enter it (roomenter hook); standing in a hot room chips your health
+  -- every second. Pure floor-is-lava roulette.
+  damage_floors= { label="Damage Floors",     w=3, dur=1,
+                   start=function() st.a_dmgfloor = { rooms = {} } end,
+                   tick=function()
+                     local d = st.a_dmgfloor
+                     if not d or not d.cur or not d.rooms[d.cur] then return end
+                     d.t = (d.t or 0) + (pd.lvupdate and pd.lvupdate() or 1)
+                     if d.t >= 60 then
+                       d.t = 0
+                       pd.player_damage(0.06)
+                     end
+                   end,
+                   stop=function() st.a_dmgfloor = nil end },
+  -- Paranormal Activity: doors slam open and shut, the lights (vtx colours)
+  -- flicker. The room-throwing-props part needs a new prop-launch binding (see
+  -- the heavy batch); this is the doors + lights haunt.
+  paranormal   = { label="Paranormal Activity", w=3, dur=1,
+                   start=function() st.a_para = {} end,
+                   tick=function(left)
+                     local p = st.a_para
+                     if not p then return end
+                     if left % 90 == 0 then
+                       p.open = not p.open
+                       pd.doors_all(p.open)
+                     end
+                     if left % 8 == 0 then
+                       if math.random() < 0.4 then
+                         pd.room_tint(20, 20, 30)
+                       else
+                         pd.room_tint()
+                       end
+                     end
+                   end,
+                   stop=function()
+                     st.a_para = nil
+                     pd.room_tint()
+                     pd.doors_all(true) -- never leave the player slammed in
+                   end },
   take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
                    start=function() pd.player_freeze(true) end,
                    stop=function() pd.player_freeze(false) end },
@@ -2845,6 +2909,9 @@ local function reset_all_modes()
   st.a_suicide = nil        -- Suicide Bomber marked-guard watch
   st.a_mario = nil          -- Mario Mode hit-count FSM (stop() clears SMALLJO)
   st.a_sonic = nil          -- Sonic Mode hit-count FSM (stop() restores weapons)
+  st.a_camp = nil           -- Camper's Paradise stillness tracker
+  st.a_dmgfloor = nil       -- Random Damage Floors per-room hot/cold map
+  st.a_para = nil           -- Paranormal Activity door/light phase (stop() restores)
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
@@ -3522,6 +3589,24 @@ pd.on("kill", function(chrnum, killerplayernum)
   if killerplayernum ~= 0 then return end
   -- (gun_game / gun_game2 kill-advance blocks removed 2026-07-19 with the
   -- effects.)
+end)
+
+-- Room-enter hook: room-crossing-reactive effects.
+pd.on("roomenter", function(room, fromroom)
+  -- Camper's Paradise: leaving a room costs 5% of current health (floored so it
+  -- is never lethal on its own).
+  if st.active.campers then
+    local h = pd.player_health()
+    if h then pd.player_set_health(math.max(0.05, h * 0.95)) end
+  end
+  -- Random Damage Floors: assign this room hot/cold once, remember it as the
+  -- current room for the effect's damage tick.
+  if st.active.damage_floors and st.a_dmgfloor then
+    local d = st.a_dmgfloor
+    if d.rooms[room] == nil then d.rooms[room] = (math.random() < 0.4) end
+    d.cur = room
+    if d.rooms[room] then pd.hud_message("CHAOS: the floor is lava!") end
+  end
 end)
 
 -- Stage transition: full teardown so no C-side effect leaks into the next

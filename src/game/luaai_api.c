@@ -1139,9 +1139,12 @@ static int l_pd_unpossess(lua_State *L)
  * ------------------------------------------------------------------------- */
 
 /* pd.player_heal() -> bool. Restore the player to full health. */
+/* pd.player_heal([frac]) -> bool. No arg / <=0 = full heal; else top up HP by
+ * the given fraction (0..1), capped at full. */
 static int l_pd_player_heal(lua_State *L)
 {
-	lua_pushboolean(L, chraiLuaPlayerHeal() != 0);
+	f32 amount = (f32)luaL_optnumber(L, 1, 0.0);
+	lua_pushboolean(L, chraiLuaPlayerHeal(amount) != 0);
 	return 1;
 }
 
@@ -1971,6 +1974,14 @@ static int l_pd_chr_weapon(lua_State *L)
 static int l_pd_player_health(lua_State *L)
 {
 	lua_pushnumber(L, chraiLuaPlayerHealth());
+	return 1;
+}
+
+/* pd.player_shield() -> number. Current shield fraction (0..1), the scale
+ * player_set_shield writes. */
+static int l_pd_player_shield(lua_State *L)
+{
+	lua_pushnumber(L, chraiLuaPlayerShield());
 	return 1;
 }
 
@@ -3472,6 +3483,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_give_weapon); lua_setfield(L, -2, "chr_give_weapon");
 	lua_pushcfunction(L, l_pd_chr_weapon);    lua_setfield(L, -2, "chr_weapon");
 	lua_pushcfunction(L, l_pd_player_health); lua_setfield(L, -2, "player_health");
+	lua_pushcfunction(L, l_pd_player_shield); lua_setfield(L, -2, "player_shield");
 	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
 	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
 	lua_pushcfunction(L, l_pd_force_secondary); lua_setfield(L, -2, "force_secondary");

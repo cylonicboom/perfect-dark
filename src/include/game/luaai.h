@@ -263,7 +263,7 @@ s32 chraiLuaSetChrPos(s32 chrnum, f32 x, f32 y, f32 z); /* move a chr prop (no p
 
 /* Archipelago bonus/buff bridges (chraction.c). Apply to the local player on
  * receipt of an AP "bonus" item; server/solo only, no-op without a live player. */
-s32 chraiLuaPlayerHeal(void);                 /* full HP */
+s32 chraiLuaPlayerHeal(f32 amount);           /* amount<=0 => full HP; else add fraction (capped) */
 s32 chraiLuaPlayerSetShield(f32 frac);        /* shield 0..1 (>=1 = full) */
 s32 chraiLuaRefillAmmo(void);                 /* top all ammo to capacity */
 s32 chraiLuaGiveAmmo(s32 ammotype, s32 qty);  /* grant ammo (+ matching weapon) */
@@ -319,6 +319,7 @@ s32 chraiLuaShiny(s32 mode);                  /* 0 off, 1 fake-chrome UVs everyw
 s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum); /* replace an NPC's held weapons with this one */
 s32 chraiLuaChrWeapon(s32 chrnum); /* the NPC's current weaponnum (-1 if invalid) */
 f32 chraiLuaPlayerHealth(void);               /* current health fraction 0..1 */
+f32 chraiLuaPlayerShield(void);               /* current shield fraction 0..1 */
 s32 chraiLuaPlayerDamage(f32 amount);         /* hurt the local player via the real damage path */
 s32 chraiLuaWeaponJam(s32 on);                /* trigger pulls dry-fire, no shot, no ammo */
 s32 chraiLuaPlayerFreeze(s32 on);             /* root the local player (look/fire still live) */

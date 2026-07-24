@@ -8393,12 +8393,19 @@ static struct chrdata *apLuaPlayerChr(void)
 }
 
 // pd.player_heal(): restore the player to full health.
-s32 chraiLuaPlayerHeal(void)
+s32 chraiLuaPlayerHeal(f32 amount)
 {
 	if (apLuaPlayerChr() == NULL) {
 		return 0;
 	}
-	g_Vars.currentplayer->bondhealth = 1.0f;
+	if (amount <= 0.0f) {
+		g_Vars.currentplayer->bondhealth = 1.0f; // full heal (default / no arg)
+	} else {
+		g_Vars.currentplayer->bondhealth += amount; // partial top-up (e.g. 0.5 = half)
+		if (g_Vars.currentplayer->bondhealth > 1.0f) {
+			g_Vars.currentplayer->bondhealth = 1.0f;
+		}
+	}
 	playerDisplayHealth(); // silent HP change — pop the health bar
 	return 1;
 }
@@ -11051,6 +11058,15 @@ f32 chraiLuaPlayerHealth(void)
 		return 0.0f;
 	}
 	return g_Vars.currentplayer->bondhealth;
+}
+
+/ pd.player_shield(): the local player's current shield fraction (0..1).
+f32 chraiLuaPlayerShield(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0.0f;
+	}
+	return playerGetShieldFrac();
 }
 
 // pd.player_damage(amount): hurt the local player through the real damage

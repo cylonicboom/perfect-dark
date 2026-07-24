@@ -1730,6 +1730,27 @@ local function touch_targets()
   return { { xa, ya }, { xb, ya }, { xa, yb }, { xb, yb }, { xc, yc } }
 end
 
+-- Random completion reward for a full calibration sweep. Shields only ever rise
+-- (never a downgrade); the half-HP top-up is additive; ammo refills the current
+-- weapon.
+local function touch_reward()
+  local pick = math.random(4)
+  if pick == 1 then
+    local cur = (pd.player_shield and pd.player_shield()) or 0
+    pd.player_set_shield(math.max(cur, 0.5))
+    return "half shield"
+  elseif pick == 2 then
+    pd.player_set_shield(1)
+    return "full shield"
+  elseif pick == 3 then
+    pd.player_heal(0.5)
+    return "+50% health"
+  else
+    pd.refill_ammo()
+    return "max ammo"
+  end
+end
+
 -- Filled disc via horizontal scanlines (there's no native circle primitive).
 local function draw_disc(cx, cy, r, color)
   for dyi = -r, r do
@@ -3097,14 +3118,16 @@ local alpha_effects = {
   -- time — the four corners + centre, in random order — and you aim the reticle
   -- onto it before its per-target timer runs out. The 2nd miss is a warning and
   -- forces a fresh random order (a recalibration); from the 3RD miss on, every
-  -- miss chips your health. Runs for one Effect Duration. The reticle only reaches
-  -- the corners in free-aim, so it's a real "hold R and point" task. Needs
+  -- miss chips your health. Aim at all five (each once) to COMPLETE: the effect
+  -- ends early and rewards a random pick (half/full shield, +50% HP, or max ammo
+  -- for the current weapon). Otherwise it runs out at one Effect Duration. Needs
   -- pd.aim_screen (new exe); the circles are drawn in the HUD draw pass.
   touch_cal = { label="Touchscreen Calibration", dur=1,
                 start=function()
                   if not pd.aim_screen then error("needs new exe") end
                   st.a_touch = { order = touch_shuffle(), idx = 1, misses = 0,
-                                 deadline = nil, flash = 0, pos = touch_targets() }
+                                 deadline = nil, flash = 0, pos = touch_targets(),
+                                 hit = {}, hits = 0 }
                   pd.hud_message("CHAOS: calibrate the touchscreen — aim at the circles")
                 end,
                 tick=function(left)
@@ -3117,8 +3140,15 @@ local alpha_effects = {
                   local tp = a.pos[a.order[a.idx]]
                   local dx, dy = cx - tp[1], cy - tp[2]
                   if dx * dx + dy * dy <= TOUCH_HIT_R2 then
-                    -- HIT: on to the next target (reshuffle after a full round of 5)
+                    -- HIT: credit this position once; when all five have been
+                    -- aimed at, reward the player and end the effect.
+                    local pos = a.order[a.idx]
+                    if not a.hit[pos] then a.hit[pos] = true; a.hits = a.hits + 1 end
                     a.flash = 5
+                    if a.hits >= 5 then
+                      pd.hud_message("CALIBRATION COMPLETE! reward: " .. touch_reward())
+                      return true -- end now (expiry loop runs stop() -> clears state)
+                    end
                     a.idx = a.idx + 1
                     if a.idx > #a.order then a.order = touch_shuffle(); a.idx = 1 end
                     a.deadline = left - TOUCH_TICKS
@@ -4188,7 +4218,7 @@ pd.on("draw", function()
       draw_disc(tp[1], tp[2], 4, 0xffffffff)
     end
     centered_text(18, "TOUCHSCREEN CALIBRATION", 0xffffffff)
-    centered_text(28, "misses " .. a.misses .. "  (warn 2 / damage 3+)", 0xffd040ff)
+    centered_text(28, "hits " .. a.hits .. "/5   misses " .. a.misses .. " (warn 2 / dmg 3+)", 0xffd040ff)
   end
 
   -- CAPTCHA: the verification demand + the live task instruction.

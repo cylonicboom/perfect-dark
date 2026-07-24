@@ -1187,7 +1187,24 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 	// Returns the overlay's compressed bytes; the caller inflates + preprocesses
 	// them under the BASE file id, so texture/ext_tex linkage stays correct.
 	if (!out && g_ModelSwapActive && g_ModelRomActive && g_ModelSwapFiles[fileNum]) {
-		const s32 cn = romdataChainFileGetNumForName(fileSlots[g_ModNum][fileNum].name);
+		// Prefer matching by NAME (handles a mod that reordered its file table).
+		s32 cn = romdataChainFileGetNumForName(fileSlots[g_ModNum][fileNum].name);
+
+		if (cn <= 0 || !fileSlots[MOD_CHAINROM][cn].data) {
+			// Name lookup failed. PD-derived total conversions keep the stock
+			// file NUMBERING but frequently expand the ROM and carry a name
+			// table our stock-offset parse can't resolve (names come back
+			// empty/garbage), while the file-offset table — which the mod ROM
+			// needs to run standalone — is correct. So fall back to the SAME
+			// file index. Guard on a real 1173 header so a stale/garbage slot
+			// can never be served: a bad index just falls through to the base
+			// file (no swap) instead of feeding the inflater junk (crash).
+			if (fileSlots[MOD_CHAINROM][fileNum].data
+					&& rzipIs1173(fileSlots[MOD_CHAINROM][fileNum].data)) {
+				cn = fileNum;
+			}
+		}
+
 		if (cn > 0 && fileSlots[MOD_CHAINROM][cn].data) {
 			g_ModelSwapRedirects++;
 			if (outSize) {
@@ -1195,8 +1212,8 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 			}
 			return fileSlots[MOD_CHAINROM][cn].data;
 		}
-		// armed but couldn't serve: the overlay lacks this name, or its slot
-		// has no data. Count it so the swap toggle can report the miss.
+		// armed but couldn't serve: the overlay lacks this name/index, or its
+		// slot has no valid data. Count it so the swap toggle reports the miss.
 		g_ModelSwapMisses++;
 	}
 

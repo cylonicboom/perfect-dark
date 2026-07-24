@@ -182,13 +182,61 @@ extern s32 g_ModelRomActive;   // an overlay ROM (--model-rom) is loaded
 extern s32 g_ModelSwapActive;  // character models sourced from the overlay now
 extern u8 g_ModelSwapFiles[];  // per-file: redirect this file to the overlay
 
+// A chr's held items (weapons_held[0]=right gun, [1]=left gun, [2]=hat) are
+// child props whose model is ATTACHED to the chr's body model — attachedtomodel
+// points at chr->model and attachedtonode at a node inside that model's
+// definition (see chrEquipWeapon / hatApplyToChr in propobj.c). When we swap the
+// body to a fresh model with a DIFFERENT definition, those two pointers dangle
+// into the old (freed) definition; chr0f022214's per-child modelFindNodeMtx then
+// reads freed memory and crashes. Re-point each held item at the new body model
+// and re-resolve its attach node against the new definition (same bodynum, so the
+// skeleton — and thus the hand/hat parts — is identical). Called after the body
+// re-link but before the old model is freed.
+static void modelSwapReattachHeld(struct chrdata *chr)
+{
+	struct model *body = chr->model;
+	bool skedar;
+	s32 h;
+
+	if (body == NULL || body->definition == NULL) {
+		return;
+	}
+
+	skedar = (body->definition->skel == &g_SkelSkedar);
+
+	for (h = 0; h < 3; h++) {
+		struct prop *held = chr->weapons_held[h];
+		struct modelnode *node = NULL;
+
+		if (held == NULL || held->obj == NULL || held->obj->model == NULL) {
+			continue;
+		}
+
+		if (h == HAND_RIGHT) {
+			node = modelGetPart(body->definition,
+					skedar ? MODELPART_SKEDAR_RIGHTHAND : MODELPART_CHR_RIGHTHAND);
+		} else if (h == HAND_LEFT) {
+			node = modelGetPart(body->definition,
+					skedar ? MODELPART_SKEDAR_LEFTHAND : MODELPART_CHR_LEFTHAND);
+		} else if (!skedar) {
+			// Hat slot — skedar has no hats (hatApplyToChr is g_SkelChr-only).
+			node = modelGetPart(body->definition, MODELPART_CHR_0006);
+		}
+
+		if (node) {
+			held->obj->model->attachedtomodel = body;
+			held->obj->model->attachedtonode = node;
+		}
+	}
+}
+
 // Rebuild every currently-spawned chr's body+head model IN PLACE, so the swap
 // takes effect immediately instead of only on respawn. For each live non-player
 // chr: allocate a fresh model (which now loads from the overlay or base per
 // g_ModelSwapActive), re-link it with chr0f020b14 — which SKIPS chrInit for an
 // existing chr, so health/AI/inventory are preserved (it re-grounds the chr and
-// resets to the idle pose) — then free the old model the same way chr death
-// does (modelmgrFreeModel handles the attached weapon). Corpses and the player
+// resets to the idle pose) — re-attach its held weapons/hat to the new model,
+// then free the old model the same way chr death does. Corpses and the player
 // are skipped. Called at effect toggle from the Lua tick (after tick, before
 // render), which is a safe boundary.
 static void modelSwapRebuildLiveChrs(void)
@@ -227,6 +275,9 @@ static void modelSwapRebuildLiveChrs(void)
 		neu = bodyAllocateModel(chr->bodynum, chr->headnum, 0);
 		if (neu) {
 			chr0f020b14(chr->prop, neu, &pos, rooms, faceangle, NULL);
+			// chr0f020b14 set chr->model = neu; re-hang the held items on it
+			// before the old model (their current attach target) is freed.
+			modelSwapReattachHeld(chr);
 			modelmgrFreeModel(old);
 		}
 		// if neu is NULL (out of model slots / missing file) keep the old model

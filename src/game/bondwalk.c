@@ -940,6 +940,14 @@ void bwalkUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 	if (cheatIsActive(CHEAT_MIRROR) && !g_Vars.currentplayer->isremote) {
 		targetspeed = -targetspeed;
 	}
+
+	// Chaos "Ice Floor": scale strafe accel/decel to match the forward slide.
+	{
+		extern f32 g_ChaosIceAccel;
+		if (g_ChaosIceAccel != 1.0f && !g_Vars.currentplayer->isremote) {
+			accelspeed *= g_ChaosIceAccel;
+		}
+	}
 #endif
 	if (g_Vars.normmplayerisrunning) {
 		targetspeed = (g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.unk1c + 25.0f) / 100 * targetspeed;
@@ -964,6 +972,18 @@ void bwalkUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 
 void bwalkUpdateSpeedForwards(f32 targetspeed, f32 accelspeed)
 {
+#ifndef PLATFORM_N64
+	// Chaos "Ice Floor": one accel/decel scale gives BOTH slow acceleration and
+	// low friction (accelspeed drives the decay toward targetspeed too, so a
+	// released stick coasts instead of stopping).
+	{
+		extern f32 g_ChaosIceAccel;
+		if (g_ChaosIceAccel != 1.0f && !g_Vars.currentplayer->isremote) {
+			accelspeed *= g_ChaosIceAccel;
+		}
+	}
+#endif
+
 	if (g_Vars.normmplayerisrunning) {
 		targetspeed = (g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.unk1c + 25.0f) / 100 * targetspeed;
 	}
@@ -1700,6 +1720,10 @@ f32 g_ChaosPlayerSpeed = 1.0f;
 // under the local player is forced far below them (bwalkUpdateVertical), so
 // they fall through to the death plane. Set by chraiLuaTrapdoor, reset in lv.c.
 s32 g_ChaosTrapdoorTicks = 0;
+
+// Chaos "Ice Floor" (pd.ice_floor): scales the walk accel/decel (bwalkUpdateSpeed*)
+// so the player accelerates slowly and keeps sliding. 1.0 = normal. Reset in lv.c.
+f32 g_ChaosIceAccel = 1.0f;
 
 void bwalkApplyMoveData(struct movedata *data)
 {

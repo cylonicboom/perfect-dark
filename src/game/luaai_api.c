@@ -2473,6 +2473,20 @@ static int l_pd_trapdoor(lua_State *L)
 	return 1;
 }
 
+/* pd.ice_floor(mult) -> bool. Ice Floor: scale walk accel/decel (slippery). */
+static int l_pd_ice_floor(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaIceFloor((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
+/* pd.player_movespeed() -> number. Local player's normalised move speed 0..~1. */
+static int l_pd_player_movespeed(lua_State *L)
+{
+	lua_pushnumber(L, chraiLuaPlayerMoveSpeed());
+	return 1;
+}
+
 /* pd.hud_off(on) -> bool. No HUD: hide every HUD element. */
 static int l_pd_hud_off(lua_State *L)
 {
@@ -3280,6 +3294,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_drop_weapon);   lua_setfield(L, -2, "drop_weapon");
 	lua_pushcfunction(L, l_pd_haunt);         lua_setfield(L, -2, "haunt");
 	lua_pushcfunction(L, l_pd_trapdoor);      lua_setfield(L, -2, "trapdoor");
+	lua_pushcfunction(L, l_pd_ice_floor);     lua_setfield(L, -2, "ice_floor");
+	lua_pushcfunction(L, l_pd_player_movespeed); lua_setfield(L, -2, "player_movespeed");
 	lua_pushcfunction(L, l_pd_hud_off);       lua_setfield(L, -2, "hud_off");
 	lua_pushcfunction(L, l_pd_gun_fov);       lua_setfield(L, -2, "gun_fov");
 	lua_pushcfunction(L, l_pd_chr_freeze_one); lua_setfield(L, -2, "chr_freeze_one");

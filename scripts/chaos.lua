@@ -1051,6 +1051,35 @@ chaos.effects = {
                      pd.trapdoor()
                      pd.hud_message("CHAOS: mind the gap!")
                    end },
+  -- Ice Floor: floors lose their grip — you accelerate slowly and keep sliding
+  -- (accel/decel scaled down in bondwalk). The catch: hit top speed and you
+  -- wipe out (the Banana Peel slip), so all that momentum turns on you.
+  ice_floor    = { label="Ice Floor",         w=3, dur=20,
+                   start=function()
+                     if not pd.ice_floor then error("needs new exe") end
+                     pd.ice_floor(0.22) -- ~1/5 grip: slow to start, slow to stop
+                     st.a_ice = { cool = 0 }
+                   end,
+                   tick=function()
+                     local a = st.a_ice
+                     if not a then return end
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     if a.cool > 0 then a.cool = a.cool - dt end
+                     local sp = pd.player_movespeed and pd.player_movespeed() or 0
+                     if sp > 0.9 and a.cool <= 0 then
+                       a.cool = 90 -- ~1.5s before the next wipeout
+                       if pd.player_slip and pd.player_pitch then
+                         pd.player_slip(25) -- squat + shove; pitch glides up
+                         st.pitch_anim = { from = pd.player_pitch(), to = 65, t = 0, len = 18 }
+                       end
+                       play_sound("banana")
+                       pd.hud_message("CHAOS: wipeout!")
+                     end
+                   end,
+                   stop=function()
+                     st.a_ice = nil
+                     if pd.ice_floor then pd.ice_floor(1) end
+                   end },
   -- Licence to Probe: every guard gets a random Bond tuxedo body and a Maian
   -- alien head (chr_set_body). Instant + permanent for the mission (no original
   -- to restore to); solo/missions only (Combat Sim returns 0).
@@ -3013,6 +3042,7 @@ local function reset_all_modes()
   st.a_dmgfloor = nil       -- Random Damage Floors per-room hot/cold map
   st.a_para = nil           -- Paranormal Activity door/light phase (stop() restores)
   st.a_dj = nil             -- DJ speed-to-pitch tracker (stop() restores pitch)
+  st.a_ice = nil            -- Ice Floor wipeout cooldown (stop() restores grip)
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil

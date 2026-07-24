@@ -9001,6 +9001,35 @@ s32 chraiLuaTrapdoor(void)
 	return 1;
 }
 
+// pd.ice_floor(mult): "Ice Floor" — scale the walk accel/decel (bondwalk.c
+// g_ChaosIceAccel). <1 = slow to start, slow to stop (slippery). 1 = normal.
+s32 chraiLuaIceFloor(f32 mult)
+{
+	extern f32 g_ChaosIceAccel;
+
+	if (mult < 0.02f) mult = 0.02f;
+	if (mult > 4.0f) mult = 4.0f;
+	g_ChaosIceAccel = mult;
+	return 1;
+}
+
+// pd.player_movespeed(): the local player's current normalised move speed
+// (0..~1), max of the forward/strafe components. Lets Ice Floor fire the banana
+// peel when the player is sliding at top speed.
+f32 chraiLuaPlayerMoveSpeed(void)
+{
+	f32 f, s;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0.0f;
+	}
+	f = g_Vars.currentplayer->speedforwards;
+	s = g_Vars.currentplayer->speedstrafe;
+	if (f < 0.0f) f = -f;
+	if (s < 0.0f) s = -s;
+	return (f > s) ? f : s;
+}
+
 // pd.drop_weapon(weaponnum): drop one of the player's weapons as a collectable
 // floor pickup (weaponCreateForPlayerDrop = the engine's blessed objDrop +
 // netSyncPropSpawn path) AND remove it from inventory so it isn't duplicated.

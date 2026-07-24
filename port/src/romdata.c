@@ -701,7 +701,10 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 				dbgBestRunRises = runRises;
 				dbgBestRunTerm = prevDofs;
 			}
-			if ((runOfs & 15) == 0 && runCount >= 1024 && runRises >= runCount / 2
+			// 8-byte aligned (entries are 8 bytes; some mods relocate the list to
+			// an 8- but not 16-aligned offset — the Mario pack's list is at
+			// 0x…1c8), plenty of entries, mostly increasing.
+			if ((runOfs & 7) == 0 && runCount >= 1024 && runRises >= runCount / 2
 					&& prevDofs >= 0x10000 && runCount > bestCount) {
 				bestOfs = runOfs;
 				bestCount = runCount;

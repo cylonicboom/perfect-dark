@@ -4264,28 +4264,40 @@ if pd.menu_add then
     persist_disabled()
   end
 
-  -- ---- Master switch + global timers (registered FIRST: the native slider path
-  -- stores its registry index in the 8-bit item param, so sliders must have small
-  -- indices — keeping them at the very top guarantees that). --------------------
+  -- ---- Master switch + global timers as individual rows at the Chaos root
+  -- (UNGROUPED so they stay real checkbox/slider widgets — a group collapses into
+  -- ONE scrollable LIST box, which can't mix a checkbox with sliders). Registered
+  -- FIRST so the slider rows keep small registry indices (the native slider path
+  -- packs its index into the 8-bit item param). --------------------------------
   if HAVE_WIDGETS then
     pd.menu_add_checkbox("Chaos Enabled",
       function() return st.enabled end,
       function(v) if (v and true or false) ~= st.enabled then chaos.handle("menu", "toggle") end end,
-      GROUP, "Master switch for the whole Chaos system. When ON, a random enabled effect fires every few seconds.")
+      "", "Master switch for the whole Chaos system. When ON, a random enabled effect fires every few seconds.")
     pd.menu_add_slider("Trigger Every (s)",
       function() return st.interval end,
       function(v) st.interval = v; persist() end,
-      5, 120, GROUP, "Seconds between random effects while Chaos is on.")
+      5, 120, "", "Seconds between random effects while Chaos is on.")
     pd.menu_add_slider("Effect Duration (s)",
       function() return st.effectdur end,
       function(v) st.effectdur = v; persist() end,
-      5, 120, GROUP, "How long each timed effect lasts. Instant effects ignore this.")
+      5, 120, "", "How long each timed effect lasts. Instant effects ignore this.")
     pd.menu_add_slider("Vote Time (s)",
       function() return st.votetime end,
       function(v) st.votetime = v; persist() end,
-      0, 120, GROUP, "Length of the chat vote window between effects (0 = voting off).")
+      0, 120, "", "Length of the chat vote window between effects (0 = voting off).")
+
+    -- ENABLE: one scrollable LIST of checkboxes (all rotation effects). The
+    -- pinned one-line description follows the highlighted effect.
+    for _, name in ipairs(names) do
+      local n = name
+      pd.menu_add_checkbox(chaos.effects[n].label or n,
+        function() return effect_enabled(n) end,
+        function(v) set_enabled(n, v and true or false) end,
+        "Effects", edesc(n))
+    end
   else
-    -- Old exe fallback: tap-to-cycle text entries.
+    -- Old exe fallback: tap-to-cycle master/timers + a flat on/off list.
     local i_toggle, i_dur, i_freq
     local function lbl_toggle() return "Chaos: " .. (st.enabled and "ON" or "off") end
     local function lbl_dur()    return "Effect duration: " .. st.effectdur .. "s" end
@@ -4299,19 +4311,9 @@ if pd.menu_add then
     i_toggle = pd.menu_add(lbl_toggle(), function() chaos.handle("menu", "toggle"); relabel() end, GROUP)
     i_dur = pd.menu_add(lbl_dur(), function() st.effectdur = next_in(DURATIONS, st.effectdur); persist(); relabel() end, GROUP)
     i_freq = pd.menu_add(lbl_freq(), function() st.interval = next_in(INTERVALS, st.interval); persist(); relabel() end, GROUP)
-  end
-
-  -- ---- Per-effect ENABLE checkboxes, grouped by category into "Enable: <cat>"
-  -- folders. Toggles the effect in/out of the random rotation. ------------------
-  for _, name in ipairs(names) do
-    local n = name
-    local e = chaos.effects[n]
-    if HAVE_WIDGETS then
-      pd.menu_add_checkbox(e.label or n,
-        function() return effect_enabled(n) end,
-        function(v) set_enabled(n, v and true or false) end,
-        "Enable: " .. cat_of(n), edesc(n))
-    else
+    for _, name in ipairs(names) do
+      local n = name
+      local e = chaos.effects[n]
       local mi
       local function lbl() return (e.label or n) .. ": " .. (effect_enabled(n) and "ON" or "off") end
       mi = pd.menu_add(lbl(), function()
@@ -4321,19 +4323,17 @@ if pd.menu_add then
     end
   end
 
-  -- ---- Manual-fire folders: "Test: <cat>" fires an effect for 30s (timers run
-  -- even with the master off). ------------------------------------------------
+  -- Manual-fire: one LIST that fires any effect for 30s (timers run even with the
+  -- master off).
   for _, name in ipairs(names) do
     local n = name
-    local e = chaos.effects[n]
-    pd.menu_add(e.label or n, function() chaos.trigger(n, "test", 30) end, "Test: " .. cat_of(n), edesc(n))
+    pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "test", 30) end, "Fire an Effect", edesc(n))
   end
 
-  -- Chaos Alpha: manual-fire the new / unproven effects held out of the rotation.
+  -- Chaos Alpha: fire the new / unproven effects held out of the rotation.
   for _, name in ipairs(anames) do
     local n = name
-    local e = chaos.effects[n]
-    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, "Chaos Alpha", edesc(n))
+    pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "alpha", 30) end, "Chaos Alpha", edesc(n))
   end
 end
 

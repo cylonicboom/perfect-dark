@@ -5397,24 +5397,87 @@ static void luaDirectorFillSlider(struct menuitem *dst, s32 regidx)
 	dst->handler = menuhandlerLuaDirectorSlider;
 }
 
-// A separator + scrollable description panel pair at the foot of a list. The
-// panel reads the shared g_LuaDirectorDesc (updated on row focus). Writes two
-// items; caller advances the cursor by 2.
-static void luaDirectorFillDesc(struct menuitem *sep, struct menuitem *scroll)
-{
-	sep->type = MENUITEMTYPE_SEPARATOR;
-	sep->param = 0;
-	sep->flags = 0;
-	sep->param2 = 0;
-	sep->param3 = 0;
-	sep->handler = NULL;
+// ---- Grouped effects render as ONE scrollable LIST box + a pinned one-line
+// MARQUEE description, instead of a wall of individual rows (the cheats-menu
+// look). The LIST scrolls internally in a fixed box, so the MARQUEE below it
+// stays pinned. Row N of group G maps to registry index
+// g_LuaGroupReg[g_LuaGroupStart[G] + N]. -------------------------------------
+static s32 g_LuaGroupReg[LUA_MENU_MAX];
+static s32 g_LuaGroupStart[LUA_DIRECTOR_MAX_SUBMENUS];
+static s32 g_LuaGroupCount[LUA_DIRECTOR_MAX_SUBMENUS];
 
-	scroll->type = MENUITEMTYPE_SCROLLABLE;
-	scroll->param = DESCRIPTION_LUADIRECTOR;
-	scroll->flags = 0;
-	scroll->param2 = 0;
-	scroll->param3 = 100; // panel height in px
-	scroll->handler = NULL;
+// MARQUEE text provider: param2 with no LITERAL_TEXT flag => the menu calls this
+// every frame. Returns the shared description buffer (updated on row focus).
+static char *luaDirectorMarqueeText(struct menuitem *item)
+{
+	return g_LuaDirectorDesc;
+}
+
+// One LIST handler for every group. item->param selects the group; the driver
+// passes the row index in data->list.value on each op. Checkbox-kind rows show
+// a box and toggle on select; action-kind rows fire on select.
+MenuItemHandlerResult menuhandlerLuaDirectorList(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 grp = (s32)item->param;
+	s32 count = (grp >= 0 && grp < LUA_DIRECTOR_MAX_SUBMENUS) ? g_LuaGroupCount[grp] : 0;
+	s32 n = (s32)data->list.value;
+	s32 reg = (n >= 0 && n < count) ? g_LuaGroupReg[g_LuaGroupStart[grp] + n] : -1;
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->list.value = count;
+		break;
+	case MENUOP_GETOPTGROUPCOUNT:
+		data->list.value = 0; // no option-groups
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return reg >= 0 ? (uintptr_t)luaMenuLabel(reg) : (uintptr_t)"";
+	case MENUOP_GETLISTITEMCHECKBOX:
+		if (reg >= 0 && luaMenuKind(reg) == 1) {
+			data->list.unk04 = luaMenuGetBool(reg); // 0/1 shown; 255 => no box
+		}
+		break;
+	case MENUOP_SET:
+		if (reg >= 0 && data->list.unk04 == 0) {
+			if (luaMenuKind(reg) == 1) {
+				luaMenuSetBool(reg, luaMenuGetBool(reg) ? 0 : 1);
+			} else {
+				luaMenuInvoke(reg);
+			}
+		}
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->list.value = 0xfffff; // no persistent single-selection cursor
+		break;
+	case MENUOP_LISTITEMFOCUS:
+		if (reg >= 0) {
+			luaDirectorSetDesc(luaMenuDesc(reg));
+		}
+		break;
+	}
+	return 0;
+}
+
+// A LIST box for group `grp` (fixed size => the MARQUEE after it is pinned).
+static void luaDirectorFillList(struct menuitem *dst, s32 grp)
+{
+	dst->type = MENUITEMTYPE_LIST;
+	dst->param = (u8)grp;
+	dst->flags = MENUITEMFLAG_LIST_WIDE;
+	dst->param2 = 180; // box width
+	dst->param3 = 96;  // box height -> internal scroll
+	dst->handler = menuhandlerLuaDirectorList;
+}
+
+// A pinned one-line MARQUEE that scrolls the focused row's description.
+static void luaDirectorFillMarquee(struct menuitem *dst)
+{
+	dst->type = MENUITEMTYPE_MARQUEE;
+	dst->param = 0;
+	dst->flags = MENUITEMFLAG_SMALLFONT | MENUITEMFLAG_MARQUEE_FADEBOTHSIDES;
+	dst->param2 = (uintptr_t)&luaDirectorMarqueeText;
+	dst->param3 = 0;
+	dst->handler = NULL;
 }
 
 // Fill one leaf row by its registry kind (action / checkbox / slider).
@@ -5531,36 +5594,45 @@ void luaDirectorRebuild(void)
 				(uintptr_t (*)(s32, struct menuitem *, union handlerdata *))&g_LuaSubmenuDialogs[i];
 	}
 
-	// Pass 3: leaf entries into their group's array (root list if ungrouped),
-	// after the openers.
+	// Pass 3: UNGROUPED entries render as individual rows at the root (master
+	// checkbox, sliders). GROUPED entries are collected per group into
+	// g_LuaGroupReg — each group becomes ONE scrollable LIST box in Pass 4, not a
+	// wall of rows, so its pinned description works.
+	(void)subwrite;
 	for (i = 0; i < n; i++) {
 		const char *g = luaMenuGroup(i);
-
 		if (g == NULL || g[0] == '\0') {
 			luaDirectorFillByKind(&g_LuaDirectorMenuItems[w], i);
 			w++;
-		} else {
-			s32 sub = luaDirectorGroup(g, &numsubs); // already discovered — lookup
-
-			if (sub < 0 || subwrite[sub] >= LUA_MENU_MAX) {
-				continue; // overflow — drop the entry rather than corrupt
+		}
+	}
+	{
+		s32 grp, cursor = 0;
+		for (grp = 0; grp < numsubs; grp++) {
+			g_LuaGroupStart[grp] = cursor;
+			for (i = 0; i < n; i++) {
+				const char *g = luaMenuGroup(i);
+				if (g != NULL && g[0] != '\0' && cursor < LUA_MENU_MAX
+						&& luaDirectorGroup(g, &numsubs) == grp) {
+					g_LuaGroupReg[cursor++] = i;
+				}
 			}
-			luaDirectorFillByKind(&g_LuaSubmenuItems[sub][subwrite[sub]], i);
-			subwrite[sub]++;
+			g_LuaGroupCount[grp] = cursor - g_LuaGroupStart[grp];
 		}
 	}
 
-	// Pass 4: a description panel (separator + scrollable) then Back + END on
-	// each sub-dialog and the root. The panel text follows the focused row.
+	// Pass 4: each group's OWN dialog = one LIST box + a pinned MARQUEE
+	// description + Back. The root gets a MARQUEE + Back after its individual
+	// rows. The LIST scrolls internally so the MARQUEE sits pinned below it.
 	for (i = 0; i < numsubs; i++) {
-		s32 sw = subwrite[i];
-		luaDirectorFillDesc(&g_LuaSubmenuItems[i][sw], &g_LuaSubmenuItems[i][sw + 1]);
-		luaDirectorFillBack(&g_LuaSubmenuItems[i][sw + 2]);
-		g_LuaSubmenuItems[i][sw + 3].type = MENUITEMTYPE_END;
+		luaDirectorFillList(&g_LuaSubmenuItems[i][0], i);
+		luaDirectorFillMarquee(&g_LuaSubmenuItems[i][1]);
+		luaDirectorFillBack(&g_LuaSubmenuItems[i][2]);
+		g_LuaSubmenuItems[i][3].type = MENUITEMTYPE_END;
 	}
 
-	luaDirectorFillDesc(&g_LuaDirectorMenuItems[w], &g_LuaDirectorMenuItems[w + 1]);
-	w += 2;
+	luaDirectorFillMarquee(&g_LuaDirectorMenuItems[w]);
+	w++;
 	luaDirectorFillBack(&g_LuaDirectorMenuItems[w]);
 	w++;
 	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_END;

@@ -41,6 +41,7 @@
 #include "game/player.h"      /* playerSetFadeColour (game_over black screen) */
 #include "game/music.h"       /* musicStartTrackAsMenu (game_over failed music) */
 #include "game/tex.h"         /* texSelect (pd.draw_sprite blood-splat textures) */
+#include "game/camera.h"      /* camGetScreen* (pd.aim_bounds reticle box) */
 #include "game/gfxmemory.h"   /* gfxAllocateVertices / gfxAllocateColours (draw_sprite) */
 #ifndef PLATFORM_N64
 #include "ext_tex.h"          /* extImageLoad / extImageFree (pd.load_image PNG hook) */
@@ -2904,6 +2905,31 @@ static int l_pd_aim_screen(lua_State *L)
 	return 2;
 }
 
+/* pd.aim_bounds() -> x0, y0, x1, y1 | nil. The rectangle the aim reticle can
+ * actually reach, in the same HUD space as pd.aim_screen. It is the crosspos
+ * clamp box from bondgun.c — [3, screenwidth-4] x [3, screenheight-4] plus the
+ * camera screen offset — with X divided by g_ScaleX to match aim_screen. Place
+ * on-screen aim targets as fractions of this box so they stay reachable at any
+ * resolution / viewport. nil when there is no live pawn. */
+static int l_pd_aim_bounds(lua_State *L)
+{
+	f32 sx, sy, sw, sh, div;
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		lua_pushnil(L);
+		return 1;
+	}
+	sx = camGetScreenLeft();
+	sy = camGetScreenTop();
+	sw = camGetScreenWidth();
+	sh = camGetScreenHeight();
+	div = (f32)(g_ScaleX ? g_ScaleX : 1);
+	lua_pushnumber(L, (sx + 3.0f) / div);
+	lua_pushnumber(L, sy + 3.0f);
+	lua_pushnumber(L, (sx + sw - 4.0f) / div);
+	lua_pushnumber(L, sy + sh - 4.0f);
+	return 4;
+}
+
 /* pd.vertex_wobble([amp, freq, phase, sag, desync]) -> bool. "Jelly"/"Acid":
  * deform every vertex in eye space by sines of position. amp world units
  * (0/absent = off), freq radians per world unit, phase the animation angle
@@ -3570,6 +3596,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_music_beat);    lua_setfield(L, -2, "music_beat");
 	lua_pushcfunction(L, l_pd_aim_chr);       lua_setfield(L, -2, "aim_chr");
 	lua_pushcfunction(L, l_pd_aim_screen);    lua_setfield(L, -2, "aim_screen");
+	lua_pushcfunction(L, l_pd_aim_bounds);    lua_setfield(L, -2, "aim_bounds");
 	lua_pushcfunction(L, l_pd_vertex_wobble); lua_setfield(L, -2, "vertex_wobble");
 	lua_pushcfunction(L, l_pd_hall_of_mirrors); lua_setfield(L, -2, "hall_of_mirrors");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");

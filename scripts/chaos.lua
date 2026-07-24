@@ -1698,8 +1698,8 @@ end
 -- ---- Touchscreen Calibration helpers (shared by the effect tick + the HUD
 -- draw pass). The HUD 2D space is 320x220 (see the DVD/blooper effects). Five
 -- calibration targets: the four corners + the centre. --------------------------
-local TOUCH_POS = {
-  { 28, 28 }, { 292, 28 }, { 28, 192 }, { 292, 192 }, { 160, 110 },
+local TOUCH_FALLBACK = { -- used only if pd.aim_bounds is unavailable (old exe)
+  { 60, 46 }, { 260, 46 }, { 60, 174 }, { 260, 174 }, { 160, 110 },
 }
 local TOUCH_R = 11             -- drawn disc radius (virtual px)
 local TOUCH_HIT_R2 = 17 * 17   -- aim hit-test radius^2 (a touch forgiving)
@@ -1713,6 +1713,21 @@ local function touch_shuffle()
     t[i], t[j] = t[j], t[i]
   end
   return t
+end
+
+-- The five target positions placed INSIDE the reticle's reachable box (corners
+-- at 20%/80%, centre at 50%) so every one is reachable without maxing the aim
+-- stick into the far screen edges. Queried once at effect start.
+local function touch_targets()
+  local x0, y0, x1, y1
+  if pd.aim_bounds then x0, y0, x1, y1 = pd.aim_bounds() end
+  if not x0 then return TOUCH_FALLBACK end
+  local LO, HI = 0.20, 0.80
+  local function r(v) return math.floor(v + 0.5) end
+  local xa, xb = r(x0 + LO * (x1 - x0)), r(x0 + HI * (x1 - x0))
+  local ya, yb = r(y0 + LO * (y1 - y0)), r(y0 + HI * (y1 - y0))
+  local xc, yc = r((x0 + x1) * 0.5), r((y0 + y1) * 0.5)
+  return { { xa, ya }, { xb, ya }, { xa, yb }, { xb, yb }, { xc, yc } }
 end
 
 -- Filled disc via horizontal scanlines (there's no native circle primitive).
@@ -3089,7 +3104,7 @@ local alpha_effects = {
                 start=function()
                   if not pd.aim_screen then error("needs new exe") end
                   st.a_touch = { order = touch_shuffle(), idx = 1, misses = 0,
-                                 deadline = nil, flash = 0 }
+                                 deadline = nil, flash = 0, pos = touch_targets() }
                   pd.hud_message("CHAOS: calibrate the touchscreen — aim at the circles")
                 end,
                 tick=function(left)
@@ -3099,7 +3114,7 @@ local alpha_effects = {
                   local cx, cy = pd.aim_screen()
                   if not cx then a.deadline = left - TOUCH_TICKS; return end -- no reticle: hold the clock
                   if a.deadline == nil then a.deadline = left - TOUCH_TICKS end
-                  local tp = TOUCH_POS[a.order[a.idx]]
+                  local tp = a.pos[a.order[a.idx]]
                   local dx, dy = cx - tp[1], cy - tp[2]
                   if dx * dx + dy * dy <= TOUCH_HIT_R2 then
                     -- HIT: on to the next target (reshuffle after a full round of 5)
@@ -4165,9 +4180,9 @@ pd.on("draw", function()
 
   -- Touchscreen Calibration: the current target circle (green flash on a hit,
   -- red otherwise) + a white centre dot, plus a miss tally.
-  if st.active.touch_cal and st.a_touch and pd.draw_box then
+  if st.active.touch_cal and st.a_touch and st.a_touch.pos and pd.draw_box then
     local a = st.a_touch
-    local tp = TOUCH_POS[a.order[a.idx]]
+    local tp = a.pos[a.order[a.idx]]
     if tp then
       draw_disc(tp[1], tp[2], TOUCH_R, (a.flash > 0) and 0x40ff40ff or 0xff4040ff)
       draw_disc(tp[1], tp[2], 4, 0xffffffff)

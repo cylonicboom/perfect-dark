@@ -5261,6 +5261,12 @@ static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + LUA_DIRECTOR_MAX_SU
 // path/title buffer, item array, parent link, and dialogdef per distinct group.
 static char g_LuaSubmenuPaths[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL];  // full group path (match key)
 static char g_LuaSubmenuTitles[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL]; // display title (last path component)
+// Same title with a trailing '\n'. SELECTABLE/LABEL row height comes from
+// textMeasure, which only counts a line's height once it hits a '\n' — a
+// newline-less literal measures ~0 tall and the opener row collapses to half
+// height. CHECKBOX/SLIDER use a fixed height so they don't need this. The dialog
+// TITLE keeps the newline-less copy (a title bar must stay one clean line).
+static char g_LuaSubmenuTitleNL[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL + 1];
 static s32  g_LuaSubmenuParent[LUA_DIRECTOR_MAX_SUBMENUS];                 // parent group index, or -1 for root
 static struct menuitem g_LuaSubmenuItems[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_MAX + 4] = {
 	{ { MENUITEMTYPE_END } },
@@ -5502,7 +5508,7 @@ static void luaDirectorFillOpener(struct menuitem *dst, s32 subidx)
 	dst->type = MENUITEMTYPE_SELECTABLE;
 	dst->param = 0;
 	dst->flags = MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT;
-	dst->param2 = (uintptr_t)g_LuaSubmenuTitles[subidx];
+	dst->param2 = (uintptr_t)g_LuaSubmenuTitleNL[subidx]; // '\n'-terminated => full row height
 	dst->param3 = 0;
 	dst->handler =
 			(uintptr_t (*)(s32, struct menuitem *, union handlerdata *))&g_LuaSubmenuDialogs[subidx];
@@ -5547,6 +5553,16 @@ static s32 luaDirectorGroup(const char *path, s32 *numsubs)
 		strncpy(g_LuaSubmenuTitles[s], g_LuaSubmenuPaths[s], LUA_MENU_LABEL - 1);
 		g_LuaSubmenuTitles[s][LUA_MENU_LABEL - 1] = '\0';
 		g_LuaSubmenuParent[s] = -1;
+	}
+
+	// Newline-terminated copy for the opener ROW (so its height measures full);
+	// the title bar keeps g_LuaSubmenuTitles (no newline).
+	strncpy(g_LuaSubmenuTitleNL[s], g_LuaSubmenuTitles[s], LUA_MENU_LABEL - 1);
+	g_LuaSubmenuTitleNL[s][LUA_MENU_LABEL - 1] = '\0';
+	{
+		s32 tl = (s32)strlen(g_LuaSubmenuTitleNL[s]);
+		g_LuaSubmenuTitleNL[s][tl] = '\n';
+		g_LuaSubmenuTitleNL[s][tl + 1] = '\0';
 	}
 
 	g_LuaSubmenuDialogs[s].type = MENUDIALOGTYPE_DEFAULT;

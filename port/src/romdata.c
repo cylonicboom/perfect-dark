@@ -99,6 +99,15 @@ s32 g_ModelSwapTexCount = 0;
 u8 *g_ModelSwapTexData = NULL;
 s32 g_ModelSwapTexActive = 0; // set only while a swapped model's textures load
 
+// Stock texture-segment ROM offsets, captured while the segment table still
+// holds raw offsets (before romdataInitSegment resolves ->data to pointers).
+// The chain/overlay texture relocator needs these as OFFSETS: the overlay path
+// runs after resolution, when segList->data is a pointer, so reading it back as
+// an offset would be garbage.
+static u32 g_StockTexListOfs = 0;
+static u32 g_StockTexDataOfs = 0;
+static u32 g_StockTexCopyOfs = 0;
+
 static u8 *romDataSeg;
 static u32 romDataSegSize;
 
@@ -645,6 +654,8 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 	const u8 *rom = chainRomFile;
 	u32 bestOfs = 0, bestCount = 0, bestTerm = 0;
 	u32 runOfs = 0, runCount = 0, runRises = 0, prevDofs = 0;
+	// diagnostics: largest run seen regardless of whether it qualified
+	u32 dbgBestRun = 0, dbgBestRunOfs = 0, dbgBestRunRises = 0, dbgBestRunTerm = 0;
 
 	for (u32 o = 0; o + 8 <= chainRomFileSize; o += 8) {
 		const u32 dofs = ((u32)rom[o + 1] << 16) | ((u32)rom[o + 2] << 8) | rom[o + 3];
@@ -678,12 +689,20 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 			}
 
 			// run ended; viable candidates are 16-aligned (segments are) with
-			// plenty of entries, mostly increasing offsets (rejects zero-filled
-			// regions), a plausible texturesdata size, and that data must fit
-			// right before the list
-			const u32 dataSize = (prevDofs + 15) & ~15u;
+			// plenty of entries and mostly increasing offsets (rejects zero-
+			// filled regions). NOTE: no longer require the texturesdata to fit
+			// BEFORE the list — texture-expanded total conversions (e.g. a Mario
+			// pack) grow texturesdata past the list, and the data base is found
+			// independently by correlation below, so the positional check only
+			// rejected otherwise-valid lists.
+			if (runCount > dbgBestRun) {
+				dbgBestRun = runCount;
+				dbgBestRunOfs = runOfs;
+				dbgBestRunRises = runRises;
+				dbgBestRunTerm = prevDofs;
+			}
 			if ((runOfs & 15) == 0 && runCount >= 1024 && runRises >= runCount / 2
-					&& prevDofs >= 0x10000 && dataSize < runOfs && runCount > bestCount) {
+					&& prevDofs >= 0x10000 && runCount > bestCount) {
 				bestOfs = runOfs;
 				bestCount = runCount;
 				bestTerm = prevDofs;
@@ -694,16 +713,18 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 	}
 
 	if (!bestCount) {
-		sysLogPrintf(LOG_WARNING, "chain ROM: could not locate a textureslist; chain ROM textures may be broken");
+		sysLogPrintf(LOG_WARNING, "chain ROM: could not locate a textureslist; chain ROM textures may be broken "
+			"(best run: %u entries at 0x%x, rises=%u, term=0x%x)",
+			dbgBestRun, dbgBestRunOfs, dbgBestRunRises, dbgBestRunTerm);
 		return;
 	}
 
 	struct romfile *segData = romdataGetSeg("texturesdata");
 	struct romfile *segList = romdataGetSeg("textureslist");
 	struct romfile *segCopy = romdataGetSeg("copyright");
-	const u32 stockListOfs = (u32)(uintptr_t)segList->data;
-	const u32 stockDataOfs = (u32)(uintptr_t)segData->data;
-	const u32 stockCount = ((u32)(uintptr_t)segCopy->data - stockListOfs) / 8;
+	const u32 stockListOfs = g_StockTexListOfs;
+	const u32 stockDataOfs = g_StockTexDataOfs;
+	const u32 stockCount = (g_StockTexCopyOfs - stockListOfs) / 8;
 
 	// vote for the texturesdata base by correlating texture bytes with the base ROM
 	enum { CORR_SAMPLES = 24, CORR_PATLEN = 16, CORR_MAXCAND = 32, CORR_MAXHITS = 16, CORR_MINVOTES = 3 };
@@ -978,6 +999,14 @@ s32 romdataInit(void)
 	}
 
 	romdataLoadRom();
+
+	// Capture the stock texture-segment offsets NOW, while ->data is still the
+	// raw ROM offset (the resolution loop below turns it into a pointer). The
+	// chain/overlay texture relocator uses these as offsets for its correlation
+	// search against the base ROM.
+	g_StockTexListOfs = (u32)(uintptr_t)romdataGetSeg("textureslist")->data;
+	g_StockTexDataOfs = (u32)(uintptr_t)romdataGetSeg("texturesdata")->data;
+	g_StockTexCopyOfs = (u32)(uintptr_t)romdataGetSeg("copyright")->data;
 
 	// optional chain-loaded second ROM: a whole pre-modded PD ROM whose data
 	// (assets + setup files carrying action blocks) backs the MOD_CHAINROM slot.

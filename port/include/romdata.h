@@ -16,6 +16,7 @@ extern s32 g_ModelRomActive;
 extern s32 g_ModelSwapActive;
 extern u8 g_ModelSwapFiles[];
 s32 romdataChainFileGetNumForName(const char *name);
+s32 romdataLoadModelRom(const char *path); // path = ROM file or dir to scan; 1 = loaded
 
 s32 romdataInit(void);
 

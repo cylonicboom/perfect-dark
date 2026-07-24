@@ -3307,13 +3307,13 @@ local alpha_effects = {
             stop=function() st.a_simon = nil end },
 
   -- Model Swap: while active, every character body + head is sourced from the
-  -- overlay ROM loaded at boot with --model-rom (e.g. a Mario-characters mod).
+  -- overlay ROM auto-loaded from scripts/chaos/rom (e.g. a Mario-characters mod).
   -- Models swap as chrs (re)load — i.e. on respawn, which in Combat Sim is
   -- seconds. No-op (fails gracefully) if no overlay ROM was loaded. New exe only.
   model_swap = { label="Model Swap", dur=1,
                  start=function()
                    if not (pd.model_rom_ok and pd.model_rom_ok()) then
-                     pd.hud_message("CHAOS: Model Swap needs --model-rom <rom>")
+                     pd.hud_message("CHAOS: put a PD ROM in scripts/chaos/rom for Model Swap")
                      error("no overlay ROM")
                    end
                    pd.model_swap(true)
@@ -4700,6 +4700,18 @@ if pd.menu_add then
   for _, name in ipairs(anames) do
     local n = name
     pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "alpha", 30) end, GROUP .. "/Chaos Alpha", edesc(n))
+  end
+end
+
+-- Model-swap overlay ROM: auto-load a full PD z64 from scripts/chaos/rom on
+-- boot (drop any Perfect Dark ROM — e.g. a Mario-characters mod — into that
+-- folder). Enables the "Model Swap" Chaos effect. No-op if the folder is empty
+-- or the exe predates the feature.
+if pd.load_model_rom then
+  if pd.load_model_rom("scripts/chaos/rom") then
+    pd.log("[chaos] model-swap overlay ROM loaded from scripts/chaos/rom")
+  else
+    pd.log("[chaos] no model-swap ROM in scripts/chaos/rom (Model Swap effect disabled)")
   end
 end
 

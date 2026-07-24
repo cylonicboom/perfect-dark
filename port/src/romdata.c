@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <dirent.h> // model-swap overlay ROM auto-load (scan scripts/chaos/rom)
 #include <PR/ultratypes.h>
 #include "lib/rzip.h"
 #include "romdata.h"
@@ -924,18 +925,13 @@ s32 romdataInit(void)
 		romdataChainImportHeadsAndBodies();
 	}
 
-	// Chaos model-swap OVERLAY ROM (mutually exclusive with --mod-rom): load a
-	// second full PD ROM's file table into MOD_CHAINROM but keep the base slot
-	// active. Nothing is redirected until g_ModelSwapActive is set (the Chaos
-	// effect). Same-region requirement as the chain ROM, but name-matched at
-	// lookup so a reordered mod table still resolves.
-	if (!g_ChainRomActive) {
+	// Chaos model-swap OVERLAY ROM via the --model-rom launch arg (optional; the
+	// Lua side normally auto-loads from scripts/chaos/rom instead). Deferred to
+	// romdataLoadModelRom so both entry points share one path.
+	{
 		const char *modelRomName = sysArgGetString("--model-rom");
 		if (modelRomName) {
-			romdataLoadRomFile(modelRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false);
-			romdataInitChainFiles();
-			g_ModelRomActive = 1;
-			sysLogPrintf(LOG_NOTE, "romdataInit: model-swap overlay ROM loaded: %s", modelRomName);
+			romdataLoadModelRom(modelRomName);
 		}
 	}
 
@@ -944,6 +940,65 @@ s32 romdataInit(void)
 	sysLogPrintf(LOG_NOTE, "romdataInit: loaded rom, size = %u", g_RomFileSize);
 
 	return 0;
+}
+
+// Load a model-swap OVERLAY ROM at runtime. `path` may be a ROM FILE or a
+// DIRECTORY (scanned for the first ROM-sized file — so the Lua side can just
+// point at scripts/chaos/rom and the user drops any-named z64 in it). Populates
+// the MOD_CHAINROM file table without switching the active slot; nothing is
+// redirected until g_ModelSwapActive is set. Returns 1 on success, 0 if no
+// usable ROM was found (graceful — a missing folder/file never fatals, so the
+// boot auto-load is safe when no ROM is present). A ROM that IS present but the
+// wrong size/compression still fatals in romdataLoadRomFile, same as --rom-file.
+s32 romdataLoadModelRom(const char *path)
+{
+	char filepath[FS_MAXPATH + 1] = { 0 };
+
+	if (g_ChainRomActive) {
+		sysLogPrintf(LOG_WARNING, "romdataLoadModelRom: --mod-rom active; model overlay skipped");
+		return 0;
+	}
+	if (g_ModelRomActive) {
+		return 1; // already loaded (idempotent)
+	}
+	if (!path || !path[0]) {
+		return 0;
+	}
+
+	if (fsFileSize(path) == (s32)ROMDATA_ROM_SIZE) {
+		// path is the ROM file itself
+		snprintf(filepath, sizeof(filepath), "%s", path);
+	} else {
+		// treat path as a directory; pick the first ROM-sized file in it
+		DIR *dr = opendir(path);
+		struct dirent *de;
+
+		if (!dr) {
+			return 0; // no such folder — nothing to auto-load
+		}
+
+		while ((de = readdir(dr)) != NULL) {
+			char cand[FS_MAXPATH + 1];
+			snprintf(cand, sizeof(cand), "%s/%s", path, de->d_name);
+			if (fsFileSize(cand) == (s32)ROMDATA_ROM_SIZE) {
+				snprintf(filepath, sizeof(filepath), "%s", cand);
+				break;
+			}
+		}
+
+		closedir(dr);
+
+		if (!filepath[0]) {
+			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no ROM-sized file in %s", path);
+			return 0;
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: loading model overlay ROM: %s", filepath);
+	romdataLoadRomFile(filepath, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false);
+	romdataInitChainFiles();
+	g_ModelRomActive = 1;
+	return 1;
 }
 
 static inline bool romdataCheckGbcRomContents(const u8 *gbcRomFile, const u32 gbcRomSize)

@@ -2020,11 +2020,27 @@ static int l_pd_model_swap(lua_State *L)
 	return 1;
 }
 
-/* pd.model_rom_ok() -> bool. Whether a --model-rom overlay ROM is loaded. */
+/* pd.model_rom_ok() -> bool. Whether a model-swap overlay ROM is loaded. */
 static int l_pd_model_rom_ok(lua_State *L)
 {
 #ifndef PLATFORM_N64
 	lua_pushboolean(L, modelSwapRomLoaded());
+#else
+	lua_pushboolean(L, 0);
+#endif
+	return 1;
+}
+
+/* pd.load_model_rom(path) -> bool. Load a model-swap overlay ROM at runtime.
+ * `path` may be a ROM file OR a directory to scan for a ROM-sized file (so the
+ * Chaos script can point at scripts/chaos/rom and the user just drops a z64 in).
+ * Safe when the folder/file is absent (no-op, returns false). New exe only. */
+static int l_pd_load_model_rom(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	extern s32 romdataLoadModelRom(const char *path); // port/include/romdata.h
+	const char *path = luaL_checkstring(L, 1);
+	lua_pushboolean(L, romdataLoadModelRom(path) != 0);
 #else
 	lua_pushboolean(L, 0);
 #endif
@@ -3534,6 +3550,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_activate); lua_setfield(L, -2, "player_activate");
 	lua_pushcfunction(L, l_pd_model_swap);    lua_setfield(L, -2, "model_swap");
 	lua_pushcfunction(L, l_pd_model_rom_ok);  lua_setfield(L, -2, "model_rom_ok");
+	lua_pushcfunction(L, l_pd_load_model_rom); lua_setfield(L, -2, "load_model_rom");
 	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
 	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
 	lua_pushcfunction(L, l_pd_force_secondary); lua_setfield(L, -2, "force_secondary");

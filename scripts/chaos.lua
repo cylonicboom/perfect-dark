@@ -3068,6 +3068,27 @@ for _, n in ipairs({ "space_program", "beat_game", "frag_out", "sentries_out",
   end
 end
 
+-- Newly added THIS SESSION — HOLD in the Chaos Alpha test folder until each is
+-- proven on a real build. alpha=true lists it in the "Chaos Alpha" menu (manual
+-- trigger, 30s) and w=0 keeps it OUT of the random rotation / on-off list, so a
+-- misbehaving one can't interrupt normal play. Graduate an effect by deleting
+-- its name here (it then rejoins the rotation at its authored weight).
+for _, n in ipairs({
+    "rapid_fire", "weapon_lock", "no_reload", "always_crouch", "disable_menus", "fake_crash",
+    "giggle_bomb", "suicide_bomb", "mario_mode", "sonic_mode",
+    "campers", "damage_floors", "paranormal", "trapdoor",
+    "licence_probe", "weapon_spread", "terminator_vision", "dj_mode",
+    "armor_guard", "headshots_only", "ice_floor",
+    "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
+    "killstreak", "boss_fight", "laugh_track",
+}) do
+  local e = chaos.effects[n]
+  if e then
+    e.alpha = true
+    e.w = 0
+  end
+end
+
 -- ------------------------------------------------------------- engine ------
 local function stop_effect(name)
   local e = chaos.effects[name]

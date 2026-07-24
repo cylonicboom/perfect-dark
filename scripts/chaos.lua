@@ -150,6 +150,11 @@ local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHA
 -- equals its hex-suffix sound id). Used by Giggle Bomb.
 local SFX_MAIAN_ARGH = { 0x05df, 0x05e0, 0x05e1 }
 
+-- Known-safe body model ids for chr_set_body / spawn_body (all already used by
+-- shipping effects). chr_set_body with head -1 auto-picks a valid head, so these
+-- never hit an unloaded/invalid head model. Used by Identity Crisis + Hydra.
+local BODIES_POOL = { 0x7b, 0x5c, 0x67, 0x5b, 0x56, 0x00, 0x90 }
+
 -- Play a one-shot external sound file from scripts/sounds/chaos/ (drop a
 -- <name>.wav or <name>.mp3 in). Non-looping, does NOT follow music. Used by the
 -- Mario/Sonic meme SFX (mariobig/mariosmall/sonicdrop).
@@ -1080,6 +1085,73 @@ chaos.effects = {
                      st.a_ice = nil
                      if pd.ice_floor then pd.ice_floor(1) end
                    end },
+  -- Hydra: every guard you kill splits into two more (spawned near you). Capped
+  -- so it escalates into a swarm without melting the sim. (kill hook.)
+  hydra        = { label="Hydra",             w=3, dur=1,
+                   start=function() st.a_hydra = { spawned = 0 } end,
+                   stop=function() st.a_hydra = nil end },
+  -- Identity Crisis: every few seconds every guard is reskinned to a random
+  -- body (head auto-picked, so it can't hit an invalid model). Bodies flicker
+  -- through Skedars, Bonds, Mr Blonde... nobody is who they were.
+  identity     = { label="Identity Crisis",   w=3, dur=20,
+                   start=function() if not pd.chr_set_body then error("needs new exe") end end,
+                   tick=function(left)
+                     if left % 90 == 0 then
+                       for _, c in ipairs(pd.all_chrs() or {}) do
+                         pd.chr_set_body(c, BODIES_POOL[math.random(#BODIES_POOL)], -1)
+                       end
+                     end
+                   end },
+  -- Breadcrumbs: the anti-camper. Linger in one room too long and you bleed;
+  -- keep crossing into new rooms to stay healthy. (roomenter resets the timer.)
+  breadcrumbs  = { label="Breadcrumbs",       w=3, dur=1,
+                   start=function() st.a_bread = { still = 0 } end,
+                   tick=function()
+                     local b = st.a_bread
+                     if not b then return end
+                     b.still = b.still + (pd.lvupdate and pd.lvupdate() or 1)
+                     if b.still > 180 then
+                       b.still = 120 -- keep the pressure: bleed again in ~1s
+                       pd.player_damage(0.08)
+                       pd.hud_message("CHAOS: keep moving!")
+                     end
+                   end,
+                   stop=function() st.a_bread = nil end },
+  -- Chain Reaction: every kill arcs an explosion to the nearest surviving enemy
+  -- (queued to the tick, never spawned in the death callback). Combo counter.
+  chain_react  = { label="Chain Reaction",    w=3, dur=1,
+                   start=function() st.a_chain = { combo = 0 } end,
+                   stop=function() st.a_chain = nil end },
+  -- Minefield Rooms: each room is randomly rigged the first time you enter it;
+  -- step into a live one and it detonates at your feet. (roomenter hook.)
+  minefield    = { label="Minefield Rooms",   w=3, dur=1,
+                   start=function() st.a_mine = { rooms = {} } end,
+                   stop=function() st.a_mine = nil end },
+  -- Killstreak: 5 kills without dropping the streak calls in an airstrike on
+  -- every enemy. (kill hook counts; queued booms.)
+  killstreak   = { label="Killstreak",        w=3, dur=1,
+                   start=function() st.a_streak = { n = 0 } end,
+                   stop=function() st.a_streak = nil end },
+  -- Boss Fight: one guard balloons to a giant, gets heavy body armour, and a
+  -- health bar rides the top of the screen. Take it down. (draw hook shows HP.)
+  boss_fight   = { label="Boss Fight",        w=2, dur=1,
+                   start=function()
+                     local list = pd.all_chrs() or {}
+                     if #list == 0 then error("no chrs") end
+                     local c = list[math.random(#list)]
+                     pd.chr_scale(c, 2.2)
+                     if pd.chr_armor then pd.chr_armor(c, 60) end
+                     st.a_boss = { chr = c, hp0 = (pd.chr_health and pd.chr_health(c)) or 1 }
+                     pd.hud_message("CHAOS: BOSS INCOMING")
+                   end,
+                   stop=function()
+                     if st.a_boss and st.a_boss.chr then pd.chr_scale(st.a_boss.chr, 1 / 2.2) end
+                     st.a_boss = nil
+                   end },
+  -- Laugh Track: a canned laugh plays on every kill (layers over the music now
+  -- that external sounds stack). Drop scripts/sounds/chaos/laugh.wav|mp3 in.
+  laugh_track  = { label="Laugh Track",       w=3, dur=20,
+                   start=function() end },
   -- Licence to Probe: every guard gets a random Bond tuxedo body and a Maian
   -- alien head (chr_set_body). Instant + permanent for the mission (no original
   -- to restore to); solo/missions only (Combat Sim returns 0).
@@ -3043,6 +3115,12 @@ local function reset_all_modes()
   st.a_para = nil           -- Paranormal Activity door/light phase (stop() restores)
   st.a_dj = nil             -- DJ speed-to-pitch tracker (stop() restores pitch)
   st.a_ice = nil            -- Ice Floor wipeout cooldown (stop() restores grip)
+  st.a_hydra = nil          -- Hydra spawn counter
+  st.a_bread = nil          -- Breadcrumbs linger timer
+  st.a_chain = nil          -- Chain Reaction combo counter
+  st.a_mine = nil           -- Minefield Rooms per-room rig map
+  st.a_streak = nil         -- Killstreak counter
+  st.a_boss = nil           -- Boss Fight target (stop() restores its scale)
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
@@ -3717,9 +3795,56 @@ pd.on("kill", function(chrnum, killerplayernum)
     st.a_suicide.chr = nil
     pd.hud_message("CHAOS: the bomber is down!")
   end
+  -- Laugh Track: a canned laugh on every death (layers over music thanks to the
+  -- external-voice pool).
+  if st.active.laugh_track then play_sound("laugh") end
   if killerplayernum ~= 0 then return end
   -- (gun_game / gun_game2 kill-advance blocks removed 2026-07-19 with the
   -- effects.)
+  -- Hydra: the corpse splits into two fresh guards near you (capped so it
+  -- swarms without melting the sim).
+  if st.active.hydra and st.a_hydra and st.a_hydra.spawned < 20 and pd.spawn_body then
+    local k
+    for k = 1, 2 do
+      local a = math.random() * 2 * math.pi
+      pd.spawn_body(BODIES_POOL[math.random(#BODIES_POOL)], -1, math.sin(a) * 180, math.cos(a) * 180)
+      st.a_hydra.spawned = st.a_hydra.spawned + 1
+    end
+  end
+  -- Chain Reaction: detonate the nearest surviving enemy (queued to the tick,
+  -- never inside this death callback). Combo counter.
+  if st.active.chain_react and st.a_chain then
+    local vx, vy, vz = pd.chr_pos(chrnum)
+    local best, bestd
+    for _, c in ipairs(pd.all_chrs() or {}) do
+      if c ~= chrnum then
+        local x, y, z = pd.chr_pos(c)
+        if x and vx then
+          local dx, dz = x - vx, z - vz
+          local d = dx * dx + dz * dz
+          if not bestd or d < bestd then best, bestd = c, d end
+        end
+      end
+    end
+    if best then
+      st.boom_queue = st.boom_queue or {}
+      st.boom_queue[#st.boom_queue + 1] = { chrnum = best, has = false }
+      st.a_chain.combo = (st.a_chain.combo or 0) + 1
+      pd.hud_message("CHAOS: chain x" .. st.a_chain.combo)
+    end
+  end
+  -- Killstreak: bank the kill; at 5, airstrike every enemy (queued booms).
+  if st.active.killstreak and st.a_streak then
+    st.a_streak.n = (st.a_streak.n or 0) + 1
+    if st.a_streak.n >= 5 then
+      st.a_streak.n = 0
+      st.boom_queue = st.boom_queue or {}
+      for _, c in ipairs(pd.all_chrs() or {}) do
+        st.boom_queue[#st.boom_queue + 1] = { chrnum = c, has = false }
+      end
+      pd.hud_message("CHAOS: AIRSTRIKE!")
+    end
+  end
 end)
 
 -- Room-enter hook: room-crossing-reactive effects.
@@ -3737,6 +3862,22 @@ pd.on("roomenter", function(room, fromroom)
     if d.rooms[room] == nil then d.rooms[room] = (math.random() < 0.4) end
     d.cur = room
     if d.rooms[room] then pd.hud_message("CHAOS: the floor is lava!") end
+  end
+  -- Breadcrumbs: crossing into a room resets the linger timer.
+  if st.active.breadcrumbs and st.a_bread then st.a_bread.still = 0 end
+  -- Minefield Rooms: rig each room once; a live one blows at your feet (queued).
+  if st.active.minefield and st.a_mine then
+    local m = st.a_mine
+    if m.rooms[room] == nil then m.rooms[room] = (math.random() < 0.35) end
+    if m.rooms[room] then
+      m.rooms[room] = false -- one-shot: defused after it blows
+      local x, y, z = pd.player_pos(0)
+      if x then
+        st.boom_queue = st.boom_queue or {}
+        st.boom_queue[#st.boom_queue + 1] = { x = x, y = y, z = z, has = true }
+        pd.hud_message("CHAOS: MINE!")
+      end
+    end
   end
 end)
 
@@ -3758,6 +3899,19 @@ local C_TEXT, C_BAR, C_BARBG, C_VOTE = 0xffffffff, 0x40c0ffff, 0x00000090, 0xffe
 
 pd.on("draw", function()
   local y = 4
+
+  -- Boss Fight health bar (top strip). chr_health returns nil once the boss is
+  -- gone -> the bar simply stops drawing.
+  if st.a_boss and st.a_boss.chr then
+    local hp = pd.chr_health and pd.chr_health(st.a_boss.chr)
+    if hp then
+      local frac = hp / (st.a_boss.hp0 or 1)
+      if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+      pd.draw_text(90, 14, "BOSS", 0xff5050ff)
+      pd.draw_box(90, 23, 140, 6, 0x000000a0)
+      pd.draw_box(90, 23, math.max(1, math.floor(140 * frac)), 6, 0xff5050ff)
+    end
+  end
 
   -- active timed effects, stable order
   if next(st.active) ~= nil then

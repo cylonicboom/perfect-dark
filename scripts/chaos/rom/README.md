@@ -8,6 +8,7 @@ Then trigger the **"Model Swap"** Chaos effect (Chaos Alpha menu / `/chaos
 trigger model_swap`): every character body + head is sourced from this ROM.
 Models swap as characters respawn.
 
-- Any filename works; the loader picks the first 32 MB file in this folder.
+- Any filename works; the loader picks the first ROM-sized file (>= 32 MB) in
+  this folder. Expanded total-conversion ROMs (e.g. 36 MB) are fine.
 - Nothing is committed to git from here (ROMs are gitignored).
 - No ROM here = the Model Swap effect is simply disabled (no error).

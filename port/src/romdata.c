@@ -246,8 +246,22 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 		romdataWrongRomError("Your ROM is in an archive file. Please extract it.");
 	}
 
-	if (romSize != ROMDATA_ROM_SIZE) {
-		romdataWrongRomError("ROM size does not match: expected: %u, got: %u.", ROMDATA_ROM_SIZE, romSize);
+	if (requireHeader) {
+		// base ROM: must be exactly the stock size
+		if (romSize != ROMDATA_ROM_SIZE) {
+			romdataWrongRomError("ROM size does not match: expected: %u, got: %u.", ROMDATA_ROM_SIZE, romSize);
+		}
+	} else {
+		// chain / model-swap overlay ROMs: total conversions commonly EXPAND the
+		// ROM past the stock 32MB (appended model/texture data). Accept anything
+		// at least stock-sized; reject only a truncated ROM. The data segment and
+		// file table are still read at their stock offsets below, so a mod that
+		// RELOCATED those will fail the 1173 check with a clear message.
+		if (romSize < ROMDATA_ROM_SIZE) {
+			romdataWrongRomError("ROM too small: expected at least %u, got: %u.", ROMDATA_ROM_SIZE, romSize);
+		} else if (romSize != ROMDATA_ROM_SIZE) {
+			sysLogPrintf(LOG_WARNING, "chain/overlay ROM is %u bytes (stock %u) — expanded mod, loading anyway", romSize, ROMDATA_ROM_SIZE);
+		}
 	}
 
 	if (memcmp(rom + 0x3b, ROMDATA_ROM_ID, 4) || memcmp(rom + 0x20, ROMDATA_ROM_TITLE, sizeof(ROMDATA_ROM_TITLE) - 1)) {
@@ -965,11 +979,13 @@ s32 romdataLoadModelRom(const char *path)
 		return 0;
 	}
 
-	if (fsFileSize(path) == (s32)ROMDATA_ROM_SIZE) {
+	// A ROM is at least the stock 32MB; expanded total conversions (e.g. a Mario
+	// model pack) are larger, so accept anything >= stock size.
+	if (fsFileSize(path) >= (s32)ROMDATA_ROM_SIZE) {
 		// path is the ROM file itself
 		snprintf(filepath, sizeof(filepath), "%s", path);
 	} else {
-		// treat path as a directory; pick the first ROM-sized file in it
+		// treat path as a directory; pick the first ROM-sized (>= stock) file
 		DIR *dr = opendir(path);
 		struct dirent *de;
 
@@ -980,7 +996,7 @@ s32 romdataLoadModelRom(const char *path)
 		while ((de = readdir(dr)) != NULL) {
 			char cand[FS_MAXPATH + 1];
 			snprintf(cand, sizeof(cand), "%s/%s", path, de->d_name);
-			if (fsFileSize(cand) == (s32)ROMDATA_ROM_SIZE) {
+			if (fsFileSize(cand) >= (s32)ROMDATA_ROM_SIZE) {
 				snprintf(filepath, sizeof(filepath), "%s", cand);
 				break;
 			}

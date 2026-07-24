@@ -5490,6 +5490,23 @@ static void luaDirectorFillByKind(struct menuitem *dst, s32 regidx)
 	}
 }
 
+// Fill a SELECTABLE row that opens submenu `subidx` when chosen. The child
+// dialogdef rides the handler field; MENUITEMFLAG_SELECTABLE_OPENSDIALOG makes
+// the menu push it (menuitem.c menuPushDialog) instead of calling it as a
+// handler — and MENUOP_FOCUS is never dispatched to OPENSDIALOG rows, so the
+// dialogdef pointer is never mistaken for a function.
+static void luaDirectorFillOpener(struct menuitem *dst, s32 subidx)
+{
+	dst->type = MENUITEMTYPE_SELECTABLE;
+	dst->param = 0;
+	dst->flags = MENUITEMFLAG_SELECTABLE_OPENSDIALOG
+			| MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
+	dst->param2 = (uintptr_t)g_LuaSubmenuTitles[subidx];
+	dst->param3 = 0;
+	dst->handler =
+			(uintptr_t (*)(s32, struct menuitem *, union handlerdata *))&g_LuaSubmenuDialogs[subidx];
+}
+
 // Find the group with this full path, creating it (and any '/'-separated
 // ancestor prefixes) if absent. Returns the group index, or -1 if the submenu
 // table is full. Recurses once per nesting level to resolve the parent.
@@ -5547,14 +5564,10 @@ void luaDirectorRebuild(void)
 	s32 i;
 	s32 w = 0; // root write cursor
 	s32 numsubs = 0;
-	s32 subwrite[LUA_DIRECTOR_MAX_SUBMENUS];
+	u8 haschildren[LUA_DIRECTOR_MAX_SUBMENUS];
 
 	if (n > LUA_MENU_MAX) {
 		n = LUA_MENU_MAX;
-	}
-
-	for (i = 0; i < LUA_DIRECTOR_MAX_SUBMENUS; i++) {
-		subwrite[i] = 0;
 	}
 
 	// Pass 1: discover every group (+ ancestors) so indices/parents are fixed
@@ -5566,46 +5579,23 @@ void luaDirectorRebuild(void)
 		}
 	}
 
-	// Pass 2: openers first — each group's opener goes at the TOP of its parent
-	// (the root list when parent == -1), so submenus sit above leaf entries.
-	// SELECTABLE_OPENSDIALOG reads the child dialog from the handler field (see
-	// menuitem.c menuPushDialog((menudialogdef *)item->handler)).
+	// A group is a CONTAINER if some other group nests inside it. Containers show
+	// their direct members as individual widget rows (real checkbox/slider) plus
+	// openers for their child folders; childless (LEAF) groups collapse into one
+	// scrollable LIST box. This lets "Chaos" hold the master checkbox + timer
+	// sliders AND the Effects/Fire/Alpha sub-folders in one submenu.
+	for (i = 0; i < LUA_DIRECTOR_MAX_SUBMENUS; i++) {
+		haschildren[i] = 0;
+	}
 	for (i = 0; i < numsubs; i++) {
-		struct menuitem *dst;
-		s32 parent = g_LuaSubmenuParent[i];
-
-		if (parent < 0) {
-			dst = &g_LuaDirectorMenuItems[w];
-			w++;
-		} else if (subwrite[parent] < LUA_MENU_MAX) {
-			dst = &g_LuaSubmenuItems[parent][subwrite[parent]];
-			subwrite[parent]++;
-		} else {
-			continue;
-		}
-
-		dst->type = MENUITEMTYPE_SELECTABLE;
-		dst->param = 0;
-		dst->flags = MENUITEMFLAG_SELECTABLE_OPENSDIALOG
-				| MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_BIGFONT;
-		dst->param2 = (uintptr_t)g_LuaSubmenuTitles[i];
-		dst->param3 = 0;
-		dst->handler =
-				(uintptr_t (*)(s32, struct menuitem *, union handlerdata *))&g_LuaSubmenuDialogs[i];
-	}
-
-	// Pass 3: UNGROUPED entries render as individual rows at the root (master
-	// checkbox, sliders). GROUPED entries are collected per group into
-	// g_LuaGroupReg — each group becomes ONE scrollable LIST box in Pass 4, not a
-	// wall of rows, so its pinned description works.
-	(void)subwrite;
-	for (i = 0; i < n; i++) {
-		const char *g = luaMenuGroup(i);
-		if (g == NULL || g[0] == '\0') {
-			luaDirectorFillByKind(&g_LuaDirectorMenuItems[w], i);
-			w++;
+		s32 p = g_LuaSubmenuParent[i];
+		if (p >= 0 && p < LUA_DIRECTOR_MAX_SUBMENUS) {
+			haschildren[p] = 1;
 		}
 	}
+
+	// Collect each group's DIRECT members (exact-path match — an entry in
+	// "Chaos/Effects" maps to that group, not to "Chaos") into g_LuaGroupReg.
 	{
 		s32 grp, cursor = 0;
 		for (grp = 0; grp < numsubs; grp++) {
@@ -5621,14 +5611,49 @@ void luaDirectorRebuild(void)
 		}
 	}
 
-	// Pass 4: each group's OWN dialog = one LIST box + a pinned MARQUEE
-	// description + Back. The root gets a MARQUEE + Back after its individual
-	// rows. The LIST scrolls internally so the MARQUEE sits pinned below it.
+	// Build each group's OWN dialog. Container = direct member rows + child
+	// openers; leaf = one LIST box. Both end with a pinned MARQUEE + Back. The
+	// LIST scrolls internally (and the widget rows scroll via SMOOTHSCROLLABLE)
+	// so the MARQUEE stays pinned below.
 	for (i = 0; i < numsubs; i++) {
-		luaDirectorFillList(&g_LuaSubmenuItems[i][0], i);
-		luaDirectorFillMarquee(&g_LuaSubmenuItems[i][1]);
-		luaDirectorFillBack(&g_LuaSubmenuItems[i][2]);
-		g_LuaSubmenuItems[i][3].type = MENUITEMTYPE_END;
+		s32 c = 0;
+
+		if (haschildren[i]) {
+			s32 m;
+			s32 sub;
+
+			for (m = 0; m < g_LuaGroupCount[i] && c < LUA_MENU_MAX; m++) {
+				luaDirectorFillByKind(&g_LuaSubmenuItems[i][c++],
+						g_LuaGroupReg[g_LuaGroupStart[i] + m]);
+			}
+			for (sub = 0; sub < numsubs && c < LUA_MENU_MAX; sub++) {
+				if (g_LuaSubmenuParent[sub] == i) {
+					luaDirectorFillOpener(&g_LuaSubmenuItems[i][c++], sub);
+				}
+			}
+		} else {
+			luaDirectorFillList(&g_LuaSubmenuItems[i][c++], i);
+		}
+
+		luaDirectorFillMarquee(&g_LuaSubmenuItems[i][c++]);
+		luaDirectorFillBack(&g_LuaSubmenuItems[i][c++]);
+		g_LuaSubmenuItems[i][c].type = MENUITEMTYPE_END;
+	}
+
+	// Root dialog: UNGROUPED entries as individual widget rows, then openers for
+	// root-level (parent == -1) groups, then the pinned MARQUEE + Back.
+	for (i = 0; i < n; i++) {
+		const char *g = luaMenuGroup(i);
+		if (g == NULL || g[0] == '\0') {
+			luaDirectorFillByKind(&g_LuaDirectorMenuItems[w], i);
+			w++;
+		}
+	}
+	for (i = 0; i < numsubs; i++) {
+		if (g_LuaSubmenuParent[i] < 0) {
+			luaDirectorFillOpener(&g_LuaDirectorMenuItems[w], i);
+			w++;
+		}
 	}
 
 	luaDirectorFillMarquee(&g_LuaDirectorMenuItems[w]);

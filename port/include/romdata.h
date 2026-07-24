@@ -8,6 +8,15 @@ extern u32 g_RomFileSize;
 extern const char *g_RomName;
 extern s32 g_ChainRomActive;
 
+// Chaos live model swap (see romdata.c). g_ModelRomActive: an overlay ROM is
+// loaded. g_ModelSwapActive: character models are currently sourced from it.
+// g_ModelSwapFiles[fileNum] != 0 flags a file for redirection. The game side
+// (body.c modelSwapSetActive) owns these.
+extern s32 g_ModelRomActive;
+extern s32 g_ModelSwapActive;
+extern u8 g_ModelSwapFiles[];
+s32 romdataChainFileGetNumForName(const char *name);
+
 s32 romdataInit(void);
 
 u8 *romdataFileLoad(s32 fileNum, u32 *outSize);

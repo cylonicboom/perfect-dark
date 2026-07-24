@@ -68,6 +68,17 @@ static u32 chainRomFileSize;
 static u8 *chainDataSeg;
 static u32 chainDataSegSize;
 
+// Chaos live model swap: an OVERLAY ROM is a second full PD ROM whose file table
+// is loaded into the MOD_CHAINROM slot WITHOUT switching the active slot (unlike
+// --mod-rom, which locks g_ModNum to MOD_CHAINROM). While g_ModelSwapActive is
+// set, character-model files flagged in g_ModelSwapFiles are sourced from that
+// overlay by NAME (so a mod that reordered its file table still resolves). Model
+// files embed their own textures (CT_TEXDATA), so geometry + textures swap
+// together. See docs / port_net_predict changes.
+s32 g_ModelRomActive = 0;                     // overlay ROM loaded, base slot still active
+s32 g_ModelSwapActive = 0;                    // sourcing flagged models from the overlay now
+u8 g_ModelSwapFiles[ROMDATA_MAX_FILES] = { 0 }; // per-file: 1 = redirect to the overlay when active
+
 static u8 *romDataSeg;
 static u32 romDataSegSize;
 
@@ -913,6 +924,21 @@ s32 romdataInit(void)
 		romdataChainImportHeadsAndBodies();
 	}
 
+	// Chaos model-swap OVERLAY ROM (mutually exclusive with --mod-rom): load a
+	// second full PD ROM's file table into MOD_CHAINROM but keep the base slot
+	// active. Nothing is redirected until g_ModelSwapActive is set (the Chaos
+	// effect). Same-region requirement as the chain ROM, but name-matched at
+	// lookup so a reordered mod table still resolves.
+	if (!g_ChainRomActive) {
+		const char *modelRomName = sysArgGetString("--model-rom");
+		if (modelRomName) {
+			romdataLoadRomFile(modelRomName, &chainRomFile, &chainRomFileSize, &chainDataSeg, &chainDataSegSize, false);
+			romdataInitChainFiles();
+			g_ModelRomActive = 1;
+			sysLogPrintf(LOG_NOTE, "romdataInit: model-swap overlay ROM loaded: %s", modelRomName);
+		}
+	}
+
 	videoSetTaskbarProgress(VIDEO_TASKBAR_NONE, 0.f);
 
 	sysLogPrintf(LOG_NOTE, "romdataInit: loaded rom, size = %u", g_RomFileSize);
@@ -1021,6 +1047,20 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 		if (fileSlots[g_ModNum][fileNum].source == SRC_UNLOADED) {
 			// tried and failed, fall back to ROM
 			fileSlots[g_ModNum][fileNum].source = SRC_ROM;
+		}
+	}
+
+	// Chaos live model swap: source flagged character-model files from the
+	// overlay ROM, matched by NAME (a reordered mod file table still resolves).
+	// Returns the overlay's compressed bytes; the caller inflates + preprocesses
+	// them under the BASE file id, so texture/ext_tex linkage stays correct.
+	if (!out && g_ModelSwapActive && g_ModelRomActive && g_ModelSwapFiles[fileNum]) {
+		const s32 cn = romdataChainFileGetNumForName(fileSlots[g_ModNum][fileNum].name);
+		if (cn > 0 && fileSlots[MOD_CHAINROM][cn].data) {
+			if (outSize) {
+				*outSize = fileSlots[MOD_CHAINROM][cn].size;
+			}
+			return fileSlots[MOD_CHAINROM][cn].data;
 		}
 	}
 
@@ -1144,6 +1184,23 @@ s32 romdataFileGetNumForName(const char *name)
 
 	for (s32 i = 0; i < ROMDATA_MAX_FILES; ++i) {
 		if (fileSlots[g_ModNum][i].name && !strcmp(fileSlots[g_ModNum][i].name, name)) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+// Same as romdataFileGetNumForName but searches the overlay (MOD_CHAINROM) table
+// — used to resolve a base model file to the overlay ROM's same-named file.
+s32 romdataChainFileGetNumForName(const char *name)
+{
+	if (!name || !name[0]) {
+		return -1;
+	}
+
+	for (s32 i = 0; i < ROMDATA_MAX_FILES; ++i) {
+		if (fileSlots[MOD_CHAINROM][i].name && !strcmp(fileSlots[MOD_CHAINROM][i].name, name)) {
 			return i;
 		}
 	}

@@ -182,17 +182,66 @@ extern s32 g_ModelRomActive;   // an overlay ROM (--model-rom) is loaded
 extern s32 g_ModelSwapActive;  // character models sourced from the overlay now
 extern u8 g_ModelSwapFiles[];  // per-file: redirect this file to the overlay
 
+// Rebuild every currently-spawned chr's body+head model IN PLACE, so the swap
+// takes effect immediately instead of only on respawn. For each live non-player
+// chr: allocate a fresh model (which now loads from the overlay or base per
+// g_ModelSwapActive), re-link it with chr0f020b14 — which SKIPS chrInit for an
+// existing chr, so health/AI/inventory are preserved (it re-grounds the chr and
+// resets to the idle pose) — then free the old model the same way chr death
+// does (modelmgrFreeModel handles the attached weapon). Corpses and the player
+// are skipped. Called at effect toggle from the Lua tick (after tick, before
+// render), which is a safe boundary.
+static void modelSwapRebuildLiveChrs(void)
+{
+	s32 i;
+
+	if (g_ChrSlots == NULL) {
+		return;
+	}
+
+	for (i = 0; i < g_NumChrSlots; i++) {
+		struct chrdata *chr = &g_ChrSlots[i];
+		struct model *old;
+		struct model *neu;
+		struct coord pos;
+		RoomNum rooms[8];
+		f32 faceangle;
+
+		if (chr->prop == NULL || chr->model == NULL) {
+			continue; // no live model
+		}
+		if (chr->prop->type != PROPTYPE_CHR) {
+			continue; // players / non-chr props handled elsewhere
+		}
+		if (chrIsDead(chr)) {
+			continue; // leave corpses as they are
+		}
+
+		old = chr->model;
+		faceangle = chrGetInverseTheta(chr);
+		pos.x = chr->prop->pos.x;
+		pos.y = chr->prop->pos.y;
+		pos.z = chr->prop->pos.z;
+		roomsCopy(chr->prop->rooms, rooms);
+
+		neu = bodyAllocateModel(chr->bodynum, chr->headnum, 0);
+		if (neu) {
+			chr0f020b14(chr->prop, neu, &pos, rooms, faceangle, NULL);
+			modelmgrFreeModel(old);
+		}
+		// if neu is NULL (out of model slots / missing file) keep the old model
+	}
+}
+
 // Turn the Chaos character-model swap on/off. Flags every character body/head
-// (and first-person hands) file for redirection to the overlay ROM, then
-// invalidates the shared modeldef cache + drops the file cache so the NEXT load
-// of each body/head re-reads — from the overlay when on, the base ROM when off.
+// (and first-person hands) file for redirection to the overlay ROM, invalidates
+// the shared modeldef cache + drops the file cache so the NEXT load of each
+// body/head re-reads (overlay when on, base when off), then rebuilds every live
+// chr in place so the swap is visible immediately (Phase 2), not just on respawn.
 //
-// SAFE by construction: it only NULLs the cache pointers; the old modeldef bytes
-// are NOT freed, so every already-spawned chr keeps rendering its current model
-// (no dangling chr->model->definition) and picks up the swap the next time it is
-// (re)loaded — i.e. on respawn, which in Combat Sim is seconds. The old modeldefs
-// leak into MEMPOOL_STAGE until stage end; we only invalidate on an actual state
-// change to keep that bounded across repeated effect toggles.
+// Only invalidates/rebuilds on an actual state change to bound the per-toggle
+// MEMPOOL_STAGE modeldef leak (nulling the cache without freeing keeps existing
+// pointers valid; the live rebuild frees each chr's OLD instance as it goes).
 void modelSwapSetActive(bool on)
 {
 	s32 i;
@@ -228,6 +277,9 @@ void modelSwapSetActive(bool on)
 				g_FileInfo[g_HeadsAndBodies[i].handfilenum].loadedsize = 0;
 			}
 		}
+
+		// Immediately swap everyone already on screen.
+		modelSwapRebuildLiveChrs();
 	}
 }
 

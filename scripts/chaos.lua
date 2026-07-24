@@ -146,6 +146,9 @@ local BODY = { MINISKEDAR=0x7b, SKEDAR=0x5c, THEKING=0x67, SKEDARKING=0x93,
 local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHARS=11,
   ENEMYSHIELDS=12, JOSHIELD=13, SUPERSHIELD=14, TEAMHEADS=16, ELVIS=17,
   ENEMYROCKETS=18, MARQUIS=20, GOLDENEYE=45, WIREFRAME=46, MIRROR=47, TONAL=48 }
+-- Maian "argh" hit/death yelps (sfx.h SFX_ARGH_MAIAN_05DF..05E1; each enum value
+-- equals its hex-suffix sound id). Used by Giggle Bomb.
+local SFX_MAIAN_ARGH = { 0x05df, 0x05e0, 0x05e1 }
 
 -- Non-gameplay stages where Chaos must stay dormant: the Carrington Institute
 -- main-menu hub plus the title / boot / credits menus (src/include/constants.h).
@@ -884,6 +887,82 @@ chaos.effects = {
                    stop=function()
                      pd.player_freeze(false)
                      if pd.chr_freeze then pd.chr_freeze(false) end
+                   end },
+  -- Giggle Bomb: every defeated enemy yelps a Maian "argh" and detonates. The
+  -- boom + sound are QUEUED from the kill hook and fired from the main tick
+  -- (spawning a prop inside the death callback is the re-entrancy that broke
+  -- earlier effects — see the kill hook + boom_queue drain).
+  giggle_bomb  = { label="The Giggle Bomb",   w=4, dur=1,
+                   start=function() end },
+  -- Suicide Bomber: one random guard is a walking bomb; killing them triggers a
+  -- massive blast (take them from range, or Butterfingers/disarm to defuse).
+  -- The bomber is picked at start and its death is watched in the kill hook.
+  suicide_bomb = { label="Suicide Bomber",    w=3, dur=1,
+                   start=function()
+                     local list = pd.all_chrs() or {}
+                     if #list == 0 then error("no chrs") end
+                     st.a_suicide = { chr = list[math.random(#list)] }
+                     pd.hud_message("CHAOS: one of them is a walking bomb...")
+                   end,
+                   stop=function() st.a_suicide = nil end },
+  -- Mario Mode: get shot once and you shrink (Small Jo); get shot again and you
+  -- die. Hits are detected as drops in player health (shield-first damage may
+  -- mask a hit — same limitation as Enemy LTK).
+  mario_mode   = { label="Mario Mode",        w=3, dur=1,
+                   start=function() st.a_mario = { h = pd.player_health(), hits = 0 } end,
+                   tick=function()
+                     local m = st.a_mario
+                     if not m then return end
+                     local h = pd.player_health()
+                     if h and m.h and h < m.h - 0.005 then
+                       m.hits = m.hits + 1
+                       if m.hits >= 2 then
+                         pd.player_damage(100)
+                       else
+                         pd.cheat(CHEAT.SMALLJO, true)
+                         pd.hud_message("CHAOS: it's-a small time!")
+                       end
+                     end
+                     m.h = h
+                   end,
+                   stop=function()
+                     st.a_mario = nil
+                     pd.cheat(CHEAT.SMALLJO, false)
+                   end },
+  -- Sonic Mode: get shot once and you lose your whole arsenal; get shot again
+  -- and you die. v1 stows the weapons (restored on stop) rather than tossing
+  -- them as collectable pickups — the physical throw-and-recollect needs a new
+  -- weapon-pickup spawn binding (take_weapon only deletes). So there's nothing
+  -- to recollect yet, and the second hit is always lethal.
+  sonic_mode   = { label="Sonic Mode",        w=3, dur=1,
+                   start=function() st.a_sonic = { h = pd.player_health(), hits = 0 } end,
+                   tick=function()
+                     local s = st.a_sonic
+                     if not s then return end
+                     local h = pd.player_health()
+                     if h and s.h and h < s.h - 0.005 then
+                       s.hits = s.hits + 1
+                       if s.hits >= 2 then
+                         pd.player_damage(100)
+                       else
+                         s.weps = {}
+                         for _, w in ipairs(GUNS) do
+                           if pd.has_weapon and pd.has_weapon(w) then
+                             s.weps[#s.weps + 1] = w
+                             pd.take_weapon(w)
+                           end
+                         end
+                         pd.switch_weapon(W.UNARMED)
+                         pd.hud_message("CHAOS: you lost your rings!")
+                       end
+                     end
+                     s.h = h
+                   end,
+                   stop=function()
+                     if st.a_sonic and st.a_sonic.weps then
+                       for _, w in ipairs(st.a_sonic.weps) do pd.give_weapon(w) end
+                     end
+                     st.a_sonic = nil
                    end },
   take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
                    start=function() pd.player_freeze(true) end,
@@ -2762,6 +2841,10 @@ local function reset_all_modes()
   st.misfire_armed = false
   st.switch_want = nil
   st.martyr_queue = nil
+  st.boom_queue = nil       -- Giggle Bomb / Suicide Bomber pending explosions
+  st.a_suicide = nil        -- Suicide Bomber marked-guard watch
+  st.a_mario = nil          -- Mario Mode hit-count FSM (stop() clears SMALLJO)
+  st.a_sonic = nil          -- Sonic Mode hit-count FSM (stop() restores weapons)
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
@@ -3137,6 +3220,29 @@ pd.on("tick", function()
     st.martyr_queue = nil
   end
 
+  -- Giggle Bomb / Suicide Bomber: fire the queued death-explosions here (never
+  -- inside the kill callback). Giggle also plays a Maian yelp; Suicide adds a
+  -- ring of extra blasts for a "massive" detonation.
+  if st.boom_queue then
+    for _, b in ipairs(st.boom_queue) do
+      if b.sound and pd.sound then
+        pd.sound(SFX_MAIAN_ARGH[math.random(#SFX_MAIAN_ARGH)])
+      end
+      if b.has then
+        pd.explosion_at(b.x, b.y, b.z)
+        if b.big then
+          pd.explosion_at(b.x + 90, b.y, b.z)
+          pd.explosion_at(b.x - 90, b.y, b.z)
+          pd.explosion_at(b.x, b.y, b.z + 90)
+          pd.explosion_at(b.x, b.y, b.z - 90)
+        end
+      elseif b.chrnum then
+        pd.explosion(b.chrnum)
+      end
+    end
+    st.boom_queue = nil
+  end
+
   -- Weeping Skedar: the view-cone statue logic — runs while the stalker
   -- lives, independent of any effect timer (the spawn is a one-off).
   -- Frozen while inside a ~40-degree half-cone of the player's facing.
@@ -3394,6 +3500,24 @@ pd.on("kill", function(chrnum, killerplayernum)
     st.martyr_queue = st.martyr_queue or {}
     st.martyr_queue[#st.martyr_queue + 1] =
         { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil) }
+  end
+  -- Giggle Bomb: every death yelps + explodes. Queue it (same re-entrancy rule
+  -- as martyrdom) — the boom_queue drain in the tick handler fires it.
+  if st.active.giggle_bomb then
+    local x, y, z = pd.chr_pos(chrnum)
+    st.boom_queue = st.boom_queue or {}
+    st.boom_queue[#st.boom_queue + 1] =
+        { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil), sound = true }
+  end
+  -- Suicide Bomber: the marked guard's death is a massive blast. Queue it and
+  -- clear the mark so it only fires once.
+  if st.active.suicide_bomb and st.a_suicide and chrnum == st.a_suicide.chr then
+    local x, y, z = pd.chr_pos(chrnum)
+    st.boom_queue = st.boom_queue or {}
+    st.boom_queue[#st.boom_queue + 1] =
+        { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil), big = true }
+    st.a_suicide.chr = nil
+    pd.hud_message("CHAOS: the bomber is down!")
   end
   if killerplayernum ~= 0 then return end
   -- (gun_game / gun_game2 kill-advance blocks removed 2026-07-19 with the

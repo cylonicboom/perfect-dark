@@ -2888,6 +2888,22 @@ static int l_pd_aim_chr(lua_State *L)
 	return 1;
 }
 
+/* pd.aim_screen() -> x, y | nil. The local player's aim reticle position in the
+ * lo-res HUD/overlay space (the same ~320x220 coords pd.draw_* / pd.draw_box
+ * use). nil when there is no live pawn (menus / cutscene). crosspos[0] is stored
+ * in g_ScaleX-scaled units, so it is divided back to virtual space to match
+ * sightDrawDefault; crosspos[1] is already virtual. */
+static int l_pd_aim_screen(lua_State *L)
+{
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushnumber(L, g_Vars.currentplayer->crosspos[0] / (f32)(g_ScaleX ? g_ScaleX : 1));
+	lua_pushnumber(L, g_Vars.currentplayer->crosspos[1]);
+	return 2;
+}
+
 /* pd.vertex_wobble([amp, freq, phase, sag, desync]) -> bool. "Jelly"/"Acid":
  * deform every vertex in eye space by sines of position. amp world units
  * (0/absent = off), freq radians per world unit, phase the animation angle
@@ -3553,6 +3569,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_music_bpm);     lua_setfield(L, -2, "music_bpm");
 	lua_pushcfunction(L, l_pd_music_beat);    lua_setfield(L, -2, "music_beat");
 	lua_pushcfunction(L, l_pd_aim_chr);       lua_setfield(L, -2, "aim_chr");
+	lua_pushcfunction(L, l_pd_aim_screen);    lua_setfield(L, -2, "aim_screen");
 	lua_pushcfunction(L, l_pd_vertex_wobble); lua_setfield(L, -2, "vertex_wobble");
 	lua_pushcfunction(L, l_pd_hall_of_mirrors); lua_setfield(L, -2, "hall_of_mirrors");
 	lua_pushcfunction(L, l_pd_lens);          lua_setfield(L, -2, "lens");

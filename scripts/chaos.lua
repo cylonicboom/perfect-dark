@@ -1695,6 +1695,34 @@ local function task_random(nofire, strict)
   return task_new(pool[math.random(#pool)])
 end
 
+-- ---- Touchscreen Calibration helpers (shared by the effect tick + the HUD
+-- draw pass). The HUD 2D space is 320x220 (see the DVD/blooper effects). Five
+-- calibration targets: the four corners + the centre. --------------------------
+local TOUCH_POS = {
+  { 28, 28 }, { 292, 28 }, { 28, 192 }, { 292, 192 }, { 160, 110 },
+}
+local TOUCH_R = 11             -- drawn disc radius (virtual px)
+local TOUCH_HIT_R2 = 17 * 17   -- aim hit-test radius^2 (a touch forgiving)
+local TOUCH_TICKS = 3 * TICKS  -- time budget per target
+
+-- Fisher-Yates shuffle of {1..5} — a fresh random target order.
+local function touch_shuffle()
+  local t = { 1, 2, 3, 4, 5 }
+  for i = #t, 2, -1 do
+    local j = math.random(i)
+    t[i], t[j] = t[j], t[i]
+  end
+  return t
+end
+
+-- Filled disc via horizontal scanlines (there's no native circle primitive).
+local function draw_disc(cx, cy, r, color)
+  for dyi = -r, r do
+    local dx = math.floor(math.sqrt(r * r - dyi * dyi) + 0.5)
+    if dx > 0 then pd.draw_box(cx - dx, cy + dyi, dx * 2, 1, color) end
+  end
+end
+
 local alpha_effects = {
   -- Hurricane v2: much smaller gust force, repeated through the effect, plus
   -- storm weather for the duration. (Faster weather animation needs C.)
@@ -3049,6 +3077,54 @@ local alpha_effects = {
                    st.super_window = st.effectdur * TICKS -- flush after one Effect Duration
                    st.enabled = true
                  end },
+
+  -- Touchscreen Calibration: a DS-style target drill. One circle appears at a
+  -- time — the four corners + centre, in random order — and you aim the reticle
+  -- onto it before its per-target timer runs out. The 2nd miss is a warning and
+  -- forces a fresh random order (a recalibration); from the 3RD miss on, every
+  -- miss chips your health. Runs for one Effect Duration. The reticle only reaches
+  -- the corners in free-aim, so it's a real "hold R and point" task. Needs
+  -- pd.aim_screen (new exe); the circles are drawn in the HUD draw pass.
+  touch_cal = { label="Touchscreen Calibration", dur=1,
+                start=function()
+                  if not pd.aim_screen then error("needs new exe") end
+                  st.a_touch = { order = touch_shuffle(), idx = 1, misses = 0,
+                                 deadline = nil, flash = 0 }
+                  pd.hud_message("CHAOS: calibrate the touchscreen — aim at the circles")
+                end,
+                tick=function(left)
+                  local a = st.a_touch
+                  if not a then return end
+                  if a.flash > 0 then a.flash = a.flash - 1 end
+                  local cx, cy = pd.aim_screen()
+                  if not cx then a.deadline = left - TOUCH_TICKS; return end -- no reticle: hold the clock
+                  if a.deadline == nil then a.deadline = left - TOUCH_TICKS end
+                  local tp = TOUCH_POS[a.order[a.idx]]
+                  local dx, dy = cx - tp[1], cy - tp[2]
+                  if dx * dx + dy * dy <= TOUCH_HIT_R2 then
+                    -- HIT: on to the next target (reshuffle after a full round of 5)
+                    a.flash = 5
+                    a.idx = a.idx + 1
+                    if a.idx > #a.order then a.order = touch_shuffle(); a.idx = 1 end
+                    a.deadline = left - TOUCH_TICKS
+                  elseif left <= a.deadline then
+                    -- MISS: escalate
+                    a.misses = a.misses + 1
+                    if a.misses >= 3 then
+                      pd.player_damage(0.9)
+                      pd.hud_message("CALIBRATION ERROR - hold still! (miss " .. a.misses .. ")")
+                    end
+                    if a.misses == 2 then
+                      pd.hud_message("CALIBRATION FAILED - recalibrating")
+                      a.order = touch_shuffle(); a.idx = 1 -- force a randomisation reset
+                    else
+                      a.idx = a.idx + 1
+                      if a.idx > #a.order then a.order = touch_shuffle(); a.idx = 1 end
+                    end
+                    a.deadline = left - TOUCH_TICKS
+                  end
+                end,
+                stop=function() st.a_touch = nil end },
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -3108,7 +3184,7 @@ for _, n in ipairs({
     "armor_guard", "headshots_only", "ice_floor",
     "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
     "killstreak", "boss_fight", "laugh_track",
-    "worst_day", "supersonic",
+    "worst_day", "supersonic", "touch_cal",
 }) do
   local e = chaos.effects[n]
   if e then
@@ -3249,6 +3325,7 @@ local function reset_all_modes()
   st.a_boom_off = nil
   st.a_bloop, st.a_twoh = nil
   st.a_ltk, st.a_run, st.a_cap, st.a_rr = nil
+  st.a_touch = nil -- Touchscreen Calibration target drill
   st.a_classic, st.a_angst, st.a_phone, st.a_count = nil
   st.a_objf, st.a_thief, st.a_cd, st.a_roll = nil
   st.a_quiz, st.a_eula, st.a_quad = nil
@@ -4085,6 +4162,19 @@ pd.on("draw", function()
 
   -- (game_over now opens the real engine mission-failed dialog — no painted
   -- overlay needed.)
+
+  -- Touchscreen Calibration: the current target circle (green flash on a hit,
+  -- red otherwise) + a white centre dot, plus a miss tally.
+  if st.active.touch_cal and st.a_touch and pd.draw_box then
+    local a = st.a_touch
+    local tp = TOUCH_POS[a.order[a.idx]]
+    if tp then
+      draw_disc(tp[1], tp[2], TOUCH_R, (a.flash > 0) and 0x40ff40ff or 0xff4040ff)
+      draw_disc(tp[1], tp[2], 4, 0xffffffff)
+    end
+    centered_text(18, "TOUCHSCREEN CALIBRATION", 0xffffffff)
+    centered_text(28, "misses " .. a.misses .. "  (warn 2 / damage 3+)", 0xffd040ff)
+  end
 
   -- CAPTCHA: the verification demand + the live task instruction.
   if st.active.captcha and st.a_cap and st.a_cap.task and not st.a_cap.done then

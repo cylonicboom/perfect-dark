@@ -11060,7 +11060,7 @@ f32 chraiLuaPlayerHealth(void)
 	return g_Vars.currentplayer->bondhealth;
 }
 
-/ pd.player_shield(): the local player's current shield fraction (0..1).
+// pd.player_shield(): the local player's current shield fraction (0..1).
 f32 chraiLuaPlayerShield(void)
 {
 	if (apLuaPlayerChr() == NULL) {
@@ -11069,7 +11069,7 @@ f32 chraiLuaPlayerShield(void)
 	return playerGetShieldFrac();
 }
 
-/ pd.player_reloading(): true while either hand is in the reload state.
+// pd.player_reloading(): true while either hand is in the reload state.
 s32 chraiLuaPlayerReloading(void)
 {
 	if (apLuaPlayerChr() == NULL) {
@@ -11079,7 +11079,7 @@ s32 chraiLuaPlayerReloading(void)
 			|| g_Vars.currentplayer->hands[HAND_LEFT].state == HANDSTATE_RELOAD) ? 1 : 0;
 }
 
-/ pd.player_activate(): true this frame if the use/activate button is held
+// pd.player_activate(): true this frame if the use/activate button is held
 // (opening a door / interacting). Mirrors lv.c's JO_ACTION_ACTIVATE test.
 s32 chraiLuaPlayerActivate(void)
 {

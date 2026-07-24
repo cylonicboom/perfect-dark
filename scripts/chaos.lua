@@ -3036,18 +3036,17 @@ local alpha_effects = {
                   st.enabled = true   -- force the system on so the drumbeat runs
                 end },
 
-  -- Effects comin' at you at supersonic speed: rapid bursts synced to the
-  -- frequency timer. A fresh random effect stacks every 2s (they don't wear off
-  -- individually), then at the end of each "Trigger Every" window ALL stacked
-  -- effects end at once and the next burst begins. Runs until restart/completion
-  -- or /chaos off. No effect of its own — start() flips st.supersonic and the
-  -- tick handler does the rest (see the drumbeat + expiry loop).
+  -- Effects comin' at you at supersonic speed: a ONE-SHOT barrage. A fresh random
+  -- effect stacks every 2s (they don't wear off individually) for one Effect
+  -- Duration window measured from the trigger; at the end, ALL active effects end
+  -- at once and Supersonic switches off. No effect of its own — start() flips
+  -- st.supersonic and the tick handler does the rest (drumbeat + expiry loop).
   supersonic = { label="Effects comin' at you at supersonic speed",
                  start=function()
                    st.supersonic = true
-                   st.worst_day = nil               -- mutually exclusive
-                   st.super_stack_timer = 0         -- first stack on the next tick
-                   st.timer = st.interval * TICKS   -- full first window
+                   st.worst_day = nil                     -- mutually exclusive
+                   st.super_stack_timer = 0               -- first stack on the next tick
+                   st.super_window = st.effectdur * TICKS -- flush after one Effect Duration
                    st.enabled = true
                  end },
 }
@@ -3263,7 +3262,7 @@ local function reset_all_modes()
   if pd.forced_march then pd.forced_march(false) end
   st.home_marked = false -- re-mark the start point on the next stage entered
   st.worst_day = nil -- "Worst Day" ends on restart/completion
-  st.supersonic = nil; st.super_stack_timer = nil -- "Supersonic" ends too
+  st.supersonic = nil; st.super_stack_timer = nil; st.super_window = nil -- "Supersonic" ends too
   -- Batch-2 C globals (new-exe bindings; guarded so old exes still run).
   if pd.force_secondary then pd.force_secondary(false) end
   if pd.button_block then pd.button_block(0) end
@@ -3718,11 +3717,11 @@ pd.on("tick", function()
   -- mode) below — it only changes the expiry loop above so nothing wears off, so
   -- effects pile up at the usual cadence instead of clearing between rolls.
 
-  -- Effects comin' at you at supersonic speed: within each "Trigger Every"
-  -- window, stack a fresh random effect every 2s (they don't wear off, pinned by
-  -- the expiry loop above); when the window rolls over, ALL stacked effects end
-  -- at the same time and the next burst begins. Overrides the normal drumbeat +
-  -- vote mode. pick_random skips alpha/disabled effects so it can't draw itself.
+  -- Effects comin' at you at supersonic speed: a ONE-SHOT barrage. Stack a fresh
+  -- random effect every 2s (pinned by the expiry loop above so none wear off) for
+  -- one Effect Duration window, fixed at trigger time; when the window ends, flush
+  -- EVERY active effect at once and switch Supersonic off. Overrides the normal
+  -- drumbeat + vote mode. pick_random skips alpha/disabled so it can't draw itself.
   if st.supersonic then
     st.super_stack_timer = (st.super_stack_timer or 0) - dt
     if st.super_stack_timer <= 0 then
@@ -3730,11 +3729,11 @@ pd.on("tick", function()
       local name = pick_random()
       if name then chaos.trigger(name, "supersonic") end
     end
-    st.timer = st.timer - dt
-    if st.timer <= 0 then
-      st.timer = st.interval * TICKS -- respect the frequency timer as the window
-      stop_all()                     -- every effect ends at once — hard reset
-      announce("supersonic reset")
+    st.super_window = (st.super_window or 0) - dt
+    if st.super_window <= 0 then
+      st.supersonic = nil -- one-shot: the window is up
+      stop_all()          -- every active effect ends at the same time
+      announce("supersonic: all effects cleared")
     end
     return
   end

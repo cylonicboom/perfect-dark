@@ -1055,6 +1055,18 @@ chaos.effects = {
                      if left % 90 == 0 then pd.spread(math.random() * 4) end
                    end,
                    stop=function() if pd.spread then pd.spread(1) end end },
+  -- Armor Guard: every guard gets body armor (chr->damage driven negative), so
+  -- they soak far more hits and stop flinching. Instant + lasts the mission
+  -- (like Shielded enemies); NPCs only, server-authoritative.
+  armor_guard  = { label="Armor Guard",       w=3, dur=0,
+                   start=function()
+                     if not pd.chr_armor then error("needs new exe") end
+                     local n = 0
+                     for _, c in ipairs(pd.all_chrs() or {}) do
+                       if pd.chr_armor(c, 30) then n = n + 1 end
+                     end
+                     if n == 0 then error("no chrs") end
+                   end },
   -- Terminator Vision: the whole screen goes red (full-screen tint, no IR
   -- border). Cosmetic overlay only.
   terminator_vision = { label="Terminator Vision", w=3, dur=20,

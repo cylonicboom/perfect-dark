@@ -2435,6 +2435,15 @@ static int l_pd_spread(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_armor(chrnum, amount) -> bool. Armor Guard: give an NPC body armor. */
+static int l_pd_chr_armor(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	f32 amount = (f32)luaL_optnumber(L, 2, 30.0);
+	lua_pushboolean(L, chraiLuaChrArmor(chrnum, amount) != 0);
+	return 1;
+}
+
 /* pd.hud_off(on) -> bool. No HUD: hide every HUD element. */
 static int l_pd_hud_off(lua_State *L)
 {
@@ -3237,6 +3246,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_forced_crouch); lua_setfield(L, -2, "forced_crouch");
 	lua_pushcfunction(L, l_pd_no_reload);     lua_setfield(L, -2, "no_reload");
 	lua_pushcfunction(L, l_pd_spread);        lua_setfield(L, -2, "spread");
+	lua_pushcfunction(L, l_pd_chr_armor);     lua_setfield(L, -2, "chr_armor");
 	lua_pushcfunction(L, l_pd_hud_off);       lua_setfield(L, -2, "hud_off");
 	lua_pushcfunction(L, l_pd_gun_fov);       lua_setfield(L, -2, "gun_fov");
 	lua_pushcfunction(L, l_pd_chr_freeze_one); lua_setfield(L, -2, "chr_freeze_one");

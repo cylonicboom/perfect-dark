@@ -8940,6 +8940,28 @@ s32 chraiLuaSpread(f32 mult)
 	return 1;
 }
 
+// pd.chr_armor(chrnum, amount): "Armor Guard" — add body armor to an NPC by
+// driving chr->damage negative via chrAddHealth (health beyond maxdamage is
+// armor; a negative damage value is the engine's no-flinch body-armor state,
+// see add_health_or_armor in commands.h). NPCs only; server-authoritative.
+s32 chraiLuaChrArmor(s32 chrnum, f32 amount)
+{
+	struct chrdata *chr;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
+	if (chr == NULL) {
+		return 0;
+	}
+	if (chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
+		return 0; // never armor the player through this path
+	}
+	chrAddHealth(chr, amount);
+	return 1;
+}
+
 // pd.hud_off(on): "No HUD" — skip every HUD element render (the seven
 // hudvd-wrapped sites in player.c/lv.c). Chaos overlays still draw.
 s32 chraiLuaHudOff(s32 on)

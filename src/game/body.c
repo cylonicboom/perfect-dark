@@ -278,6 +278,29 @@ static void modelSwapRebuildLiveChrs(void)
 			// chr0f020b14 set chr->model = neu; re-hang the held items on it
 			// before the old model (their current attach target) is freed.
 			modelSwapReattachHeld(chr);
+
+			// chr0f020b14 is the spawn-time linker: it leaves the fresh model
+			// with a zeroed anim (T-pose) and a default-initialised chrinfo
+			// rwdata (root position / facing / root-motion accumulator). On a
+			// live chr that renders as a T-pose that then integrates garbage
+			// root motion each tick — the chr teleports, spins, or drifts out
+			// of view ("invisible"). Both models are the same bodynum, so the
+			// anim struct and the root chrinfo rwdata are layout-identical:
+			// copy them straight across so the swap is seamless.
+			modelCopyAnimData(old, neu);
+
+			if ((old->definition->rootnode->type & 0xff) == MODELNODETYPE_CHRINFO
+					&& (neu->definition->rootnode->type & 0xff) == MODELNODETYPE_CHRINFO) {
+				union modelrwdata *oldrw =
+						modelGetNodeRwData(old, old->definition->rootnode);
+				union modelrwdata *newrw =
+						modelGetNodeRwData(neu, neu->definition->rootnode);
+
+				if (oldrw && newrw) {
+					newrw->chrinfo = oldrw->chrinfo;
+				}
+			}
+
 			modelmgrFreeModel(old);
 		}
 		// if neu is NULL (out of model slots / missing file) keep the old model

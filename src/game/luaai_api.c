@@ -2406,6 +2406,28 @@ static int l_pd_forced_fire(lua_State *L)
 	return 1;
 }
 
+/* pd.rapid_fire(on) -> bool. Trigger Happy: while you hold fire, semi-autos
+ * fire as fast as automatics. */
+static int l_pd_rapid_fire(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaRapidFire(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.forced_crouch(on) -> bool. Permacrouch: the stance is pinned to a crouch. */
+static int l_pd_forced_crouch(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaForcedCrouch(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.no_reload(on) -> bool. Reload Denied: every reload transition is refused. */
+static int l_pd_no_reload(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaNoReload(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.hud_off(on) -> bool. No HUD: hide every HUD element. */
 static int l_pd_hud_off(lua_State *L)
 {
@@ -3204,6 +3226,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_piglatin);      lua_setfield(L, -2, "piglatin");
 	lua_pushcfunction(L, l_pd_forced_march);  lua_setfield(L, -2, "forced_march");
 	lua_pushcfunction(L, l_pd_forced_fire);   lua_setfield(L, -2, "forced_fire");
+	lua_pushcfunction(L, l_pd_rapid_fire);    lua_setfield(L, -2, "rapid_fire");
+	lua_pushcfunction(L, l_pd_forced_crouch); lua_setfield(L, -2, "forced_crouch");
+	lua_pushcfunction(L, l_pd_no_reload);     lua_setfield(L, -2, "no_reload");
 	lua_pushcfunction(L, l_pd_hud_off);       lua_setfield(L, -2, "hud_off");
 	lua_pushcfunction(L, l_pd_gun_fov);       lua_setfield(L, -2, "gun_fov");
 	lua_pushcfunction(L, l_pd_chr_freeze_one); lua_setfield(L, -2, "chr_freeze_one");

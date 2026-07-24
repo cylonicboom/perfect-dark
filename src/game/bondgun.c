@@ -3893,6 +3893,19 @@ bool bgunSetState(s32 handnum, s32 state)
 					&& bgunSecondaryFunctionDisabled(hand->gset.weaponnum)))) {
 		valid = false;
 	}
+
+	// Chaos "Reload Denied" (pd.no_reload): refuse every reload transition. The
+	// manual reload button, the empty-clip auto-reload, and the switch-triggered
+	// reload all funnel through bgunSetState(HANDSTATE_RELOAD), so one gate here
+	// blocks them all — the gun runs dry and stays dry until the effect ends.
+	// Local player only (remote hands are wire-driven).
+	{
+		extern s32 g_ChaosNoReload;
+		if (state == HANDSTATE_RELOAD && g_ChaosNoReload
+				&& !g_Vars.currentplayer->isremote) {
+			valid = false;
+		}
+	}
 #endif
 
 	if (valid) {

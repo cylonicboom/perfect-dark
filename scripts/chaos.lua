@@ -826,6 +826,65 @@ chaos.effects = {
   weapon_jam   = { label="Weapon jam",        w=5, dur=12,
                    start=function() pd.weapon_jam(true) end,
                    stop=function() pd.weapon_jam(false) end },
+  -- Trigger Happy: while you hold fire, semi-autos rip as fast as automatics.
+  -- Pure input-side pulse (bondmove.c), so it only fires while YOU hold the
+  -- trigger — it never shoots on its own like Itchy Trigger Finger.
+  rapid_fire   = { label="Trigger Happy",     w=4, dur=20,
+                   start=function()
+                     if not pd.rapid_fire then error("needs new exe") end
+                     pd.rapid_fire(true)
+                   end,
+                   stop=function() if pd.rapid_fire then pd.rapid_fire(false) end end },
+  -- Weapon lock: you're stuck with whatever you're holding. Snap-back every
+  -- tick catches number-key / wheel switches without touching the shared
+  -- button_block mask (so it can't clobber No Pausing / Button thief).
+  weapon_lock  = { label="Weapon lock",       w=4, dur=20,
+                   start=function()
+                     st.a_wlock = pd.weapon_held and pd.weapon_held() or nil
+                     if not st.a_wlock then error("no weapon") end
+                   end,
+                   tick=function()
+                     local w = st.a_wlock
+                     if w and pd.weapon_held() ~= w then pd.switch_weapon(w) end
+                   end,
+                   stop=function() st.a_wlock = nil end },
+  -- Reload Denied: every reload path (button, empty-auto, switch) is refused in
+  -- bgunSetState. Run dry and stay dry.
+  no_reload    = { label="Reload Denied",     w=4, dur=15,
+                   start=function()
+                     if not pd.no_reload then error("needs new exe") end
+                     pd.no_reload(true)
+                   end,
+                   stop=function() if pd.no_reload then pd.no_reload(false) end end },
+  -- Permacrouch: stance pinned to a crouch (bondmove.c crouchpos override).
+  always_crouch= { label="Permacrouch",       w=3, dur=20,
+                   start=function()
+                     if not pd.forced_crouch then error("needs new exe") end
+                     pd.forced_crouch(true)
+                   end,
+                   stop=function() if pd.forced_crouch then pd.forced_crouch(false) end end },
+  -- Menu lockout: pause/inventory (0x1000) AND the weapon wheel (0x0080) are
+  -- stripped from input. Shares the single button_block mask like No Pausing.
+  disable_menus= { label="Menu lockout",      w=3, dur=15,
+                   start=function()
+                     if not pd.button_block then error("needs new exe") end
+                     pd.button_block(0x1000 | 0x0080)
+                     pd.hud_message("CHAOS: no menus for you")
+                   end,
+                   stop=function() pd.button_block(0) end },
+  -- Fake Crash: freeze the player AND every chr for a few seconds so the scene
+  -- goes dead-still — looks like the game hung. silent+nobar hide every chaos
+  -- HUD tell, so nothing on screen gives the gag away. The chaos timer still
+  -- runs (only entities are frozen, not the sim), so it self-recovers.
+  fake_crash   = { label="Fake Crash", silent=true, nobar=true, fixeddur=true, dur=3,
+                   start=function()
+                     pd.player_freeze(true)
+                     if pd.chr_freeze then pd.chr_freeze(true) end
+                   end,
+                   stop=function()
+                     pd.player_freeze(false)
+                     if pd.chr_freeze then pd.chr_freeze(false) end
+                   end },
   take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
                    start=function() pd.player_freeze(true) end,
                    stop=function() pd.player_freeze(false) end },
@@ -2840,7 +2899,11 @@ function chaos.trigger(name, who, dur_override)
     st.active[name] = ticks
     st.duration[name] = ticks
   end
-  announce(e.label .. (who and ("  [" .. who .. "]") or ""))
+  -- silent effects show no "CHAOS: <name>" toast (e.g. Fake Crash, whose whole
+  -- gag is that nothing on screen hints it's a chaos effect at all).
+  if not e.silent then
+    announce(e.label .. (who and ("  [" .. who .. "]") or ""))
+  end
   -- Anti-repeat deck: age every effect's cooldown by one fire, then put the one
   -- that just played on a fresh cooldown as long as the enabled list. Its pick
   -- weight stays suppressed (pick_random) until the whole list has cycled, so

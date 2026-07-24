@@ -326,6 +326,9 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosOneBulletMags;   // chaos One Bullet Mags
 	extern s32 g_ChaosForcedMarch;     // chaos Forced March
 	extern s32 g_ChaosForcedFire;      // chaos Itchy Trigger Finger
+	extern s32 g_ChaosRapidFire;       // chaos Trigger Happy
+	extern s32 g_ChaosForcedCrouch;    // chaos Permacrouch
+	extern s32 g_ChaosNoReload;        // chaos Reload Denied
 	extern s32 g_ChaosHudOff;          // chaos No HUD
 	extern f32 g_ChaosGunFovOverride;  // chaos WAYTOODANK viewmodel FOV
 	extern s32 g_ChaosFreezeChrnum;    // chaos Weeping Skedar single freeze
@@ -383,6 +386,9 @@ void lvReset(s32 stagenum)
 	g_ChaosOneBulletMags = 0;
 	g_ChaosForcedMarch = 0;
 	g_ChaosForcedFire = 0;
+	g_ChaosRapidFire = 0;
+	g_ChaosForcedCrouch = 0;
+	g_ChaosNoReload = 0;
 	g_ChaosHudOff = 0;
 	g_ChaosGunFovOverride = 0.0f;
 	g_ChaosFreezeChrnum = -1;

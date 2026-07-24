@@ -93,6 +93,17 @@ s32 g_ChaosMagDumpArmed = 0;
 // player is rooted in place. Mouse look and firing stay live — you can watch
 // and shoot, you just can't move.
 s32 g_ChaosPlayerFreeze = 0;
+// Chaos "Trigger Happy" (pd.rapid_fire): while the player holds fire, the
+// trigger is pulsed so semi-autos fire as fast as automatics. Unlike Mag Dump
+// it never latches or stops at clip-empty — it only acts while you are actively
+// firing, so it reads as "press = rapid fire". Cleared in lvInit.
+s32 g_ChaosRapidFire = 0;
+// Chaos "Permacrouch" (pd.forced_crouch): the stance is pinned to a crouch each
+// tick. Cleared in lvInit.
+s32 g_ChaosForcedCrouch = 0;
+// Chaos "Reload Denied" (pd.no_reload): every reload transition is refused in
+// bgunSetState (bondgun.c externs this). Cleared in lvInit.
+s32 g_ChaosNoReload = 0;
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
@@ -2485,6 +2496,25 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		}
 	}
 
+	// Chaos "Trigger Happy" (pd.rapid_fire): while YOU hold the trigger, pulse
+	// it so semi-autos fire as fast as automatics. It only acts while you are
+	// actively firing (movedata.triggeron already set from your input), so it
+	// reads as "press = rapid fire" rather than auto-fire. Automatic weapons
+	// (0x0100) already re-fire on a held trigger, so leave them untouched and
+	// only pulse the single-shot SHOOT funcs (0x0000).
+	if (g_ChaosRapidFire && !g_Vars.currentplayer->isremote
+			&& g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED
+			&& !g_Vars.currentplayer->isdead && movedata.triggeron) {
+		struct weaponfunc *rfunc = currentPlayerGetWeaponFunction(HAND_RIGHT);
+		static s32 rapidpulse = 0;
+
+		if (rfunc && (rfunc->type & 0xff) == INVENTORYFUNCTYPE_SHOOT
+				&& (rfunc->type & 0xff00) == 0x0000) {
+			rapidpulse++;
+			movedata.triggeron = (rapidpulse & 1) != 0;
+		}
+	}
+
 	// Chaos "Forced March" (pd.forced_march): force the walk at the MOVEDATA
 	// level, after every control-style branch — the digital step-forward is
 	// consumed uniformly by bwalk on all styles. (A raw c1sticky inject
@@ -2534,6 +2564,16 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		movedata.rleanright = false;
 		movedata.btapcount = 0;
 		movedata.alt1tapcount = 0;
+	}
+
+	// Chaos "Permacrouch" (pd.forced_crouch): pin the stance to a crouch. The
+	// crouchpos state machine already ran this frame (above), so we override its
+	// result directly rather than feeding movedata; downstream height/camera all
+	// derive from crouchpos, so this holds the player crouched. Cleared when the
+	// effect ends, after which normal standing resumes.
+	if (g_ChaosForcedCrouch && !g_Vars.currentplayer->isremote
+			&& !g_Vars.currentplayer->isdead) {
+		g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
 	}
 #endif
 

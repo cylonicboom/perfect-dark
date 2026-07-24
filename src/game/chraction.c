@@ -8898,6 +8898,36 @@ s32 chraiLuaForcedFire(s32 on)
 	return 1;
 }
 
+// pd.rapid_fire(on): "Trigger Happy" — while you hold fire, semi-autos fire as
+// fast as automatics (bondmove.c g_ChaosRapidFire).
+s32 chraiLuaRapidFire(s32 on)
+{
+	extern s32 g_ChaosRapidFire;
+
+	g_ChaosRapidFire = on ? 1 : 0;
+	return 1;
+}
+
+// pd.forced_crouch(on): "Permacrouch" — the stance is pinned to a crouch
+// (bondmove.c g_ChaosForcedCrouch).
+s32 chraiLuaForcedCrouch(s32 on)
+{
+	extern s32 g_ChaosForcedCrouch;
+
+	g_ChaosForcedCrouch = on ? 1 : 0;
+	return 1;
+}
+
+// pd.no_reload(on): "Reload Denied" — every reload transition is refused
+// (bondgun.c g_ChaosNoReload).
+s32 chraiLuaNoReload(s32 on)
+{
+	extern s32 g_ChaosNoReload;
+
+	g_ChaosNoReload = on ? 1 : 0;
+	return 1;
+}
+
 // pd.hud_off(on): "No HUD" — skip every HUD element render (the seven
 // hudvd-wrapped sites in player.c/lv.c). Chaos overlays still draw.
 s32 chraiLuaHudOff(s32 on)

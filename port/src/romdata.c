@@ -729,8 +729,13 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 	const u32 stockDataOfs = g_StockTexDataOfs;
 	const u32 stockCount = (g_StockTexCopyOfs - stockListOfs) / 8;
 
-	// vote for the texturesdata base by correlating texture bytes with the base ROM
-	enum { CORR_SAMPLES = 24, CORR_PATLEN = 16, CORR_MAXCAND = 32, CORR_MAXHITS = 16, CORR_MINVOTES = 3 };
+	// vote for the texturesdata base by correlating texture bytes with the base
+	// ROM. A texture-REPLACING total conversion (e.g. a Mario pack) shares few
+	// textures with the base, so sample MANY textures to catch the ones it kept
+	// (HUD/effects/fonts), and reject any base whose data region would overlap
+	// the textureslist — those are coincidental false matches (the base's own
+	// texturesdata sits before the list, so base + size must fit before it).
+	enum { CORR_SAMPLES = 256, CORR_PATLEN = 16, CORR_MAXCAND = 64, CORR_MAXHITS = 16, CORR_MINVOTES = 2 };
 	struct { u32 base; u32 votes; } cand[CORR_MAXCAND];
 	u32 numCand = 0;
 
@@ -760,14 +765,20 @@ static void romdataChainRelocateTexSegments(bool applyGlobal)
 				const u32 pos = (u32)(p - rom);
 				if (pos >= cThis) {
 					const u32 base = pos - cThis;
-					u32 c;
-					for (c = 0; c < numCand && cand[c].base != base; ++c);
-					if (c < numCand) {
-						++cand[c].votes;
-					} else if (numCand < CORR_MAXCAND) {
-						cand[numCand].base = base;
-						cand[numCand].votes = 1;
-						++numCand;
+					// geometric sanity: the overlay's texturesdata sits BEFORE its
+					// textureslist, so its whole span must fit before the list.
+					// Rejects coincidental 16-byte matches landing at an impossible
+					// base (which overlap the list).
+					if (base + bestTerm <= bestOfs) {
+						u32 c;
+						for (c = 0; c < numCand && cand[c].base != base; ++c);
+						if (c < numCand) {
+							++cand[c].votes;
+						} else if (numCand < CORR_MAXCAND) {
+							cand[numCand].base = base;
+							cand[numCand].votes = 1;
+							++numCand;
+						}
 					}
 				}
 			}

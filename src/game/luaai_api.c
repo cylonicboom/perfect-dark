@@ -117,7 +117,13 @@ static s32 g_LuaLastPlayerRoom = -0x7fffffff;
 struct luamenuentry {
 	char label[LUA_MENU_LABEL];
 	char group[LUA_MENU_LABEL]; /* "" = root; else the submenu title it lives under */
-	int luaref; /* LUA_NOREF if unused */
+	int luaref; /* action fn (kind 0); LUA_NOREF if unused */
+	u8 kind;    /* 0 = action/selectable, 1 = checkbox, 2 = slider */
+	int getref; /* checkbox/slider getter (kind 1/2); LUA_NOREF if none */
+	int setref; /* checkbox/slider setter (kind 1/2); LUA_NOREF if none */
+	s32 smin;   /* slider lower bound (kind 2) */
+	s32 smax;   /* slider upper bound (kind 2) */
+	char desc[LUA_MENU_DESC]; /* scroll-panel description text */
 };
 
 static struct luamenuentry g_LuaMenu[LUA_MENU_MAX];
@@ -1227,26 +1233,39 @@ static void luaMenuClearAll(lua_State *L)
 		if (L && g_LuaMenu[i].luaref != LUA_NOREF) {
 			luaL_unref(L, LUA_REGISTRYINDEX, g_LuaMenu[i].luaref);
 		}
+		if (L && g_LuaMenu[i].getref != LUA_NOREF) {
+			luaL_unref(L, LUA_REGISTRYINDEX, g_LuaMenu[i].getref);
+		}
+		if (L && g_LuaMenu[i].setref != LUA_NOREF) {
+			luaL_unref(L, LUA_REGISTRYINDEX, g_LuaMenu[i].setref);
+		}
 		g_LuaMenu[i].luaref = LUA_NOREF;
+		g_LuaMenu[i].getref = LUA_NOREF;
+		g_LuaMenu[i].setref = LUA_NOREF;
+		g_LuaMenu[i].kind = 0;
 		g_LuaMenu[i].label[0] = '\0';
 		g_LuaMenu[i].group[0] = '\0';
+		g_LuaMenu[i].desc[0] = '\0';
 	}
 	g_LuaMenuCount = 0;
 	luaDirectorRebuild(); /* array back to just the terminator */
 }
 
-/* pd.menu_add(label, fn, [group]) -> index (or -1 if the registry is full).
- * Adds a Lua Director pause-menu entry; selecting it later calls fn(). If group
- * is a non-empty string the entry is placed under a submenu of that title (the
- * submenu opener appears at the top of the root list); omit it for a root-level
- * entry. */
+/* pd.menu_add(label, fn, [group], [desc]) -> index (or -1 if the registry is
+ * full). Adds a Lua Director pause-menu entry; selecting it later calls fn(). If
+ * group is a non-empty string the entry is placed under a submenu of that title
+ * (the submenu opener appears at the top of the root list); omit it for a
+ * root-level entry. desc, if given, is shown in the scroll panel when the row is
+ * focused. */
 static int l_pd_menu_add(lua_State *L)
 {
 	const char *label = luaL_checkstring(L, 1);
 	const char *group;
+	const char *desc;
 
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 	group = luaL_optstring(L, 3, "");
+	desc = luaL_optstring(L, 4, "");
 
 	if (g_LuaMenuCount >= LUA_MENU_MAX) {
 		luaApiLog("menu_add: registry full");
@@ -1258,6 +1277,13 @@ static int l_pd_menu_add(lua_State *L)
 	g_LuaMenu[g_LuaMenuCount].label[LUA_MENU_LABEL - 1] = '\0';
 	strncpy(g_LuaMenu[g_LuaMenuCount].group, group, LUA_MENU_LABEL - 1);
 	g_LuaMenu[g_LuaMenuCount].group[LUA_MENU_LABEL - 1] = '\0';
+	g_LuaMenu[g_LuaMenuCount].kind = 0;
+	g_LuaMenu[g_LuaMenuCount].getref = LUA_NOREF;
+	g_LuaMenu[g_LuaMenuCount].setref = LUA_NOREF;
+	g_LuaMenu[g_LuaMenuCount].smin = 0;
+	g_LuaMenu[g_LuaMenuCount].smax = 0;
+	strncpy(g_LuaMenu[g_LuaMenuCount].desc, desc, LUA_MENU_DESC - 1);
+	g_LuaMenu[g_LuaMenuCount].desc[LUA_MENU_DESC - 1] = '\0';
 
 	lua_pushvalue(L, 2); /* the fn */
 	g_LuaMenu[g_LuaMenuCount].luaref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -1265,6 +1291,94 @@ static int l_pd_menu_add(lua_State *L)
 	lua_pushinteger(L, g_LuaMenuCount);
 	g_LuaMenuCount++;
 	luaDirectorRebuild(); /* keep the menu items array valid + current */
+	return 1;
+}
+
+/* Shared tail for the typed registrars below: fill label/group/desc, bump the
+ * count, rebuild. Returns the new index (already pushed by the caller path). */
+static s32 luaMenuStoreCommon(const char *label, const char *group, const char *desc)
+{
+	struct luamenuentry *e = &g_LuaMenu[g_LuaMenuCount];
+	strncpy(e->label, label, LUA_MENU_LABEL - 1);
+	e->label[LUA_MENU_LABEL - 1] = '\0';
+	strncpy(e->group, group, LUA_MENU_LABEL - 1);
+	e->group[LUA_MENU_LABEL - 1] = '\0';
+	strncpy(e->desc, desc, LUA_MENU_DESC - 1);
+	e->desc[LUA_MENU_DESC - 1] = '\0';
+	e->luaref = LUA_NOREF;
+	e->getref = LUA_NOREF;
+	e->setref = LUA_NOREF;
+	e->smin = 0;
+	e->smax = 0;
+	return g_LuaMenuCount;
+}
+
+/* pd.menu_add_checkbox(label, getfn, setfn, [group], [desc]) -> index. A native
+ * checkbox row: getfn() returns the current bool, setfn(v) stores it. desc is
+ * shown in the scroll panel when the row is focused. */
+static int l_pd_menu_add_checkbox(lua_State *L)
+{
+	const char *label = luaL_checkstring(L, 1);
+	const char *group, *desc;
+	struct luamenuentry *e;
+
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	luaL_checktype(L, 3, LUA_TFUNCTION);
+	group = luaL_optstring(L, 4, "");
+	desc = luaL_optstring(L, 5, "");
+
+	if (g_LuaMenuCount >= LUA_MENU_MAX) {
+		luaApiLog("menu_add_checkbox: registry full");
+		lua_pushinteger(L, -1);
+		return 1;
+	}
+
+	luaMenuStoreCommon(label, group, desc);
+	e = &g_LuaMenu[g_LuaMenuCount];
+	e->kind = 1;
+	lua_pushvalue(L, 2); e->getref = luaL_ref(L, LUA_REGISTRYINDEX);
+	lua_pushvalue(L, 3); e->setref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+	lua_pushinteger(L, g_LuaMenuCount);
+	g_LuaMenuCount++;
+	luaDirectorRebuild();
+	return 1;
+}
+
+/* pd.menu_add_slider(label, getfn, setfn, min, max, [group], [desc]) -> index. A
+ * native slider row: getfn() returns the current int (clamped min..max), setfn(v)
+ * stores it. */
+static int l_pd_menu_add_slider(lua_State *L)
+{
+	const char *label = luaL_checkstring(L, 1);
+	const char *group, *desc;
+	s32 smin, smax;
+	struct luamenuentry *e;
+
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	luaL_checktype(L, 3, LUA_TFUNCTION);
+	smin = (s32)luaL_checkinteger(L, 4);
+	smax = (s32)luaL_checkinteger(L, 5);
+	group = luaL_optstring(L, 6, "");
+	desc = luaL_optstring(L, 7, "");
+
+	if (g_LuaMenuCount >= LUA_MENU_MAX) {
+		luaApiLog("menu_add_slider: registry full");
+		lua_pushinteger(L, -1);
+		return 1;
+	}
+
+	luaMenuStoreCommon(label, group, desc);
+	e = &g_LuaMenu[g_LuaMenuCount];
+	e->kind = 2;
+	e->smin = smin;
+	e->smax = smax;
+	lua_pushvalue(L, 2); e->getref = luaL_ref(L, LUA_REGISTRYINDEX);
+	lua_pushvalue(L, 3); e->setref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+	lua_pushinteger(L, g_LuaMenuCount);
+	g_LuaMenuCount++;
+	luaDirectorRebuild();
 	return 1;
 }
 
@@ -1331,6 +1445,91 @@ void luaMenuInvoke(s32 i)
 		lua_pop(L, 1);
 	}
 }
+
+s32 luaMenuKind(s32 i)
+{
+	if (i < 0 || i >= g_LuaMenuCount) {
+		return 0;
+	}
+	return (s32)g_LuaMenu[i].kind;
+}
+
+const char *luaMenuDesc(s32 i)
+{
+	if (i < 0 || i >= g_LuaMenuCount) {
+		return "";
+	}
+	return g_LuaMenu[i].desc;
+}
+
+s32 luaMenuSliderMin(s32 i)
+{
+	if (i < 0 || i >= g_LuaMenuCount) {
+		return 0;
+	}
+	return g_LuaMenu[i].smin;
+}
+
+s32 luaMenuSliderMax(s32 i)
+{
+	if (i < 0 || i >= g_LuaMenuCount) {
+		return 0;
+	}
+	return g_LuaMenu[i].smax;
+}
+
+/* Call a checkbox/slider getter (ref), returning its result via the caller's
+ * pcall. Shared guarded body; wantint selects boolean vs integer coercion. */
+static s32 luaMenuGetValue(s32 i, s32 wantint)
+{
+	lua_State *L = luaaiGetState();
+	s32 r = 0;
+
+	if (!L || i < 0 || i >= g_LuaMenuCount || g_LuaMenu[i].getref == LUA_NOREF) {
+		return 0;
+	}
+	lua_rawgeti(L, LUA_REGISTRYINDEX, g_LuaMenu[i].getref);
+	if (lua_isfunction(L, -1)) {
+		if (lua_pcall(L, 0, 1, 0) == LUA_OK) {
+			r = wantint ? (s32)lua_tointeger(L, -1) : (lua_toboolean(L, -1) ? 1 : 0);
+			lua_pop(L, 1);
+		} else {
+			luaApiLog2("menu get error: ", lua_tostring(L, -1));
+			lua_pop(L, 1);
+		}
+	} else {
+		lua_pop(L, 1);
+	}
+	return r;
+}
+
+static void luaMenuSetValue(s32 i, s32 v, s32 wantint)
+{
+	lua_State *L = luaaiGetState();
+
+	if (!L || i < 0 || i >= g_LuaMenuCount || g_LuaMenu[i].setref == LUA_NOREF) {
+		return;
+	}
+	lua_rawgeti(L, LUA_REGISTRYINDEX, g_LuaMenu[i].setref);
+	if (lua_isfunction(L, -1)) {
+		if (wantint) {
+			lua_pushinteger(L, v);
+		} else {
+			lua_pushboolean(L, v);
+		}
+		if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+			luaApiLog2("menu set error: ", lua_tostring(L, -1));
+			lua_pop(L, 1);
+		}
+	} else {
+		lua_pop(L, 1);
+	}
+}
+
+s32 luaMenuGetBool(s32 i) { return luaMenuGetValue(i, 0); }
+void luaMenuSetBool(s32 i, s32 v) { luaMenuSetValue(i, v, 0); }
+s32 luaMenuGetInt(s32 i) { return luaMenuGetValue(i, 1); }
+void luaMenuSetInt(s32 i, s32 v) { luaMenuSetValue(i, v, 1); }
 
 /* Called by luaai.c's luaai_build_pd with the pd table on top of the stack. */
 #ifndef PLATFORM_N64
@@ -3181,6 +3380,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_spawn_ally_clone); lua_setfield(L, -2, "spawn_ally_clone");
 	/* director pause-menu registry */
 	lua_pushcfunction(L, l_pd_menu_add);    lua_setfield(L, -2, "menu_add");
+	lua_pushcfunction(L, l_pd_menu_add_checkbox); lua_setfield(L, -2, "menu_add_checkbox");
+	lua_pushcfunction(L, l_pd_menu_add_slider);   lua_setfield(L, -2, "menu_add_slider");
 	lua_pushcfunction(L, l_pd_menu_clear);  lua_setfield(L, -2, "menu_clear");
 	lua_pushcfunction(L, l_pd_menu_set_label); lua_setfield(L, -2, "menu_set_label");
 	/* session-persistent KV (survives the per-stage lua_State teardown) */

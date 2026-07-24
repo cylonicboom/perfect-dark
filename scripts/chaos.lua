@@ -4142,44 +4142,33 @@ pd.on("draw", function()
 end)
 
 if pd.menu_add then
-  -- One "Chaos" submenu in the Lua Director. At the TOP: the master switch and
-  -- the two global knobs (how long each effect lasts, how often one fires) as
-  -- tap-to-cycle entries whose labels rewrite in place (pd.menu_set_label).
-  -- Below them: every effect, alphabetical by label, as an ON/off toggle that
-  -- adds/removes it from the random rotation. All state persists via pd.persist.
+  -- Cheats-style Chaos menu. When the exe exposes the typed-row API
+  -- (pd.menu_add_checkbox / pd.menu_add_slider), the "Chaos" root shows a native
+  -- master CHECKBOX + timer SLIDERS, per-category Enable folders are real
+  -- checkbox lists, and a SCROLLABLE description panel at the foot of each list
+  -- follows the highlighted row. On an older exe it falls back to the tap-to-cycle
+  -- text entries. All state persists via pd.persist.
   local GROUP = "Chaos"
+  local HAVE_WIDGETS = pd.menu_add_checkbox and pd.menu_add_slider
+
+  -- Placeholder description shown for every effect until a real one is authored.
+  local DESC_TODO = "Redvox57 is gonna add this, I haven't really asked but "
+    .. "guess what? You're gonna do it for me. Give me your descriptions "
+    .. "whenever you're ready and I'll add them. Thanks! Have a great stream"
+  local function edesc(n)
+    local e = chaos.effects[n]
+    return (e and e.desc) or DESC_TODO
+  end
+
   local INTERVALS = { 5, 10, 15, 20, 30, 45, 60, 90, 120 }
   local DURATIONS = { 5, 10, 15, 20, 30, 45, 60, 90, 120, 180 }
 
-  -- Next value strictly greater than cur, wrapping to the smallest. Works even
-  -- if the persisted value isn't itself a list entry.
+  -- Next value strictly greater than cur, wrapping to the smallest (old exe
+  -- fallback only).
   local function next_in(list, cur)
     for _, v in ipairs(list) do if v > cur then return v end end
     return list[1]
   end
-
-  local i_toggle, i_dur, i_freq
-
-  local function lbl_toggle() return "Chaos: " .. (st.enabled and "ON" or "off") end
-  local function lbl_dur()    return "Effect duration: " .. st.effectdur .. "s" end
-  local function lbl_freq()   return "Trigger every: " .. st.interval .. "s" end
-
-  local function relabel()
-    if not pd.menu_set_label then return end
-    pd.menu_set_label(i_toggle, lbl_toggle())
-    pd.menu_set_label(i_dur, lbl_dur())
-    pd.menu_set_label(i_freq, lbl_freq())
-  end
-
-  i_toggle = pd.menu_add(lbl_toggle(), function()
-    chaos.handle("menu", "toggle"); relabel()
-  end, GROUP)
-  i_dur = pd.menu_add(lbl_dur(), function()
-    st.effectdur = next_in(DURATIONS, st.effectdur); persist(); relabel()
-  end, GROUP)
-  i_freq = pd.menu_add(lbl_freq(), function()
-    st.interval = next_in(INTERVALS, st.interval); persist(); relabel()
-  end, GROUP)
 
   -- Effect list, sorted by display label (ties broken by internal name).
   -- Alpha (testbed) effects live in their own submenu below, not here.
@@ -4197,15 +4186,10 @@ if pd.menu_add then
   table.sort(names, label_sort)
   table.sort(anames, label_sort)
 
-  -- Test menus: category folders (a suggestion from the alpha batch). The old
-  -- single "Chaos Test" list is split into sibling submenus by effect type —
-  -- all root-level (a submenu inside a submenu crashes the menu engine at
-  -- 3-deep scroll stacks, so folders are siblings, not nested). Selecting an
-  -- effect fires it for a fixed 30s; timers run even with the master off.
-  -- Categorisation is this one table — names not listed fall into the
-  -- "Weapons & World" catch-all. Edit freely.
+  -- Category folders. Effects not listed fall into the "Weapons & World"
+  -- catch-all. Bare titles here; the Enable/Test folders prefix them. Edit freely.
   local CATS = {
-    { title = "Test: Visual & Audio", set = {
+    { title = "Visual & Audio", set = {
       mirror=1, untextured=1, watercolour=1, noir=1, shiny=1, midas=1,
       paint_red=1, toxic=1, blackout=1, disco=1, sepia=1, terminal=1,
       bit8=1, bit16=1, gameboy=1, crt=1, vhs=1, peephole=1, underwater=1,
@@ -4227,12 +4211,12 @@ if pd.menu_add then
       -- session graduates (2026-07-20)
       jelly=1, acid_trip=1, pirate=1,
     } },
-    { title = "Test: Cheats", set = {
+    { title = "Cheats", set = {
       fists=1, slomo=1, dkmode=1, smalljo=1, smallchars=1, goldeneye=1,
       cloak=1, xray=1, nightvision=1, marquis=1, godmode=1, one_punch=1,
       superhot=1,
     } },
-    { title = "Test: Helpful", set = {
+    { title = "Helpful", set = {
       arsenal=1, ammo_rain=1, heal=1, shields_up=1, cavalry=1, buddy=1,
       reinforce=1, lock_n_load=1, random_loadout=1, turbo=1, enemyshields=1,
       golden_gun=1, no_drops=1, freeze=1, nap_time=1, benny_hill=1, zombies=1,
@@ -4242,7 +4226,7 @@ if pd.menu_add then
       -- session graduates (2026-07-20)
       me_and_my_son=1,
     } },
-    { title = "Test: Lethal", set = {
+    { title = "Lethal", set = {
       self_destruct=1, misfire=1, weapon_jam=1, vampire=1, plague=1,
       thanos_snap=1, airstrike=1, boom=1, panic=1, intruder=1, predators=1,
       take_a_break=1, one_hp=1, dry_spell=1, amnesia=1, disarm=1,
@@ -4261,44 +4245,95 @@ if pd.menu_add then
       space_program=1, frag_out=1, sentries_out=1, silo_countdown=1, beat_game=1,
     } },
   }
-  local CATCHALL = "Test: Weapons & World"
+  local CATCHALL = "Weapons & World"
   local function cat_of(n)
     for _, c in ipairs(CATS) do
       if c.set[n] then return c.title end
     end
     return CATCHALL
   end
+
+  -- Toggle one effect's enabled state (shared by checkbox setter + old toggle).
+  local function set_enabled(n, on)
+    if on then
+      st.disabled[n] = nil
+    else
+      st.disabled[n] = true
+      if st.active[n] then stop_effect(n) end
+    end
+    persist_disabled()
+  end
+
+  -- ---- Master switch + global timers (registered FIRST: the native slider path
+  -- stores its registry index in the 8-bit item param, so sliders must have small
+  -- indices — keeping them at the very top guarantees that). --------------------
+  if HAVE_WIDGETS then
+    pd.menu_add_checkbox("Chaos Enabled",
+      function() return st.enabled end,
+      function(v) if (v and true or false) ~= st.enabled then chaos.handle("menu", "toggle") end end,
+      GROUP, "Master switch for the whole Chaos system. When ON, a random enabled effect fires every few seconds.")
+    pd.menu_add_slider("Trigger Every (s)",
+      function() return st.interval end,
+      function(v) st.interval = v; persist() end,
+      5, 120, GROUP, "Seconds between random effects while Chaos is on.")
+    pd.menu_add_slider("Effect Duration (s)",
+      function() return st.effectdur end,
+      function(v) st.effectdur = v; persist() end,
+      5, 120, GROUP, "How long each timed effect lasts. Instant effects ignore this.")
+    pd.menu_add_slider("Vote Time (s)",
+      function() return st.votetime end,
+      function(v) st.votetime = v; persist() end,
+      0, 120, GROUP, "Length of the chat vote window between effects (0 = voting off).")
+  else
+    -- Old exe fallback: tap-to-cycle text entries.
+    local i_toggle, i_dur, i_freq
+    local function lbl_toggle() return "Chaos: " .. (st.enabled and "ON" or "off") end
+    local function lbl_dur()    return "Effect duration: " .. st.effectdur .. "s" end
+    local function lbl_freq()   return "Trigger every: " .. st.interval .. "s" end
+    local function relabel()
+      if not pd.menu_set_label then return end
+      pd.menu_set_label(i_toggle, lbl_toggle())
+      pd.menu_set_label(i_dur, lbl_dur())
+      pd.menu_set_label(i_freq, lbl_freq())
+    end
+    i_toggle = pd.menu_add(lbl_toggle(), function() chaos.handle("menu", "toggle"); relabel() end, GROUP)
+    i_dur = pd.menu_add(lbl_dur(), function() st.effectdur = next_in(DURATIONS, st.effectdur); persist(); relabel() end, GROUP)
+    i_freq = pd.menu_add(lbl_freq(), function() st.interval = next_in(INTERVALS, st.interval); persist(); relabel() end, GROUP)
+  end
+
+  -- ---- Per-effect ENABLE checkboxes, grouped by category into "Enable: <cat>"
+  -- folders. Toggles the effect in/out of the random rotation. ------------------
   for _, name in ipairs(names) do
     local n = name
     local e = chaos.effects[n]
-    pd.menu_add(e.label or n, function() chaos.trigger(n, "test", 30) end, cat_of(n))
+    if HAVE_WIDGETS then
+      pd.menu_add_checkbox(e.label or n,
+        function() return effect_enabled(n) end,
+        function(v) set_enabled(n, v and true or false) end,
+        "Enable: " .. cat_of(n), edesc(n))
+    else
+      local mi
+      local function lbl() return (e.label or n) .. ": " .. (effect_enabled(n) and "ON" or "off") end
+      mi = pd.menu_add(lbl(), function()
+        set_enabled(n, not effect_enabled(n))
+        if pd.menu_set_label and mi then pd.menu_set_label(mi, lbl()) end
+      end, GROUP)
+    end
   end
 
-  -- (The former testbed effects have graduated into the Test categories above and
-  -- the on/off list below — there is no separate Alpha area anymore. anames is
-  -- normally empty; register any stragglers in a plain "Chaos Alpha" folder.)
+  -- ---- Manual-fire folders: "Test: <cat>" fires an effect for 30s (timers run
+  -- even with the master off). ------------------------------------------------
+  for _, name in ipairs(names) do
+    local n = name
+    local e = chaos.effects[n]
+    pd.menu_add(e.label or n, function() chaos.trigger(n, "test", 30) end, "Test: " .. cat_of(n), edesc(n))
+  end
+
+  -- Chaos Alpha: manual-fire the new / unproven effects held out of the rotation.
   for _, name in ipairs(anames) do
     local n = name
     local e = chaos.effects[n]
-    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, "Chaos Alpha")
-  end
-
-  -- Effect on/off list (adds/removes each from the random rotation), alphabetical.
-  for _, name in ipairs(names) do
-    local n = name
-    local e = chaos.effects[n]
-    local mi
-    local function lbl() return (e.label or n) .. ": " .. (effect_enabled(n) and "ON" or "off") end
-    mi = pd.menu_add(lbl(), function()
-      if st.disabled[n] then
-        st.disabled[n] = nil                 -- re-enable
-      else
-        st.disabled[n] = true                -- disable + end it if it's live
-        if st.active[n] then stop_effect(n) end
-      end
-      persist_disabled()
-      if pd.menu_set_label and mi then pd.menu_set_label(mi, lbl()) end
-    end, GROUP)
+    pd.menu_add(e.label or n, function() chaos.trigger(n, "alpha", 30) end, "Chaos Alpha", edesc(n))
   end
 end
 

@@ -467,12 +467,25 @@ void luaPossessApplyCamera(void); /* point the render camera at the fly pose */
                                       Raised 256->640: the on/off list is registered LAST, so once the
                                       registry filled it silently truncated to a handful of toggles. */
 #define LUA_MENU_LABEL 40          /* per-entry label / group buffer size (shared) */
+#define LUA_MENU_DESC 224          /* per-entry scroll-panel description buffer size */
 s32 luaMenuCount(void);            /* number of registered Director entries */
 const char *luaMenuLabel(s32 i);   /* label of entry i ("" if out of range) */
 const char *luaMenuGroup(s32 i);   /* submenu title of entry i ("" = root) */
-void luaMenuInvoke(s32 i);         /* call entry i's Lua fn (guarded, logged) */
+void luaMenuInvoke(s32 i);         /* call entry i's Lua action fn (guarded, logged) */
+/* Typed Director rows (cheats-style Chaos menu): kind 0 = action/selectable,
+ * 1 = checkbox, 2 = slider. Checkbox/slider round-trip through Lua get/set. */
+s32 luaMenuKind(s32 i);            /* row kind of entry i (0/1/2) */
+const char *luaMenuDesc(s32 i);    /* scroll-panel description of entry i */
+s32 luaMenuSliderMin(s32 i);       /* slider lower bound (kind 2) */
+s32 luaMenuSliderMax(s32 i);       /* slider upper bound (kind 2) */
+s32 luaMenuGetBool(s32 i);         /* call the checkbox getter -> 0/1 */
+void luaMenuSetBool(s32 i, s32 v); /* call the checkbox setter with a bool */
+s32 luaMenuGetInt(s32 i);          /* call the slider getter -> int */
+void luaMenuSetInt(s32 i, s32 v);  /* call the slider setter with an int */
 
-#define LUA_DIRECTOR_MAX_SUBMENUS 12 /* distinct submenu groups in the Director */
+#define LUA_DIRECTOR_MAX_SUBMENUS 16 /* distinct submenu groups in the Director (raised
+                                        12->16 for the cheats-style Chaos menu: a Chaos
+                                        root + per-category Enable + Test folders + Alpha) */
 
 /* Rebuild the Director menu items array from the registry (defined in
  * mainmenu.c). Called by pd.menu_add/menu_clear so the array is always valid +

@@ -888,6 +888,9 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define DESCRIPTION_HOLOTIP2       0x0a
 #define DESCRIPTION_DEVICETIP1     0x0b
 #define DESCRIPTION_DEVICETIP2     0x0c
+#ifndef PLATFORM_N64
+#define DESCRIPTION_LUADIRECTOR    0x0d /* port-only: Lua Director scroll-panel text */
+#endif
 
 #define DEVICE_NIGHTVISION 0x01
 #define DEVICE_XRAYSCANNER 0x02

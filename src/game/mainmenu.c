@@ -5248,7 +5248,8 @@ MenuDialogHandlerResult menudialogMainMenu(s32 operation, struct menudialogdef *
 
 // Sized to: LUA_MENU_MAX entries + one opener per submenu + Back + END. Statically
 // terminated so it is safe to open before any rebuild.
-static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + LUA_DIRECTOR_MAX_SUBMENUS + 2] = {
+// +4 tail slack per list: description separator + scrollable panel + Back + END.
+static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + LUA_DIRECTOR_MAX_SUBMENUS + 4] = {
 	{ MENUITEMTYPE_END },
 };
 
@@ -5261,15 +5262,88 @@ static struct menuitem g_LuaDirectorMenuItems[LUA_MENU_MAX + LUA_DIRECTOR_MAX_SU
 static char g_LuaSubmenuPaths[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL];  // full group path (match key)
 static char g_LuaSubmenuTitles[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_LABEL]; // display title (last path component)
 static s32  g_LuaSubmenuParent[LUA_DIRECTOR_MAX_SUBMENUS];                 // parent group index, or -1 for root
-static struct menuitem g_LuaSubmenuItems[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_MAX + 2] = {
+static struct menuitem g_LuaSubmenuItems[LUA_DIRECTOR_MAX_SUBMENUS][LUA_MENU_MAX + 4] = {
 	{ { MENUITEMTYPE_END } },
 };
 static struct menudialogdef g_LuaSubmenuDialogs[LUA_DIRECTOR_MAX_SUBMENUS];
+
+// Shared scroll-panel text for the cheats-style Chaos menu. Each typed row's
+// handler writes the focused effect's description here on MENUOP_FOCUS; the
+// SCROLLABLE row (DESCRIPTION_LUADIRECTOR) reads it via luaDirectorGetDesc.
+static char g_LuaDirectorDesc[LUA_MENU_DESC] = "";
+
+char *luaDirectorGetDesc(void)
+{
+	return g_LuaDirectorDesc;
+}
+
+static void luaDirectorSetDesc(const char *s)
+{
+	if (s == NULL || s[0] == '\0') {
+		return; // keep the last description rather than blanking the panel
+	}
+	strncpy(g_LuaDirectorDesc, s, LUA_MENU_DESC - 1);
+	g_LuaDirectorDesc[LUA_MENU_DESC - 1] = '\0';
+}
 
 MenuItemHandlerResult menuhandlerLuaDirectorItem(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
 		luaMenuInvoke((s32)item->param);
+	} else if (operation == MENUOP_FOCUS) {
+		luaDirectorSetDesc(luaMenuDesc((s32)item->param));
+	}
+	return 0;
+}
+
+// Checkbox row: regidx is stashed in param3 (u8 param is too small for the
+// full registry). GET/SET round-trip a Lua bool; FOCUS updates the description.
+MenuItemHandlerResult menuhandlerLuaDirectorCheckbox(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 reg = (s32)item->param3;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return luaMenuGetBool(reg);
+	case MENUOP_SET:
+		luaMenuSetBool(reg, data->checkbox.value);
+		break;
+	case MENUOP_FOCUS:
+		luaDirectorSetDesc(luaMenuDesc(reg));
+		break;
+	}
+	return 0;
+}
+
+// Slider row: regidx rides param (u8) since param3 carries the slider max and
+// sliders are always registered early (small regidx). Value clamped to the
+// registry min/max on GET and SET.
+MenuItemHandlerResult menuhandlerLuaDirectorSlider(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	s32 reg = (s32)item->param;
+	s32 lo = luaMenuSliderMin(reg);
+	s32 hi = luaMenuSliderMax(reg);
+	s32 v;
+
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		v = luaMenuGetInt(reg);
+		if (v < lo) v = lo;
+		if (v > hi) v = hi;
+		data->slider.value = v;
+		break;
+	case MENUOP_SET:
+		v = (s32)data->slider.value;
+		if (v < lo) v = lo;
+		if (v > hi) v = hi;
+		luaMenuSetInt(reg, v);
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d", (s32)data->slider.value);
+		break;
+	case MENUOP_FOCUS:
+		luaDirectorSetDesc(luaMenuDesc(reg));
+		break;
 	}
 	return 0;
 }
@@ -5297,6 +5371,60 @@ static void luaDirectorFillBack(struct menuitem *dst)
 	dst->param2 = L_OPTIONS_213; // "Back"
 	dst->param3 = 0;
 	dst->handler = NULL;
+}
+
+// Cheats-style checkbox row. regidx in param3 (u8 param can't hold the full
+// registry); the handler reads it back there.
+static void luaDirectorFillCheckbox(struct menuitem *dst, s32 regidx)
+{
+	dst->type = MENUITEMTYPE_CHECKBOX;
+	dst->param = 0;
+	dst->flags = MENUITEMFLAG_LITERAL_TEXT;
+	dst->param2 = (uintptr_t)luaMenuLabel(regidx);
+	dst->param3 = regidx;
+	dst->handler = menuhandlerLuaDirectorCheckbox;
+}
+
+// Cheats-style slider row. param3 is the slider max (renderer reads it), so
+// regidx rides param (u8) — safe because sliders register early (small regidx).
+static void luaDirectorFillSlider(struct menuitem *dst, s32 regidx)
+{
+	dst->type = MENUITEMTYPE_SLIDER;
+	dst->param = (u8)regidx;
+	dst->flags = MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE;
+	dst->param2 = (uintptr_t)luaMenuLabel(regidx);
+	dst->param3 = luaMenuSliderMax(regidx);
+	dst->handler = menuhandlerLuaDirectorSlider;
+}
+
+// A separator + scrollable description panel pair at the foot of a list. The
+// panel reads the shared g_LuaDirectorDesc (updated on row focus). Writes two
+// items; caller advances the cursor by 2.
+static void luaDirectorFillDesc(struct menuitem *sep, struct menuitem *scroll)
+{
+	sep->type = MENUITEMTYPE_SEPARATOR;
+	sep->param = 0;
+	sep->flags = 0;
+	sep->param2 = 0;
+	sep->param3 = 0;
+	sep->handler = NULL;
+
+	scroll->type = MENUITEMTYPE_SCROLLABLE;
+	scroll->param = DESCRIPTION_LUADIRECTOR;
+	scroll->flags = 0;
+	scroll->param2 = 0;
+	scroll->param3 = 100; // panel height in px
+	scroll->handler = NULL;
+}
+
+// Fill one leaf row by its registry kind (action / checkbox / slider).
+static void luaDirectorFillByKind(struct menuitem *dst, s32 regidx)
+{
+	switch (luaMenuKind(regidx)) {
+	case 1:  luaDirectorFillCheckbox(dst, regidx); break;
+	case 2:  luaDirectorFillSlider(dst, regidx); break;
+	default: luaDirectorFillAction(dst, regidx); break;
+	}
 }
 
 // Find the group with this full path, creating it (and any '/'-separated
@@ -5409,7 +5537,7 @@ void luaDirectorRebuild(void)
 		const char *g = luaMenuGroup(i);
 
 		if (g == NULL || g[0] == '\0') {
-			luaDirectorFillAction(&g_LuaDirectorMenuItems[w], i);
+			luaDirectorFillByKind(&g_LuaDirectorMenuItems[w], i);
 			w++;
 		} else {
 			s32 sub = luaDirectorGroup(g, &numsubs); // already discovered — lookup
@@ -5417,17 +5545,22 @@ void luaDirectorRebuild(void)
 			if (sub < 0 || subwrite[sub] >= LUA_MENU_MAX) {
 				continue; // overflow — drop the entry rather than corrupt
 			}
-			luaDirectorFillAction(&g_LuaSubmenuItems[sub][subwrite[sub]], i);
+			luaDirectorFillByKind(&g_LuaSubmenuItems[sub][subwrite[sub]], i);
 			subwrite[sub]++;
 		}
 	}
 
-	// Pass 4: terminate each sub-dialog + the root with Back + END.
+	// Pass 4: a description panel (separator + scrollable) then Back + END on
+	// each sub-dialog and the root. The panel text follows the focused row.
 	for (i = 0; i < numsubs; i++) {
-		luaDirectorFillBack(&g_LuaSubmenuItems[i][subwrite[i]]);
-		g_LuaSubmenuItems[i][subwrite[i] + 1].type = MENUITEMTYPE_END;
+		s32 sw = subwrite[i];
+		luaDirectorFillDesc(&g_LuaSubmenuItems[i][sw], &g_LuaSubmenuItems[i][sw + 1]);
+		luaDirectorFillBack(&g_LuaSubmenuItems[i][sw + 2]);
+		g_LuaSubmenuItems[i][sw + 3].type = MENUITEMTYPE_END;
 	}
 
+	luaDirectorFillDesc(&g_LuaDirectorMenuItems[w], &g_LuaDirectorMenuItems[w + 1]);
+	w += 2;
 	luaDirectorFillBack(&g_LuaDirectorMenuItems[w]);
 	w++;
 	g_LuaDirectorMenuItems[w].type = MENUITEMTYPE_END;

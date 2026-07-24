@@ -3032,8 +3032,24 @@ local alpha_effects = {
   worst_day = { label="Worst Day of Your Life So Far",
                 start=function()
                   st.worst_day = true
-                  st.enabled = true -- force the system on so the drumbeat runs
+                  st.supersonic = nil -- the two escalators are mutually exclusive
+                  st.enabled = true   -- force the system on so the drumbeat runs
                 end },
+
+  -- Effects comin' at you at supersonic speed: rapid bursts synced to the
+  -- frequency timer. A fresh random effect stacks every 2s (they don't wear off
+  -- individually), then at the end of each "Trigger Every" window ALL stacked
+  -- effects end at once and the next burst begins. Runs until restart/completion
+  -- or /chaos off. No effect of its own — start() flips st.supersonic and the
+  -- tick handler does the rest (see the drumbeat + expiry loop).
+  supersonic = { label="Effects comin' at you at supersonic speed",
+                 start=function()
+                   st.supersonic = true
+                   st.worst_day = nil               -- mutually exclusive
+                   st.super_stack_timer = 0         -- first stack on the next tick
+                   st.timer = st.interval * TICKS   -- full first window
+                   st.enabled = true
+                 end },
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -3093,7 +3109,7 @@ for _, n in ipairs({
     "armor_guard", "headshots_only", "ice_floor",
     "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
     "killstreak", "boss_fight", "laugh_track",
-    "worst_day",
+    "worst_day", "supersonic",
 }) do
   local e = chaos.effects[n]
   if e then
@@ -3247,6 +3263,7 @@ local function reset_all_modes()
   if pd.forced_march then pd.forced_march(false) end
   st.home_marked = false -- re-mark the start point on the next stage entered
   st.worst_day = nil -- "Worst Day" ends on restart/completion
+  st.supersonic = nil; st.super_stack_timer = nil -- "Supersonic" ends too
   -- Batch-2 C globals (new-exe bindings; guarded so old exes still run).
   if pd.force_secondary then pd.force_secondary(false) end
   if pd.button_block then pd.button_block(0) end
@@ -3391,7 +3408,7 @@ function chaos.handle(source, text)
     -- Disabling Chaos clears the non-repeat queue (a fresh session starts with a
     -- clean slate). A game restart wipes it too (pd.persist is process-only);
     -- returning to the menu or restarting a mission does NOT.
-    st.enabled = false; st.worst_day = nil; stop_all(); st.recent = {}; recent_save(); persist(); announce("disabled")
+    st.enabled = false; st.worst_day = nil; st.supersonic = nil; stop_all(); st.recent = {}; recent_save(); persist(); announce("disabled")
   elseif cmd == "toggle" then
     chaos.handle(source, st.enabled and "off" or "on")
   elseif cmd == "status" then
@@ -3676,10 +3693,11 @@ pd.on("tick", function()
       local ok, r = pcall(e.tick, left)
       endnow = ok and r == true
     end
-    if st.worst_day and not endnow then
-      -- Worst Day: nothing wears off — keep every timed effect topped up so the
-      -- pile only ever grows. Input-driven popups (endnow) still clear normally,
-      -- else they'd soft-lock.
+    if (st.worst_day or st.supersonic) and not endnow then
+      -- Worst Day / Supersonic: nothing wears off individually — keep every timed
+      -- effect topped up. Worst Day never clears; Supersonic flushes the whole
+      -- pile at once when its window rolls over (see the drumbeat). Input-driven
+      -- popups (endnow) still clear normally, else they'd soft-lock.
       st.active[name] = math.max(left, 2 * TICKS)
     else
       left = left - dt
@@ -3699,6 +3717,27 @@ pd.on("tick", function()
   -- Worst Day of Your Life So Far keeps the NORMAL frequency timer (and vote
   -- mode) below — it only changes the expiry loop above so nothing wears off, so
   -- effects pile up at the usual cadence instead of clearing between rolls.
+
+  -- Effects comin' at you at supersonic speed: within each "Trigger Every"
+  -- window, stack a fresh random effect every 2s (they don't wear off, pinned by
+  -- the expiry loop above); when the window rolls over, ALL stacked effects end
+  -- at the same time and the next burst begins. Overrides the normal drumbeat +
+  -- vote mode. pick_random skips alpha/disabled effects so it can't draw itself.
+  if st.supersonic then
+    st.super_stack_timer = (st.super_stack_timer or 0) - dt
+    if st.super_stack_timer <= 0 then
+      st.super_stack_timer = 2 * TICKS -- one new effect every 2s
+      local name = pick_random()
+      if name then chaos.trigger(name, "supersonic") end
+    end
+    st.timer = st.timer - dt
+    if st.timer <= 0 then
+      st.timer = st.interval * TICKS -- respect the frequency timer as the window
+      stop_all()                     -- every effect ends at once — hard reset
+      announce("supersonic reset")
+    end
+    return
+  end
 
   -- vote mode: chat picks from the 3-candidate slate; the winner fires when
   -- the window closes (ties / no votes -> random candidate, chaos must flow).

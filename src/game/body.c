@@ -186,6 +186,10 @@ extern s32 g_ModelSwapMisses;    // # armed-but-couldn't-serve (diagnostics)
 extern s32 romdataChainFileGetNumForName(const char *name);
 extern const char *romdataFileGetName(s32 fileNum);
 
+// # of live chrs whose overlay body/head produced no modeldef this rebuild
+// (they keep the base model). Reported by the model-swap toggle log.
+static s32 g_ModelSwapNullLoads = 0;
+
 // A chr's held items (weapons_held[0]=right gun, [1]=left gun, [2]=hat) are
 // child props whose model is ATTACHED to the chr's body model — attachedtomodel
 // points at chr->model and attachedtonode at a node inside that model's
@@ -308,8 +312,13 @@ static s32 modelSwapRebuildLiveChrs(void)
 
 			modelmgrFreeModel(old);
 			rebuilt++;
+		} else {
+			// bodyAllocateModel returned NULL: the overlay file for this
+			// body/head produced no usable modeldef (bad/absent slot). The chr
+			// keeps its old model, so it shows as un-swapped rather than gone —
+			// count it so the toggle log can report how many failed to load.
+			g_ModelSwapNullLoads++;
 		}
-		// if neu is NULL (out of model slots / missing file) keep the old model
 	}
 
 	return rebuilt;
@@ -369,6 +378,7 @@ void modelSwapSetActive(bool on)
 		// resolves to a same-named file in the overlay ROM.
 		g_ModelSwapRedirects = 0;
 		g_ModelSwapMisses = 0;
+		g_ModelSwapNullLoads = 0;
 		probefile = g_HeadsAndBodies[0].filenum;
 		probecn = romdataChainFileGetNumForName(romdataFileGetName(probefile));
 
@@ -376,9 +386,9 @@ void modelSwapSetActive(bool on)
 		rebuilt = modelSwapRebuildLiveChrs();
 
 		sysLogPrintf(LOG_NOTE,
-				"modelswap: %s romactive=%d chrs=%d rebuilt=%d redirects=%d misses=%d probe(file=%d '%s' -> chain=%d)",
+				"modelswap: %s romactive=%d chrs=%d rebuilt=%d nullloads=%d redirects=%d misses=%d probe(file=%d '%s' -> chain=%d)",
 				on ? "ON" : "OFF", g_ModelRomActive, g_NumChrSlots, rebuilt,
-				g_ModelSwapRedirects, g_ModelSwapMisses,
+				g_ModelSwapNullLoads, g_ModelSwapRedirects, g_ModelSwapMisses,
 				probefile, romdataFileGetName(probefile), probecn);
 	}
 }

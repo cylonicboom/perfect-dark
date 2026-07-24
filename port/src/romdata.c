@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h> // model-swap overlay ROM auto-load (scan scripts/chaos/rom)
+#include <sys/stat.h> // stat() for the overlay-ROM folder scan
 #include <PR/ultratypes.h>
 #include "lib/rzip.h"
 #include "romdata.h"
@@ -1024,18 +1025,28 @@ s32 romdataLoadModelRom(const char *path)
 		// path is the ROM file itself
 		snprintf(filepath, sizeof(filepath), "%s", path);
 	} else {
-		// treat path as a directory; pick the first ROM-sized (>= stock) file
-		DIR *dr = opendir(path);
+		// Treat path as a directory. Resolve it through the fs search path (mod +
+		// base dirs) ONCE, then opendir + stat that SAME absolute location — a raw
+		// relative opendir uses the CWD while fsFileSize resolves via fsFullPath,
+		// so in an AIO/mod layout they disagree and the folder looks empty even
+		// with the ROM present.
+		char dirfull[FS_MAXPATH + 1];
+		DIR *dr;
 		struct dirent *de;
 
+		snprintf(dirfull, sizeof(dirfull), "%s", fsFullPath(path));
+
+		dr = opendir(dirfull);
 		if (!dr) {
-			return 0; // no such folder — nothing to auto-load
+			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no folder %s (resolved: %s)", path, dirfull);
+			return 0;
 		}
 
 		while ((de = readdir(dr)) != NULL) {
 			char cand[FS_MAXPATH + 1];
-			snprintf(cand, sizeof(cand), "%s/%s", path, de->d_name);
-			if (fsFileSize(cand) >= (s32)ROMDATA_ROM_SIZE) {
+			struct stat st;
+			snprintf(cand, sizeof(cand), "%s/%s", dirfull, de->d_name);
+			if (stat(cand, &st) == 0 && st.st_size >= (off_t)ROMDATA_ROM_SIZE) {
 				snprintf(filepath, sizeof(filepath), "%s", cand);
 				break;
 			}
@@ -1044,7 +1055,7 @@ s32 romdataLoadModelRom(const char *path)
 		closedir(dr);
 
 		if (!filepath[0]) {
-			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no ROM-sized file in %s", path);
+			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no ROM-sized file in %s (resolved: %s)", path, dirfull);
 			return 0;
 		}
 	}

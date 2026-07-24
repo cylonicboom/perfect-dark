@@ -2466,6 +2466,13 @@ static int l_pd_haunt(lua_State *L)
 	return 1;
 }
 
+/* pd.trapdoor() -> bool. Drop the local player through the floor to their death. */
+static int l_pd_trapdoor(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTrapdoor() != 0);
+	return 1;
+}
+
 /* pd.hud_off(on) -> bool. No HUD: hide every HUD element. */
 static int l_pd_hud_off(lua_State *L)
 {
@@ -3272,6 +3279,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_headshots_only); lua_setfield(L, -2, "headshots_only");
 	lua_pushcfunction(L, l_pd_drop_weapon);   lua_setfield(L, -2, "drop_weapon");
 	lua_pushcfunction(L, l_pd_haunt);         lua_setfield(L, -2, "haunt");
+	lua_pushcfunction(L, l_pd_trapdoor);      lua_setfield(L, -2, "trapdoor");
 	lua_pushcfunction(L, l_pd_hud_off);       lua_setfield(L, -2, "hud_off");
 	lua_pushcfunction(L, l_pd_gun_fov);       lua_setfield(L, -2, "gun_fov");
 	lua_pushcfunction(L, l_pd_chr_freeze_one); lua_setfield(L, -2, "chr_freeze_one");

@@ -360,6 +360,7 @@ s32 chraiLuaChrArmor(s32 chrnum, f32 amount); /* give an NPC body armor (negativ
 s32 chraiLuaHeadshotsOnly(s32 on);            /* zero non-head damage to the local player */
 s32 chraiLuaDropWeapon(s32 weaponnum);        /* drop a player weapon as a collectable pickup */
 s32 chraiLuaHaunt(f32 force);                 /* hurl LOS-visible props at the player */
+s32 chraiLuaTrapdoor(void);                   /* drop the local player through the floor */
 s32 chraiLuaHudOff(s32 on);                   /* hide every HUD element */
 s32 chraiLuaGunFov(f32 deg);                  /* viewmodel FOV override (0 restores) */
 s32 chraiLuaChrFreezeOne(s32 chrnum);         /* statue exactly one chr (-1 = none) */

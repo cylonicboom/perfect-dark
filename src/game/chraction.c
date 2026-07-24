@@ -8988,6 +8988,19 @@ s32 chraiLuaHeadshotsOnly(s32 on)
 	return 1;
 }
 
+// pd.trapdoor(): "Trapdoor" — open a hole under the local player for ~2s so the
+// floor vanishes and they fall to their death (bondwalk.c g_ChaosTrapdoorTicks).
+s32 chraiLuaTrapdoor(void)
+{
+	extern s32 g_ChaosTrapdoorTicks;
+
+	if (g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+	g_ChaosTrapdoorTicks = 120; // ~2s of no floor -> fall past the death plane
+	return 1;
+}
+
 // pd.drop_weapon(weaponnum): drop one of the player's weapons as a collectable
 // floor pickup (weaponCreateForPlayerDrop = the engine's blessed objDrop +
 // netSyncPropSpawn path) AND remove it from inventory so it isn't duplicated.

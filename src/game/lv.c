@@ -330,6 +330,7 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosForcedCrouch;    // chaos Permacrouch
 	extern s32 g_ChaosNoReload;        // chaos Reload Denied
 	extern s32 g_ChaosHeadshotsOnly;   // chaos No Damage Except Headshots
+	extern s32 g_ChaosTrapdoorTicks;   // chaos Trapdoor
 	extern f32 g_ChaosSpreadMult;      // chaos Chaos Weapon Spread
 	extern s32 g_ChaosHudOff;          // chaos No HUD
 	extern f32 g_ChaosGunFovOverride;  // chaos WAYTOODANK viewmodel FOV
@@ -392,6 +393,7 @@ void lvReset(s32 stagenum)
 	g_ChaosForcedCrouch = 0;
 	g_ChaosNoReload = 0;
 	g_ChaosHeadshotsOnly = 0;
+	g_ChaosTrapdoorTicks = 0;
 	g_ChaosSpreadMult = 1.0f;
 	g_ChaosHudOff = 0;
 	g_ChaosGunFovOverride = 0.0f;

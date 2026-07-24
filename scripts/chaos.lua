@@ -1043,6 +1043,14 @@ chaos.effects = {
                      pd.room_tint()
                      pd.doors_all(true) -- never leave the player slammed in
                    end },
+  -- Trapdoor: the floor opens under you and you plummet to your death (the
+  -- engine's own fall + death-plane path). Instant.
+  trapdoor     = { label="Trapdoor",          w=2, dur=0,
+                   start=function()
+                     if not pd.trapdoor then error("needs new exe") end
+                     pd.trapdoor()
+                     pd.hud_message("CHAOS: mind the gap!")
+                   end },
   -- Licence to Probe: every guard gets a random Bond tuxedo body and a Maian
   -- alien head (chr_set_body). Instant + permanent for the mission (no original
   -- to restore to); solo/missions only (Combat Sim returns 0).

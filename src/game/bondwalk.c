@@ -1069,6 +1069,22 @@ void bwalkUpdateVertical(void)
 			&newinlift, &lift);
 	ground += g_Vars.currentplayer->bondonground;
 
+#ifndef PLATFORM_N64
+	// Chaos "Trapdoor" (pd.trapdoor): for a few ticks the floor is yanked far
+	// below the player, so the fall branch runs and they plummet to the death
+	// plane (vv_manground <= -30000 -> playerDie). Local human only; clients get
+	// the authoritative death over the wire. Decrement once per frame (index 0).
+	{
+		extern s32 g_ChaosTrapdoorTicks;
+		if (g_ChaosTrapdoorTicks > 0 && !g_Vars.currentplayer->isremote) {
+			ground = -35000.0f;
+			if (g_Vars.currentplayerindex == 0) {
+				g_ChaosTrapdoorTicks--;
+			}
+		}
+	}
+#endif
+
 	if (ground < -30000) {
 		ground = -30000;
 	}
@@ -1679,6 +1695,11 @@ void bwalkHandleActivate(void)
 // real movement velocity — unlike the Combat Boost, which is bullet-time + a
 // mere 1.25x forward ramp.
 f32 g_ChaosPlayerSpeed = 1.0f;
+
+// Chaos "Trapdoor" (pd.trapdoor): countdown of ticks during which the floor
+// under the local player is forced far below them (bwalkUpdateVertical), so
+// they fall through to the death plane. Set by chraiLuaTrapdoor, reset in lv.c.
+s32 g_ChaosTrapdoorTicks = 0;
 
 void bwalkApplyMoveData(struct movedata *data)
 {

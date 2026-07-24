@@ -3305,6 +3305,21 @@ local alpha_effects = {
             end,
             tick=function(left) simon_tick(left) end,
             stop=function() st.a_simon = nil end },
+
+  -- Model Swap: while active, every character body + head is sourced from the
+  -- overlay ROM loaded at boot with --model-rom (e.g. a Mario-characters mod).
+  -- Models swap as chrs (re)load — i.e. on respawn, which in Combat Sim is
+  -- seconds. No-op (fails gracefully) if no overlay ROM was loaded. New exe only.
+  model_swap = { label="Model Swap", dur=1,
+                 start=function()
+                   if not (pd.model_rom_ok and pd.model_rom_ok()) then
+                     pd.hud_message("CHAOS: Model Swap needs --model-rom <rom>")
+                     error("no overlay ROM")
+                   end
+                   pd.model_swap(true)
+                   pd.hud_message("CHAOS: Model Swap ON - respawns use the mod models")
+                 end,
+                 stop=function() if pd.model_swap then pd.model_swap(false) end end },
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -3364,7 +3379,7 @@ for _, n in ipairs({
     "armor_guard", "headshots_only", "ice_floor",
     "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
     "killstreak", "boss_fight", "laugh_track",
-    "worst_day", "supersonic", "touch_cal", "simon",
+    "worst_day", "supersonic", "touch_cal", "simon", "model_swap",
 }) do
   local e = chaos.effects[n]
   if e then
@@ -3507,6 +3522,7 @@ local function reset_all_modes()
   st.a_ltk, st.a_run, st.a_cap, st.a_rr = nil
   st.a_touch = nil -- Touchscreen Calibration target drill
   st.a_simon = nil -- Simon Says command drill
+  if pd.model_swap then pd.model_swap(false) end -- revert Chaos model swap
   st.a_classic, st.a_angst, st.a_phone, st.a_count = nil
   st.a_objf, st.a_thief, st.a_cd, st.a_roll = nil
   st.a_quiz, st.a_eula, st.a_quad = nil

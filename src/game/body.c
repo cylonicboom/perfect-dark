@@ -176,6 +176,67 @@ bool bodyLoad(s32 bodynum)
 	return false;
 }
 
+#ifndef PLATFORM_N64
+// Chaos live model swap (see port/src/romdata.c). These live in the port loader.
+extern s32 g_ModelRomActive;   // an overlay ROM (--model-rom) is loaded
+extern s32 g_ModelSwapActive;  // character models sourced from the overlay now
+extern u8 g_ModelSwapFiles[];  // per-file: redirect this file to the overlay
+
+// Turn the Chaos character-model swap on/off. Flags every character body/head
+// (and first-person hands) file for redirection to the overlay ROM, then
+// invalidates the shared modeldef cache + drops the file cache so the NEXT load
+// of each body/head re-reads — from the overlay when on, the base ROM when off.
+//
+// SAFE by construction: it only NULLs the cache pointers; the old modeldef bytes
+// are NOT freed, so every already-spawned chr keeps rendering its current model
+// (no dangling chr->model->definition) and picks up the swap the next time it is
+// (re)loaded — i.e. on respawn, which in Combat Sim is seconds. The old modeldefs
+// leak into MEMPOOL_STAGE until stage end; we only invalidate on an actual state
+// change to keep that bounded across repeated effect toggles.
+void modelSwapSetActive(bool on)
+{
+	s32 i;
+	bool changed = (on != 0) != (g_ModelSwapActive != 0);
+
+	if (!g_ModelRomActive) {
+		return; // no --model-rom overlay loaded; nothing to swap
+	}
+
+	// Rebuild the redirect set from the live body/head table (tracks whatever
+	// bodies/heads the current stage actually uses).
+	for (i = 0; i < 2048 /* ROMDATA_MAX_FILES */; i++) {
+		g_ModelSwapFiles[i] = 0;
+	}
+	if (on) {
+		for (i = 0; g_HeadsAndBodies[i].filenum; i++) {
+			g_ModelSwapFiles[g_HeadsAndBodies[i].filenum] = 1;
+			if (g_HeadsAndBodies[i].handfilenum) {
+				g_ModelSwapFiles[g_HeadsAndBodies[i].handfilenum] = 1;
+			}
+		}
+	}
+
+	g_ModelSwapActive = on ? 1 : 0;
+
+	if (changed) {
+		// Drop the shared modeldef cache + the file cache so the next load
+		// re-reads the (now redirected) file data.
+		for (i = 0; g_HeadsAndBodies[i].filenum; i++) {
+			g_HeadsAndBodies[i].modeldef = NULL;
+			g_FileInfo[g_HeadsAndBodies[i].filenum].loadedsize = 0;
+			if (g_HeadsAndBodies[i].handfilenum) {
+				g_FileInfo[g_HeadsAndBodies[i].handfilenum].loadedsize = 0;
+			}
+		}
+	}
+}
+
+bool modelSwapRomLoaded(void)
+{
+	return g_ModelRomActive != 0;
+}
+#endif
+
 struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeldef, struct modeldef *headmodeldef, bool sunglasses, struct model *model, bool isplayer, u8 varyheight)
 {
 	f32 scale = g_HeadsAndBodies[bodynum].scale * 0.10000001f;

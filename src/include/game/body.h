@@ -19,4 +19,9 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex);
 struct prop *bodyAllocateEyespy(struct pad *pad, RoomNum room);
 void bodyCalculateHeadOffset(struct modeldef *headmodeldef, s32 headnum, s32 bodynum);
 
+#ifndef PLATFORM_N64
+void modelSwapSetActive(bool on); // Chaos live character-model swap (overlay ROM)
+bool modelSwapRomLoaded(void);     // an --model-rom overlay is available
+#endif
+
 #endif

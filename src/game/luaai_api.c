@@ -42,6 +42,7 @@
 #include "game/music.h"       /* musicStartTrackAsMenu (game_over failed music) */
 #include "game/tex.h"         /* texSelect (pd.draw_sprite blood-splat textures) */
 #include "game/camera.h"      /* camGetScreen* (pd.aim_bounds reticle box) */
+#include "game/body.h"        /* modelSwapSetActive (pd.model_swap overlay ROM) */
 #include "game/gfxmemory.h"   /* gfxAllocateVertices / gfxAllocateColours (draw_sprite) */
 #ifndef PLATFORM_N64
 #include "ext_tex.h"          /* extImageLoad / extImageFree (pd.load_image PNG hook) */
@@ -2000,6 +2001,36 @@ static int l_pd_player_activate(lua_State *L)
 	return 1;
 }
 
+/* pd.model_swap(on) -> bool. Turn the Chaos character-model swap on/off: source
+ * every character body/head model from the --model-rom overlay ROM (on), or the
+ * base ROM (off). Models swap as chrs (re)load — i.e. on respawn. Returns whether
+ * an overlay ROM is loaded (false = no --model-rom, nothing happened). */
+static int l_pd_model_swap(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	if (!modelSwapRomLoaded()) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	modelSwapSetActive(lua_toboolean(L, 1));
+	lua_pushboolean(L, 1);
+#else
+	lua_pushboolean(L, 0);
+#endif
+	return 1;
+}
+
+/* pd.model_rom_ok() -> bool. Whether a --model-rom overlay ROM is loaded. */
+static int l_pd_model_rom_ok(lua_State *L)
+{
+#ifndef PLATFORM_N64
+	lua_pushboolean(L, modelSwapRomLoaded());
+#else
+	lua_pushboolean(L, 0);
+#endif
+	return 1;
+}
+
 /* pd.player_damage(amount) -> bool. Hurt the local player through the real
  * damage path; ~1.0 is roughly one gunshot. */
 static int l_pd_player_damage(lua_State *L)
@@ -3501,6 +3532,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_shield); lua_setfield(L, -2, "player_shield");
 	lua_pushcfunction(L, l_pd_player_reloading); lua_setfield(L, -2, "player_reloading");
 	lua_pushcfunction(L, l_pd_player_activate); lua_setfield(L, -2, "player_activate");
+	lua_pushcfunction(L, l_pd_model_swap);    lua_setfield(L, -2, "model_swap");
+	lua_pushcfunction(L, l_pd_model_rom_ok);  lua_setfield(L, -2, "model_rom_ok");
 	lua_pushcfunction(L, l_pd_player_damage); lua_setfield(L, -2, "player_damage");
 	lua_pushcfunction(L, l_pd_weapon_jam);    lua_setfield(L, -2, "weapon_jam");
 	lua_pushcfunction(L, l_pd_force_secondary); lua_setfield(L, -2, "force_secondary");

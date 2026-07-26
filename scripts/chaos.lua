@@ -155,13 +155,13 @@ local SFX_MAIAN_ARGH = { 0x05df, 0x05e0, 0x05e1 }
 -- never hit an unloaded/invalid head model. Used by Identity Crisis + Hydra.
 local BODIES_POOL = { 0x7b, 0x5c, 0x67, 0x5b, 0x56, 0x00, 0x90 }
 
--- Play a one-shot external sound file from scripts/sounds/chaos/ (drop a
+-- Play a one-shot external sound file from scripts/chaos/sounds/ (drop a
 -- <name>.wav or <name>.mp3 in). Non-looping, does NOT follow music. Used by the
 -- Mario/Sonic meme SFX (mariobig/mariosmall/sonicdrop).
 local function play_sound(name)
   if not pd.play_file then return false end
-  return (pd.play_file("scripts/sounds/chaos/" .. name .. ".wav", false, false)
-      or pd.play_file("scripts/sounds/chaos/" .. name .. ".mp3", false, false)) and true or false
+  return (pd.play_file("scripts/chaos/sounds/" .. name .. ".wav", false, false)
+      or pd.play_file("scripts/chaos/sounds/" .. name .. ".mp3", false, false)) and true or false
 end
 
 -- Non-gameplay stages where Chaos must stay dormant: the Carrington Institute
@@ -201,19 +201,19 @@ local function force_switch(w)
 end
 
 -- Ringtones: prefer a random ring1..ring6 (wav or mp3) from
--- scripts/sounds/chaos/, falling back to the original ring.wav/mp3. Drop
+-- scripts/chaos/sounds/, falling back to the original ring.wav/mp3. Drop
 -- however many ringN files you like in the folder — missing slots just skip.
 local function play_ring(loop)
   local first = math.random(6)
   for k = 0, 5 do
     local i = (first + k - 1) % 6 + 1
-    if pd.play_file("scripts/sounds/chaos/ring" .. i .. ".wav", loop, true)
-        or pd.play_file("scripts/sounds/chaos/ring" .. i .. ".mp3", loop, true) then
+    if pd.play_file("scripts/chaos/sounds/ring" .. i .. ".wav", loop, true)
+        or pd.play_file("scripts/chaos/sounds/ring" .. i .. ".mp3", loop, true) then
       return true
     end
   end
-  return (pd.play_file("scripts/sounds/chaos/ring.wav", loop, true)
-      or pd.play_file("scripts/sounds/chaos/ring.mp3", loop, true)) and true or false
+  return (pd.play_file("scripts/chaos/sounds/ring.wav", loop, true)
+      or pd.play_file("scripts/chaos/sounds/ring.mp3", loop, true)) and true or false
 end
 
 -- hue (0..359) -> r, g, b in 0..255, full saturation/value (disco lights)
@@ -1149,7 +1149,7 @@ chaos.effects = {
                      st.a_boss = nil
                    end },
   -- Laugh Track: a canned laugh plays on every kill (layers over the music now
-  -- that external sounds stack). Drop scripts/sounds/chaos/laugh.wav|mp3 in.
+  -- that external sounds stack). Drop scripts/chaos/sounds/laugh.wav|mp3 in.
   laugh_track  = { label="Laugh Track",       w=3, dur=20,
                    start=function() end },
   -- Licence to Probe: every guard gets a random Bond tuxedo body and a Maian
@@ -1272,7 +1272,7 @@ chaos.effects = {
                      -- ships without the sound; drop a WAV or MP3 at this path
                      -- (e.g. the Discord call ringtone) to complete the bit
                      if not play_ring(false) then
-                       error("scripts/sounds/chaos/ring*.wav|mp3 missing")
+                       error("scripts/chaos/sounds/ring*.wav|mp3 missing")
                      end
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
   negative_zoom = { label="Negative zoom",    w=4, dur=25,
@@ -1909,7 +1909,7 @@ local alpha_effects = {
                  start=function()
                    if not pd.load_image then error("needs new exe") end
                    local h = pd.load_image("dvd.png")
-                   if not h then error("scripts/images/dvd.png missing") end
+                   if not h then error("scripts/chaos/images/dvd.png missing") end
                    -- 4x bigger (2x each dim): 32x14 source drawn as 64x28, so the
                    -- hitbox is hw=32, hh=14 to keep the bounce edge-accurate.
                    local hw, hh = 32, 14
@@ -1982,14 +1982,14 @@ local alpha_effects = {
                  stop=function() pd.fov_scale(1) end },
   -- Bayblade: every NPC spins like a top (~2 rev/s, engine-side yaw stomp —
   -- AI keeps fighting) while the beyblade clip plays. Drop
-  -- scripts/sounds/chaos/beyblade.wav|mp3 in for the full "LET IT RIP";
+  -- scripts/chaos/sounds/beyblade.wav|mp3 in for the full "LET IT RIP";
   -- the spin works without it.
   bayblade   = { label="Bayblade!", dur=1,
                  start=function()
                    if not pd.beyblade then error("needs new exe") end
                    pd.beyblade(true)
-                   local _ = pd.play_file("scripts/sounds/chaos/beyblade.wav", false, true)
-                         or pd.play_file("scripts/sounds/chaos/beyblade.mp3", false, true)
+                   local _ = pd.play_file("scripts/chaos/sounds/beyblade.wav", false, true)
+                         or pd.play_file("scripts/chaos/sounds/beyblade.mp3", false, true)
                  end,
                  stop=function()
                    pd.beyblade(false)
@@ -2003,8 +2003,8 @@ local alpha_effects = {
                  dur=function() return 1 + math.floor(st.effectdur / 10) end,
                  start=function()
                    if not pd.player_add_yaw then error("needs new exe") end
-                   local _ = pd.play_file("scripts/sounds/chaos/speen.wav", false, true)
-                         or pd.play_file("scripts/sounds/chaos/speen.mp3", false, true)
+                   local _ = pd.play_file("scripts/chaos/sounds/speen.wav", false, true)
+                         or pd.play_file("scripts/chaos/sounds/speen.mp3", false, true)
                  end,
                  tick=function(left)
                    local dt = pd.lvupdate and pd.lvupdate() or 1
@@ -2012,7 +2012,7 @@ local alpha_effects = {
                  end },
   -- Banana peel: you slip — dropped to a full squat, shoved forward a few
   -- map units (knockback physics, so walls stop the slide) and left staring
-  -- at the ceiling. scripts/sounds/chaos/banana.wav|mp3 sells it.
+  -- at the ceiling. scripts/chaos/sounds/banana.wav|mp3 sells it.
   banana_peel = { label="Banana peel", dur=0,
                  start=function()
                    if not pd.player_slip or not pd.player_pitch then
@@ -2023,8 +2023,8 @@ local alpha_effects = {
                    -- snap — the main tick runs st.pitch_anim to completion
                    st.pitch_anim = { from = pd.player_pitch(), to = 65,
                                      t = 0, len = 18 }
-                   local _ = pd.play_file("scripts/sounds/chaos/banana.wav", false, true)
-                         or pd.play_file("scripts/sounds/chaos/banana.mp3", false, true)
+                   local _ = pd.play_file("scripts/chaos/sounds/banana.wav", false, true)
+                         or pd.play_file("scripts/chaos/sounds/banana.mp3", false, true)
                  end },
   -- Do a Barrel Roll: the whole view rolls through exactly ONE 360 (about a
   -- second), then rights itself. The Speen spiritual sibling, renderer-side
@@ -2035,8 +2035,8 @@ local alpha_effects = {
                    st.a_roll = 0
                    -- the clip likely outlives the 1s roll — let it play out
                    -- (no stop_file in stop), it's the whole joke
-                   local _ = pd.play_file("scripts/sounds/chaos/barrelroll.wav", false, true)
-                         or pd.play_file("scripts/sounds/chaos/barrelroll.mp3", false, true)
+                   local _ = pd.play_file("scripts/chaos/sounds/barrelroll.wav", false, true)
+                         or pd.play_file("scripts/chaos/sounds/barrelroll.mp3", false, true)
                  end,
                  tick=function(left)
                    local dt = pd.lvupdate and pd.lvupdate() or 1
@@ -2215,7 +2215,7 @@ local alpha_effects = {
                  end,
                  stop=function() pd.alarm(false); st.a_cd = nil end },
   -- "Silo Countdown": a self-destruct (chaos.silo_seconds, default 8:30). Kills
-  -- the level music, plays Silo.mp3 (scripts/sounds/chaos/Silo.mp3, looped)
+  -- the level music, plays Silo.mp3 (scripts/chaos/sounds/Silo.mp3, looped)
   -- underneath — the final-stretch music is baked into that track now, so there's
   -- no mid-countdown swap — and shows a big centred MM:SS timer (drawn in the
   -- alpha HUD hook off st.a_silo); at zero it detonates — explosions_around the
@@ -2236,7 +2236,7 @@ local alpha_effects = {
                        -- best-effort: Silo.mp3 plays ONCE (no loop) at the player's
                        -- music-volume setting (2nd arg loop=false, 3rd = follow music
                        -- slider). The countdown + detonation still run if it's missing.
-                       pd.play_file("scripts/sounds/chaos/Silo.mp3", false, true)
+                       pd.play_file("scripts/chaos/sounds/Silo.mp3", false, true)
                        pd.hud_message(string.format("CHAOS: SILO SELF-DESTRUCT ARMED - %d:%02d",
                                                     math.floor(secs / 60), secs % 60))
                      end,
@@ -2437,8 +2437,8 @@ local alpha_effects = {
   estus      = { label="Estus flask", fixeddur=true, dur=8,
                  start=function()
                    pd.player_speed(0.05)
-                   local _ = pd.play_file("scripts/sounds/chaos/estus.wav", false, true)
-                         or pd.play_file("scripts/sounds/chaos/estus.mp3", false, true)
+                   local _ = pd.play_file("scripts/chaos/sounds/estus.wav", false, true)
+                         or pd.play_file("scripts/chaos/sounds/estus.mp3", false, true)
                  end,
                  tick=function(left)
                    if left % 30 == 0 then
@@ -2976,7 +2976,7 @@ local alpha_effects = {
   -- of your (lowercased, alphanumeric-only) name, longest match first, down
   -- to 1 char (Gras/Graslu/Graslu00 -> gras.png; Red/Redvox/Redvox57 ->
   -- red.png). If nothing resembles you, the family picks a favourite anyway:
-  -- a RANDOM image from scripts/images/. Works for any name.
+  -- a RANDOM image from scripts/chaos/images/. Works for any name.
   nepotism   = { label="Nepotism", dur=1,
                  start=function()
                    if not pd.tex_override or not pd.player_name then
@@ -2989,7 +2989,7 @@ local alpha_effects = {
                    end
                    -- no relation: pick a random image from the folder
                    local imgs = pd.list_images and pd.list_images() or {}
-                   if #imgs == 0 then error("scripts/images/ has no images") end
+                   if #imgs == 0 then error("scripts/chaos/images/ has no images") end
                    -- shuffle-try so a broken/oversized PNG doesn't kill it
                    for i = #imgs, 2, -1 do
                      local j = math.random(i)
@@ -2998,7 +2998,7 @@ local alpha_effects = {
                    for _, n in ipairs(imgs) do
                      if pd.tex_override(n) then return end
                    end
-                   error("no usable image in scripts/images/")
+                   error("no usable image in scripts/chaos/images/")
                  end,
                  stop=function() pd.tex_override() end },
   -- iPod Ad: the silhouette dance. Walls turn a solid vivid colour, everyone

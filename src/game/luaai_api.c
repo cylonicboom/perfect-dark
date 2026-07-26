@@ -85,7 +85,7 @@ struct luaoverlay {
 };
 
 #ifndef PLATFORM_N64
-/* External images loaded from scripts/images/ via pd.load_image. Each keeps
+/* External images loaded from scripts/chaos/images/ via pd.load_image. Each keeps
  * its own RGBA8888 buffer + a textureconfig pointing at it so pd.draw_image
  * can blit it through the same texrect path as the blood splats. This is a
  * loading HOOK for future effects — nothing in the shipped effects uses it. */
@@ -289,7 +289,7 @@ static int l_pd_draw_sprite(lua_State *L)
 	return 0;
 }
 
-/* pd.load_image(name) -> handle | nil. Load a PNG from scripts/images/<name>
+/* pd.load_image(name) -> handle | nil. Load a PNG from scripts/chaos/images/<name>
  * (".png" appended if it has no extension) into an RGBA texture and return an
  * opaque handle for pd.draw_image. A LOADING HOOK for future effects — no
  * shipped effect uses it. Handles + buffers are freed on stage change.
@@ -299,7 +299,7 @@ static int l_pd_draw_sprite(lua_State *L)
  * To fill a bigger area, draw a 64x64 source at a larger w/h (draw_image scales). */
 #ifndef PLATFORM_N64
 /* pd.tex_override([name]): replace EVERY game texture's RGB with an external
- * image (scripts/images/<name>[.png]) via flat-texture mode 3 — the renderer
+ * image (scripts/chaos/images/<name>[.png]) via flat-texture mode 3 — the renderer
  * re-imports the whole texture cache through the override filter (per-pixel
  * alpha preserved, so cutouts/glyphs keep their shapes). No arg = restore
  * normal textures and free the image. */
@@ -340,7 +340,7 @@ static int l_pd_tex_override(lua_State *L)
 	}
 
 	dot = strrchr(name, '.');
-	snprintf(path, sizeof(path), "scripts/images/%s%s", name, dot ? "" : ".png");
+	snprintf(path, sizeof(path), "scripts/chaos/images/%s%s", name, dot ? "" : ".png");
 
 	data = extImageLoad(path, &w, &h);
 	if (!data || w == 0 || h == 0) {
@@ -381,7 +381,7 @@ static int l_pd_load_image(lua_State *L)
 	}
 
 	dot = strrchr(name, '.');
-	snprintf(path, sizeof(path), "scripts/images/%s%s", name, dot ? "" : ".png");
+	snprintf(path, sizeof(path), "scripts/chaos/images/%s%s", name, dot ? "" : ".png");
 
 	data = extImageLoad(path, &w, &h);
 	if (!data || w == 0 || h == 0) {
@@ -2321,7 +2321,7 @@ static int l_pd_mute(lua_State *L)
 }
 
 /* pd.play_file(path, [loop], [follow_music]) -> bool. Play an external WAV/MP3
- * (e.g. scripts/sounds/chaos/ring.wav) through the device stream. follow_music
+ * (e.g. scripts/chaos/sounds/ring.wav) through the device stream. follow_music
  * scales the track by the in-game music volume slider (so it ducks/mutes with
  * the player's music setting) — default off (full volume, e.g. the ringtone). */
 static int l_pd_play_file(lua_State *L)
@@ -2811,7 +2811,7 @@ static int l_pd_player_name(lua_State *L)
 }
 
 /* pd.list_images() -> { "gras", "red", ... }. The basenames (no extension) of
- * every .png in scripts/images/. Nepotism uses this for its random fallback. */
+ * every .png in scripts/chaos/images/. Nepotism uses this for its random fallback. */
 static int l_pd_list_images(lua_State *L)
 {
 #ifndef PLATFORM_N64

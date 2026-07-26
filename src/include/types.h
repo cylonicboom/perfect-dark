@@ -4078,7 +4078,15 @@ struct menumodel {
 struct menurow {
 	s16 height;
 	u8 itemindex;
+#ifdef PLATFORM_N64
 	s8 blockindex;
+#else
+	// Port: blockindex is a CUMULATIVE index into menu->blocks[], which the port
+	// enlarged to 320 (the 4-page carousels need >127 blocks). An s8 can't address
+	// past 127 and wraps to the -1 "no block" sentinel, handing NULL menuitemdata
+	// to the item tick/render/init handlers (crash in menuitemListTick). Widen it.
+	s16 blockindex;
+#endif
 };
 
 struct menucolumn {

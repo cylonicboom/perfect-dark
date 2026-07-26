@@ -219,7 +219,7 @@ u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height)
 }
 
 // General-purpose PNG loader for the Lua image hook (pd.load_image): load an
-// arbitrary image from scripts/images/ into a fresh RGBA8888 buffer. Unlike
+// arbitrary image from scripts/chaos/images/ into a fresh RGBA8888 buffer. Unlike
 // extTexLoad this isn't tied to the game-texture-replacement tables — the
 // caller owns the returned buffer and frees it with stbi_image_free (exposed
 // as extImageFree). Returns NULL on failure. `relpath` is opened directly
@@ -252,12 +252,12 @@ void extImageFree(u8 *data)
 	}
 }
 
-// List .png basenames (without the extension) in scripts/images/ into out[],
+// List .png basenames (without the extension) in scripts/chaos/images/ into out[],
 // up to maxout entries; returns the count written. Working-directory relative,
 // same as extImageLoad. Backs pd.list_images (Nepotism's random fallback).
 s32 extImageList(char out[][64], s32 maxout)
 {
-	DIR *dr = opendir("scripts/images");
+	DIR *dr = opendir("scripts/chaos/images");
 	struct dirent *de;
 	s32 count = 0;
 

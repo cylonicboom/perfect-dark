@@ -1149,35 +1149,42 @@ s32 romdataLoadModelRom(const char *path)
 		return 0;
 	}
 
+	// Anchor a bare relative path to the CWD (prefix "./") so fsFileSize /
+	// fsFileLoad (which route through fsFullPath) do NOT prepend the data/ base
+	// dir. scripts/chaos/rom lives at the exe/working-dir ROOT, exactly like the
+	// scripts/init.lua loader and the pd.load_image / pd.play_file assets — it is
+	// NOT under data/. Absolute, .-relative, or $-expanded paths (e.g. an explicit
+	// --model-rom) are already unambiguous and used verbatim.
+	const char *base = path;
+	char anchored[FS_MAXPATH + 1];
+	if (!fsPathIsAbsolute(path) && path[0] != '.' && path[0] != '$') {
+		snprintf(anchored, sizeof(anchored), "./%s", path);
+		base = anchored;
+	}
+
 	// A ROM is at least the stock 32MB; expanded total conversions (e.g. a Mario
 	// model pack) are larger, so accept anything >= stock size.
-	if (fsFileSize(path) >= (s32)ROMDATA_ROM_SIZE) {
-		// path is the ROM file itself
-		snprintf(filepath, sizeof(filepath), "%s", path);
+	if (fsFileSize(base) >= (s32)ROMDATA_ROM_SIZE) {
+		// base is the ROM file itself
+		snprintf(filepath, sizeof(filepath), "%s", base);
 	} else {
-		// Treat path as a directory. Resolve it through the fs search path (mod +
-		// base dirs) ONCE, then opendir + stat that SAME absolute location — a raw
-		// relative opendir uses the CWD while fsFileSize resolves via fsFullPath,
-		// so in an AIO/mod layout they disagree and the folder looks empty even
-		// with the ROM present.
-		char dirfull[FS_MAXPATH + 1];
+		// Treat base as a directory and scan it (working-directory-relative, no
+		// data/ prepend) for the first ROM-sized file — so the Lua side can just
+		// point at scripts/chaos/rom and the user drops any-named z64 in it.
 		DIR *dr;
 		struct dirent *de;
 
-		snprintf(dirfull, sizeof(dirfull), "%s", fsFullPath(path));
-
-		dr = opendir(dirfull);
+		dr = opendir(base);
 		if (!dr) {
-			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no folder %s (resolved: %s)", path, dirfull);
+			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no folder %s", base);
 			return 0;
 		}
 
 		while ((de = readdir(dr)) != NULL) {
-			// cand is built from the SAME resolved dir opendir walked; fsFileSize
-			// treats this ./- or absolute path consistently (no CWD-vs-search
-			// mismatch), so listing and sizing agree.
+			// cand inherits base's "./"-anchoring, so fsFileSize (and later
+			// fsFileLoad) read from the CWD, not the data/ base dir.
 			char cand[FS_MAXPATH + 1];
-			snprintf(cand, sizeof(cand), "%s/%s", dirfull, de->d_name);
+			snprintf(cand, sizeof(cand), "%s/%s", base, de->d_name);
 			if (fsFileSize(cand) >= (s32)ROMDATA_ROM_SIZE) {
 				snprintf(filepath, sizeof(filepath), "%s", cand);
 				break;
@@ -1187,7 +1194,7 @@ s32 romdataLoadModelRom(const char *path)
 		closedir(dr);
 
 		if (!filepath[0]) {
-			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no ROM-sized file in %s (resolved: %s)", path, dirfull);
+			sysLogPrintf(LOG_NOTE, "romdataLoadModelRom: no ROM-sized file in %s", base);
 			return 0;
 		}
 	}

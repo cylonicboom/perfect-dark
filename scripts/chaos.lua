@@ -2658,6 +2658,56 @@ local alpha_effects = {
                      { q="dataDyne's CEO is...", a="Cassandra De Vries", b="Daniel Carrington", correct=1 },
                      { q="The FarSight sees through...", a="everything, it's broken", b="nothing", correct=1 },
                      { q="Proximity mines are best deployed...", a="carefully", b="at your own feet", correct=1 },
+                     -- ===== port batch: Perfect Dark trivia (2026-07-26) =====
+                     -- correct=1 -> answer a (FIRE), correct=2 -> answer b (AIM).
+                     -- both_right/both_wrong = joke questions (any/no answer passes).
+                     { q="How many bullets does the CMP-150 magazine hold?", a="32", b="28", correct=1 },
+                     { q="How many objectives does Air Base have on Special Agent?", a="3", b="4", correct=1 },
+                     { q="How many levels does the Dragon appear in?", a="6 levels", b="9 levels", correct=1 },
+                     { q="How many weapon slots does Combat Sim support?", a="5 slots", b="6 slots", correct=2 },
+                     { q="How many levels do you start with a Falcon 2 (Silenced) as Joanna?", a="4 levels", b="7 levels", correct=1 },
+                     { q="What vehicle do you reprogram in Chicago?", a="A taxi", b="A police car", correct=1 },
+                     { q="Is Fast Animation a cheat?", a="Yes", b="No", correct=2 },
+                     { q="How many challenges are in Combat Sim?", a="30", b="50", correct=1 },
+                     { q="What is the first preset game in Combat Sim?", a="Automatics", b="No Shield", correct=2 },
+                     { q="Can you disable the Falcon 2's laser beam in display options?", a="Yes", b="No", correct=2 },
+                     { q="Which secondary function is shared between multiple weapons?", a="Threat Detector", b="3-round burst", correct=2 },
+                     { q="How old is Joanna Dark?", a="23y 2m", b="21y 5m", correct=1 },
+                     { q="Who had the highest training score before Joanna?", a="Foster", b="Jonathan", correct=2 },
+                     { q="Where was Air Force One heading before the crash?", a="Victoria Islands", b="Oslo, Norway", correct=1 },
+                     { q="Which weapon was NOT developed by Chesluk Industries?", a="RC-P120", b="Devastator", correct=1 },
+                     { q="Which GoldenEye weapon is NOT featured in this game?", a="ZMG", b="Phantom", correct=1 },
+                     { q="The R-Tracker cheat does what?", a="Shows objective locations", b="Shows hidden weapon caches", correct=1 },
+                     { q="Did McSmith put a curse on me?", a="Yes", b="No", both_wrong=true },
+                     { q="Which weapon's description hints at better accuracy when crouching?", a="Reaper", b="Shotgun", correct=1 },
+                     { q="Does punching guards out kill them?", a="Yes", b="No", correct=2 },
+                     { q="Do you get more gear in the G5 Building on higher difficulties?", a="Yes", b="No", correct=1 },
+                     { q="Do you get more gear in Pelagic II on higher difficulties?", a="Yes", b="No", correct=1 },
+                     { q="What is the sky colour in Crash Site?", a="Red with yellow clouds", b="Blue with grey clouds", correct=1 },
+                     { q="Which console did Perfect Dark originally release on first?", a="Nintendo 64", b="Game Boy Color", correct=1 },
+                     { q="Is Carrington Institute the best level?", a="Yes", b="No", both_right=true },
+                     { q="Is the ammo pool shared between the Mauler and Callisto NTG?", a="Yes", b="No", correct=2 },
+                     { q="How many classic weapons are there?", a="8", b="9", correct=2 },
+                     { q="Is Paintball Mode a cheat?", a="Yes", b="No", correct=1 },
+                     { q="What is rank 10 in the Combat Simulator titles?", a="Veteran", b="Pro", correct=2 },
+                     { q="How many medals do you need at least for a 'Perfect: 1'?", a="900", b="1000", correct=2 },
+                     { q="If you switch to dual-wielding, how is the spread affected?", a="Stays the same", b="Gets worse (1.5x)", correct=2 },
+                     { q="If you go into a full crouch, how is the spread affected?", a="Stays the same", b="Improves (halved)", correct=2 },
+                     { q="Who is the manufacturer of the RC-P120?", a="Carrington", b="Chesluk Industries", correct=1 },
+                     { q="What is the RPM of the Cyclone's Magazine Discharge?", a="2000", b="2500", correct=2 },
+                     { q="Does the Psychosis Gun deal damage?", a="Yes", b="No", correct=2 },
+                     { q="Does the Tranquilizer / Crossbow deal damage in solo missions?", a="Yes", b="No", correct=2 },
+                     { q="Does the N-Bomb deal damage in solo missions?", a="Yes", b="No", correct=2 },
+                     { q="Does the Disarm / Unarmed deal damage in Combat Sim?", a="Yes", b="No", correct=2 },
+                     { q="If you punch an opponent who is knocked out, does it deal damage?", a="Yes", b="No", correct=2 },
+                     { q="Are the Punch and Disarm of Unarmed equally powerful?", a="Yes", b="No", correct=2 },
+                     { q="Which weapon has the higher damage?", a="DY357-LX", b="FarSight XR-20", correct=2 },
+                     { q="How many shots can the Mauler's charge-up hold?", a="4", b="5", correct=2 },
+                     { q="Do FistSims ever use weapons?", a="Yes", b="No", correct=2 },
+                     { q="Where is Area 52 found?", a="Campaign", b="Combat Simulator", correct=2 },
+                     { q="Does Combat Boost increase game speed?", a="Yes", b="No", correct=2 },
+                     { q="Can a Shield protect against a FarSight shot?", a="Yes", b="No", correct=2 },
+                     { q="Can a PeaceSim ever score a point?", a="Yes", b="No", correct=2 },
                    }
                    -- 1-3 questions, drawn without repeats, for unpredictability
                    local want = math.random(1, 3)
@@ -2678,7 +2728,13 @@ local alpha_effects = {
                    if pressed and (pressed & 0x2000) ~= 0 then pick = 1
                    elseif pressed and (pressed & 0x0010) ~= 0 then pick = 2 end
                    if pick then
-                     if pick == cur.correct then
+                     -- both_right = any answer passes (joke); both_wrong = any
+                     -- answer hurts (joke); otherwise match cur.correct.
+                     local ok
+                     if cur.both_right then ok = true
+                     elseif cur.both_wrong then ok = false
+                     else ok = (pick == cur.correct) end
+                     if ok then
                        pd.hud_message(string.format("CHAOS: correct (%d/%d)", qz.idx, qz.total))
                      else
                        pd.player_damage(4)

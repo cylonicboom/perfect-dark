@@ -10543,6 +10543,11 @@ s32 chraiLuaSpawnBike(void)
 	pos.x = g_Vars.currentplayer->prop->pos.x + g_Vars.currentplayer->bond2.unk00.x * 80.0f;
 	pos.y = g_Vars.currentplayer->prop->pos.y;
 	pos.z = g_Vars.currentplayer->prop->pos.z + g_Vars.currentplayer->bond2.unk00.z * 80.0f;
+	// Materialise at the player's WAIST rather than their feet (user call
+	// 2026-07-28): both placement paths below rest the bike's bbox min at
+	// pos.y, so lifting here spawns it mid-air and OBJFLAG_FALL settles it
+	// onto the floor instead of it popping up embedded at ground level.
+	pos.y += 85.0f;
 	mtx4LoadIdentity(&mtx);
 	roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms);
 

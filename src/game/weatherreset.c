@@ -51,6 +51,13 @@ s32 weatherChaosSet(s32 type, s32 intensity)
 {
 	if (intensity < 0) intensity = 0;
 	if (intensity > 3) intensity = 3;
+	// snow only implements intensities 0/1 in weatherSetIntensity (the N64
+	// game never ran snow harder); 2/3 fall through its switch leaving the
+	// particle target (unkd4) at 0 = invisible weather. 1 is already the
+	// 500-particle maximum, so clamp rather than extend the table.
+	if (type == 2 && intensity > 1) {
+		intensity = 1;
+	}
 
 	if (type <= 0) {
 		if (g_WeatherData) {

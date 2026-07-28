@@ -2312,9 +2312,21 @@ local alpha_effects = {
                    if h then pd.take_weapon(h); pd.give_weapon(h); pd.switch_weapon(h) end
                    st.a_twoh = nil
                  end },
+  -- Committed to the bit: FULL magnum ammo (the one exception to the 2-mag
+  -- free-gun policy — user call 2026-07-28) and no switching away from the
+  -- golden guns while it runs (knife_lock blocks switching only, the
+  -- russian_roulette pattern). Only the Magnum pool is topped, so the rest
+  -- of the arsenal keeps the mags-not-max rule.
   double_lx  = { label="Double Magnum LX", dur=1,
-                 start=function() pd.dual_wield(W.LX); give_ammo_mags() end,
-                 stop=function() pd.take_weapon(W.LX) end },
+                 start=function()
+                   pd.dual_wield(W.LX)
+                   pd.give_ammo(AMMO.MAGNUM, 200) -- clamps at pool capacity
+                   if pd.knife_lock then pd.knife_lock(true) end
+                 end,
+                 stop=function()
+                   if pd.knife_lock then pd.knife_lock(false) end
+                   pd.take_weapon(W.LX)
+                 end },
   -- Tank: dual rocket launchers, barely able to walk.
   tank       = { label="Tank mode", dur=1,
                  start=function()

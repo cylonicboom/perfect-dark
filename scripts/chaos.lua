@@ -996,8 +996,22 @@ chaos.effects = {
                      for _, g in ipairs(GUNS) do pd.take_weapon(g) end
                      pd.take_weapon(W.KNIFE) end },
   -- world chaos
+  -- INTRUDER ALERT: the klaxon alone only moves guards whose STAGE AI
+  -- scripts poll the alarm (aiIfAlarmActive branches in their action
+  -- blocks) — most idle/patrol lists never do, so on most stages it was
+  -- just noise. So every chr's shot/alert list is tripped directly too
+  -- (pd.chr_alert = CHRCFLAG_TRIGGERSHOTLIST, the damage-path flag),
+  -- re-swept every 5s to catch alarm-spawned reinforcements.
   intruder     = { label="INTRUDER ALERT",    w=5, dur=20,
-                   start=function() pd.alarm(true) end,
+                   start=function()
+                     pd.alarm(true)
+                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end
+                   end,
+                   tick=function(left)
+                     if left % 300 == 0 then
+                       for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end
+                     end
+                   end,
                    stop=function() pd.alarm(false) end },
   predators    = { label="Predators",         w=4, dur=20,
                    start=function()

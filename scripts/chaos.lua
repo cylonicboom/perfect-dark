@@ -439,11 +439,18 @@ chaos.effects = {
                      local h = pd.weapon_held()
                      if h and h > W.UNARMED then pd.take_weapon(h) end end },
   knife_fight  = { label="Knife fight!",      w=5,  dur=20,
-                   -- force the knife and lock out all other weapons (Cyclone-style)
+                   -- force the knife and lock out all other weapons (Cyclone-style).
+                   -- knife_lock blocks the cycle buttons AND the gadget menu
+                   -- (amOpen); the tick's snap-back catches the one avenue left,
+                   -- PC number-key direct select (the Weapon-lock pattern).
                    start=function()
                      pd.give_weapon(W.KNIFE); pd.switch_weapon(W.KNIFE)
                      pd.give_ammo(0x09, 1) -- AMMOTYPE_KNIFE: one throwable knife
                      if pd.knife_lock then pd.knife_lock(true) end
+                   end,
+                   tick=function()
+                     local h = pd.weapon_held and pd.weapon_held()
+                     if h and h ~= W.KNIFE then pd.switch_weapon(W.KNIFE) end
                    end,
                    stop=function()
                      if pd.knife_lock then pd.knife_lock(false) end
@@ -574,7 +581,14 @@ chaos.effects = {
                      end,
                      tick=function()
                        local a = st.a_cyc
-                       if not a or not a.arm then return end
+                       if not a then return end
+                       if not a.arm then
+                         -- armed and live: snap-back — number-key direct select
+                         -- bypasses gun_lock's cycle/menu blocks
+                         local h = pd.weapon_held and pd.weapon_held()
+                         if h and h ~= W.CYCLONE then pd.dual_wield(W.CYCLONE, 1) end
+                         return
+                       end
                        a.arm = a.arm - (pd.lvupdate and pd.lvupdate() or 1)
                        if a.arm > 0 then return end
                        a.arm = nil
@@ -2410,6 +2424,11 @@ local alpha_effects = {
                    pd.give_ammo(AMMO.MAGNUM, 200) -- clamps at pool capacity
                    if pd.knife_lock then pd.knife_lock(true) end
                  end,
+                 tick=function()
+                   -- snap-back: number-key direct select bypasses knife_lock
+                   local h = pd.weapon_held and pd.weapon_held()
+                   if h and h ~= W.LX then pd.dual_wield(W.LX) end
+                 end,
                  stop=function()
                    if pd.knife_lock then pd.knife_lock(false) end
                    pd.take_weapon(W.LX)
@@ -2637,6 +2656,9 @@ local alpha_effects = {
                    pd.hud_message("CHAOS: six chambers. one round. FIRE.")
                  end,
                  tick=function(left)
+                   -- snap-back: number-key direct select bypasses knife_lock
+                   local h = pd.weapon_held and pd.weapon_held()
+                   if h and h ~= W.MAGNUM then force_switch(W.MAGNUM) end
                    local rr = st.a_rr
                    if rr and not rr.fired and left <= 10 then
                      rr.fired = true -- time's up: the gun goes off by itself

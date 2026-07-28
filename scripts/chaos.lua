@@ -168,12 +168,12 @@ local function announce(text, effect)
   st.toast = { text = "CHAOS: " .. text, life = TOAST_TICKS }
 end
 
--- Beat game: current beat phase in [0,1) (0 = on the beat). Uses the live music
--- beat when a sequenced track is playing (pd.music_beat), else the effect's own
--- free-running fallback accumulator (st.a_beat.freephase, advanced in its tick).
+-- Beat game: current beat phase in [0,1) (0 = on the beat). Always the effect's
+-- own free-running accumulator (st.a_beat.freephase) — the effect tick anchors
+-- it to the live music's FIRST downbeat once, then it runs steady. Reading
+-- pd.music_beat() live here re-synced every frame, and sequence loops / tempo
+-- wobble made the target twitch mid-game.
 local function beat_phase()
-  local ph = pd.music_beat and pd.music_beat()
-  if ph then return ph end
   return (st.a_beat and st.a_beat.freephase) or 0
 end
 
@@ -696,15 +696,17 @@ chaos.effects = {
                     end,
                     stop=function() if pd.space_program then pd.space_program(false) end end },
   -- "Beat game": shoot ON the music beat for bonus damage, slightly off for
-  -- normal, badly off and you hurt yourself. Syncs to the live music tempo
-  -- (pd.music_bpm / pd.music_beat) with a 120-BPM visual-metronome fallback when
-  -- no sequenced track is playing. Scored in the weaponfire hook; the pulsing
+  -- normal, badly off and you hurt yourself. Anchors ONCE to the live music's
+  -- first downbeat (phase + tempo from pd.music_beat / pd.music_bpm), then
+  -- free-runs as a steady metronome — following the live phase every tick made
+  -- the target twitch on sequence loops / tempo wobble. 120-BPM fallback when
+  -- no sequenced track is playing. Scored in the effect tick; the pulsing
   -- HUD is drawn in the alpha overlay hook. Both read beat_phase() off st.a_beat.
   beat_game    = { label="Beat game", alpha=true, w=0, dur=30,
                    start=function()
                      if not pd.music_beat then error("needs new exe") end
                      st.a_beat = { freephase = 0, bpm = pd.music_bpm and pd.music_bpm() or 0,
-                                   hasmusic = false, hits = 0, misses = 0,
+                                   synced = false, hasmusic = false, hits = 0, misses = 0,
                                    last = "", lastcol = 0xffffffff, lastt = 0 }
                      pd.hud_message("CHAOS: shoot ON THE BEAT")
                    end,
@@ -712,16 +714,26 @@ chaos.effects = {
                      local b = st.a_beat
                      if not b then return end
                      local dt = pd.lvupdate and pd.lvupdate() or 1
-                     local bpm = pd.music_bpm and pd.music_bpm() or 0
-                     if pd.music_beat and pd.music_beat() then
-                       b.hasmusic = true
-                       if bpm > 0 then b.bpm = bpm end
-                     else
-                       b.hasmusic = false
-                       if b.bpm <= 0 then b.bpm = 120 end
-                       local tpb = 3600 / b.bpm -- ticks per beat (60 ticks/s * 60)
-                       b.freephase = (b.freephase + dt / tpb) % 1
+                     -- One-shot sync: latch onto the first live downbeat (the
+                     -- music phase wrapping ~1 -> ~0), grab the tempo, and never
+                     -- consult the live phase again. hasmusic only flips once
+                     -- synced, so the HUD's "(metronome)" tag stays honest.
+                     if not b.synced then
+                       local mph = pd.music_beat and pd.music_beat()
+                       if mph then
+                         if b.lastmusicph and (b.lastmusicph - mph) > 0.5 then
+                           local bpm = pd.music_bpm and pd.music_bpm() or 0
+                           if bpm > 0 then b.bpm = bpm end
+                           b.freephase = mph
+                           b.synced = true
+                           b.hasmusic = true
+                         end
+                         b.lastmusicph = mph
+                       end
                      end
+                     if b.bpm <= 0 then b.bpm = 120 end
+                     local tpb = 3600 / b.bpm -- ticks per beat (60 ticks/s * 60)
+                     b.freephase = (b.freephase + dt / tpb) % 1
                      -- Metronome: click once per beat, on the downbeat (the phase
                      -- wrapping ~1 -> ~0). Played at half the music volume C-side.
                      local ph = beat_phase()

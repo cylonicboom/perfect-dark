@@ -572,23 +572,44 @@ static inline void romdataInitFiles(void)
 // blocks) resolve from the chain ROM rather than the base ROM
 static inline void romdataInitChainFiles(void)
 {
-	// the file offset table is in the chain ROM's data seg
+	// The chain ROM is an arbitrary user file (romdataLoadModelRom even picks up
+	// the first ROM-sized file it finds in scripts/chaos/rom with no
+	// confirmation), and a mod that relocated its file table leaves this region
+	// pointing at unrelated inflated data — see the "names come back
+	// empty/garbage" notes above. So BOTH loops need a hard element bound:
+	// fileSlots[MOD_CHAINROM] is the LAST row of fileSlots[MOD_COUNT][2048], so
+	// an index past 2048 runs off the end of the whole array.
 	const u32 *offsets = (u32 *)(chainDataSeg + ROMDATA_FILES_OFS);
 	u32 i;
-	for (i = 1; offsets[i]; ++i) {
-		if (offsets + i + 1 < (u32 *)(chainDataSeg + chainDataSegSize)) {
-			const u32 nextofs = PD_BE32(offsets[i + 1]);
-			const u32 ofs = PD_BE32(offsets[i]);
-			fileSlots[MOD_CHAINROM][i].data = chainRomFile + ofs;
-			fileSlots[MOD_CHAINROM][i].size = nextofs - ofs;
-			fileSlots[MOD_CHAINROM][i].source = SRC_UNLOADED;
-			fileSlots[MOD_CHAINROM][i].preprocessed = 0;
+	for (i = 1; i < ROMDATA_MAX_FILES && offsets[i]; ++i) {
+		// break, don't skip: once the table runs past the data seg every later
+		// entry is out of bounds too, and continuing just reads further garbage.
+		if (offsets + i + 1 >= (u32 *)(chainDataSeg + chainDataSegSize)) {
+			break;
 		}
+
+		const u32 nextofs = PD_BE32(offsets[i + 1]);
+		const u32 ofs = PD_BE32(offsets[i]);
+		fileSlots[MOD_CHAINROM][i].data = chainRomFile + ofs;
+		fileSlots[MOD_CHAINROM][i].size = nextofs - ofs;
+		fileSlots[MOD_CHAINROM][i].source = SRC_UNLOADED;
+		fileSlots[MOD_CHAINROM][i].preprocessed = 0;
 	}
 
-	// last offset is to the name table
-	const u32 *nameOffsets = (u32 *)(chainRomFile + PD_BE32(offsets[i - 1]));
-	for (i = 1; nameOffsets[i]; ++i) {
+	// last offset is to the name table — validate it lands inside the ROM before
+	// dereferencing, then bound the walk the same way.
+	const u32 nametableofs = PD_BE32(offsets[i - 1]);
+
+	if (nametableofs >= chainRomFileSize) {
+		sysLogPrintf(LOG_WARNING, "romdataInitChainFiles: name table offset 0x%x past end of chain ROM (0x%x)",
+				nametableofs, chainRomFileSize);
+		return;
+	}
+
+	const u32 *nameOffsets = (u32 *)(chainRomFile + nametableofs);
+	const u32 namemax = (chainRomFileSize - nametableofs) / sizeof(u32);
+
+	for (i = 1; i < ROMDATA_MAX_FILES && i < namemax && nameOffsets[i]; ++i) {
 		const u32 ofs = PD_BE32(nameOffsets[i]);
 		fileSlots[MOD_CHAINROM][i].name = (const char *)nameOffsets + ofs; // ofs is relative to the start of the name table
 	}

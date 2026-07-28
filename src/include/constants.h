@@ -3169,6 +3169,16 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 // (640/640 bits) — any further saved field needs MPSETUP_BLOCKSIZE enlarged.
 #endif
 
+// Number of rows in g_MpScenarios[] (scenarios.c). g_MpSetup.scenario indexes
+// that table of function pointers at ~36 sites, none of which bounds-check, so
+// EVERY ingress that can set it from data we don't control (the wire, a saved
+// wad, an admin push) must validate against this first.
+#ifndef PLATFORM_N64
+#define MPSCENARIO_COUNT (MPSCENARIO_RACE + 1)
+#else
+#define MPSCENARIO_COUNT (MPSCENARIO_CAPTURETHECASE + 1)
+#endif
+
 #define MPSETUPMENU_ADVSETUP 1
 #define MPSETUPMENU_GENERAL  2
 #define MPSETUPMENU_QUICKGO  3

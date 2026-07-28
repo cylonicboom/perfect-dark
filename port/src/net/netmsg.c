@@ -736,6 +736,16 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 		return 0;
 	}
 
+	// Same bound as the SVC_STAGE_START reader: scenario indexes the
+	// g_MpScenarios[] function-pointer table. An admin is authenticated but
+	// still remote, and chrslots right below is already masked for exactly
+	// this reason.
+	if ((u32)scenario >= MPSCENARIO_COUNT) {
+		sysLogPrintf(LOG_WARNING, "NET: CLC_ADMIN_SETUP from client %u rejected: bad scenario %d", srccl->id, (s32)scenario);
+		netAdminReply(srccl, "setup: invalid scenario");
+		return 0;
+	}
+
 	// Commit.
 	g_MpSetup.stagenum = stagenum;
 	g_MpSetup.scenario = scenario;
@@ -807,6 +817,17 @@ u32 netmsgClcMoveRead(struct netbuf *src, struct netclient *srccl)
 	struct netplayermove newmove;
 	const u32 outmoveack = netbufReadU32(src);
 	netbufReadPlayerMove(src, &newmove);
+
+	// UCMD_FL_FORCE* are SERVER-authored bits (every setter is
+	// NETMODE_SERVER-gated: player.c, lv.c, chraction.c, playermgr.c). They must
+	// never arrive from a client: the server echoes a remote pawn's inmove
+	// verbatim in netmsgSvcPlayerMoveWrite, but decides whether to append the
+	// rooms block from its OWN outmove ucmd — so a client that sets a force bit
+	// makes every OTHER client's reader expect a rooms block that was never
+	// written, misaligning the rest of the packet (and the reliable buffer it
+	// shares with prop spawns/frees). One modified client could corrupt the
+	// stream for all peers.
+	newmove.ucmd &= ~UCMD_FL_FORCEMASK;
 
 	if (srccl->state != CLSTATE_GAME) {
 		// silently ignore
@@ -1356,6 +1377,14 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 			const u8 pn = netbufReadU8(src);
 			const u8 spec = netbufReadU8(src);
 			struct netclient *ncl = netResolveWireClient(id);
+			// playernum indexes g_PlayerConfigsArray[] and g_Vars.players[] in
+			// netPlayersAllocate, whose overflow guard only runs on the server —
+			// so on a client the wire value must be validated here or it lands
+			// unchecked in both. Park an out-of-range entry as a spectator.
+			if (!spec && pn >= MAX_PLAYERS) {
+				sysLogPrintf(LOG_WARNING, "NET: SVC_STAGE bad co-op playernum %u for client %u", pn, id);
+				return 2;
+			}
 			if (ncl) {
 				ncl->id = id;
 				ncl->is_spectator = spec;
@@ -1390,7 +1419,23 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 #endif
 
 	g_MpSetup.stagenum = stagenum;
-	g_MpSetup.scenario = netbufReadU8(src);
+
+	// g_MpSetup.scenario indexes g_MpScenarios[] (a table of function pointers)
+	// at ~36 unguarded sites, starting with scenarioInit() inside mpStartMatch
+	// below. A wire byte of 0-255 straight into it reads a struct of function
+	// pointers past the end of a MPSCENARIO_COUNT-row table and CALLS through
+	// it, every frame. Reject the message instead.
+	{
+		const u8 wirescenario = netbufReadU8(src);
+
+		if (wirescenario >= MPSCENARIO_COUNT) {
+			sysLogPrintf(LOG_WARNING, "NET: SVC_STAGE bad scenario %u from server", wirescenario);
+			return 2;
+		}
+
+		g_MpSetup.scenario = wirescenario;
+	}
+
 	g_MpSetup.scorelimit = netbufReadU8(src);
 	g_MpSetup.timelimit = netbufReadU8(src);
 	g_MpSetup.teamscorelimit = netbufReadU16(src);
@@ -1438,6 +1483,16 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 			return 2;
 		}
 		ncl->playernum = netbufReadU8(src);
+		// netPlayersAllocate indexes g_PlayerConfigsArray[MAX_MPPLAYERCONFIGS]
+		// and g_Vars.players[MAX_PLAYERS] with this, and its overflow guard is
+		// inside an `if (g_NetMode == NETMODE_SERVER)` block — so on a client
+		// nothing else bounds it. NET_PLAYERNUM_SPECTATOR is the one legal
+		// out-of-range value.
+		if (ncl->playernum >= MAX_PLAYERS && ncl->playernum != NET_PLAYERNUM_SPECTATOR) {
+			sysLogPrintf(LOG_WARNING, "NET: SVC_STAGE bad playernum %u for client %u from server",
+					ncl->playernum, id);
+			return 2;
+		}
 		ncl->settings.team = netbufReadU8(src);
 		if (ncl != g_NetLocalClient) {
 			ncl->id = id;
@@ -2094,24 +2149,32 @@ u32 netmsgSvcPlayerMoveWrite(struct netbuf *dst, struct netclient *movecl)
 	}
 
 	const struct netplayermove *inmove = &movecl->inmove[movecl->inmove_head];
-	const bool has_force = (movecl->outmove[0].ucmd & UCMD_FL_FORCEMASK) != 0;
+	const bool server_force = (movecl->outmove[0].ucmd & UCMD_FL_FORCEMASK) != 0;
+	// Which move goes on the wire...
+	const struct netplayermove *sent =
+			(!server_force && inmove->tick) ? inmove : &movecl->outmove[0];
+	// ...and the rooms block is appended iff the SENT move carries force bits.
+	// netmsgSvcPlayerMoveRead keys the trailing rooms read off the ucmd it just
+	// parsed out of the payload, so deriving this from anything other than the
+	// move we actually write lets the two disagree and misaligns the stream.
+	const bool has_force = (sent->ucmd & UCMD_FL_FORCEMASK) != 0;
 
 	netbufWriteU8(dst, SVC_PLAYER_MOVE);
 	netbufWriteU8(dst, movecl->id);
 	netbufWriteU32(dst, inmove->tick);
 
-	if (!has_force && inmove->tick) {
+	if (!server_force && inmove->tick) {
 		// Echo the client's own last CLC_MOVE back. The client's netCspReconcile
 		// compares this against its self-recorded CSP history at inmove->tick —
 		// the values are identical so error = 0 and no correction fires.
 		// Sending outmove[0] (server extrapolation) instead causes CSP to see
 		// large positional drift at high latency (21 ticks at 350ms), firing a
 		// hard snap every frame and producing the slide/snap-back behaviour.
-		netbufWritePlayerMove(dst, inmove);
+		netbufWritePlayerMove(dst, sent);
 	} else {
 		// Force correction (respawn, kill plane, initial state) or no CLC_MOVE
 		// received yet (server's own player). Send the authoritative server state.
-		netbufWritePlayerMove(dst, &movecl->outmove[0]);
+		netbufWritePlayerMove(dst, sent);
 		if (has_force) {
 			netDiagLogf("force_move_write",
 					"cl=%u ucmd=0x%08x pos=(%.1f,%.1f,%.1f)",
@@ -4032,6 +4095,18 @@ u32 netmsgSvcPropLiftRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	struct liftobj *lift = (struct liftobj *)prop->obj;
+
+	// levelcur/levelaim index lift->pads[4] and lift->doors[4] in liftTick
+	// (propobj.c padUnpack(lift->pads[lift->levelcur]) and
+	// doorIsClosed(lift->doors[lift->levelcur])), neither of which bounds-checks.
+	// The prop TYPE was validated above but these indices never were.
+	if (levelcur < 0 || levelcur >= (s32)ARRAYCOUNT(lift->pads)
+			|| levelaim < 0 || levelaim >= (s32)ARRAYCOUNT(lift->pads)) {
+		sysLogPrintf(LOG_WARNING, "NET: SVC_PROP_LIFT: prop %u bad level cur=%d aim=%d",
+				prop->syncid, (s32)levelcur, (s32)levelaim);
+		return src->error;
+	}
+
 	lift->levelcur = levelcur;
 	lift->levelaim = levelaim;
 	lift->speed = speed;
@@ -4424,11 +4499,17 @@ u32 netmsgSvcChrDisarmRead(struct netbuf *src, struct netclient *srccl)
 		return 1;
 	}
 
-	struct chrdata *chr = chrprop->chr;
-
-	if (chrprop->type == PROPTYPE_CHR) {
+	// prop->chr / ->obj / ->door alias one union slot, so `chrprop->chr != NULL`
+	// is true for ANY prop — a recycled or forged syncid can resolve to a weapon
+	// or obj here. Excluding PROPTYPE_CHR alone let those through into the
+	// player-disarm path below, which then runs playermgrGetPlayerNumByProp on a
+	// non-player and gets -1. Require the type this path actually handles.
+	// (This mirrors the type-gate netmsgSvcPropPickupRead already carries.)
+	if (chrprop->type != PROPTYPE_PLAYER) {
 		return src->error;
 	}
+
+	struct chrdata *chr = chrprop->chr;
 
 	if (weapondmg > 0.f) {
 		// someone shot a grenade the chr is holding, explode that shit
@@ -4448,10 +4529,25 @@ u32 netmsgSvcChrDisarmRead(struct netbuf *src, struct netclient *srccl)
 		return src->error;
 	}
 
+	// playermgrGetPlayerNumByProp returns -1 when the prop isn't a seated local
+	// player; setCurrentPlayerNum(-1) would set g_Vars.currentplayer from
+	// g_Vars.players[-1] and every write through `player` below would go through
+	// that garbage pointer. netFbwEngage guards the same call the same way.
+	const s32 disarmplayernum = playermgrGetPlayerNumByProp(chrprop);
+
+	if (disarmplayernum < 0) {
+		return src->error;
+	}
+
 	const s32 prevplayernum = g_Vars.currentplayernum;
-	setCurrentPlayerNum(playermgrGetPlayerNumByProp(chrprop));
+	setCurrentPlayerNum(disarmplayernum);
 
 	struct player *player = g_Vars.currentplayer;
+
+	if (!player) {
+		setCurrentPlayerNum(prevplayernum);
+		return src->error;
+	}
 
 	if (weaponHasFlag(weaponnum, WEAPONFLAG_UNDROPPABLE) || weaponnum > WEAPON_RCP45 || weaponnum <= WEAPON_UNARMED) {
 		setCurrentPlayerNum(prevplayernum);

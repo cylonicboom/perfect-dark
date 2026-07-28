@@ -3811,27 +3811,33 @@ void netPlayersAllocate(void)
 		}
 
 		if (g_NetMode == NETMODE_SERVER) {
-			// Overflow safety net (NET_MAX_CLIENTS = MAX_PLAYERS + 1): never
-			// hand out a combatant playernum >= MAX_PLAYERS. g_PlayerConfigsArray
-			// and g_Vars.players are MAX_PLAYERS-sized and indexed by playernum,
-			// so a mis-configured g_NetMaxClients must not let a 9th combatant
-			// slip through and corrupt slot 8. The netStartServer cap should make
-			// this unreachable; if it ever fires, park the client as a spectator
-			// (no pawn) instead of overflowing. Logged so it can't hide.
-			if (playernum >= MAX_PLAYERS) {
-				sysLogPrintf(LOG_WARNING,
-						"NET: combatant overflow (id %d) — parking as spectator (playernum cap %d)",
-						cl->id, MAX_PLAYERS);
-				cl->is_spectator = 1;
-				cl->playernum = NET_PLAYERNUM_SPECTATOR;
-				cl->config = NULL;
-				cl->player = NULL;
-				continue;
-			}
 			// on the server allocate players sequentially (spectators were
 			// skipped above so playernum stays a dense [0..g_NetNumClients) range
 			// of combatants only)
 			cl->playernum = playernum++;
+		}
+
+		// Overflow safety net (NET_MAX_CLIENTS = MAX_PLAYERS + 1): never use a
+		// combatant playernum >= MAX_PLAYERS. g_PlayerConfigsArray and
+		// g_Vars.players are MAX_PLAYERS-sized and indexed by playernum below,
+		// so a mis-configured g_NetMaxClients must not let a 9th combatant slip
+		// through and corrupt slot 8.
+		//
+		// This is deliberately OUTSIDE the NETMODE_SERVER block: on a client
+		// cl->playernum comes off the wire (SVC_STAGE_START's manifest), so the
+		// server-only placement left the client's own indexing unguarded — a
+		// malformed or hostile server could point it anywhere. The wire reader
+		// rejects the message first; this is the backstop. If it ever fires,
+		// park the client as a spectator (no pawn) instead of overflowing.
+		if (cl->playernum >= MAX_PLAYERS) {
+			sysLogPrintf(LOG_WARNING,
+					"NET: combatant overflow (id %d playernum %d) — parking as spectator (playernum cap %d)",
+					cl->id, cl->playernum, MAX_PLAYERS);
+			cl->is_spectator = 1;
+			cl->playernum = NET_PLAYERNUM_SPECTATOR;
+			cl->config = NULL;
+			cl->player = NULL;
+			continue;
 		}
 
 		if (cl != g_NetLocalClient) {

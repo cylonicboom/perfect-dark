@@ -185,6 +185,8 @@ void lvResetChaosPerStage(void)
 	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch
 	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry
 	extern f32 g_ChaosPlayerSpeed;    // chaos Gotta go fast
+	extern s32 g_ChaosRubberObjects;  // chaos Rubber Objects
+	extern s32 g_ChaosYassify;        // chaos Yassify
 	s32 twin_i;
 
 	g_ChaosSnatchActive = 0;
@@ -197,6 +199,8 @@ void lvResetChaosPerStage(void)
 	g_ChaosMagDump = 0;
 	g_ChaosMagDumpArmed = 0;
 	g_ChaosPlayerSpeed = 1.0f;
+	g_ChaosRubberObjects = 0;
+	g_ChaosYassify = 0;
 
 	for (twin_i = 0; twin_i < 8; twin_i++) {
 		g_ChaosTwinChrnums[twin_i] = -1;

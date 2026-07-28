@@ -108,9 +108,89 @@ the Lua HUD left margin, by the Combat Sim kill count):
 
 - **Active-effect timers**: up to 5 rows, each an item-pickup-style bar —
   effect label + a dark backing box with a filled fraction that drains as
-  the effect's time runs out (`st.duration` recorded at trigger).
+  the effect's time runs out (`st.duration` recorded at trigger). Blue
+  (`C_BAR`).
+- **One-off acknowledgement bars** (2026-07-28): up to 3 rows, same shape,
+  **green** (`C_BARONE`) — see below.
 - **Vote slate** (only while `votetime > 0`): "VOTE NEXT:" + the 3 candidate
   effects numbered 1–3 with live vote counts, and a window-countdown bar.
+
+### One-off acknowledgement bars
+
+An instant effect (`dur` 0/nil) never enters `st.active`, so it used to fire
+with **nothing on screen at all** — you'd notice the consequence but get no
+confirmation chaos caused it, especially with toasts defaulted off. Instant
+effects now get a short bar of their own (`ONEOFF_BAR`, 3s — matched to the
+Snap so the two read as the same kind of quick flash), in a distinct **green**
+so it reads as "this just happened" rather than as a duration still running.
+
+They live in **`st.oneoff`, deliberately NOT `st.active`**. `st.active` drives
+`stop_effect`, the "wore off" announce, the sticky / Worst Day top-ups and every
+is-it-running check — none of which an instant effect should touch. `st.oneoff`
+is a plain display list of `{label, life, total}`, ticked next to the active
+expiry (so it still drains when Chaos itself is disabled, for `/chaos trigger`),
+cleared in the per-stage reset, and capped to the newest 3 on screen because
+Combo Time fires three effects at once and the lo-res screen is only ~220 tall.
+
+**Two opt-outs, and this is what the existing flags are for:**
+
+| Flag | Meaning | Instant effects using it |
+|---|---|---|
+| `silent` | Nothing on screen may hint chaos is involved — no toast, and now no bar | `fake_objective`, `fake_objective_fail` |
+| `nobar` | Draws its own HUD, *or* is a prank that still wants a toast but must never show a chaos bar | `game_over` |
+
+Both are folded into one helper, `is_deniable(e)`, which gates **the bar and the
+trigger sting**. **Any new prank effect whose gag depends on deniability must set
+one of those two flags**, or the bar and the sound will give it away.
+`game_over` is the worked example: it isn't `silent` (the toast is part of the
+reveal, when toasts are on at all) but it is `nobar`, because a green
+"Game over?" bar next to a real-looking mission-failed dialog kills the joke
+instantly.
+
+### Trigger sting (2026-07-28)
+
+A universal "an effect just fired" cue, played by `play_trigger_sting()` from
+`start_effect` for every effect, timed or instant, except the deniable ones.
+Unlike the toasts it never says *what* fired — it's a cue, not a spoiler — so
+it's on by default and independent of the toast setting.
+
+Pick it in **Extended > Chaos > Trigger Sound** (one row per sound; selecting a
+row **plays it immediately** as a preview and marks it with `>`), or with
+`/chaos sound [list|next|<key>]`. Persisted as `chaos_trigsound` by key, not
+index, so adding or reordering sounds later can't silently change someone's
+choice. An unknown key resolves to the default rather than to `off` — silently
+muting the cue would look like a bug.
+
+Options are the `TRIGSOUNDS` table: `off`, ~19 built-in game sounds (menu blips,
+error buzz, cloak on/off, pickups, glass shatter, explosion, alarms, Mauler
+charge, Maian scream, throw), `random` (a different built-in every fire), and
+`external`.
+
+**Nothing here can stop the music**, which is the one hard requirement:
+
+- Built-ins go through `pd.sound` → `chraiLuaPlaySound` → `sndStart`, an
+  ordinary non-positional SFX.
+- `external` plays `scripts/chaos/sounds/chaostrigger.wav` or `.mp3` through
+  `pd.play_file(..., loop=false, followMusic=false)` → `audioPlayExternal`,
+  which mixes into **its own voice slot** and never touches the music track.
+  (`audioPlayExternal` sniffs WAV-vs-MP3 by *content*, so either extension
+  works regardless of what the file is called.)
+- The Silo countdown's music cut is an explicit `pd.stage_music(false)` inside
+  that effect — the effect deliberately doing it, not a side effect of playing
+  a file. Nothing in the sting path can inherit that.
+
+The external result is cached in `st.trigsound_ok` (`nil` untried / `false`
+missing): with no file present the audio layer logs a "can't load" warning per
+attempt, which would otherwise spam the log on every single effect. Switching
+sound resets the cache so a newly-added file is picked up.
+
+**SFX ids are raw hex numbers** because `pd.sound` takes a number and Lua has no
+view of the `sfx.h` enum (the pre-existing `SFX_MAIAN_ARGH` hardcodes are the
+precedent). They were derived by walking the enum in `src/include/sfx.h` and
+validated two ways: every self-naming constant matches its own hex
+(`SFX_805E == 0x805e`), and `0x05df`–`0x05e1` came out as exactly the Maian
+sounds already hardcoded in chaos.lua. **Validate the same way if you add more**
+— don't eyeball a line number, most of the enum is implicit.
 
 The `CHAOS: <name>` announce is a separate **bottom-left** weapon-pickup-style
 toast (`st.toast`): white text on a dark box sized to hug the text via the
@@ -392,6 +472,18 @@ function, called every frame while active (disco's hue cycle).
   stay until destroyed or the stage ends.
 - **`temu_mag`** (Chaos Alpha testbed) — reloading pays the full ammo cost
   but only partly refills the magazine (`pd.temu_mag`).
+- **`yassify`** — **NOT registered as a chaos effect** (pulled 2026-07-28). The
+  shaping works, but the waist cinch propagates through the entire torso, so the
+  proportions don't read as an hourglass yet; it needs per-joint compensation
+  first. The C side (`pd.yassify`, the `chrHandleJointPositioned` hook) and the
+  `/yassify waist|shoulder|neck N` tuning command are still present for
+  development — re-add an `alpha_effects` entry once it looks right.
+- **`rubber_objects`** ("Rubber Objects", Chaos Alpha testbed) — anything
+  **dropped into the world** while the effect runs (enemy corpse drops,
+  disarms/surrenders, your own dropped gun, thrown grenades) bounces like rubber
+  instead of thudding down after the vanilla 6 bounces (`pd.rubber_objects`).
+  Opt-in **at the drop**, deliberately: guns and crates already lying around the
+  map never start twitching. Single-player only.
 - **`helpful_son`** (Chaos Alpha testbed) — a toddler on the second pad:
   at random intervals grabs an input for 0.3-0.7s (look sweep / fire / walk /
   weapon fumble).
@@ -510,6 +602,7 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.double_vision(on)` | `gfx_doublevision_mode` (renderer) | "One too many": retro post filter blends rotated ghosts of the finished frame over the normal one — `uFx` 128/256/512 = 180/90/270, all three set, averaged then mixed at 0.6 (drunk kaleidoscope). 90/270 are backend-swapped but set together so the result matches on GL + SDL_GPU; cleared in `lvInit` |
 | `pd.chr_cloak(chrnum, on)` | `CHRHFLAG_CLOAKED` bit | same flag as the cloaking device; IR scanner still reveals |
 | `pd.strip_ammo()` | `bgunSetAmmoQuantity(type, 0)` loop | all ammo types 1..`AMMOTYPE_ECM_MINE` |
+| `pd.set_ammo(ammotype, qty)` | `bgunSetAmmoQuantity` | set ONE pool to an exact quantity, others untouched (russian roulette's one Magnum round); type validated 1..`AMMOTYPE_ECM_MINE`, qty floored at 0. Pool only — a round already chambered in an equipped gun's clip isn't touched (same limitation as `strip_ammo`) |
 | `pd.teleport_to_chr(chrnum)` | `chrSetPos` / direct prop move | Snap the local player *beside* a chr (offset by both radii along the approach direction), server-side. Validated with `chrAdjustPosForSpawn` (avoids walls + physics objects, nudges through a ring, falls back to the NPC's own pos/rooms). **Body-model player** (Combat Sim) uses `chrSetPos`; the **model-less solo player** (campaign — `chr->model == NULL`, which `chrSetPos`/`chrMoveToPos` would crash on) is moved by hand (prop pos + rooms + bondwalk `vv_*` view fields) |
 | `pd.chr_weapon(chrnum)` | `aibot->weaponnum` / held prop | Current weapon of an NPC (`-1` if invalid). Snapshot before `chr_give_weapon` to restore it when a timed effect ends |
 | `pd.flattex(mode)` | `gfx_flattex_mode` (gfx_pc.cpp) | 0 off / 1 white / 2 average-colour textures; applied by a texture-cache reimport at the next frame boundary; per-pixel **alpha preserved** so fonts/HUD stay readable; HD ext-tex falls back to the (flattened) N64 decode while active |
@@ -519,7 +612,11 @@ by the `apLuaPlayerChr()` pawn-null checks):
 | `pd.nbomb()` | `nbombCreateStorm` | the thrown N-Bomb's impact call, at the player's feet, player-owned |
 | `pd.gust(force)` | `chrYeetFromPos` + `objApplyMomentum` + `bondshotspeed` | one random compass direction for the whole map: chrs flung from a virtual point behind them, objects via the explosion-knockback gate (`!MOUNTED && !GRABBED && OBJFLAG3_PUSHABLE`), local player via the shot-knockback velocity |
 | `pd.dual_wield(weaponnum[, funcnum])` | `invGiveSingle/DoubleWeapon` + `bgunEquipWeapon2` both hands | the `playerSpawnAnti` dual-wield recipe + full ammo; funcnum 0/1 forces that fire function on both hand gsets (1 = Cyclone Magazine Discharge) |
+| `pd.give_mags([n])` | `chraiLuaGiveMags` → `weaponGetAmmoByFunction` + `bgunSetAmmoQtyForWeapon` | Stock every ammo type with **n magazines** (default 2) instead of filling the reserve to capacity. A magazine is a property of the WEAPON FUNCTION, not the ammo type — several weapons share an ammo type with different clip sizes — so pass 1 walks every weapon × both functions recording the **largest** clip size per ammo type (largest, so n mags is sensible for whatever you're actually holding; undershooting on a Cyclone/Reaper would feel broken) and pass 2 writes n of those back, clamped to capacity. Goes through the public `bgun*ForWeapon` accessors because the ammo table is file-local to bondgun.c. Ammo types no weapon uses are left alone — zeroing them would strip gadgets and objective items sharing the array |
 | `pd.gun_lock(on)` | `g_ChaosGunLock` → `bmoveProcessInput` (bondmove.c) + `amOpen` (activemenu.c) | Cyclone Frenzy: per-tick force `weaponfunc = FUNC_SECONDARY` both hands, `triggeron = true` (auto-fire), zero the weapon-cycle offsets, and block the weapon menu; local player, unpaused, alive; cleared in `lvInit` |
+| `pd.backfire(on)` | `g_ChaosBackfire` → `bgunCalculatePlayerShotSpread` (bondgun.c) + `chrTick`/`chrTestHit` (chr.c) + `shotCalculateHits` (prop.c) | Backwards bullets. The ray flip itself was always fine; the effect never registered hits for **three** stacked reasons, all fixed 2026-07-28 — see "Backwards bullets: why it never worked" below |
+| `pd.yassify(on)` | `g_ChaosYassify` + `chrChaosScaleXZY` → `chrHandleJointPositioned` (chr.c) | Yassify: non-uniform per-joint body shaping — waist XZ cinched, shoulders XZ flared, head scaled up (slightly wider than tall, so the face reads as cheekbones not a DK-mode balloon). Rides the existing per-joint callback that DK mode / flinch / aim-tracking already use, inside the same world-space round trip with the translation zeroed, so joint POSITIONS don't move — only the basis, and therefore the children hanging off it. Humans only (`CHRRACE == RACE_HUMAN`, like DK mode). **Scales COLUMNS, not rows**: `mtx4TransformVec` shows a row-vector convention, so columns 0/1/2 are the world-space output axes — scaling rows would scale along each joint's own axes and shear the model as it animates. World-space is safe here only because X and Z share one factor, making it invariant to the chr's Y facing. Multipliers are live-tunable (`/yassify waist\|shoulder\|neck N`) because a joint scale **propagates to that joint's children** — the waist cinch narrows everything above it, so the shoulder/neck values are compensations. Cosmetic only: no collision or hit box moves. Cleared in `lvResetChaosPerStage` |
+| `pd.rubber_objects(on)` | `g_ChaosRubberObjects` + `PROJECTILEFLAG_CHAOSRUBBER` → `objSetDropped` / `projectileTick` (both propobj.c) | Rubber Objects: the mark is stamped at the **drop chokepoint** (`objSetDropped` — corpse drops, disarms, surrenders, the player's own drop, thrown grenades), so props already lying on the floor are never affected. In the bounce handler a marked projectile skips `projectileFall` while `bouncecount < 40` (vanilla settles at 6) and gets `speed.y` re-kicked to a hop that decays to 0 over that budget; restitution (`unk08c`) is raised to 0.7 at the drop, never lowered. Sticky projectiles (mines) excluded. Both the global **and** the mark are checked, so turning the effect off settles everything on its next contact — no mark sweep. Marking is gated on `g_NetMode == NETMODE_NONE` (single-player only); cleared in `lvResetChaosPerStage` |
 | `pd.aspect_scale(mult)` | `g_ChaosAspectMult` (playermgr.c) | multiplier inside `playermgrSetAspectRatio` — playerTick re-derives natural aspect every tick, so the hook must live in the setter and restore is automatic; 2 = wide, 0.5 = tall, clamped 0.25..4 |
 | `pd.song(slot)` / `()` | `musicStartTrackAsMenu(mpGetTrackMusicNum(slot % unlocked))` / `musicEndMenu` | the credits-roll mechanism: stage music pauses underneath, resumes on stop; only unlocked Combat Sim tracks |
 | `pd.spawn_body(bodynum[, weaponnum, dx, dz])` | `chrSpawnAtCoord` | the `chraiLuaSpawnAlly` recipe with allegiance inverted: TEAM_ENEMY, GAILIST_ALERTED, `CHRCFLAG_TRIGGERSHOTLIST`, facing the player; weaponnum −1 = unarmed (melee bodies) |
@@ -569,7 +666,7 @@ chaos.lua (guarded `if pd.X then` so the script still runs on an older exe).
 | `pd.chr_wireframe(on)` | `g_ChaosWireframeChrs` (prop.c) → `G_CHRWIREFRAME_EXT 0x4c` | "Wireframe enemies": propRender's PROPTYPE_CHR case brackets hostile chrs (`chrCompareTeams COMPARE_ENEMIES`; held guns render as children inside chrRender so they wireframe too) in a new scoped-wireframe EXT opcode. The renderer (`gfx_wireframe_scope`, gfx_pc.cpp) flushes on toggle, ORs into both backends' existing wireframe reads (gfx_opengl draw_triangles + gfx_sdlgpu pipeline/wire-colour), and force-clears the scope each `gfx_start_frame` so a lost END can't leak. Friendly/non-combat chrs stay solid |
 | `pd.double_shots(on)` | `g_ChaosDoubleShots` (bondgun.c) | "Quad handed": doubles `hand->shotstotake` per fire event (same site as ammo_cost; ammo drains to match). Paired with dual-wield = four barrels |
 | `pd.buttons()` / `pd.buttons_pressed()` | `chraiLuaButtons` → `joyGetButtons(PressedThisFrame)` | the local player's RAW pad buttons — reads the joy layer directly, so it sees buttons `pd.button_block` is hiding from gameplay. This is the popup framework's input: block FIRE from shooting, read FIRE as the answer |
-| `pd.spawn_chopper([kind[, extrascale]])` | `chraiLuaSpawnChopper` (chraction.c) | **EXPLORATORY**: a hostile chopper near the player — the spawn_bike runtime-template recipe adapted to `OBJTYPE_CHOPPER` + setup.c's chopper field block, with `GAILIST_IDLE` (choppers `chraiExecute` every tick; a NULL ailist is fatal), the player as `target`, and `CHOPPERMODE_COMBAT`. kind 0 = `MODEL_DD_HOVERCOPTER` (chaos runs it at extrascale **64 = quarter size**; `objInitWithModelDef` does NOT apply extrascale — the explicit `modelSetScale` line does); kind 1 = `MODEL_A51INTERCEPTOR` at **256** — its MODELDEF is natively ~0.1 scale (the gunfire path's `0.1/model->scale` gun-pos correction), so 256 = authored size and anything lower shrinks it toward invisible (the first-round "vanished after one frame" bug). Because the spawns run `GAILIST_IDLE`, the mission ailists' see-target→fire loop is **driven from C instead**: the chopper tick dispatch calls `chaosChopperIsChaos()` (chraction.c) and runs `chopperCheckTargetInSight` per tick (the FOV half of `aiIfLosToTarget` is skipped so it spots the player all around) + re-asserts `CHOPPERMODE_COMBAT` — without this, `targetvisible` never goes true and the chopper never fires (the first-round "doesn't shoot" bug). Two static templates (`g_ChaosChoppers[2]`), per-kind respawn summons the existing instance. No patrol path = the "stay put" branch in chopperTickMove |
+| `pd.spawn_chopper([kind[, extrascale]])` | `chraiLuaSpawnChopper` (chraction.c) | **EXPLORATORY**: a hostile chopper near the player — the spawn_bike runtime-template recipe adapted to `OBJTYPE_CHOPPER` + setup.c's chopper field block, with `GAILIST_IDLE` (choppers `chraiExecute` every tick; a NULL ailist is fatal), the player as `target`, and `CHOPPERMODE_COMBAT`. kind 0 = `MODEL_DD_HOVERCOPTER` (chaos runs it at extrascale **64 = quarter size**; `objInitWithModelDef` does NOT apply extrascale — the explicit `modelSetScale` line does); kind 1 = `MODEL_A51INTERCEPTOR` at **256** — its MODELDEF is natively ~0.1 scale (the gunfire path's `0.1/model->scale` gun-pos correction), so 256 = authored size and anything lower shrinks it toward invisible (the first-round "vanished after one frame" bug). Because the spawns run `GAILIST_IDLE`, the mission ailists' see-target→fire loop is **driven from C instead**: the chopper tick dispatch calls `chaosChopperIsChaos()` (chraction.c) and runs `chopperCheckTargetInSight` per tick (the FOV half of `aiIfLosToTarget` is skipped so it spots the player all around) + re-asserts `CHOPPERMODE_COMBAT` — without this, `targetvisible` never goes true and the chopper never fires (the first-round "doesn't shoot" bug). Two static templates (`g_ChaosChoppers[2]`), per-kind respawn summons the existing instance. **kind 1 STALKS the player** (2026-07-28): a chaos chopper has `path == NULL`, so `chopperTickCombat`'s vanilla test (`targetvisible && dist < 2000000` **or** `path == NULL`) picked the stay-put branch every tick and the interceptor just hovered where it spawned. A port-only branch keyed on `chaosChopperKind(chopper) == 1` instead aims `goalpos` at a point on a `CHOPPER_CHAOS_STANDOFF` (700u) ring around the target at `CHOPPER_CHAOS_ALTITUDE` (260u), **on the bearing the chopper already occupies** — so it closes to that radius rather than diving, and drifts round the ring as the player moves. `goalpos` is the only input the steering below it reads, so this is the entire behaviour change; flight model, banking, gunfire and LOS are untouched. kind 0 (dD hovercopter) deliberately keeps the original hold-position behaviour |
 
 Batch-3 Lua machinery: the **popup framework** — pop_quiz / eula / lore draw a
 centred card in the alpha draw hook, `pd.button_block` keeps FIRE/AIM from
@@ -589,7 +686,7 @@ cleared in lvReset like batch 2.
 
 | Binding | Backing | Notes |
 |---|---|---|
-| `pd.vertex_wobble([amp, freq, phase, sag, desync])` | `chraiLuaVertexWobble` → `gfx_vtx_wobble_*` → `gfx_sp_vertex` (gfx_pc.cpp) | a **true per-vertex deformation**, not a post-process. The port transforms vertices on the CPU in `gfx_sp_vertex`, so the effect splits the usual combined model→clip multiply into **model→eye (displace) →clip**: each vertex is moved in **eye space** by sines of its own position (`ex += amp·sin(ey·freq+phase)`, etc.), then projected. Eye space (world-scale, camera-relative) is the key — a fixed frequency there gives a coherent ripple across the whole scene regardless of each model's local vertex magnitude (model-space would be fine noise on big room meshes, a faint sway on small props). `amp` world units (0/absent = off, clamped ≤200), `freq` radians/world-unit, `phase` advanced by the caller each tick (the speen pattern), `sag` an extra always-**downward** eye-Y droop for the Acid Trip **melt** (walls + characters sag/drip), `desync` (0 = lockstep, clamped ≤4) a **per-vertex rate spread**: each vertex hashes its (camera-stable) model position to a stable [0,1) value that both scales and statically offsets its `phase`, so different vertices flow at different speeds and arrive out of step (an organic melt, not a coherent travelling wave). UI drawn as 3D (`G_NOMIRROR_EXT`) is exempt; the path is gated so the normal single-multiply fast path is untouched when off. **Gates the display-list cache off** (`bg.c`, alongside speen/shiny) so cached room geometry re-runs the CPU vertex path and wobbles too; cleared in `lvReset`. `jelly`/`acid_trip` drive an **ease-in/out envelope** (`vwobble_prog` in chaos.lua: `sin(prog·π)` over the effect's life) and morph amp/freq/sag across `prog` between two states so the scene flows OUT to a warped state and gently back to NORMAL rather than snapping |
+| `pd.vertex_wobble([amp, freq, phase, sag, desync, nearfade])` | `chraiLuaVertexWobble` → `gfx_vtx_wobble_*` → `gfx_sp_vertex` (gfx_pc.cpp) | a **true per-vertex deformation**, not a post-process. The port transforms vertices on the CPU in `gfx_sp_vertex`, so the effect splits the usual combined model→clip multiply into **model→eye (displace) →clip**: each vertex is moved in **eye space** by sines of its own position (`ex += amp·sin(ey·freq+phase)`, etc.), then projected. Eye space (world-scale, camera-relative) is the key — a fixed frequency there gives a coherent ripple across the whole scene regardless of each model's local vertex magnitude (model-space would be fine noise on big room meshes, a faint sway on small props). `amp` world units (0/absent = off, clamped ≤200), `freq` radians/world-unit, `phase` advanced by the caller each tick (the speen pattern), `sag` an extra always-**downward** eye-Y droop for the Acid Trip **melt** (walls + characters sag/drip), `desync` (0 = lockstep, clamped ≤4) a **per-vertex rate spread**: each vertex hashes its (camera-stable) model position to a stable [0,1) value that both scales and statically offsets its `phase`, so different vertices flow at different speeds and arrive out of step (an organic melt, not a coherent travelling wave). UI drawn as 3D (`G_NOMIRROR_EXT`) is exempt; the path is gated so the normal single-multiply fast path is untouched when off. **Gates the display-list cache off** (`bg.c`, alongside speen/shiny) so cached room geometry re-runs the CPU vertex path and wobbles too; cleared in `lvReset`. `nearfade` (2026-07-28, world units, 0 = off) is a **near fade**: the whole displacement — wobble AND sag — is scaled by a smoothstep of the vertex's RADIAL distance from the eye-space origin (the camera sits there), so geometry near the lens barely strays from where it belongs while the far scene still melts. Radial, not depth: something beside your head is visually close even at small `|ez|`, and depth alone would let it thrash. Measured from the UNDISTORTED eye position, for the same reason the sines are — the field must not feed back on itself. Smoothstep rather than a linear ramp so there is no visible crease at the fade limit and the derivative is zero at the camera (geometry eases into motion instead of starting to slide the instant it clears the limit). `acid_trip` uses `ACID_NEARFADE` = 900; `jelly` deliberately omits it and keeps the uniform wobble. `jelly`/`acid_trip` drive an **ease-in/out envelope** (`vwobble_prog` in chaos.lua: `sin(prog·π)` over the effect's life) and morph amp/freq/sag across `prog` between two states so the scene flows OUT to a warped state and gently back to NORMAL rather than snapping |
 | `pd.hall_of_mirrors(on)` | `chraiLuaHallOfMirrors` → `gfx_hom_mode` → `gfx_pc.cpp` frame clear | skip the game framebuffer's per-frame **colour** clear so un-redrawn pixels smear — the Doom Hall-of-Mirrors / acid trails. Depth still clears (via the dlist), so new geometry renders normally over the smear. Cleared in `lvReset`. (How much shows depends on how much of the frame the scene redraws — motion edges trail heavily) |
 
 `acid_trip` combines these with the existing **Prismatic** hue field (`pd.pixelate(0,0,1005)`, the retro post-filter's screen-space multi-rate hue rotate) for the trippy colours: melt (`vertex_wobble` + `sag`) + trails (`hall_of_mirrors`) + colour cycle.
@@ -767,6 +864,103 @@ Until then, the UDP bridge is the supported route.
 - **Per-seed randomiser**: at connect time call `chaos.set_seed(slot_seed)`
   and `chaos.handle("ap", "on")` — the weighted effect stream is then
   deterministic per AP seed (same seed = same chaos schedule).
+
+## Backwards bullets: why it never worked (fixed 2026-07-28)
+
+`pd.backfire` reverses the shot ray in `bgunCalculatePlayerShotSpread`
+(bondgun.c) and `gundir3d` is correctly derived from the reversed `gundir2d`
+(prop.c:1496/1512) — **the flip was never the problem**. Hits didn't register
+because of three independent gates, each of which had to be found by testing:
+
+1. **The candidate set.** `shotCalculateHits` walks only
+   `g_Vars.onscreenprops`, which `propsSort` builds by filtering on
+   `PROPFLAG_ONTHISSCREENTHISTICK`. A chr behind you has neither that flag nor
+   the model-to-screen matrices the narrow phase needs — both are set in one
+   `if (needsupdate)` block in `chrTick`. So the reversed ray was traced against
+   an empty list. Fixed by forcing `needsupdate` for chrs in draw distance while
+   the effect is on (the blind server's Tier 1 idea,
+   `PORT_HEADLESS_BLIND_SERVER.md` §9), placed **before** the kill-plane and
+   corpse-reap guards so those still get the last word.
+2. **The per-frame update budget.** chr.c caps chr render-preps at 30 per frame
+   (`var8009cdb0 + var8009cdac > 30`, reset in `propsTick`). Normally only
+   on-screen chrs spend it; the force made every nearby chr spend it, so chrs
+   past the cap silently lost their matrices. Symptom: **one enemy could be hit
+   and the next couldn't, decided by tick order.** Forced chrs are now exempt
+   from the budget and from the corpse-reap counters.
+3. **A sign error, and the one that hid the longest.** `shotCalculateHits`
+   clamps `shotdata.distance` to the BG hit depth via `-sp658.z` — depth along
+   the CAMERA'S FORWARD axis. For the wall a reversed shot hits, that is
+   **negative**, so every downstream comparison inverts: `sp68 <
+   shotdata->distance` becomes `-D < -W`, i.e. a rear chr only registers if it
+   is *further away than the wall behind it*, and `prop->z - radius < distance`
+   only passes when `prop->z` ≈ 0. Symptom: **hits only registered when you were
+   touching the guard.** Fixed by taking magnitudes at three sites (the bg-depth
+   clamp in prop.c, and `prop->z` + `sp68` in `chrTestHit`) — with the ray
+   flipped 180°, everything reachable is behind the camera, so the magnitude is
+   the true along-ray distance. Note `sp68` also feeds `hitCreate` as the sort
+   key, so a negative was mis-ordering the hit list too.
+
+`/backfire` dumps the per-chr gates (`scr` = onscreen, `mtx` = matrices, `hid` =
+hidden, `ddist` = draw distance) if this ever regresses.
+
+### The rear-view mirror: ABANDONED after three attempts
+
+The idea was a mirror panel showing what's behind you, so the effect is
+aimable. **All three implementations were abandoned 2026-07-28. Do not
+re-attempt without reading this.**
+
+| Attempt | Approach | Result |
+|---|---|---|
+| 1 | Viewport hijack inside `playerRenderHud` | Total frame corruption |
+| 2 | "Sibling pass" at the `lvRender` loop level, sharing the frame's viewport + z-buffer | Letterboxed the main view, stray polys everywhere |
+| 3 | Render into an offscreen framebuffer (`gDPSetFramebufferTargetEXT`) + blit with `gSPImageRectangleEXT`, the menugfx.c:160-166 menu-blur recipe | Still glitchy |
+
+Two root causes were identified and are worth keeping even though the feature
+was dropped:
+
+- **`viSetFovAspectAndSize` mutates GLOBAL VI aspect state that fast3d consumes
+  at flush time, not at display-list record time.** Restore commands queued into
+  the list therefore cannot unwind it. gfx_pc.cpp:2526 carries a matching
+  comment: *"HACK: assume all target framebuffers have the same aspect"*.
+- **`bg.c`'s draw slots and room visibility are computed once per frame for the
+  forward camera.** Any second pass emits geometry against a mismatched slot
+  set. Forcing `g_BgNoCull` makes it draw *something*, not the right thing.
+
+Splitscreen survives multiple viewports only because they are **disjoint screen
+regions established before anything is drawn**. A view-within-a-view is a
+different problem, and attempt 3 shows that even a separate render target
+doesn't fully decouple it — the global VI/aspect and per-frame bg state are
+still shared. Anyone retrying this should expect to need a genuinely
+frame-level second pass, not a nested one.
+
+## Ammo policy: two magazines, not max (2026-07-28)
+
+Every chaos effect that hands out a weapon or swaps ammo now gives
+**`AMMO_MAGS` = 2 magazines** rather than topping the reserve to capacity. A
+free gun should be a moment of power, not a licence to stop caring about ammo.
+
+The rule is enforced in **two** places, and it needs both:
+
+- **chaos.lua** routes all 23 former `pd.refill_ammo()` call sites through one
+  `give_ammo_mags()` helper, so the count lives in a single constant. It falls
+  back to the old max refill on an exe without `pd.give_mags`.
+- **chraction.c** applies it at the C grant sites, because `chraiLuaDualWield`
+  and the body-snatch weapon grab both called `bgunGiveMaxAmmo(true)` directly.
+  Four `pd.dual_wield` effects don't follow up with a Lua refill, so gating it in
+  Lua alone would have left those still topping up to capacity. Both now call
+  `chraiLuaGiveMags(CHAOS_GUN_MAGS)`.
+
+`pd.refill_ammo` itself is unchanged and still means "fill to capacity" — it is
+simply no longer what the effects call.
+
+**Exempt — effects whose identity IS the ammo** keep the full `pd.refill_ammo()`
+resupply, because capping them would leave them with nothing to be:
+
+- `ammo_rain` ("Ammo rain")
+- the `touch_reward` "max ammo" prize (it announces itself as max ammo)
+
+The ammo-SWAP effects (rockets / devastator / LX / farsight / tranq) are *not*
+exempt: their identity is "your gun now fires rockets", not the quantity.
 
 ## Netplay caveats
 

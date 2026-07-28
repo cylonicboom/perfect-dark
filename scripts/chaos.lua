@@ -58,6 +58,15 @@ local st = {
   -- when you want to see what fired. System messages (Chaos enabled/disabled)
   -- always show, and every effect is logged regardless.
   toasts = (pd.persist_get and pd.persist_get("chaos_toasts") == "1") or false,
+  -- Which sting plays when an effect fires — a TRIGSOUNDS key ("off",
+  -- "external", or a built-in). Defaults to a built-in so the cue works with
+  -- no setup; "external" uses scripts/chaos/sounds/chaostrigger.wav|.mp3.
+  -- Unlike the toasts it never says WHAT fired, so it's a cue, not a spoiler.
+  -- Deniable effects are excluded (see is_deniable).
+  trigsound = (pd.persist_get and pd.persist_get("chaos_trigsound")) or "select",
+  -- nil = external file not tried yet, false = missing (stop retrying so the
+  -- audio layer doesn't log a "can't load" warning on every single effect).
+  trigsound_ok = nil,
   -- Effects pinned ON by `set` — they never tick down and never wear off,
   -- until `unset`/`clear`, a stop_all (Chaos off, supersonic flush) or a
   -- stage change. name -> true.
@@ -68,6 +77,12 @@ local st = {
   cvotes   = {0, 0, 0},  -- votes per candidate slot
   active   = {},         -- name -> ticks remaining (timed effects)
   duration = {},         -- name -> total ticks (for the HUD bars)
+  oneoff   = {},         -- DISPLAY-ONLY acknowledgement bars for instant effects.
+                         -- Deliberately NOT st.active: that list drives stop(),
+                         -- the "wore off" announce, sticky/Worst Day top-ups and
+                         -- the is-it-running checks, none of which an instant
+                         -- effect should ever touch. This is purely "something
+                         -- just fired", so it's its own list.
   cooldown = {},         -- name -> fires-until-recovery: a shown effect's pick
                          -- weight is suppressed, easing back to full only once
                          -- the whole enabled list has had a turn (anti-repeat deck)
@@ -99,6 +114,7 @@ local function persist()
     pd.persist_set("chaos_effectdur", tostring(st.effectdur))
     pd.persist_set("chaos_votetime", tostring(st.votetime))
     pd.persist_set("chaos_toasts", st.toasts and "1" or "0")
+    pd.persist_set("chaos_trigsound", st.trigsound or "off")
   end
 end
 
@@ -108,6 +124,23 @@ end
 -- lua_State — so the queue survives the per-stage Lua teardown (mission restart /
 -- return to menu) but is wiped on a game restart (fresh process). It is also
 -- cleared explicitly when Chaos is disabled (see chaos.handle "off").
+-- How long an instant effect's acknowledgement bar lingers, in seconds. Matched
+-- to the Snap's 3s so the two read as the same kind of quick flash.
+-- Acid Trip / Jelly near-fade radius, world units. Vertices closer to the
+-- camera than this are displaced progressively less (smoothstepped to zero at
+-- the lens), so near geometry stays where it belongs and the melt reads as
+-- depth rather than everything sliding at once.
+-- All the gun-giving / ammo-swapping effects hand out AMMO_MAGS magazines
+-- rather than filling the reserve to capacity (user request 2026-07-28): a free
+-- gun should be a moment of power, not a licence to stop caring about ammo.
+-- Falls back to the old max-ammo refill on an exe without pd.give_mags.
+local AMMO_MAGS = 2
+local function give_ammo_mags()
+  if pd.give_mags then pd.give_mags(AMMO_MAGS) else pd.refill_ammo() end
+end
+
+local ACID_NEARFADE = 900
+local ONEOFF_BAR = 3
 local RECENT_MAX = 100
 local function recent_load()
   local q = {}
@@ -179,6 +212,104 @@ local function play_sound(name)
   if not pd.play_file then return false end
   return (pd.play_file("scripts/chaos/sounds/" .. name .. ".wav", false, false)
       or pd.play_file("scripts/chaos/sounds/" .. name .. ".mp3", false, false)) and true or false
+end
+
+-- Is this effect one whose whole gag depends on the player NOT knowing chaos
+-- did it? Those get no acknowledgement bar and no trigger sound.
+--
+--   silent -> nothing on screen may hint chaos is involved (fake objectives,
+--             Fake Crash).
+--   nobar  -> draws its own HUD, or wants a toast but must never carry a chaos
+--             tell of its own (Game over?, Ominous countdown, Silo Countdown —
+--             all effects built on suspense).
+--
+-- ANY new prank effect must set one of these two, or the bar and the sting will
+-- give it away. See docs/PORT_CHAOS.md.
+local function is_deniable(e)
+  return (e.silent or e.nobar) and true or false
+end
+
+-- ---------------------------------------------------------------------------
+-- Trigger sting: a universal "an effect just fired" cue.
+--
+-- NOTHING here can stop the music. Built-ins go through pd.sound -> sndStart,
+-- an ordinary non-positional SFX. The External option goes through play_sound
+-- -> pd.play_file(..., loop=false, followMusic=false) -> audioPlayExternal,
+-- which mixes into its OWN voice slot and never touches the music track. The
+-- Silo countdown cuts the mission music with an explicit pd.stage_music(false)
+-- — that's the effect deliberately doing it, not a consequence of playing a
+-- file, so there's no way for this to inherit that behaviour.
+--
+-- SFX ids are raw numbers because pd.sound takes a number and Lua has no view
+-- of the sfx.h enum (the existing SFX_MAIAN_ARGH hardcodes are the precedent).
+-- They were derived by walking the enum in src/include/sfx.h and validated
+-- against the self-naming constants (SFX_805E == 0x805e) — if you add more,
+-- validate the same way rather than eyeballing a line number.
+local TRIGSOUNDS = {
+  { key="off",      label="Off" },
+  { key="select",   label="Menu Blip",       sfx=0x05dd },
+  { key="error",    label="Error Buzz",      sfx=0x8040 },
+  { key="swipe",    label="Menu Swipe",      sfx=0x05bb },
+  { key="dialog",   label="Dialog Open",     sfx=0x05bc },
+  { key="cancel",   label="Menu Cancel",     sfx=0x002b },
+  { key="cloakon",  label="Cloak On",        sfx=0x005b },
+  { key="cloakoff", label="Cloak Off",       sfx=0x005c },
+  { key="shield",   label="Shield Pickup",   sfx=0x01cd },
+  { key="keycard",  label="Keycard",         sfx=0x00e5 },
+  { key="gun",      label="Gun Pickup",      sfx=0x00e8 },
+  { key="ammo",     label="Ammo Pickup",     sfx=0x00ea },
+  { key="laser",    label="Laser Pickup",    sfx=0x00f2 },
+  { key="glass",    label="Glass Shatter",   sfx=0x8078 },
+  { key="boom",     label="Explosion",       sfx=0x8098 },
+  { key="alarm",    label="Alarm",           sfx=0x00a3 },
+  { key="chicago",  label="Chicago Alarm",   sfx=0x6455 },
+  { key="charge",   label="Mauler Charge",   sfx=0x8065 },
+  { key="maian",    label="Maian Scream",    sfx=0x05df },
+  { key="throw",    label="Throw",           sfx=0x80a9 },
+  { key="random",   label="Random Each Time", random=true },
+  { key="external", label="External File",   ext=true },
+}
+
+local TRIGSOUND_DEFAULT = "select"
+
+local function trigsound_entry(key)
+  local fallback, fallbacki = TRIGSOUNDS[1], 1
+  for i = 1, #TRIGSOUNDS do
+    if TRIGSOUNDS[i].key == key then return TRIGSOUNDS[i], i end
+    -- Unknown key (hand-edited persistence, or an entry removed in a later
+    -- version) resolves to the default rather than to TRIGSOUNDS[1], which is
+    -- "off" — silently muting the cue would look like a bug. Resolved in the
+    -- same pass so a bad TRIGSOUND_DEFAULT can't recurse.
+    if TRIGSOUNDS[i].key == TRIGSOUND_DEFAULT then fallback, fallbacki = TRIGSOUNDS[i], i end
+  end
+  return fallback, fallbacki
+end
+
+local function play_trigger_sting()
+  local t = trigsound_entry(st.trigsound)
+  if t.key == "off" then return end
+
+  if t.random then
+    local pool = {}
+    for i = 1, #TRIGSOUNDS do
+      if TRIGSOUNDS[i].sfx then pool[#pool + 1] = TRIGSOUNDS[i] end
+    end
+    if #pool == 0 then return end
+    t = pool[math.random(#pool)]
+  end
+
+  if t.sfx then
+    if pd.sound then pd.sound(t.sfx) end
+  elseif t.ext then
+    -- Cached: with no file present the audio layer logs a "can't load" warning
+    -- per attempt, which would otherwise spam the log on every single effect.
+    if st.trigsound_ok == false then return end
+    local ok = play_sound("chaostrigger")
+    st.trigsound_ok = ok
+    if not ok then
+      pd.log("[chaos] External trigger sound needs scripts/chaos/sounds/chaostrigger.wav or .mp3 - disabled for this session")
+    end
+  end
 end
 
 -- Non-gameplay stages where Chaos must stay dormant: the Carrington Institute
@@ -292,7 +423,7 @@ chaos.effects = {
   -- arsenal roulette
   arsenal      = { label="Free gun!",         w=10, dur=0, start=function()
                      local g = GUNS[math.random(#GUNS)]
-                     pd.give_weapon(g); pd.switch_weapon(g); pd.refill_ammo() end },
+                     pd.give_weapon(g); pd.switch_weapon(g); give_ammo_mags() end },
   disarm       = { label="Butterfingers",     w=8,  dur=0, start=function()
                      local h = pd.weapon_held()
                      if h and h > W.UNARMED then pd.take_weapon(h) end end },
@@ -306,6 +437,9 @@ chaos.effects = {
                    stop=function()
                      if pd.knife_lock then pd.knife_lock(false) end
                    end },
+  -- Deliberately NOT the 2-magazine rule: this effect IS the resupply, so
+  -- capping it would leave it with no identity. Same for the touch_reward
+  -- "max ammo" prize below.
   ammo_rain    = { label="Ammo rain",         w=8,  dur=0, start=function() pd.refill_ammo() end },
   -- cheat-bank chaos (visual + gameplay)
   mirror       = setmetatable({ label="Mirror world",  w=8 }, {__index=cheat_effect(CHEAT.MIRROR, 30)}),
@@ -391,22 +525,22 @@ chaos.effects = {
   -- ammo roulette (pd.ammo_swap: every held gun fires another weapon's
   -- primary rounds; refills keep the borrowed ammo topped up while active)
   rocket_rounds  = { label="Everything Rockets",   w=4, dur=20,
-                     start=function() pd.ammo_swap(W.ROCKET); pd.refill_ammo() end,
-                     tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
+                     start=function() pd.ammo_swap(W.ROCKET); give_ammo_mags() end,
+                     tick=function(left) if left % 120 == 0 then give_ammo_mags() end end,
                      stop=function() pd.ammo_swap() end },
   grenade_rounds = { label="Grenade machine gun",  w=4, dur=20,
-                     start=function() pd.ammo_swap(W.DEVASTATOR); pd.refill_ammo() end,
-                     tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
+                     start=function() pd.ammo_swap(W.DEVASTATOR); give_ammo_mags() end,
+                     tick=function(left) if left % 120 == 0 then give_ammo_mags() end end,
                      stop=function() pd.ammo_swap() end },
   golden_gun     = { label="The golden gun",       w=3, dur=15,
-                     start=function() pd.ammo_swap(W.LX); pd.refill_ammo() end,
+                     start=function() pd.ammo_swap(W.LX); give_ammo_mags() end,
                      stop=function() pd.ammo_swap() end },
   farsight_rounds= { label="FarSight rounds",      w=3, dur=15,
-                     start=function() pd.ammo_swap(W.FARSIGHT); pd.refill_ammo() end,
-                     tick=function(left) if left % 120 == 0 then pd.refill_ammo() end end,
+                     start=function() pd.ammo_swap(W.FARSIGHT); give_ammo_mags() end,
+                     tick=function(left) if left % 120 == 0 then give_ammo_mags() end end,
                      stop=function() pd.ammo_swap() end },
   sedative_rounds= { label="Sedative rounds",      w=3, dur=20,
-                     start=function() pd.ammo_swap(W.TRANQ); pd.refill_ammo() end,
+                     start=function() pd.ammo_swap(W.TRANQ); give_ammo_mags() end,
                      stop=function() pd.ammo_swap() end },
   backfire       = { label="Backwards bullets",   w=4, dur=15,
                      start=function() pd.backfire(true) end,
@@ -419,7 +553,7 @@ chaos.effects = {
                      start=function()
                        pd.dual_wield(W.CYCLONE, 1)    -- both hands, Magazine Discharge
                        pd.cheat(CHEAT.NORELOAD, true) -- unlimited ammo, no reloads
-                       pd.refill_ammo()
+                       give_ammo_mags()
                        -- force secondary + hold fire + no weapon switching
                        if pd.gun_lock then pd.gun_lock(true) end
                      end,
@@ -795,7 +929,7 @@ chaos.effects = {
                      local c = random_chr(); if c then pd.teleport_to_chr(c) end end },
   lock_n_load  = { label="Lock and load",     w=3, dur=0, start=function()
                      for _, g in ipairs(GUNS) do pd.give_weapon(g) end
-                     pd.refill_ammo() end },
+                     give_ammo_mags() end },
   amnesia      = { label="Amnesia",           w=2, dur=0, start=function()
                      for _, g in ipairs(GUNS) do pd.take_weapon(g) end
                      pd.take_weapon(W.KNIFE) end },
@@ -1280,7 +1414,7 @@ chaos.effects = {
                          n = n + 1
                        end
                      end
-                     pd.refill_ammo()
+                     give_ammo_mags()
                      if first then pd.switch_weapon(first) end end },
   muted        = { label="Muted",             w=4, dur=20,
                    start=function() pd.mute(true) end,
@@ -1419,7 +1553,11 @@ chaos.effects = {
                        error("needs new exe")
                      end
                      st.a_acid = {}
-                     pd.vertex_wobble(0, 0.030, 0, 0, 0.75) -- 0 amp/sag: tick eases it in
+                     -- Last arg = near-fade radius (world units): geometry
+                     -- inside it barely strays from its true position, so the
+                     -- weapon, your hands and whatever you're standing next to
+                     -- stay readable while the far scene melts.
+                     pd.vertex_wobble(0, 0.030, 0, 0, 0.75, ACID_NEARFADE) -- 0 amp/sag: tick eases it in
                      pd.hall_of_mirrors(true)               -- HOM trails
                      if pd.pixelate then pd.pixelate(0, 0, 1005) end -- Prismatic colours
                    end,
@@ -1435,7 +1573,7 @@ chaos.effects = {
                      local freq  = 0.032 - 0.012 * prog     -- wavelength morphs A → B
                      local phase = 3.0 * math.pi * prog     -- slow one-way sweep
                      local sag   = 22 * warp                -- drip grows in, holds, eases out
-                     pd.vertex_wobble(amp, freq, phase, sag, 0.75)
+                     pd.vertex_wobble(amp, freq, phase, sag, 0.75, ACID_NEARFADE)
                    end,
                    stop=function()
                      if pd.vertex_wobble then pd.vertex_wobble(0) end
@@ -1520,7 +1658,7 @@ chaos.effects = {
                    -- every gun fires a Gold Magnum (DY357-LX) one-shot-kill round,
                    -- then SHATTERS (removed from inventory — see the weaponfire
                    -- handler). A glass cannon: devastating once, then gone.
-                   start=function() pd.ammo_swap(W.LX); pd.refill_ammo() end,
+                   start=function() pd.ammo_swap(W.LX); give_ammo_mags() end,
                    stop=function() pd.ammo_swap(); st.glass_pending = nil end },
   karma        = { label="Empath",            w=4, dur=20,
                    start=function() end }, -- reflect handled in the damage hook
@@ -1601,8 +1739,11 @@ chaos.effects = {
                      pd.gas(false)
                      pd.screen_tint()
                    end },
+  -- NB: snow intensity maxes at 1 (weatherSetIntensity has no snow case 2/3 —
+  -- passing 2 left the particle target at 0, i.e. no snow at all). 1 is the
+  -- same 500-particle ceiling the heaviest rain uses.
   blizzard     = { label="Blizzard",          w=4, dur=30,
-                   start=function() pd.weather(2, 2); st.weather_set = true end,
+                   start=function() pd.weather(2, 1); st.weather_set = true end,
                    stop=function() pd.weather(0); st.weather_set = false end },
 }
 
@@ -1763,7 +1904,7 @@ local function touch_reward()
     pd.player_heal(0.5)
     return "+50% health"
   else
-    pd.refill_ammo()
+    pd.refill_ammo() -- the prize announces itself as max ammo; honour that
     return "max ammo"
   end
 end
@@ -2097,7 +2238,7 @@ local alpha_effects = {
                    if not h or h <= W.UNARMED then h = W.FALCON2 end
                    st.a_twoh = { cur = h }
                    pd.dual_wield(h)
-                   pd.refill_ammo()
+                   give_ammo_mags()
                  end,
                  tick=function()
                    local t = st.a_twoh
@@ -2108,7 +2249,7 @@ local alpha_effects = {
                    if h and h > W.UNARMED and h ~= W.KNIFE and h ~= t.cur then
                      t.cur = h
                      pd.dual_wield(h)
-                     pd.refill_ammo()
+                     give_ammo_mags()
                    end
                  end,
                  stop=function()
@@ -2117,12 +2258,12 @@ local alpha_effects = {
                    st.a_twoh = nil
                  end },
   double_lx  = { label="Double Magnum LX", dur=1,
-                 start=function() pd.dual_wield(W.LX); pd.refill_ammo() end,
+                 start=function() pd.dual_wield(W.LX); give_ammo_mags() end,
                  stop=function() pd.take_weapon(W.LX) end },
   -- Tank: dual rocket launchers, barely able to walk.
   tank       = { label="Tank mode", dur=1,
                  start=function()
-                   pd.dual_wield(W.ROCKET); pd.refill_ammo()
+                   pd.dual_wield(W.ROCKET); give_ammo_mags()
                    pd.player_speed(0.25)
                  end,
                  stop=function()
@@ -2308,19 +2449,20 @@ local alpha_effects = {
                    for _, g in ipairs(GUNS) do pd.take_weapon(g) end
                    pd.take_weapon(W.KNIFE)
                    local w = (math.random() < 0.2) and W.LX or W.MAGNUM
-                   pd.give_weapon(w); force_switch(w); pd.refill_ammo()
+                   pd.give_weapon(w); force_switch(w); give_ammo_mags()
                  end },
   -- Russian roulette: you're handed a Magnum with exactly ONE round, weapon
   -- switching locks, and the effect waits until you pull the trigger — the
   -- weaponfire hook resolves the spin (1-in-6 it's yours; otherwise someone
   -- else eats it and you get a little health back for your nerve). Stall too
-  -- long and the gun gets impatient.
+  -- long and the gun gets impatient. The rest of the arsenal keeps its ammo —
+  -- only the Magnum pool is pinned to one round (pd.set_ammo, not strip_ammo).
   russian_roulette = { label="Russian roulette", fixeddur=true, dur=45,
                  start=function()
                    st.a_rr = { fired = false }
-                   pd.strip_ammo()
                    pd.give_weapon(W.MAGNUM)
-                   pd.give_ammo(AMMO.MAGNUM, 1)
+                   if pd.set_ammo then pd.set_ammo(AMMO.MAGNUM, 1)
+                   else pd.give_ammo(AMMO.MAGNUM, 1) end
                    force_switch(W.MAGNUM)
                    if pd.knife_lock then pd.knife_lock(true) end
                    pd.hud_message("CHAOS: six chambers. one round. FIRE.")
@@ -2342,7 +2484,10 @@ local alpha_effects = {
   -- Game over: the REAL mission-failed screen (a red DANGER dialog over the
   -- paused mission). Accept restarts the mission; Decline resumes right where
   -- you were. Solo/co-op only.
-  game_over  = { label="Game over?", dur=0,
+  -- nobar: the whole gag is that it looks like a real mission failure, so it
+  -- must never get the instant-effect acknowledgement bar. (It isn't `silent`
+  -- because the toast, when toasts are on at all, is part of the reveal.)
+  game_over  = { label="Game over?", dur=0, nobar=true,
                  start=function()
                    if not pd.game_over then error("needs new exe") end
                    if not pd.game_over() then error("can't open it here") end
@@ -2423,7 +2568,7 @@ local alpha_effects = {
                    st.a_classic.given = given
                    -- force_switch: the take_weapon cycle-back above would eat
                    -- a same-tick equip, leaving the player empty-handed
-                   force_switch(first); pd.refill_ammo()
+                   force_switch(first); give_ammo_mags()
                  end,
                  stop=function()
                    local cl = st.a_classic
@@ -2436,7 +2581,7 @@ local alpha_effects = {
                      for _, g in ipairs(cl.mine or {}) do
                        pd.give_weapon(g); back = back or g
                      end
-                     if back then force_switch(back); pd.refill_ammo() end
+                     if back then force_switch(back); give_ammo_mags() end
                    end
                    st.a_classic = nil
                  end },
@@ -2521,7 +2666,11 @@ local alpha_effects = {
   -- the duration — done ones read incomplete, undone ones read complete —
   -- then everything snaps back to the truth. (Old version only flipped one
   -- already-completed objective, so early in a mission it just errored.)
-  objective_scramble = { label="Objective scramble", dur=1,
+  -- silent: the whole gag is that the objective list LIES to you, so nothing
+  -- may announce it — not the generic toast (even with Effect Toasts turned
+  -- ON), and not the effect's own hud_message, which used to say "objectives
+  -- scrambled" and give the game away before you'd even opened the list.
+  objective_scramble = { label="Objective scramble", dur=1, silent=true,
                  start=function()
                    if not pd.objective_status then error("needs new exe") end
                    local live = {}
@@ -2533,12 +2682,10 @@ local alpha_effects = {
                    for _, i in ipairs(live) do
                      pd.objective_force(i, math.random(2)) -- 1 = force incomplete, 2 = force complete
                    end
-                   pd.hud_message("CHAOS: objectives scrambled. probably fine")
                  end,
                  stop=function()
                    if st.a_objf then
                      pd.objective_force(-1, 0) -- clear every override
-                     pd.hud_message("CHAOS: objectives restored")
                      st.a_objf = nil
                    end
                  end },
@@ -2820,7 +2967,7 @@ local alpha_effects = {
                    if pd.quad_top then pd.quad_top(true) end -- top guns + double mag
                    pd.double_shots(true)                     -- double ammo per shot
                    pd.dual_wield(h)                          -- equips -> bakes 2x clip
-                   pd.refill_ammo()
+                   give_ammo_mags()
                  end,
                  stop=function()
                    pd.double_shots(false)
@@ -2843,8 +2990,10 @@ local alpha_effects = {
                    if not pd.spawn_chopper then error("needs new exe") end
                    if not pd.spawn_chopper(0, 64) then error("no room for a chopper") end
                  end },
-  -- A51 interceptor: the manned interceptor scrambles to your position. A
-  -- native chopper type, so it flies and fires with the real machinery.
+  -- A51 interceptor: the manned interceptor scrambles to your position and
+  -- then STALKS you, holding station ~700 units out and ~260 up (the
+  -- chaosChopperKind==1 branch in chopperTickCombat). A native chopper type, so
+  -- it flies, banks and fires with the real machinery.
   -- (256 = the authored size — the modeldef is natively ~0.1 scale, so lower
   -- shrinks it toward invisible; 1024 = the 4x menace requested.)
   interceptor = { label="A51 interceptor", dur=0, start=function()
@@ -3393,6 +3542,24 @@ local alpha_effects = {
                    pd.hud_message("CHAOS: Model Swap ON - respawns use the mod models")
                  end,
                  stop=function() if pd.model_swap then pd.model_swap(false) end end },
+
+  -- Rubber Objects: anything DROPPED into the world while this is on (enemy
+  -- corpse drops, disarms, surrenders, your own dropped gun, thrown grenades)
+  -- bounces around like rubber instead of thudding to the floor after the
+  -- vanilla 6 bounces. Deliberately opt-in at the drop, so the guns and crates
+  -- already lying around the map don't start twitching. New exe only.
+  rubber_objects = { label="Rubber Objects", dur=1,
+                 start=function()
+                   if not pd.rubber_objects then error("needs new exe") end
+                   pd.rubber_objects(true)
+                 end,
+                 stop=function() if pd.rubber_objects then pd.rubber_objects(false) end end },
+
+  -- (Yassify deliberately NOT registered as a chaos effect — 2026-07-28. The
+  -- shaping works but the waist cinch propagates through the whole torso, so
+  -- the proportions don't read as intended yet. The C side and the /yassify
+  -- console command are still there for development; re-add an entry here once
+  -- the joint compensation is sorted. See docs/PORT_CHAOS.md.)
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -3494,6 +3661,7 @@ local function reset_all_modes()
   stop_all()
   st.active = {}
   st.duration = {}
+  st.oneoff = {}
   st.cvotes = {0, 0, 0}
   st.timer = st.interval * TICKS
   st.votetimer = st.votetime * TICKS
@@ -3656,6 +3824,23 @@ function chaos.trigger(name, who, dur_override)
     local ticks = secs * TICKS
     st.active[name] = ticks
     st.duration[name] = ticks
+  elseif not is_deniable(e) then
+    -- Instant effect (dur 0/nil): it never enters st.active, so it used to fire
+    -- with nothing on screen at all — you'd notice the CONSEQUENCE but get no
+    -- confirmation that chaos did it. Give it a short acknowledgement bar in
+    -- its own colour, so it reads as "this just happened" rather than as a
+    -- duration that's still running down.
+    st.oneoff[#st.oneoff + 1] = {
+      label = e.label or name,
+      life  = ONEOFF_BAR * TICKS,
+      total = ONEOFF_BAR * TICKS,
+    }
+  end
+  -- Universal trigger sting — every effect, timed or instant, except the
+  -- deniable ones. Fires regardless of the toast setting: it says SOMETHING
+  -- happened without saying what, so it's a cue rather than a spoiler.
+  if not is_deniable(e) then
+    play_trigger_sting()
   end
   -- silent effects show no "CHAOS: <name>" toast (e.g. Fake Crash, whose whole
   -- gag is that nothing on screen hints it's a chaos effect at all).
@@ -3759,9 +3944,9 @@ function chaos.handle(source, text)
   elseif cmd == "toggle" then
     chaos.handle(source, st.enabled and "off" or "on")
   elseif cmd == "status" then
-    pd.log(string.format("[chaos] %s  interval=%ds effectdur=%ds votetime=%ds toasts=%s active=%d port-fed-by=%s",
+    pd.log(string.format("[chaos] %s  interval=%ds effectdur=%ds votetime=%ds toasts=%s sound=%s active=%d port-fed-by=%s",
         st.enabled and "ON" or "off", st.interval, st.effectdur, st.votetime,
-        st.toasts and "on" or "off",
+        st.toasts and "on" or "off", (trigsound_entry(st.trigsound)).label,
         (function() local n=0 for _ in pairs(st.active) do n=n+1 end return n end)(), source))
   elseif cmd == "list" then
     local names = {}
@@ -3781,6 +3966,38 @@ function chaos.handle(source, text)
     else st.toasts = not st.toasts end
     persist()
     pd.log("[chaos] effect toasts " .. (st.toasts and "ON" or "off"))
+  elseif cmd == "sound" then
+    -- `sound` with no arg lists everything; `sound <key>` selects and previews;
+    -- `sound next` cycles. Previewing on select is the point — you shouldn't
+    -- have to wait for a random effect to hear what you picked.
+    local a = (arg or ""):lower()
+    if a == "" or a == "list" then
+      local out = {}
+      for i = 1, #TRIGSOUNDS do
+        out[#out + 1] = (TRIGSOUNDS[i].key == st.trigsound and "*" or "") .. TRIGSOUNDS[i].key
+      end
+      pd.log("[chaos] trigger sounds: " .. table.concat(out, " "))
+    else
+      if a == "next" then
+        local _, i = trigsound_entry(st.trigsound)
+        st.trigsound = TRIGSOUNDS[(i % #TRIGSOUNDS) + 1].key
+      else
+        local found
+        for i = 1, #TRIGSOUNDS do
+          if TRIGSOUNDS[i].key == a then found = a break end
+        end
+        if not found then
+          pd.log("[chaos] unknown trigger sound '" .. a .. "' (try: sound list)")
+          return
+        end
+        st.trigsound = found
+      end
+      st.trigsound_ok = nil -- re-test the external file after a switch
+      persist()
+      local t = trigsound_entry(st.trigsound)
+      pd.log("[chaos] trigger sound = " .. t.label)
+      play_trigger_sting()
+    end
   elseif cmd == "votetime" then
     st.votetime = math.max(0, tonumber(arg) or 0); st.votetimer = st.votetime * TICKS
     persist()
@@ -4100,6 +4317,14 @@ pd.on("tick", function()
     end
   end
 
+  -- Acknowledgement bars for instant effects. Display-only: expiring one runs
+  -- no stop() and announces nothing. Iterated backwards so removal is safe.
+  for i = #st.oneoff, 1, -1 do
+    local o = st.oneoff[i]
+    o.life = o.life - dt
+    if o.life <= 0 then table.remove(st.oneoff, i) end
+  end
+
   -- The random drumbeat and chat-vote only run while Chaos is enabled; the
   -- expiry above already ran so manual test effects stay on their own timers.
   if not st.enabled then return end
@@ -4373,6 +4598,10 @@ pd.on("stage", reset_all_modes)
 -- Anchored top-left (x=8, the Lua HUD left margin), by the Combat Sim kill count.
 local HUD_X, HUD_W = 8, 74
 local C_TEXT, C_BAR, C_BARBG, C_VOTE = 0xffffffff, 0x40c0ffff, 0x00000090, 0xffe040ff
+-- One-off acknowledgement bars get their own colour (green vs the timed bars'
+-- blue) so a quick flash reads as "that just fired" and not as a duration
+-- you're waiting out.
+local C_BARONE = 0x60e080ff
 
 pd.on("draw", function()
   local y = 4
@@ -4411,6 +4640,21 @@ pd.on("draw", function()
         shown = shown + 1
       end
     end
+  end
+
+  -- One-off acknowledgement bars, under the timed ones. Same shape as a timed
+  -- bar (that's the point — it should read like the Snap's), different colour.
+  -- Newest last so an older one draining out doesn't shuffle the list; capped
+  -- to the newest 3 because Combo Time fires three effects at once and the
+  -- lo-res screen is only ~220 tall (the timed list above already takes 5).
+  for i = math.max(1, #st.oneoff - 2), #st.oneoff do
+    local o = st.oneoff[i]
+    local frac = (o.total > 0) and (o.life / o.total) or 0
+    if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+    pd.draw_text(HUD_X, y, o.label, C_TEXT)
+    pd.draw_box(HUD_X, y + 8, HUD_W, 4, C_BARBG)
+    pd.draw_box(HUD_X, y + 8, math.max(1, math.floor(HUD_W * frac)), 4, C_BARONE)
+    y = y + 16
   end
 
   -- vote slate
@@ -4771,6 +5015,37 @@ if pd.menu_add then
       function() return st.toasts end,
       function(v) st.toasts = (v and true or false); persist() end,
       GROUP, "Show the corner notification naming each effect as it starts and ends. Turn OFF for a clean screen - effects then fire with no on-screen hint that Chaos did it.")
+
+    -- Trigger sting picker: one row per sound in a "Chaos/Trigger Sound"
+    -- sub-folder. Selecting a row PLAYS it immediately — you shouldn't have to
+    -- wait for a random effect to hear what you just chose — and the selected
+    -- row is marked so the list doubles as the current-setting readout.
+    do
+      local ids = {}
+      local function slbl(i)
+        return (TRIGSOUNDS[i].key == st.trigsound and "> " or "  ") .. TRIGSOUNDS[i].label
+      end
+      local function srelabel()
+        if not pd.menu_set_label then return end
+        for i = 1, #TRIGSOUNDS do
+          if ids[i] then pd.menu_set_label(ids[i], slbl(i)) end
+        end
+      end
+      for i = 1, #TRIGSOUNDS do
+        local idx = i
+        ids[idx] = pd.menu_add(slbl(idx), function()
+          st.trigsound = TRIGSOUNDS[idx].key
+          st.trigsound_ok = nil -- re-test the external file after a switch
+          persist()
+          srelabel()
+          play_trigger_sting()
+        end, GROUP .. "/Trigger Sound", TRIGSOUNDS[idx].ext
+            and "Plays scripts/chaos/sounds/chaostrigger.wav or .mp3 - drop your own file in that folder. Never interrupts the music."
+            or (TRIGSOUNDS[idx].random and "Picks a different built-in sting every time an effect fires."
+            or (TRIGSOUNDS[idx].key == "off" and "No sound when an effect fires."
+            or "Built-in game sound. Selecting it plays a preview.")))
+      end
+    end
 
     -- ENABLE: one scrollable LIST of checkboxes (all rotation effects) in the
     -- "Chaos/Effects" sub-folder. The pinned one-line description follows the

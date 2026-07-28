@@ -1631,9 +1631,64 @@ f32 chrGetFlinchAmount(struct chrdata *chr)
  * - Body flinching when shot
  * - Chrs aiming up, down, left and right
  */
+#ifndef PLATFORM_N64
+/**
+ * Chaos "Yassify" (pd.yassify / /yassify): non-uniform per-joint body shaping —
+ * cinched waist, broader shoulders, bigger head/cheekbones.
+ *
+ * Cosmetic ONLY. This runs in the render-time joint callback and touches no
+ * collision, hit box or AI state, so it can't desync anything.
+ *
+ * The multipliers are separate live-tunable globals rather than constants
+ * because scaling a joint matrix PROPAGATES TO THAT JOINT'S CHILDREN — cinching
+ * the waist also narrows everything above it, so the shoulder/neck values have
+ * to compensate, and the right numbers can only be found by looking at it.
+ * `/yassify waist|shoulder|neck N` tunes them without a rebuild.
+ *
+ * Cleared per stage in lvResetChaosPerStage (NOT lvInit — that runs once at
+ * boot in this port).
+ */
+// Chaos "Backwards bullets" — read in chrTick's render-prep gate below to force
+// chrs behind the player into the shot-test candidate set. Defined in bondgun.c.
+extern s32 g_ChaosBackfire;
+
+s32 g_ChaosYassify = 0;
+f32 g_ChaosYassifyWaist = 0.75f;    // waist XZ cinch
+f32 g_ChaosYassifyShoulder = 1.45f; // shoulder/bust XZ flare
+f32 g_ChaosYassifyNeck = 1.25f;     // head scale
+
+/**
+ * Post-multiply a non-uniform scale onto a joint matrix: XZ by one factor, Y by
+ * another. The engine only ships uniform scales (mtx00015f04 and friends).
+ *
+ * COLUMNS, not rows. mtx4TransformVec shows the row-vector convention — the
+ * output x/y/z come from columns 0/1/2 — so scaling columns applies the scale
+ * AFTER the joint transform, i.e. in world space. Scaling rows would scale
+ * along the joint's OWN axes, which for a rotated limb points somewhere
+ * unpredictable and would shear the model as it animates.
+ *
+ * World-space is safe here precisely because X and Z share one factor: that
+ * makes the scale invariant under the Y rotation a standing chr actually has.
+ *
+ * m[3][*] (translation) is deliberately untouched — the caller has zeroed it
+ * and restores it afterwards, so joint POSITIONS stay put and only the basis
+ * (and therefore the children hanging off it) is reshaped.
+ */
+static void chrChaosScaleXZY(Mtxf *mtx, f32 xz, f32 y)
+{
+	mtx->m[0][0] *= xz; mtx->m[1][0] *= xz; mtx->m[2][0] *= xz;
+	mtx->m[0][1] *= y;  mtx->m[1][1] *= y;  mtx->m[2][1] *= y;
+	mtx->m[0][2] *= xz; mtx->m[1][2] *= xz; mtx->m[2][2] *= xz;
+}
+#endif
+
 void chrHandleJointPositioned(s32 joint, Mtxf *mtx)
 {
 	f32 scale = 1.0f;
+#ifndef PLATFORM_N64
+	f32 yassxz = 1.0f;
+	f32 yassy = 1.0f;
+#endif
 	s32 lshoulderjoint;
 	s32 rshoulderjoint;
 	s32 waistjoint;
@@ -1737,6 +1792,24 @@ void chrHandleJointPositioned(s32 joint, Mtxf *mtx)
 				scale = 2.5f;
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// Chaos "Yassify". Human-only, like DK mode: the Skedar skeleton's
+		// joints sit differently and these multipliers are tuned for the human
+		// proportions, so applying them there just looks broken.
+		if (g_ChaosYassify && CHRRACE(g_CurModelChr) == RACE_HUMAN) {
+			if (joint == waistjoint) {
+				yassxz = g_ChaosYassifyWaist;
+			} else if (joint == lshoulderjoint || joint == rshoulderjoint) {
+				yassxz = g_ChaosYassifyShoulder;
+			} else if (joint == neckjoint) {
+				// Slightly wider than tall so the face reads as cheekbones
+				// rather than as a plain DK-mode balloon head.
+				yassxz = g_ChaosYassifyNeck * 1.12f;
+				yassy = g_ChaosYassifyNeck;
+			}
+		}
+#endif
 
 		if (joint == lshoulderjoint || joint == rshoulderjoint || joint == waistjoint || joint == neckjoint) {
 			xrot = 0.0f;
@@ -1857,7 +1930,11 @@ void chrHandleJointPositioned(s32 joint, Mtxf *mtx)
 				}
 			}
 
-			if (xrot != 0.0f || yrot != 0.0f || zrot != 0.0f || scale != 1.0f) {
+			if (xrot != 0.0f || yrot != 0.0f || zrot != 0.0f || scale != 1.0f
+#ifndef PLATFORM_N64
+					|| yassxz != 1.0f || yassy != 1.0f
+#endif
+					) {
 				struct coord sp70;
 				f32 aimangle;
 				Mtxf tmpmtx;
@@ -1914,6 +1991,15 @@ void chrHandleJointPositioned(s32 joint, Mtxf *mtx)
 				if (scale != 1.0f) {
 					mtx00015f04(scale, mtx);
 				}
+
+#ifndef PLATFORM_N64
+				// Chaos "Yassify" — applied here, inside the world-space round
+				// trip with the translation zeroed, so it reshapes the joint
+				// basis without moving the joint itself.
+				if (yassxz != 1.0f || yassy != 1.0f) {
+					chrChaosScaleXZY(mtx, yassxz, yassy);
+				}
+#endif
 
 				mtx->m[3][0] = sp70.x;
 				mtx->m[3][1] = sp70.y;
@@ -2582,6 +2668,12 @@ s32 chrTick(struct prop *prop)
 	}
 #endif
 	bool needsupdate;
+#ifndef PLATFORM_N64
+	// Chaos "Backwards bullets": this chr's render prep was forced on by the
+	// effect rather than earned by being on screen. Exempts it from the vanilla
+	// per-frame update budget below.
+	bool chaosbackfireforced = false;
+#endif
 	bool hatvisible = true;
 	s32 lvupdate240 = g_Vars.lvupdate240;
 	struct prop *child;
@@ -2892,12 +2984,55 @@ s32 chrTick(struct prop *prop)
 		chrUpdateAimProperties(chr);
 	}
 
+#ifndef PLATFORM_N64
+	// Chaos "Backwards bullets" (pd.backfire) — why the effect never worked.
+	//
+	// bgunCalculatePlayerShotSpread reverses the shot ray correctly, and
+	// gundir3d is derived from the reversed gundir2d (prop.c), so the ray really
+	// does point behind the player. But shotCalculateHits only ever walks
+	// g_Vars.onscreenprops, a list propsSort builds by filtering on
+	// PROPFLAG_ONTHISSCREENTHISTICK — and the chr narrow phase then tests
+	// against model->matrices, which are model-to-SCREEN and are only built in
+	// the `if (needsupdate)` block below. A chr behind you has neither, so the
+	// reversed ray had literally nothing to test against.
+	//
+	// Force the render prep on for chrs within draw distance while the effect
+	// runs, so they enter onscreenprops WITH valid matrices. Same idea as the
+	// blind server's Tier 1 visibility restoration (docs/PORT_HEADLESS_BLIND_
+	// SERVER.md §9): the sim always runs, the screen predicate only decides
+	// whether it's drawn.
+	//
+	// Deliberately placed BEFORE the kill-plane and corpse-reap guards below so
+	// those still get the last word — forcing after them would resurrect
+	// corpses queued for deletion and bypass the per-frame update cap.
+	//
+	// Local viewport only (remote pawns tick through here too and must keep
+	// their real visibility), and gated on the effect, so this is one branch
+	// when it's off.
+	if (g_ChaosBackfire && !needsupdate
+			&& !g_Vars.currentplayer->isremote
+			&& posIsInDrawDistance(&prop->pos)) {
+		needsupdate = true;
+		chaosbackfireforced = true;
+	}
+#endif
+
 	if (prop->pos.y < -65536) {
 		needsupdate = false;
 	}
 
 #if VERSION >= VERSION_NTSC_1_0
-	if (!g_Vars.normmplayerisrunning && needsupdate) {
+	// The `> 30` below is a PER-FRAME budget on how many chrs get render prep
+	// (reset each frame in propsTick). Normally only on-screen chrs spend it, so
+	// it's rarely reached — but a backfire-forced chr must not spend it, or the
+	// effect eats the budget with everything behind the player and chrs beyond
+	// the cap silently lose their matrices. That made backwards bullets hit one
+	// enemy and pass straight through the next, decided purely by tick order.
+	//
+	// Forced chrs are extra work the effect asked for, so they're exempt from
+	// the budget AND from the corpse-reap counters — the vanilla accounting is
+	// left to describe exactly what it did before.
+	if (!g_Vars.normmplayerisrunning && needsupdate && !chaosbackfireforced) {
 		if (chr->actiontype == ACT_DEAD
 				|| (chr->actiontype == ACT_DRUGGEDKO && (chr->chrflags & CHRCFLAG_KEEPCORPSEKO) == 0)) {
 			var8009cdac++;
@@ -4850,12 +4985,94 @@ f32 chrGetHitRadius(struct chrdata *chr)
 	return result;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * /backfire — dump, for every chr near the player, the exact gates a shot must
+ * pass to register a hit on it.
+ *
+ * Backwards bullets has now been "partially" fixed twice by reasoning about the
+ * code, so this stops the guessing: fire with an enemy behind you, run the
+ * command, and the one that DIDN'T take damage will be missing one of these.
+ * Every field maps to a specific early-out:
+ *
+ *   scr    PROPFLAG_ONTHISSCREENTHISTICK. Clear => propsSort never puts it in
+ *          g_Vars.onscreenprops, so shotCalculateHits never even sees it.
+ *   mtx    model->matrices. NULL => chrTestHit returns immediately (the
+ *          crash-ledger #25 guard).
+ *   hid    CHRCFLAG_HIDDEN => chrTestHit's outer test fails.
+ *   z      prop->z, the depth propsSort sorts by. Negative = behind the camera.
+ *   dist   world distance from the player, for spotting draw-distance cutoffs.
+ *   ddist  posIsInDrawDistance — the predicate the backfire force is gated on.
+ *
+ * A chr showing scr=1 mtx=1 hid=0 that still can't be shot means the failure is
+ * downstream in the narrow phase, not in visibility — which would be new
+ * information and rules out everything upstream.
+ */
+void chrBackfireDiag(void)
+{
+	extern s32 g_ChaosBackfire;
+	struct prop *pprop = g_Vars.currentplayer ? g_Vars.currentplayer->prop : NULL;
+	s32 slots = chrsGetNumSlots();
+	s32 shown = 0;
+	s32 i;
+
+	if (!pprop) {
+		sysLogPrintf(LOG_CHAT, "backfire: no local player");
+		return;
+	}
+
+	sysLogPrintf(LOG_CHAT, "backfire=%s  onscreenprops=%d  (scr=onscreen mtx=matrices hid=hidden)",
+			g_ChaosBackfire ? "ON" : "off", g_Vars.numonscreenprops);
+
+	for (i = 0; i < slots; i++) {
+		// The slot IS the chrdata (chr allocation hands out &g_ChrSlots[i]) —
+		// don't round-trip through chrFindByLiteralId, which can miss a chr in
+		// some states and would make this print nothing at all.
+		struct chrdata *chr = (g_ChrSlots[i].chrnum < 0) ? NULL : &g_ChrSlots[i];
+		struct prop *prop;
+		f32 dx;
+		f32 dy;
+		f32 dz;
+		f32 dist;
+
+		if (!chr || !chr->prop || chr->prop == pprop) {
+			continue;
+		}
+
+		prop = chr->prop;
+
+		dx = prop->pos.x - pprop->pos.x;
+		dy = prop->pos.y - pprop->pos.y;
+		dz = prop->pos.z - pprop->pos.z;
+		dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+		// Only the ones near enough to plausibly be the test subject.
+		if (dist > 4000.0f || shown >= 24) {
+			continue;
+		}
+
+		shown++;
+
+		sysLogPrintf(LOG_CHAT, "  chr %-4d dist=%-7.0f z=%-8.0f scr=%d mtx=%d hid=%d ddist=%d act=%d",
+				(s32)chr->chrnum, dist, prop->z,
+				(prop->flags & PROPFLAG_ONTHISSCREENTHISTICK) ? 1 : 0,
+				(chr->model && chr->model->matrices) ? 1 : 0,
+				(chr->chrflags & CHRCFLAG_HIDDEN) ? 1 : 0,
+				posIsInDrawDistance(&prop->pos) ? 1 : 0,
+				chr->actiontype);
+	}
+
+	if (shown == 0) {
+		sysLogPrintf(LOG_CHAT, "  (no chrs within 4000 units)");
+	}
+}
+#endif
+
 void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, bool cheap)
 {
 	struct coord spdc;
 	struct coord spd0;
 	struct chrdata *chr = prop->chr;
-
 	if ((chr->chrflags & CHRCFLAG_HIDDEN) == 0 && (prop->flags & PROPFLAG_ONTHISSCREENTHISTICK)) {
 		f32 radius = chrGetHitRadius(chr);
 
@@ -4871,7 +5088,17 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 		}
 #endif
 
+#ifndef PLATFORM_N64
+		// Chaos "Backwards bullets": prop->z is depth along the camera's
+		// FORWARD axis, so a chr behind the player carries a negative one. Use
+		// the magnitude so this reads as a real distance and compares correctly
+		// against the (now also magnitude) shot distance — see the matching
+		// note at the bg-depth clamp in prop.c's shotCalculateHits.
+		if (g_ChaosBackfire ? (ABSF(prop->z) - radius < shotdata->distance)
+				: (prop->z - radius < shotdata->distance)) {
+#else
 		if (prop->z - radius < shotdata->distance) {
+#endif
 			struct model *model = chr->model;
 			s32 hitpart = 0;
 			struct modelnode *node = NULL;
@@ -4951,6 +5178,15 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 				mtx = camGetWorldToScreenMtxf();
 				sp68 = spdc.x * mtx->m[0][2] + spdc.y * mtx->m[1][2] + spdc.z * mtx->m[2][2] + mtx->m[3][2];
 				sp68 = -sp68;
+
+#ifndef PLATFORM_N64
+				// Same sign problem as prop->z above: this is depth along the
+				// camera's forward axis, and it doubles as hitCreate's sort
+				// key, so a negative would also mis-order the hit list.
+				if (g_ChaosBackfire && sp68 < 0.0f) {
+					sp68 = -sp68;
+				}
+#endif
 
 				if (sp68 < shotdata->distance) {
 					hitCreate(shotdata, prop, sp68, hitpart, node, &sp88, sp84, sp80, model, true, chrGetShield(chr) > 0.0f, &spdc, &spd0);

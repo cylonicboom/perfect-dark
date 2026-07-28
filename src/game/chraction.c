@@ -8433,6 +8433,84 @@ s32 chraiLuaRefillAmmo(void)
 	return 1;
 }
 
+/**
+ * How many magazines the chaos gun-giving effects hand out (user request
+ * 2026-07-28: a free gun should be a moment of power, not a licence to stop
+ * caring about ammo). Applied at the C grant sites themselves — dual-wield and
+ * body-snatch both used to call bgunGiveMaxAmmo directly, so gating it in Lua
+ * alone would have left four dual_wield effects still topping up to capacity.
+ */
+#define CHAOS_GUN_MAGS 2
+
+/**
+ * pd.give_mags(n): stock every ammo type with n MAGAZINES instead of filling it
+ * to capacity, so the gun-giving chaos effects hand you a usable weapon rather
+ * than an inexhaustible one.
+ *
+ * A magazine is a property of the WEAPON FUNCTION, not the ammo type — several
+ * weapons share an ammo type with different clip sizes — so there is no single
+ * "one magazine" figure to read off the ammo table. Pass 1 walks every weapon
+ * and both its functions and records the LARGEST clip size seen per ammo type;
+ * pass 2 writes n of those back. Largest rather than smallest deliberately:
+ * n mags should be a sensible amount for whatever you are actually holding, and
+ * undershooting on a big-magazine gun (Cyclone, Reaper) would leave the effect
+ * feeling broken.
+ *
+ * Everything goes through the public bgun*ForWeapon accessors rather than the
+ * ammo table itself, which is file-local to bondgun.c. Ammo types no weapon
+ * uses are left alone — zeroing them would strip gadgets and objective items
+ * that ride the same array.
+ */
+s32 chraiLuaGiveMags(s32 mags)
+{
+	s32 clip[AMMOTYPE_ECM_MINE + 1];
+	s32 i;
+	s32 f;
+
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+
+	if (mags < 1) {
+		mags = 1;
+	} else if (mags > 99) {
+		mags = 99;
+	}
+
+	for (i = 0; i < ARRAYCOUNT(clip); i++) {
+		clip[i] = 0;
+	}
+
+	for (i = WEAPON_UNARMED; i <= WEAPON_SUICIDEPILL; i++) {
+		for (f = 0; f < 2; f++) {
+			struct inventory_ammo *ammo = weaponGetAmmoByFunction(i, f);
+
+			if (ammo && ammo->type < ARRAYCOUNT(clip) && ammo->clipsize > clip[ammo->type]) {
+				clip[ammo->type] = ammo->clipsize;
+			}
+		}
+	}
+
+	for (i = WEAPON_UNARMED; i <= WEAPON_SUICIDEPILL; i++) {
+		for (f = 0; f < 2; f++) {
+			struct inventory_ammo *ammo = weaponGetAmmoByFunction(i, f);
+
+			if (ammo && ammo->type < ARRAYCOUNT(clip) && clip[ammo->type] > 0) {
+				s32 cap = bgunGetAmmoCapacityForWeapon(i, f);
+				s32 qty = clip[ammo->type] * mags;
+
+				if (cap > 0 && qty > cap) {
+					qty = cap;
+				}
+
+				bgunSetAmmoQtyForWeapon(i, f, qty);
+			}
+		}
+	}
+
+	return 1;
+}
+
 // pd.give_ammo(ammotype, qty): grant ammo (auto-gives the matching weapon).
 s32 chraiLuaGiveAmmo(s32 ammotype, s32 qty)
 {
@@ -9313,6 +9391,24 @@ s32 chraiLuaStripAmmo(void)
 	return 1;
 }
 
+// pd.set_ammo(ammotype, qty): set ONE ammo pool to an exact quantity,
+// leaving every other pool alone (russian roulette wants exactly one
+// Magnum round without confiscating the rest of the arsenal).
+s32 chraiLuaSetAmmo(s32 ammotype, s32 qty)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	if (ammotype < 1 || ammotype > AMMOTYPE_ECM_MINE) {
+		return 0;
+	}
+	if (qty < 0) {
+		qty = 0;
+	}
+	bgunSetAmmoQuantity(ammotype, qty);
+	return 1;
+}
+
 // pd.teleport_to_chr(chrnum): snap the local player to a chr's position.
 // Server-side only (a client's move would just be force-corrected straight
 // back). When the player carries a body model (Combat Sim / anti-reality),
@@ -9488,7 +9584,7 @@ s32 chraiLuaGust(f32 force)
 
 // pd.dual_wield(weaponnum [, funcnum]): give and equip the weapon in BOTH
 // hands (the playerSpawnAnti dual-wield recipe: single + double inventory
-// entries, then equip each hand) with full ammo. funcnum 0/1 also forces that
+// entries, then equip each hand) with CHAOS_GUN_MAGS magazines. funcnum 0/1 forces
 // fire function on both hands (1 = secondary, e.g. the Cyclone's Magazine
 // Discharge); the player can still cycle functions manually afterwards.
 s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum)
@@ -9506,7 +9602,7 @@ s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum)
 	invGiveDoubleWeapon(weaponnum, weaponnum);
 	bgunEquipWeapon2(HAND_RIGHT, weaponnum);
 	bgunEquipWeapon2(HAND_LEFT, weaponnum);
-	bgunGiveMaxAmmo(true);
+	chraiLuaGiveMags(CHAOS_GUN_MAGS);
 
 	if (funcnum == FUNC_PRIMARY || funcnum == FUNC_SECONDARY) {
 		pl->hands[HAND_RIGHT].gset.weaponfunc = funcnum;
@@ -9523,6 +9619,31 @@ extern s32 g_ChaosGunLock;
 s32 chraiLuaGunLock(s32 on)
 {
 	g_ChaosGunLock = on ? 1 : 0;
+	return 1;
+}
+
+// pd.rubber_objects(on): "Rubber Objects" — items dropped into the world while
+// this is on (corpse drops, disarms, the player's own drop, thrown grenades)
+// bounce like rubber instead of settling after the vanilla 6 bounces. The mark
+// is stamped in objSetDropped and read in projectileTick, both in propobj.c, so
+// props already lying on the floor are untouched. Turning it off settles
+// everything on its next contact; also cleared in lvResetChaosPerStage.
+extern s32 g_ChaosRubberObjects;
+s32 chraiLuaRubberObjects(s32 on)
+{
+	g_ChaosRubberObjects = on ? 1 : 0;
+	return 1;
+}
+
+// pd.yassify(on): "Yassify" — non-uniform per-joint body shaping (cinched
+// waist, broader shoulders, bigger head) applied in chrHandleJointPositioned
+// (chr.c). Humans only, render-side only — no collision or hit boxes move, so
+// it's purely cosmetic. Per-joint multipliers are tunable live with /yassify;
+// cleared in lvResetChaosPerStage.
+extern s32 g_ChaosYassify;
+s32 chraiLuaYassify(s32 on)
+{
+	g_ChaosYassify = on ? 1 : 0;
 	return 1;
 }
 
@@ -9904,7 +10025,7 @@ s32 chraiLuaBodySnatch(s32 chrnum)
 	if (weaponnum > WEAPON_UNARMED) {
 		invGiveSingleWeapon(weaponnum);
 		bgunEquipWeapon2(HAND_RIGHT, weaponnum);
-		bgunGiveMaxAmmo(true);
+		chraiLuaGiveMags(CHAOS_GUN_MAGS);
 	}
 
 	// Warp onto the guard.
@@ -10865,6 +10986,22 @@ s32 chaosChopperIsChaos(struct chopperobj *chopper)
 	return chopper == &g_ChaosChoppers[0] || chopper == &g_ChaosChoppers[1];
 }
 
+// Which chaos chopper is this? 0 = dD hovercopter, 1 = A51 interceptor, -1 =
+// not one of ours. Slot 1 stalks the player (chopperTickCombat); slot 0 keeps
+// the original hold-position behaviour.
+s32 chaosChopperKind(struct chopperobj *chopper)
+{
+	if (chopper == &g_ChaosChoppers[0]) {
+		return 0;
+	}
+
+	if (chopper == &g_ChaosChoppers[1]) {
+		return 1;
+	}
+
+	return -1;
+}
+
 // Chaos Gormless master switch (bondmove.c, bmoveProcessInput).
 extern s32 g_ChaosGormless;
 
@@ -11519,7 +11656,8 @@ extern f32 gfx_vtx_wobble_freq;
 extern f32 gfx_vtx_wobble_phase;
 extern f32 gfx_vtx_wobble_sag;
 extern f32 gfx_vtx_wobble_desync;
-s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync)
+extern f32 gfx_vtx_wobble_nearfade;
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync, f32 nearfade)
 {
 	if (amp < 0.0f) {
 		amp = 0.0f;
@@ -11543,7 +11681,14 @@ s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync)
 	gfx_vtx_wobble_freq = freq;
 	gfx_vtx_wobble_phase = phase;
 	gfx_vtx_wobble_sag = sag;
+	if (nearfade < 0.0f) {
+		nearfade = 0.0f; // 0 = off: uniform wobble at every distance
+	}
+	if (nearfade > 4000.0f) {
+		nearfade = 4000.0f; // past this nothing in a normal room wobbles at all
+	}
 	gfx_vtx_wobble_desync = desync;
+	gfx_vtx_wobble_nearfade = nearfade;
 	return 1;
 }
 

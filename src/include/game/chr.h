@@ -47,6 +47,9 @@ void chrBruise(struct model *model, s32 hitpart, struct modelnode *node, struct 
 void chrDisfigure(struct chrdata *chr, struct coord *exppos, f32 damageradius);
 f32 chrGetHitRadius(struct chrdata *chr);
 void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, bool cheap);
+#ifndef PLATFORM_N64
+void chrBackfireDiag(void); /* /backfire — per-chr shot-gate dump */
+#endif
 void chrHit(struct shotdata *shotdata, struct hit *hit);
 void chr0f028498(bool value);
 void chrsCheckForNoise(f32 noiseradius);

@@ -3728,6 +3728,13 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define PROJECTILEFLAG_NOTIMELIMIT 0x00004000
 #define PROJECTILEFLAG_INROOM      0x00008000
 #define PROJECTILEFLAG_00010000    0x00010000
+#ifndef PLATFORM_N64
+// Port-only: chaos "Rubber Objects". Stamped on a projectile at its drop
+// (objSetDropped) so only items entering the world while the effect is on keep
+// bouncing; props already lying on the floor are never marked. Self-clearing —
+// projectileReset zeroes projectile->flags on the next launch.
+#define PROJECTILEFLAG_CHAOSRUBBER 0x00020000
+#endif
 #define PROJECTILEFLAG_LIGHTWEIGHT 0x40000000
 #define PROJECTILEFLAG_FREE        0x80000000
 

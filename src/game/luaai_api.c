@@ -1164,6 +1164,15 @@ static int l_pd_refill_ammo(lua_State *L)
 	return 1;
 }
 
+/* pd.give_mags([n]) -> bool. Stock every ammo type with n magazines (default 2)
+ * instead of filling to capacity. Used by the gun-giving effects. */
+static int l_pd_give_mags(lua_State *L)
+{
+	s32 mags = (s32)luaL_optinteger(L, 1, 2);
+	lua_pushboolean(L, chraiLuaGiveMags(mags) != 0);
+	return 1;
+}
+
 /* pd.give_ammo(ammotype, [qty]) -> bool. Grants ammo (+ the matching weapon). */
 static int l_pd_give_ammo(lua_State *L)
 {
@@ -1915,6 +1924,15 @@ static int l_pd_chr_cloak(lua_State *L)
 static int l_pd_strip_ammo(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaStripAmmo() != 0);
+	return 1;
+}
+
+/* pd.set_ammo(ammotype, qty) -> bool. Set one ammo pool to an exact quantity. */
+static int l_pd_set_ammo(lua_State *L)
+{
+	s32 ammotype = (s32)luaL_checkinteger(L, 1);
+	s32 qty = (s32)luaL_checkinteger(L, 2);
+	lua_pushboolean(L, chraiLuaSetAmmo(ammotype, qty) != 0);
 	return 1;
 }
 
@@ -3016,7 +3034,10 @@ static int l_pd_vertex_wobble(lua_State *L)
 	f32 phase = (f32)luaL_optnumber(L, 3, 0.0);
 	f32 sag = (f32)luaL_optnumber(L, 4, 0.0);
 	f32 desync = (f32)luaL_optnumber(L, 5, 0.0);
-	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase, sag, desync) != 0);
+	/* nearfade: world-unit radius the wobble ramps in over, so geometry close
+	 * to the camera barely strays from its true position. 0 = off. */
+	f32 nearfade = (f32)luaL_optnumber(L, 6, 0.0);
+	lua_pushboolean(L, chraiLuaVertexWobble(amp, freq, phase, sag, desync, nearfade) != 0);
 	return 1;
 }
 
@@ -3220,6 +3241,23 @@ static int l_pd_dual_wield(lua_State *L)
 static int l_pd_gun_lock(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaGunLock(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.rubber_objects(on) -> bool. Rubber Objects: items dropped into the world
+ * while this is on bounce like rubber instead of settling. Props already lying
+ * on the floor are unaffected. */
+static int l_pd_rubber_objects(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaRubberObjects(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.yassify(on) -> bool. Yassify: cinched waist, broader shoulders, bigger
+ * head/cheekbones. Humans only; cosmetic (render-side joint shaping). */
+static int l_pd_yassify(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaYassify(lua_toboolean(L, 1)) != 0);
 	return 1;
 }
 
@@ -3484,6 +3522,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_player_heal);      lua_setfield(L, -2, "player_heal");
 	lua_pushcfunction(L, l_pd_player_set_shield);lua_setfield(L, -2, "player_set_shield");
 	lua_pushcfunction(L, l_pd_refill_ammo);      lua_setfield(L, -2, "refill_ammo");
+	lua_pushcfunction(L, l_pd_give_mags);      lua_setfield(L, -2, "give_mags");
 	lua_pushcfunction(L, l_pd_give_ammo);        lua_setfield(L, -2, "give_ammo");
 	lua_pushcfunction(L, l_pd_give_weapon);      lua_setfield(L, -2, "give_weapon");
 	lua_pushcfunction(L, l_pd_device_on);        lua_setfield(L, -2, "device_on");
@@ -3539,6 +3578,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_dizzy);         lua_setfield(L, -2, "dizzy");
 	lua_pushcfunction(L, l_pd_chr_cloak);     lua_setfield(L, -2, "chr_cloak");
 	lua_pushcfunction(L, l_pd_strip_ammo);    lua_setfield(L, -2, "strip_ammo");
+	lua_pushcfunction(L, l_pd_set_ammo);      lua_setfield(L, -2, "set_ammo");
 	lua_pushcfunction(L, l_pd_teleport_to_chr); lua_setfield(L, -2, "teleport_to_chr");
 	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
 	lua_pushcfunction(L, l_pd_shiny);         lua_setfield(L, -2, "shiny");
@@ -3642,6 +3682,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_gust);          lua_setfield(L, -2, "gust");
 	lua_pushcfunction(L, l_pd_dual_wield);    lua_setfield(L, -2, "dual_wield");
 	lua_pushcfunction(L, l_pd_gun_lock);      lua_setfield(L, -2, "gun_lock");
+	lua_pushcfunction(L, l_pd_rubber_objects); lua_setfield(L, -2, "rubber_objects");
+	lua_pushcfunction(L, l_pd_yassify);       lua_setfield(L, -2, "yassify");
 	lua_pushcfunction(L, l_pd_mag_dump);      lua_setfield(L, -2, "mag_dump");
 	lua_pushcfunction(L, l_pd_knife_lock);    lua_setfield(L, -2, "knife_lock");
 	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");

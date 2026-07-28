@@ -6588,6 +6588,104 @@ s32 netConsoleCommand(const char *line)
 			g_CheatsEnabledBank1 &= ~bit;
 		}
 		sysLogPrintf(LOG_CHAT, "tonal inversion %s", on ? "ON" : "OFF");
+	} else if (strcmp(cmd, "backfire") == 0) {
+		// /backfire — dump the per-chr shot gates for the chaos "Backwards
+		// bullets" effect (body in chr.c, which has the chr internals). Fire
+		// with an enemy behind you, then run this: the one that didn't take
+		// damage is missing one of scr / mtx / hid.
+		chrBackfireDiag();
+	} else if (strcmp(cmd, "yassify") == 0 || strcmp(cmd, "yass") == 0) {
+		// /yassify [on|off|waist N|shoulder N|neck N|reset|status]
+		// Chaos "Yassify" body shaping (chr.c chrHandleJointPositioned). The
+		// multipliers are live-tunable because scaling a joint matrix
+		// propagates to that joint's CHILDREN — cinching the waist narrows
+		// everything above it, so the shoulder/neck values are compensations
+		// whose right values can only be found by looking at it.
+		extern s32 g_ChaosYassify;
+		extern f32 g_ChaosYassifyWaist;
+		extern f32 g_ChaosYassifyShoulder;
+		extern f32 g_ChaosYassifyNeck;
+
+		if (*arg == '\0') {
+			g_ChaosYassify = !g_ChaosYassify;
+		} else if (strcmp(arg, "on") == 0 || strcmp(arg, "1") == 0) {
+			g_ChaosYassify = 1;
+		} else if (strcmp(arg, "off") == 0 || strcmp(arg, "0") == 0) {
+			g_ChaosYassify = 0;
+		} else if (strncmp(arg, "waist", 5) == 0) {
+			g_ChaosYassifyWaist = (f32)atof(arg + 5);
+		} else if (strncmp(arg, "shoulder", 8) == 0) {
+			g_ChaosYassifyShoulder = (f32)atof(arg + 8);
+		} else if (strncmp(arg, "neck", 4) == 0) {
+			g_ChaosYassifyNeck = (f32)atof(arg + 4);
+		} else if (strcmp(arg, "reset") == 0) {
+			g_ChaosYassifyWaist = 0.75f;
+			g_ChaosYassifyShoulder = 1.45f;
+			g_ChaosYassifyNeck = 1.25f;
+		} else if (strcmp(arg, "status") != 0) {
+			sysLogPrintf(LOG_CHAT, "usage: /yassify [on|off|waist N|shoulder N|neck N|reset|status]");
+		}
+
+		// A zero or negative multiplier collapses the joint basis to a
+		// degenerate matrix, which turns the chr into flickering slivers.
+		if (g_ChaosYassifyWaist < 0.05f) { g_ChaosYassifyWaist = 0.05f; }
+		if (g_ChaosYassifyShoulder < 0.05f) { g_ChaosYassifyShoulder = 0.05f; }
+		if (g_ChaosYassifyNeck < 0.05f) { g_ChaosYassifyNeck = 0.05f; }
+		if (g_ChaosYassifyWaist > 4.0f) { g_ChaosYassifyWaist = 4.0f; }
+		if (g_ChaosYassifyShoulder > 4.0f) { g_ChaosYassifyShoulder = 4.0f; }
+		if (g_ChaosYassifyNeck > 4.0f) { g_ChaosYassifyNeck = 4.0f; }
+
+		sysLogPrintf(LOG_CHAT, "yassify %s: waist=%.2f shoulder=%.2f neck=%.2f",
+				g_ChaosYassify ? "ON" : "off",
+				g_ChaosYassifyWaist, g_ChaosYassifyShoulder, g_ChaosYassifyNeck);
+	} else if (strcmp(cmd, "collision") == 0 || strcmp(cmd, "col") == 0) {
+		// /collision [on|off|geo|props|hitboxes|xray|alpha N|range N|status]
+		// Collision View debug overlay — see docs/PORT_COLLISION_VIEW.md. The
+		// globals live in src/game/collisionview.c (a game TU); they are all
+		// s32 rather than bool because this is a port TU and the two disagree
+		// on bool's width. Unrelated to netplay, but every /-command routes
+		// through netConsoleCommand.
+		extern s32 g_ColViewEnabled;
+		extern s32 g_ColViewGeo;
+		extern s32 g_ColViewHitboxes;
+		extern s32 g_ColViewOutlines;
+		extern s32 g_ColViewProps;
+		extern s32 g_ColViewXray;
+		extern s32 g_ColViewAlpha;
+		extern s32 g_ColViewRange;
+
+		if (*arg == '\0') {
+			g_ColViewEnabled = !g_ColViewEnabled;
+		} else if (strcmp(arg, "on") == 0 || strcmp(arg, "1") == 0) {
+			g_ColViewEnabled = 1;
+		} else if (strcmp(arg, "off") == 0 || strcmp(arg, "0") == 0) {
+			g_ColViewEnabled = 0;
+		} else if (strcmp(arg, "geo") == 0) {
+			g_ColViewGeo = !g_ColViewGeo;
+		} else if (strcmp(arg, "props") == 0) {
+			g_ColViewProps = !g_ColViewProps;
+		} else if (strcmp(arg, "hitboxes") == 0 || strcmp(arg, "hit") == 0) {
+			g_ColViewHitboxes = !g_ColViewHitboxes;
+		} else if (strcmp(arg, "outlines") == 0 || strcmp(arg, "edges") == 0) {
+			g_ColViewOutlines = !g_ColViewOutlines;
+		} else if (strcmp(arg, "xray") == 0) {
+			g_ColViewXray = !g_ColViewXray;
+		} else if (strncmp(arg, "alpha", 5) == 0) {
+			g_ColViewAlpha = atoi(arg + 5);
+		} else if (strncmp(arg, "range", 5) == 0) {
+			g_ColViewRange = atoi(arg + 5);
+		} else if (strcmp(arg, "status") != 0) {
+			sysLogPrintf(LOG_CHAT, "usage: /collision [on|off|geo|props|hitboxes|outlines|xray|alpha N|range N|status]");
+		}
+
+		sysLogPrintf(LOG_CHAT, "collision view %s: geo=%s props=%s hitboxes=%s outlines=%s xray=%s alpha=%d range=%d",
+				g_ColViewEnabled ? "ON" : "off",
+				g_ColViewGeo ? "on" : "off",
+				g_ColViewProps ? "on" : "off",
+				g_ColViewHitboxes ? "on" : "off",
+				g_ColViewOutlines ? "on" : "off",
+				g_ColViewXray ? "on" : "off",
+				g_ColViewAlpha, g_ColViewRange);
 	} else if (strcmp(cmd, "wireframe") == 0 || strcmp(cmd, "wf") == 0) {
 		// /wireframe [on|off]        toggle the Wireframe cheat (CHEAT_WIREFRAME)
 		//                            live, no stage reload.

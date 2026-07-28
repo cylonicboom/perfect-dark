@@ -923,6 +923,9 @@ void func0f060bac(s32 weaponnum, struct prop *prop)
  */
 struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpos2d, struct coord *gundir2d, struct coord *gunpos3d, struct coord *gundir3d, u32 arg6, f32 distance, bool cheap)
 {
+#ifndef PLATFORM_N64
+	extern s32 g_ChaosBackfire; // chaos "Backwards bullets" (bondgun.c)
+#endif
 	u32 index;
 	struct prop **propptr;
 	struct prop *root;
@@ -1076,10 +1079,32 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 	}
 
 	if (hitbg && shotdata.gset.weaponnum != WEAPON_FARSIGHT) {
+		f32 bgdepth;
+
 		mtx4TransformVec(camGetWorldToScreenMtxf(), &sp694.pos, &sp658);
 
-		if (shotdata.distance > -sp658.z) {
-			shotdata.distance = -sp658.z;
+		bgdepth = -sp658.z;
+
+#ifndef PLATFORM_N64
+		// Chaos "Backwards bullets": this depth is measured along the CAMERA'S
+		// FORWARD axis, so the wall a reversed shot hits — which is behind the
+		// player — produces a NEGATIVE distance. Every downstream comparison
+		// then inverts: chrTestHit's `sp68 < shotdata->distance` becomes
+		// "-D < -W", i.e. a rear chr only registers if it is FURTHER than the
+		// wall behind it, and `prop->z - radius < distance` only passes when
+		// prop->z is ~0. That is precisely the observed "only registers when
+		// you're touching the guard".
+		//
+		// With the ray flipped 180 degrees everything the shot can reach is
+		// behind the camera, so the magnitude is the true along-ray distance
+		// and restores the normal "nearer than the wall wins" ordering.
+		if (g_ChaosBackfire && bgdepth < 0.0f) {
+			bgdepth = -bgdepth;
+		}
+#endif
+
+		if (shotdata.distance > bgdepth) {
+			shotdata.distance = bgdepth;
 		}
 	}
 

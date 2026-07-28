@@ -6509,6 +6509,30 @@ s32 projectileLaunch(struct defaultobj *obj, struct projectile *projectile, stru
 	return cdresult;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Chaos "Rubber Objects" (pd.rubber_objects).
+ *
+ * Objects stamped with PROJECTILEFLAG_CHAOSRUBBER at their drop keep hopping
+ * instead of settling after the vanilla 6 bounces. Read in the bounce handler
+ * below and written in objSetDropped; cleared in lvResetChaosPerStage.
+ *
+ * Gating on the live global as well as the per-object mark means switching the
+ * effect off settles everything on its next contact, so no mark sweep is
+ * needed. Single-player only (see docs/PORT_CHAOS.md).
+ */
+s32 g_ChaosRubberObjects = 0;
+
+// Restitution (projectile->unk08c) forced on a marked drop — a dropped weapon
+// is 0.05, a bouncy grenade is 1.0.
+#define CHAOS_RUBBER_RESTITUTION 0.7f
+// Bounces before a marked object is allowed to settle (vanilla is 6).
+#define CHAOS_RUBBER_MAXBOUNCES  40
+// Vertical speed of the first re-kick, decaying to 0 by MAXBOUNCES. The vanilla
+// settle threshold is 2.2222223, so hops below that stop mattering anyway.
+#define CHAOS_RUBBER_HOP         9.0f
+#endif
+
 s32 projectileTick(struct defaultobj *obj, bool *embedded)
 {
 	struct projectile *projectile = obj->projectile;
@@ -7621,6 +7645,26 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 						}
 
 						if (sp350) {
+#ifndef PLATFORM_N64
+							// Chaos "Rubber Objects": a marked object never
+							// reaches projectileFall until it has used up its
+							// bounce budget — instead the vertical speed is
+							// re-kicked above the settle threshold, decaying
+							// with bouncecount so it still comes to rest.
+							// Sticky projectiles (mines) are excluded so they
+							// keep sticking.
+							if (g_ChaosRubberObjects
+									&& (projectile->flags & PROJECTILEFLAG_CHAOSRUBBER)
+									&& (projectile->flags & PROJECTILEFLAG_STICKY) == 0
+									&& projectile->bouncecount < CHAOS_RUBBER_MAXBOUNCES) {
+								f32 hop = CHAOS_RUBBER_HOP
+									* (1.0f - projectile->bouncecount / (f32)CHAOS_RUBBER_MAXBOUNCES);
+
+								if (projectile->speed.y < hop) {
+									projectile->speed.y = hop;
+								}
+							} else
+#endif
 							if ((projectile->flags & PROJECTILEFLAG_STICKY) == 0 && projectile->bouncecount >= 6) {
 								if (sp354) {
 									projectileFall(obj, realrot);
@@ -10550,6 +10594,16 @@ void chopperTickPatrol(struct prop *chopperprop)
  * This function is only directly responsible for the chopper's movement during
  * combat.
  */
+#ifndef PLATFORM_N64
+// Chaos interceptor stalking distances (see chopperTickCombat). Standoff is the
+// radius it holds around the player; altitude is how far above the player's
+// feet it flies. The steering powers off within 50 units of the goal, so the
+// ring is a station it settles onto rather than a target it overshoots.
+extern s32 chaosChopperKind(struct chopperobj *chopper);
+#define CHOPPER_CHAOS_STANDOFF 700.0f
+#define CHOPPER_CHAOS_ALTITUDE 260.0f
+#endif
+
 void chopperTickCombat(struct prop *chopperprop)
 {
 	struct defaultobj *obj = chopperprop->obj;
@@ -10577,6 +10631,41 @@ void chopperTickCombat(struct prop *chopperprop)
 
 	chopper->timer60 += g_Vars.lvupdate60;
 
+#ifndef PLATFORM_N64
+	// Chaos "A51 interceptor" (pd.spawn_chopper kind 1): stalk the player
+	// instead of hovering where it spawned.
+	//
+	// A chaos chopper has no setup-file patrol path, so `chopper->path == NULL`
+	// makes the vanilla test below pick the stay-put branch every tick — that's
+	// the entire reason the effect looked static. goalpos is the only input the
+	// steering further down reads, so re-aiming it is the whole behaviour
+	// change; the flight model, banking, gunfire and LOS all still run as
+	// authored.
+	//
+	// The goal is a point on a ring of CHOPPER_CHAOS_STANDOFF units around the
+	// target, on the bearing the chopper ALREADY occupies. That makes it close
+	// in or back off to that radius rather than diving onto the player, and it
+	// drifts around the ring naturally as the player moves — a menacing tail
+	// rather than a pursuit. Only slot 1; the dD hovercopter keeps the original
+	// hold-position behaviour it was authored around.
+	if (chaosChopperKind(chopper) == 1) {
+		f32 dx = chopperprop->pos.x - targetprop->pos.x;
+		f32 dz = chopperprop->pos.z - targetprop->pos.z;
+		f32 flat = sqrtf(dx * dx + dz * dz);
+
+		if (flat < 1.0f) {
+			// Directly overhead — pick an arbitrary bearing so the normalise
+			// below can't divide by zero.
+			dx = 1.0f;
+			dz = 0.0f;
+			flat = 1.0f;
+		}
+
+		goalpos.x = targetprop->pos.x + dx / flat * CHOPPER_CHAOS_STANDOFF;
+		goalpos.z = targetprop->pos.z + dz / flat * CHOPPER_CHAOS_STANDOFF;
+		goalpos.y = targetprop->pos.y + CHOPPER_CHAOS_ALTITUDE;
+	} else
+#endif
 	if ((chopper->targetvisible && dist < 2000000.0f) || chopper->path == NULL) {
 		// Stay put
 		osSyncPrintf("HC: %x - visible\n", chopper);
@@ -14652,6 +14741,36 @@ void objSetDropped(struct prop *prop, u32 droptype)
 				&& obj->modelnum != MODEL_CHRDATATHIEF) {
 			obj->flags3 |= OBJFLAG3_CANHARDFREE;
 		}
+
+#ifndef PLATFORM_N64
+		// Chaos "Rubber Objects": mark items ENTERING the world here, at the one
+		// chokepoint every drop path goes through (corpse drops, disarms,
+		// surrenders, the player's own drop, thrown grenades), so props already
+		// lying on the floor are never marked and the map is left alone. The
+		// mark is read by projectileTick's bounce handler above.
+		//
+		// Single-player only by design — bouncing drops would fight the
+		// prop-sync paths, and chaos is not a netplay feature.
+		if (g_ChaosRubberObjects && g_NetMode == NETMODE_NONE) {
+			struct projectile *rubber = NULL;
+
+			if ((obj->hidden & OBJHFLAG_EMBEDDED) && obj->embedment->projectile) {
+				rubber = obj->embedment->projectile;
+			} else if (obj->hidden & OBJHFLAG_PROJECTILE) {
+				rubber = obj->projectile;
+			}
+
+			if (rubber) {
+				rubber->flags |= PROJECTILEFLAG_CHAOSRUBBER;
+
+				// Only raise it — a caller that already wanted a bouncier
+				// projectile (thrown grenade = 1.0) keeps its own value.
+				if (rubber->unk08c < CHAOS_RUBBER_RESTITUTION) {
+					rubber->unk08c = CHAOS_RUBBER_RESTITUTION;
+				}
+			}
+		}
+#endif
 
 #ifndef PLATFORM_N64
 		// "Wire owns the lifetime" (PORT_NET_PROP_LIFECYCLE / prop-sync

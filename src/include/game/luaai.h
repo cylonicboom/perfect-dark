@@ -266,6 +266,7 @@ s32 chraiLuaSetChrPos(s32 chrnum, f32 x, f32 y, f32 z); /* move a chr prop (no p
 s32 chraiLuaPlayerHeal(f32 amount);           /* amount<=0 => full HP; else add fraction (capped) */
 s32 chraiLuaPlayerSetShield(f32 frac);        /* shield 0..1 (>=1 = full) */
 s32 chraiLuaRefillAmmo(void);                 /* top all ammo to capacity */
+s32 chraiLuaGiveMags(s32 mags);               /* stock every ammo type with N magazines, not max */
 s32 chraiLuaGiveAmmo(s32 ammotype, s32 qty);  /* grant ammo (+ matching weapon) */
 s32 chraiLuaGiveWeaponToPlayer(s32 weaponnum);/* add a weapon to inventory */
 s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) */
@@ -283,7 +284,7 @@ s32 chraiLuaTemuMag(s32 on);                  /* reload pays full cost but only 
 f32 chraiLuaMusicBpm(void);                   /* current sequenced-music tempo (BPM), 0 if none */
 f32 chraiLuaMusicBeat(void);                  /* beat phase [0,1), -1 if no sequenced track */
 s32 chraiLuaAimChr(void);                     /* chrnum the player is aiming at, or -1 */
-s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync); /* "Jelly"/"Acid" vertex deformation (+melt sag, +per-vertex rate spread) */
+s32 chraiLuaVertexWobble(f32 amp, f32 freq, f32 phase, f32 sag, f32 desync, f32 nearfade); /* "Jelly"/"Acid" vertex deformation (+melt sag, +per-vertex rate spread) */
 s32 chraiLuaHallOfMirrors(s32 on);            /* skip the frame colour clear (HOM trails) */
 
 /* Chaos-mode primitives (docs/PORT_CHAOS.md; backs scripts/chaos.lua). Same
@@ -312,6 +313,7 @@ s32 chraiLuaPlayerSetHealth(f32 frac);        /* health 0.01..1 (never kills) */
 s32 chraiLuaDizzy(s32 amount);                /* tranq screen-sway, 0..4000 blur units */
 s32 chraiLuaChrCloak(s32 chrnum, s32 on);     /* toggle CHRHFLAG_CLOAKED on a chr */
 s32 chraiLuaStripAmmo(void);                  /* zero every ammo pool */
+s32 chraiLuaSetAmmo(s32 ammotype, s32 qty);   /* set one ammo pool to an exact qty */
 s32 chraiLuaTeleportToChr(s32 chrnum);        /* snap player to a chr (server-side) */
 s32 chraiLuaFlatTex(s32 mode);                /* 0 normal, 1 white/vertex-only, 2 avg-colour textures */
 s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale path */
@@ -377,6 +379,8 @@ void luaTexOverrideReset(void);               /* free the pd.tex_override image 
 s32 chraiLuaBeyblade(s32 on);                 /* Bayblade!: spin every NPC's model yaw */
 s32 chraiLuaDoubleVision(s32 on);             /* One too many: 180-flipped ghost blended over the frame */
 s32 chraiLuaGunLock(s32 on);                  /* Cyclone Frenzy: force secondary + hold fire + no weapon switch */
+s32 chraiLuaRubberObjects(s32 on);            /* Rubber Objects: newly-dropped items bounce instead of settling */
+s32 chraiLuaYassify(s32 on);                  /* Yassify: cinched waist + broader shoulders + bigger head */
 s32 chraiLuaMagDump(s32 on);                  /* Mag Dump: one trigger press empties the clip (hold auto / pulse semi) */
 s32 chraiLuaKnifeLock(s32 on);                /* Knife fight: block weapon switching only (knife used normally) */
 s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */

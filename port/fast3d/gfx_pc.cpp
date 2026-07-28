@@ -427,6 +427,9 @@ float gfx_vtx_wobble_sag = 0.0f;
 // vertices flow at different rates and reach their warped state at different
 // times, an organic melt rather than a coherent ripple. Only read when amp != 0.
 float gfx_vtx_wobble_desync = 0.0f;
+// Chaos wobble near-fade: world-unit radius over which the displacement ramps
+// in from zero at the camera to full. 0 = off (uniform wobble everywhere).
+float gfx_vtx_wobble_nearfade = 0.0f;
 // Chaos "Hall of mirrors" (pd.hall_of_mirrors / Acid Trip): skip the per-frame
 // colour clear of the game framebuffer so un-redrawn pixels smear — the classic
 // Doom HOM / psychedelic trails. Depth still clears, so new geometry draws
@@ -1675,18 +1678,48 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
                     + r * 6.2831853f * gfx_vtx_wobble_desync;
             }
 
-            const float dx = a * sinf(ey * f + p);
-            const float dy = a * sinf(ez * f + p * 1.3f);
-            const float dz = a * sinf(ex * f + p * 0.7f);
+            // Near fade: scale the whole displacement down as geometry
+            // approaches the camera, so what's right in front of you barely
+            // strays from where it belongs while the far scene still melts.
+            //
+            // Distance is RADIAL from the eye-space origin (the camera sits
+            // there), not just depth — something beside your head is visually
+            // close even with a small |ez|, and using depth alone would let it
+            // thrash. Measured from the UNDISTORTED eye position for the same
+            // reason the sines are: the field must not feed back on itself.
+            //
+            // smoothstep rather than a linear ramp so there's no visible crease
+            // where the fade ends, and the derivative is zero at the camera —
+            // geometry eases into motion instead of starting to slide the
+            // instant it clears the near limit. 0 = feature off.
+            float nearscale = 1.0f;
+
+            if (gfx_vtx_wobble_nearfade > 0.0f) {
+                const float d = sqrtf(ex * ex + ey * ey + ez * ez);
+                float t = d / gfx_vtx_wobble_nearfade;
+
+                if (t > 1.0f) {
+                    t = 1.0f;
+                }
+
+                nearscale = t * t * (3.0f - 2.0f * t);
+            }
+
+            const float an = a * nearscale;
+            const float dx = an * sinf(ey * f + p);
+            const float dy = an * sinf(ez * f + p * 1.3f);
+            const float dz = an * sinf(ex * f + p * 0.7f);
             ex += dx;
             ey += dy;
             ez += dz;
 
             // Acid Trip melt: an always-downward (eye -Y) droop that undulates
             // across the surface, so geometry sags and drips rather than just
-            // jiggling. (eye +Y is up, so subtract.)
+            // jiggling. (eye +Y is up, so subtract.) Faded with the same curve —
+            // otherwise near geometry stops wobbling but still droops, which
+            // reads as broken rather than calm.
             if (gfx_vtx_wobble_sag != 0.0f) {
-                ey -= gfx_vtx_wobble_sag * (0.5f + 0.5f * sinf(ex * f * 0.5f + p));
+                ey -= gfx_vtx_wobble_sag * nearscale * (0.5f + 0.5f * sinf(ex * f * 0.5f + p));
             }
 
             const float (*P)[4] = rsp.P_matrix;

@@ -605,10 +605,56 @@ void audioEndFrame(void)
 						SDL_memcpy(mixBuf, nextBuf, nextSize);
 					}
 
+					// effect chain (GAME audio only — external voices are mixed
+					// in AFTER it, below): reverse -> pitch -> radio -> reverb ->
+					// crush. Order puts the tonal effects on the already
+					// time-warped signal and the crunch last. External one-shots
+					// used to run through the chain too (b9255fa4d, deliberate at
+					// the time); user call 2026-07-28: the meme mp3s / ringtones /
+					// jingles must play clean while Helium leak & co. warp the
+					// game, so they now bypass every filter.
+					if (!audioMuted && fxactive) {
+						const u32 frames = nextSize / (2 * sizeof(s16));
+
+						if (audioRevOn) {
+							audioProcessReverse(mixBuf, frames);
+						}
+						if (pitching) {
+							audioProcessPitch(mixBuf, frames);
+						}
+						if (audioRadioOn) {
+							audioProcessRadio(mixBuf, frames);
+						}
+						if (audioReverbWet > 0.0f) {
+							audioProcessReverb(mixBuf, frames);
+						}
+
+						// bitcrush: the mask sign-extends through the int
+						// promotion, so negative samples quantize the same
+						// as positive.
+						if (crushing) {
+							const s16 mask = (s16)(0xffffu << (16 - audioCrushBits));
+							u32 i;
+
+							for (i = 0; i < frames; i++) {
+								if (audioCrushPhase == 0) {
+									audioCrushL = mixBuf[i * 2 + 0] & mask;
+									audioCrushR = mixBuf[i * 2 + 1] & mask;
+								}
+								if (++audioCrushPhase >= (u32)audioCrushStep) {
+									audioCrushPhase = 0;
+								}
+								mixBuf[i * 2 + 0] = audioCrushL;
+								mixBuf[i * 2 + 1] = audioCrushR;
+							}
+						}
+					}
+
 					// mix every active external voice (already device-spec s16
-					// stereo); muted mutes them all. A followMusic voice (Silo.mp3)
-					// pauses with the game: while paused we skip its mix AND its
-					// position advance, so it holds and resumes from the menu.
+					// stereo) AFTER the effect chain so they play clean; muted
+					// mutes them all. A followMusic voice (Silo.mp3) pauses with
+					// the game: while paused we skip its mix AND its position
+					// advance, so it holds and resumes from the menu.
 					if (!audioMuted) {
 						s32 vi;
 						for (vi = 0; vi < EXT_VOICES; vi++) {
@@ -650,47 +696,6 @@ void audioEndFrame(void)
 							}
 
 							v->pos += bytes;
-						}
-					}
-
-					// effect chain (after the ext mix so one-shots are
-					// processed too): reverse -> pitch -> radio -> reverb ->
-					// crush. Order puts the tonal effects on the already
-					// time-warped signal and the crunch last.
-					if (!audioMuted && fxactive) {
-						const u32 frames = nextSize / (2 * sizeof(s16));
-
-						if (audioRevOn) {
-							audioProcessReverse(mixBuf, frames);
-						}
-						if (pitching) {
-							audioProcessPitch(mixBuf, frames);
-						}
-						if (audioRadioOn) {
-							audioProcessRadio(mixBuf, frames);
-						}
-						if (audioReverbWet > 0.0f) {
-							audioProcessReverb(mixBuf, frames);
-						}
-
-						// bitcrush: the mask sign-extends through the int
-						// promotion, so negative samples quantize the same
-						// as positive.
-						if (crushing) {
-							const s16 mask = (s16)(0xffffu << (16 - audioCrushBits));
-							u32 i;
-
-							for (i = 0; i < frames; i++) {
-								if (audioCrushPhase == 0) {
-									audioCrushL = mixBuf[i * 2 + 0] & mask;
-									audioCrushR = mixBuf[i * 2 + 1] & mask;
-								}
-								if (++audioCrushPhase >= (u32)audioCrushStep) {
-									audioCrushPhase = 0;
-								}
-								mixBuf[i * 2 + 0] = audioCrushL;
-								mixBuf[i * 2 + 1] = audioCrushR;
-							}
 						}
 					}
 

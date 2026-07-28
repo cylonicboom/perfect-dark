@@ -545,9 +545,11 @@ function, called every frame while active (disco's hue cycle).
   invert / 1001 Game Boy / 1002 thermal). Audio is a bitcrush at the
   `audioEndFrame` push point (the `pd.mute` mutable-copy mechanism):
   sample-and-hold every `step`th stereo frame (device rate 22 kHz ÷ step)
-  masked to `bits` depth, hold phase continuous across buffer pushes; the
-  external one-shot (`pd.play_file`) is mixed first so it crunches too,
-  and mute wins over crush.
+  masked to `bits` depth, hold phase continuous across buffer pushes; mute
+  wins over crush. External voices (`pd.play_file`) are mixed AFTER the
+  whole effect chain since 2026-07-28 (user call: meme mp3s / ringtones /
+  jingles play clean while helium/demon/crush/radio warp the game audio) —
+  they bypass every chaos audio filter.
 - **Post-filter looks** (the same retro pass, fragment body shared between
   backends in `port/fast3d/gfx_retro_common.h`; `pd.screen_fx(bits, on)`
   sets/clears composable fx bits — 1 scanlines, 2 RGB aperture grille,

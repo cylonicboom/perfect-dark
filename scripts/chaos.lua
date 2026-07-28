@@ -702,7 +702,7 @@ chaos.effects = {
   -- the target twitch on sequence loops / tempo wobble. 120-BPM fallback when
   -- no sequenced track is playing. Scored in the effect tick; the pulsing
   -- HUD is drawn in the alpha overlay hook. Both read beat_phase() off st.a_beat.
-  beat_game    = { label="Beat game", alpha=true, w=0, dur=30,
+  beat_game    = { label="BPM", alpha=true, w=0, dur=30,
                    start=function()
                      if not pd.music_beat then error("needs new exe") end
                      st.a_beat = { freephase = 0, bpm = pd.music_bpm and pd.music_bpm() or 0,

@@ -1773,16 +1773,23 @@ local AMMO = { PSYCHOSIS=0x16, REMOTEMINE=0x0c, PROXYMINE=0x0d, TIMEDMINE=0x0e,
 
 -- ---- interactive task library (EULA / CAPTCHA accept requirements) --------
 -- A task is a little sensor the player must satisfy: press FIRE, fire real
--- shots, open a door, hold crouch, or spin a full circle. task_tick returns
--- true when complete; task_label renders the live instruction. The door /
--- crouch / spin kinds need the 2026-07-18 exe (pd.door_opens etc.) — the
--- pool builder only offers what the exe supports.
+-- shots, open a door, hold crouch, spin a full circle, reload, switch
+-- weapons, or stare at the floor. task_tick returns true when complete;
+-- task_label renders the live instruction. The door / crouch / spin kinds
+-- need the 2026-07-18 exe (pd.door_opens etc.), reload / switchwep /
+-- lookdown the Simon Says-era one — the pool builder only offers what the
+-- exe supports.
 local function task_new(kind)
   local t = { kind = kind, prog = 0 }
   if kind == "door" then t.base = pd.door_opens() end
   if kind == "spin" then t.last = pd.player_yaw(); t.turned = 0 end
   if kind == "fire" then t.shots = 0 end
   if kind == "crouch" then t.held = 0 end
+  -- a reload already in progress at spawn must finish first, or the tail of
+  -- it would satisfy the check without a deliberate act
+  if kind == "reload" then t.wasreloading = pd.player_reloading and pd.player_reloading() or false end
+  if kind == "switchwep" then t.wep0 = pd.weapon_held and pd.weapon_held() end
+  if kind == "lookdown" then t.held = 0 end
   return t
 end
 
@@ -1792,6 +1799,9 @@ local function task_label(t)
   if t.kind == "door" then return "open a door to accept" end
   if t.kind == "crouch" then return string.format("hold crouch to accept (%d%%)", math.floor(math.min(1, t.prog) * 100)) end
   if t.kind == "spin" then return string.format("spin around to accept (%d%%)", math.floor(math.min(1, t.prog) * 100)) end
+  if t.kind == "reload" then return "reload your weapon to accept" end
+  if t.kind == "switchwep" then return "switch weapons to accept" end
+  if t.kind == "lookdown" then return string.format("stare at the floor to accept (%d%%)", math.floor(math.min(1, t.prog) * 100)) end
   return "?"
 end
 
@@ -1818,6 +1828,23 @@ local function task_tick(t)
     t.turned = (t.turned or 0) + math.abs(d)
     t.last = y
     t.prog = (t.turned or 0) / 360
+    return t.prog >= 1
+  elseif t.kind == "reload" then
+    local r = pd.player_reloading and pd.player_reloading()
+    if t.wasreloading then
+      if not r then t.wasreloading = false end
+      return false
+    end
+    return r and true or false
+  elseif t.kind == "switchwep" then
+    local w = pd.weapon_held and pd.weapon_held()
+    return w ~= nil and t.wep0 ~= nil and w ~= t.wep0
+  elseif t.kind == "lookdown" then
+    -- pitch is +up (pd.player_pitch); the floor is a big negative pitch,
+    -- held for a second so a glance doesn't pass
+    local p = pd.player_pitch and pd.player_pitch() or 0
+    if p <= -55 then t.held = (t.held or 0) + 1 end
+    t.prog = (t.held or 0) / TICKS
     return t.prog >= 1
   end
   return false
@@ -1848,18 +1875,34 @@ end
 -- Random task pool.
 --   nofire  : exclude the live-shots task (EULA blocks the trigger, so
 --             demanding real shots would soft-lock the page).
---   strict  : DELIBERATE actions only (fire + crouch). CAPTCHA uses this so
---             the check can't be satisfied incidentally — normal mouse-look
---             was completing the "spin" task and any nearby door the "door"
---             task, making it feel like looking/doors passed a "shoot" check.
-local function task_random(nofire, strict)
+--   strict  : DELIBERATE actions only. CAPTCHA uses this so the check can't
+--             be satisfied incidentally — normal mouse-look was completing
+--             the "spin" task and any nearby door the "door" task, making it
+--             feel like looking/doors passed a "shoot" check. The strict-only
+--             extras (reload / switchwep / lookdown) stay out of the EULA
+--             pool: its button_block could leave them uncompletable.
+--   avoid   : a task kind to leave out of the pool (CAPTCHA passes its
+--             previous kind so back-to-back checks never repeat).
+local function task_random(nofire, strict, avoid)
   local pool = {}
   if not nofire then pool[#pool + 1] = "fire" end
   if pd.player_crouch then pool[#pool + 1] = "crouch" end
-  if not strict then
+  if strict then
+    -- reload needs a gun in hand (fists/knife have nothing to reload)
+    if pd.player_reloading and pd.weapon_held and (pd.weapon_held() or 0) > 1 then
+      pool[#pool + 1] = "reload"
+    end
+    if pd.weapon_held then pool[#pool + 1] = "switchwep" end
+    if pd.player_pitch then pool[#pool + 1] = "lookdown" end
+  else
     pool[#pool + 1] = "press"
     if pd.door_opens then pool[#pool + 1] = "door" end
     if pd.player_yaw then pool[#pool + 1] = "spin" end
+  end
+  if avoid and #pool > 1 then
+    for i = #pool, 1, -1 do
+      if pool[i] == avoid then table.remove(pool, i) end
+    end
   end
   if #pool == 0 then pool[1] = "press" end -- safety (nofire+strict+no crouch)
   return task_new(pool[math.random(#pool)])
@@ -2430,13 +2473,15 @@ local alpha_effects = {
                        if pd.stage_music then pd.stage_music(true) end -- restore music
                        st.a_silo = nil
                      end },
-  -- CAPTCHA: prove you're human — a random verification task (shots, door,
-  -- crouch, spin, or just pressing FIRE). Complete it and the window closes;
-  -- run out of time and the failed check hurts.
+  -- CAPTCHA: prove you're human — a random verification task (shots, crouch,
+  -- reload, weapon switch, or staring at the floor). Complete it and the
+  -- window closes; run out of time and the failed check hurts. Never deals
+  -- the same task twice in a row (st.cap_last).
   captcha    = { label="CAPTCHA", fixeddur=true, dur=15,
                  start=function()
                    if not pd.buttons_pressed then error("needs new exe") end
-                   st.a_cap = { task = task_random(false, true) } -- deliberate-only
+                   st.a_cap = { task = task_random(false, true, st.cap_last) } -- deliberate-only
+                   st.cap_last = st.a_cap.task.kind
                  end,
                  tick=function(left)
                    local c = st.a_cap

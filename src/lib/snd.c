@@ -119,6 +119,11 @@ u32 var8005dda4 = 0x00000000;
 // Chaos SFX shuffle master switch (docs/PORT_CHAOS.md, pd.sfx_shuffle):
 // applied in sndStart just before the sound-id validity check.
 s32 g_ChaosSfxShuffle = 0;
+// Chaos targeted SFX replace (pd.sfx_replace): ONE sound id plays as another
+// (Mediguns swaps the weapon-pickup jingle for the keycard blip so pickups
+// sound like health kits). -1 = off.
+s32 g_ChaosSfxReplaceFrom = -1;
+s32 g_ChaosSfxReplaceTo = -1;
 #endif
 
 s32 g_SndNosediveVolume = 0;
@@ -2308,6 +2313,13 @@ struct sndstate *sndStart(s32 arg0, s16 sound, struct sndstate **handle, s32 vol
 		static u32 shuffleseed = 0x2545f491;
 		shuffleseed = shuffleseed * 1664525u + 1013904223u;
 		sp40.id = (shuffleseed >> 8) % (u32)g_NumSounds;
+	}
+	// Chaos targeted replace (pd.sfx_replace): checked AFTER the shuffle so
+	// Soundboard's full randomisation still wins when both are active, and
+	// bounds-gated like the shuffle so the target is a valid table entry.
+	if (g_ChaosSfxReplaceFrom >= 0 && sp40.id == (u32)g_ChaosSfxReplaceFrom
+			&& g_ChaosSfxReplaceTo >= 0 && g_ChaosSfxReplaceTo < g_NumSounds) {
+		sp40.id = (u32)g_ChaosSfxReplaceTo;
 	}
 #endif
 

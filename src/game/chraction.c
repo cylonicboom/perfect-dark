@@ -10487,6 +10487,19 @@ s32 chraiLuaAspectScale(f32 mult)
 // Chaos SFX shuffle (src/lib/snd.c, sndStart) — s32, no bool-width gotcha.
 extern s32 g_ChaosSfxShuffle;
 
+// pd.sfx_replace(from, to): ONE sound id plays as another (snd.c sndStart);
+// no args (both -1) = off. Mediguns swaps the weapon-pickup jingle for the
+// keycard blip.
+s32 chraiLuaSfxReplace(s32 from, s32 to)
+{
+	extern s32 g_ChaosSfxReplaceFrom;
+	extern s32 g_ChaosSfxReplaceTo;
+
+	g_ChaosSfxReplaceFrom = from;
+	g_ChaosSfxReplaceTo = to;
+	return 1;
+}
+
 // pd.sfx_shuffle(on): every one-shot sound effect plays as a random other
 // sound (remapped inside sndStart, always to a valid sound-table id). Turning it
 // OFF also hard-stops every playing sample sound — a one-shot remapped to a

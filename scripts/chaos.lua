@@ -2445,9 +2445,16 @@ local alpha_effects = {
                    pd.player_speed(1)
                    pd.take_weapon(W.ROCKET)
                  end },
-  -- Mediguns: picking up any weapon heals a chunk (see weaponfound hook).
+  -- Mediguns: picking up any weapon heals 10% of max HP (weaponfound hook),
+  -- and the weapon-pickup jingle plays as the keycard blip while active so
+  -- pickups sound like health kits (0x00e8 gun pickup -> 0x00e5 keycard,
+  -- the TRIGSOUNDS-validated ids).
   mediguns   = { label="Mediguns", dur=1, start=function()
+                   if pd.sfx_replace then pd.sfx_replace(0x00e8, 0x00e5) end
                    pd.hud_message("CHAOS: weapon pickups heal you")
+                 end,
+                 stop=function()
+                   if pd.sfx_replace then pd.sfx_replace() end
                  end },
   -- Enemy LTK: any hit that costs you health finishes the job. Your own guns
   -- behave normally. (Don't run with Vampire — the drain counts as a hit.)
@@ -3917,6 +3924,7 @@ local function reset_all_modes()
   if pd.one_punch then pd.one_punch(false) end
   if pd.gormless then pd.gormless(false) end
   if pd.sfx_shuffle then pd.sfx_shuffle(false) end
+  if pd.sfx_replace then pd.sfx_replace() end -- clear the Mediguns sound swap
   if pd.instrument_shuffle then pd.instrument_shuffle(false) end
   if pd.gun_sound then pd.gun_sound() end
   if pd.damage_scale then pd.damage_scale(1) end

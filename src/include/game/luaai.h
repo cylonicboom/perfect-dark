@@ -413,6 +413,7 @@ s32 chraiLuaOnePunch(s32 on);                 /* unarmed strikes: lethal + mega 
 s32 chraiLuaGormless(s32 on);                 /* invert movement + look, swap fire/aim */
 s32 chraiLuaSpawnBike(void);                  /* half-size hoverbike at the player (solo) */
 s32 chraiLuaSfxShuffle(s32 on);               /* every SFX plays as a random other SFX */
+s32 chraiLuaSfxReplace(s32 from, s32 to);     /* one sound id plays as another; -1,-1 = off */
 s32 chraiLuaInstrumentShuffle(s32 on);        /* MIDI program changes pick random instruments */
 s32 chraiLuaPixelate(s32 w, s32 h, s32 colors); /* pixelate to w x h; colours 4=grey4, 256=RGB332, 1000=invert, 1001=gameboy, 1002=thermal */
 s32 chraiLuaScreenFx(s32 bits, s32 on);       /* post-fx bits: 1 scanlines, 2 grille, 4 curve, 8 vignette, 16 VHS, 32 wobble */

@@ -3437,6 +3437,16 @@ static int l_pd_sfx_shuffle(lua_State *L)
 	return 1;
 }
 
+/* pd.sfx_replace(from, to) -> bool. Play sound id `from` as `to`; no args
+ * clears. Mediguns: weapon-pickup jingle -> keycard blip. */
+static int l_pd_sfx_replace(lua_State *L)
+{
+	s32 from = (s32)luaL_optinteger(L, 1, -1);
+	s32 to = (s32)luaL_optinteger(L, 2, -1);
+	lua_pushboolean(L, chraiLuaSfxReplace(from, to) != 0);
+	return 1;
+}
+
 /* pd.instrument_shuffle(on) -> bool. Random instruments on program change. */
 static int l_pd_instrument_shuffle(lua_State *L)
 {
@@ -3723,6 +3733,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_gormless);      lua_setfield(L, -2, "gormless");
 	lua_pushcfunction(L, l_pd_spawn_bike);    lua_setfield(L, -2, "spawn_bike");
 	lua_pushcfunction(L, l_pd_sfx_shuffle);   lua_setfield(L, -2, "sfx_shuffle");
+	lua_pushcfunction(L, l_pd_sfx_replace);   lua_setfield(L, -2, "sfx_replace");
 	lua_pushcfunction(L, l_pd_instrument_shuffle); lua_setfield(L, -2, "instrument_shuffle");
 	lua_pushcfunction(L, l_pd_pixelate);      lua_setfield(L, -2, "pixelate");
 	lua_pushcfunction(L, l_pd_screen_fx);     lua_setfield(L, -2, "screen_fx");

@@ -410,7 +410,7 @@ s32 chraiLuaCivilWar(s32 on);                 /* NPCs fight each other (hostile 
 s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the player */
 s32 chraiLuaFovScale(f32 mult);               /* vertical-FOV multiplier (1.0 = normal) */
 s32 chraiLuaOnePunch(s32 on);                 /* unarmed strikes: lethal + mega knockback */
-s32 chraiLuaGormless(s32 on);                 /* invert look + swap fire/aim (movement untouched) */
+s32 chraiLuaGormless(s32 on);                 /* invert movement + look, swap fire/aim */
 s32 chraiLuaSpawnBike(void);                  /* half-size hoverbike at the player (solo) */
 s32 chraiLuaSfxShuffle(s32 on);               /* every SFX plays as a random other SFX */
 s32 chraiLuaInstrumentShuffle(s32 on);        /* MIDI program changes pick random instruments */

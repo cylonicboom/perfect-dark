@@ -11018,9 +11018,9 @@ s32 chaosChopperKind(struct chopperobj *chopper)
 // Chaos Gormless master switch (bondmove.c, bmoveProcessInput).
 extern s32 g_ChaosGormless;
 
-// pd.gormless(on): invert LOOK (stick turn/pitch + mouse) and swap the
-// fire/aim buttons at the bmoveProcessInput chokepoints. Movement is
-// deliberately untouched (user call 2026-07-28).
+// pd.gormless(on): EVERYTHING backwards — movement (both sticks, dpad,
+// keyboard steps), look (stick + mouse), and the fire/aim buttons swapped,
+// all at the bmoveProcessInput chokepoints.
 s32 chraiLuaGormless(s32 on)
 {
 	if (apLuaPlayerChr() == NULL) {

@@ -9,9 +9,19 @@ Archipelago randomiser (trap items / DeathLink → `chaos.trigger()`), with the
 Twitch/YouTube window left deliberately open.
 
 Everything is `#ifndef PLATFORM_N64` (rides the existing Lua runtime, which is
-port-only). No wire-format changes, no `NET_PROTOCOL_VER` bump — chaos is a
-local-machine feature; in netplay each effect acts on the local player/cheat
-banks only (see "Netplay caveats").
+port-only). No wire-format changes, no `NET_PROTOCOL_VER` bump.
+
+> **Chaos is SINGLE-PLAYER ONLY, by design.** New effects do **not** need to be
+> netplay-safe, host-authoritative or wire-synced — gate them off when
+> `g_NetMode` is set instead. This is a deliberate scope decision, and it is
+> worth stating because the code can suggest otherwise: several existing effects
+> carry `g_NetMode` / `NETMODE_CLIENT` guards inherited from the conventions of
+> the decompiled files they are spliced into. Those guards are **incidental, not
+> intent** — they are harmless and are being left in place, but do not read them
+> as a promise that chaos replicates. Anything that mutates world/prop/chr state
+> (bouncing drops, model shaping, physics tweaks) would otherwise have to
+> reconcile with the prop-sync paths, and that cost is explicitly not being
+> paid. See "Netplay caveats" for what the older effects happen to do today.
 
 **Status: largely runtime-confirmed, actively iterated.** The retro/audio-filter
 suite, teleport family (`quantum_leap`), and the K7-style weapon arming are

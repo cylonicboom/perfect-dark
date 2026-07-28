@@ -73,6 +73,8 @@ text)`. One command per line/datagram:
 | `votetime N` | Vote window length in seconds; 0 = vote mode off (persisted) |
 | `toasts [on\|off]` | Show the per-effect "CHAOS: &lt;name&gt;" / "wore off" corner toast. **Defaults OFF** so effects fire with nothing on screen hinting Chaos did it (no arg toggles; persisted). Effects are still written to the log either way, and Chaos enabled/disabled messages always show. Effects flagged `silent` (Fake Crash, the fake-objective pair) never toast even when this is on — their whole gag is that nothing identifies them. |
 | `trigger <effect> [who]` | Fire an effect immediately (channel-point style); `who` shows in the HUD announce |
+| `set <effect>` | Fire an effect and **hold it on indefinitely** — it never ticks down and never wears off (no countdown bar). Instant effects (dur 0) have no state to hold and say so. Cleared by `unset`, by anything calling `stop_all` (Chaos `off`, the Supersonic flush) or by a stage change. |
+| `unset [<effect>\|all]` | Release a held effect (no arg = all). |
 | `vote <1\|2\|3\|name>` | Vote for a slate candidate by number or name; winner fires when the window closes (off-slate votes ignored) |
 | `seed N` | `math.randomseed(N)` — deterministic effect stream (AP per-slot seeding) |
 | `say <text>` | HUD message passthrough (chat shoutouts) |

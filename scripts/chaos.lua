@@ -58,6 +58,10 @@ local st = {
   -- when you want to see what fired. System messages (Chaos enabled/disabled)
   -- always show, and every effect is logged regardless.
   toasts = (pd.persist_get and pd.persist_get("chaos_toasts") == "1") or false,
+  -- Effects pinned ON by `set` — they never tick down and never wear off,
+  -- until `unset`/`clear`, a stop_all (Chaos off, supersonic flush) or a
+  -- stage change. name -> true.
+  sticky   = {},
   timer    = 0,          -- ticks until the next random effect
   votetimer = 0,         -- ticks left in the current vote window
   candidates = {},       -- the 3 effects chat can vote on this window
@@ -3463,6 +3467,7 @@ local function stop_effect(name)
   if e and e.stop then pcall(e.stop) end
   st.active[name] = nil
   st.duration[name] = nil
+  st.sticky[name] = nil
 end
 
 local function stop_all()
@@ -3784,6 +3789,39 @@ function chaos.handle(source, text)
   elseif cmd == "trigger" then
     local name, who = arg:match("^(%S+)%s*(.*)$")
     chaos.trigger(name or "", who ~= "" and who or source)
+  elseif cmd == "set" then
+    -- Turn an effect ON and leave it on: it never ticks down and never wears
+    -- off. Cleared by `unset`, by anything that calls stop_all (Chaos off,
+    -- the Supersonic flush) or by a stage change.
+    local name = arg:match("^(%S+)")
+    if not name then
+      pd.log("[chaos] usage: set <effect>   (see `list`; clear with `unset <effect>|all`)")
+    elseif not chaos.effects[name] then
+      pd.log("[chaos] unknown effect: " .. name)
+    elseif chaos.trigger(name, source) then
+      if st.active[name] then
+        st.sticky[name] = true
+        pd.log("[chaos] " .. name .. " SET on (stays until unset)")
+      else
+        -- dur 0/nil: it already did its one thing, there is no state to hold.
+        pd.log("[chaos] " .. name .. " is an instant effect - nothing to keep on")
+      end
+    end
+  elseif cmd == "unset" then
+    local name = arg:match("^(%S+)")
+    if not name or name == "all" then
+      local n = 0
+      for k in pairs(st.sticky) do
+        if st.active[k] then stop_effect(k) else st.sticky[k] = nil end
+        n = n + 1
+      end
+      pd.log("[chaos] unset " .. n .. " held effect(s)")
+    elseif st.sticky[name] then
+      if st.active[name] then stop_effect(name) else st.sticky[name] = nil end
+      pd.log("[chaos] " .. name .. " unset")
+    else
+      pd.log("[chaos] " .. name .. " is not held")
+    end
   elseif cmd == "vote" then
     -- chat votes by slate number ("vote 1") or by candidate name; anything
     -- not on the current slate is ignored
@@ -4043,7 +4081,7 @@ pd.on("tick", function()
       local ok, r = pcall(e.tick, left)
       endnow = ok and r == true
     end
-    if (st.worst_day or st.supersonic) and not endnow then
+    if (st.sticky[name] or st.worst_day or st.supersonic) and not endnow then
       -- Worst Day / Supersonic: nothing wears off individually — keep every timed
       -- effect topped up. Worst Day never clears; Supersonic flushes the whole
       -- pile at once when its window rolls over (see the drumbeat). Input-driven
@@ -4362,7 +4400,7 @@ pd.on("draw", function()
       if shown >= 5 then break end
       local name = names[i]
       local e = chaos.effects[name]
-      if not (e and e.nobar) then -- nobar: one-offs that draw their own HUD
+      if not (e and e.nobar) and not st.sticky[name] then -- nobar: one-offs that draw their own HUD; sticky has no countdown
         local left = st.active[name]
         local total = st.duration[name] or left
         local frac = (total > 0) and (left / total) or 0

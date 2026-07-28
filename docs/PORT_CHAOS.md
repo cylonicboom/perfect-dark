@@ -71,6 +71,7 @@ text)`. One command per line/datagram:
 | `interval N` | Seconds between random effects (min 5, **default 20**, persisted) |
 | `effectdur N` (alias `duration`) | Global length of every timed effect in seconds (min 1, **default 60**, persisted) |
 | `votetime N` | Vote window length in seconds; 0 = vote mode off (persisted) |
+| `toasts [on\|off]` | Show the per-effect "CHAOS: &lt;name&gt;" / "wore off" corner toast. **Defaults OFF** so effects fire with nothing on screen hinting Chaos did it (no arg toggles; persisted). Effects are still written to the log either way, and Chaos enabled/disabled messages always show. Effects flagged `silent` (Fake Crash, the fake-objective pair) never toast even when this is on — their whole gag is that nothing identifies them. |
 | `trigger <effect> [who]` | Fire an effect immediately (channel-point style); `who` shows in the HUD announce |
 | `vote <1\|2\|3\|name>` | Vote for a slate candidate by number or name; winner fires when the window closes (off-slate votes ignored) |
 | `seed N` | `math.randomseed(N)` — deterministic effect stream (AP per-slot seeding) |

@@ -51,6 +51,13 @@ local st = {
   -- instant effects (dur 0) stay instant.
   effectdur = tonumber(pd.persist_get and pd.persist_get("chaos_effectdur") or "") or 60,
   votetime = tonumber(pd.persist_get and pd.persist_get("chaos_votetime") or "") or 0,
+  -- Show the per-effect "CHAOS: <name>" / "<name> wore off" toasts in the
+  -- corner? Defaults OFF: effects then fire with nothing on screen hinting that
+  -- Chaos did it, which is the point for the troll effects (fake objectives and
+  -- friends). Turn on from Extended > Chaos > Effect Toasts, or /chaos toasts on,
+  -- when you want to see what fired. System messages (Chaos enabled/disabled)
+  -- always show, and every effect is logged regardless.
+  toasts = (pd.persist_get and pd.persist_get("chaos_toasts") == "1") or false,
   timer    = 0,          -- ticks until the next random effect
   votetimer = 0,         -- ticks left in the current vote window
   candidates = {},       -- the 3 effects chat can vote on this window
@@ -87,6 +94,7 @@ local function persist()
     pd.persist_set("chaos_interval", tostring(st.interval))
     pd.persist_set("chaos_effectdur", tostring(st.effectdur))
     pd.persist_set("chaos_votetime", tostring(st.votetime))
+    pd.persist_set("chaos_toasts", st.toasts and "1" or "0")
   end
 end
 
@@ -110,12 +118,17 @@ local function recent_save()
 end
 st.recent = recent_load()
 
-local function announce(text)
+-- `effect` = true for the per-effect start/stop toasts, which the "Effect
+-- Toasts" option silences; system messages (enabled/disabled) pass false and
+-- always show. The console log is written either way, so /chaos status and the
+-- log still tell you what fired even when the screen stays clean.
+local function announce(text, effect)
+  pd.log("[chaos] " .. text)
+  if effect and not st.toasts then return end
   -- Weapon-pickup-style toast in the bottom-left. Rendered by the draw hook
   -- with a box sized to HUG the text (the engine hudmsg box is a full
   -- line-height tall, leaving a gap below the letters). Held then faded.
   st.toast = { text = "CHAOS: " .. text, life = TOAST_TICKS }
-  pd.log("[chaos] " .. text)
 end
 
 -- Beat game: current beat phase in [0,1) (0 = on the beat). Uses the live music
@@ -1947,12 +1960,12 @@ local alpha_effects = {
                  stop=function() if pd.hudvd then pd.hudvd(false) end end },
   -- Fake objective-complete toast (real green complete style, no prefix;
   -- doesn't actually complete anything).
-  fake_objective = { label="Objective complete?", dur=0, start=function()
+  fake_objective = { label="Objective complete?", dur=0, silent=true, start=function()
                    pd.hud_message(string.format("Objective %d complete", math.random(1, 5)), 1)
                  end },
   -- The pessimist spinoff: real RED "objective failed" style (hud type 2),
   -- no prefix. Also changes nothing.
-  fake_objective_fail = { label="Objective failed?", dur=0, start=function()
+  fake_objective_fail = { label="Objective failed?", dur=0, silent=true, start=function()
                    pd.hud_message(string.format("Objective %d failed", math.random(1, 5)), 2)
                  end },
   -- (minefield_drops removed 2026-07-18 round 2 — superseded by booby_doors.)
@@ -3642,7 +3655,7 @@ function chaos.trigger(name, who, dur_override)
   -- silent effects show no "CHAOS: <name>" toast (e.g. Fake Crash, whose whole
   -- gag is that nothing on screen hints it's a chaos effect at all).
   if not e.silent then
-    announce(e.label .. (who and ("  [" .. who .. "]") or ""))
+    announce(e.label .. (who and ("  [" .. who .. "]") or ""), true)
   end
   -- Anti-repeat deck: age every effect's cooldown by one fire, then put the one
   -- that just played on a fresh cooldown as long as the enabled list. Its pick
@@ -3741,8 +3754,9 @@ function chaos.handle(source, text)
   elseif cmd == "toggle" then
     chaos.handle(source, st.enabled and "off" or "on")
   elseif cmd == "status" then
-    pd.log(string.format("[chaos] %s  interval=%ds effectdur=%ds votetime=%ds active=%d port-fed-by=%s",
+    pd.log(string.format("[chaos] %s  interval=%ds effectdur=%ds votetime=%ds toasts=%s active=%d port-fed-by=%s",
         st.enabled and "ON" or "off", st.interval, st.effectdur, st.votetime,
+        st.toasts and "on" or "off",
         (function() local n=0 for _ in pairs(st.active) do n=n+1 end return n end)(), source))
   elseif cmd == "list" then
     local names = {}
@@ -3755,6 +3769,13 @@ function chaos.handle(source, text)
   elseif cmd == "effectdur" or cmd == "duration" then
     st.effectdur = math.max(1, tonumber(arg) or 60); persist()
     pd.log("[chaos] effect duration = " .. st.effectdur .. "s")
+  elseif cmd == "toasts" or cmd == "toast" then
+    local a = (arg or ""):lower()
+    if a == "on" or a == "1" then st.toasts = true
+    elseif a == "off" or a == "0" then st.toasts = false
+    else st.toasts = not st.toasts end
+    persist()
+    pd.log("[chaos] effect toasts " .. (st.toasts and "ON" or "off"))
   elseif cmd == "votetime" then
     st.votetime = math.max(0, tonumber(arg) or 0); st.votetimer = st.votetime * TICKS
     persist()
@@ -4032,7 +4053,9 @@ pd.on("tick", function()
       left = left - dt
       if endnow or left <= 0 then
         stop_effect(name)
-        announce((e and e.label or name) .. (endnow and " cleared" or " wore off"))
+        if not (e and e.silent) then
+          announce((e and e.label or name) .. (endnow and " cleared" or " wore off"), true)
+        end
       else
         st.active[name] = left
       end
@@ -4706,6 +4729,10 @@ if pd.menu_add then
       function() return st.votetime end,
       function(v) st.votetime = v; persist() end,
       0, 120, GROUP, "Length of the chat vote window between effects (0 = voting off).")
+    pd.menu_add_checkbox("Effect Toasts",
+      function() return st.toasts end,
+      function(v) st.toasts = (v and true or false); persist() end,
+      GROUP, "Show the corner notification naming each effect as it starts and ends. Turn OFF for a clean screen - effects then fire with no on-screen hint that Chaos did it.")
 
     -- ENABLE: one scrollable LIST of checkboxes (all rotation effects) in the
     -- "Chaos/Effects" sub-folder. The pinned one-line description follows the
@@ -4719,19 +4746,22 @@ if pd.menu_add then
     end
   else
     -- Old exe fallback: tap-to-cycle master/timers + a flat on/off list.
-    local i_toggle, i_dur, i_freq
+    local i_toggle, i_dur, i_freq, i_toast
     local function lbl_toggle() return "Chaos: " .. (st.enabled and "ON" or "off") end
     local function lbl_dur()    return "Effect duration: " .. st.effectdur .. "s" end
     local function lbl_freq()   return "Trigger every: " .. st.interval .. "s" end
+    local function lbl_toast()  return "Effect toasts: " .. (st.toasts and "ON" or "off") end
     local function relabel()
       if not pd.menu_set_label then return end
       pd.menu_set_label(i_toggle, lbl_toggle())
       pd.menu_set_label(i_dur, lbl_dur())
       pd.menu_set_label(i_freq, lbl_freq())
+      pd.menu_set_label(i_toast, lbl_toast())
     end
     i_toggle = pd.menu_add(lbl_toggle(), function() chaos.handle("menu", "toggle"); relabel() end, GROUP)
     i_dur = pd.menu_add(lbl_dur(), function() st.effectdur = next_in(DURATIONS, st.effectdur); persist(); relabel() end, GROUP)
     i_freq = pd.menu_add(lbl_freq(), function() st.interval = next_in(INTERVALS, st.interval); persist(); relabel() end, GROUP)
+    i_toast = pd.menu_add(lbl_toast(), function() st.toasts = not st.toasts; persist(); relabel() end, GROUP)
     for _, name in ipairs(names) do
       local n = name
       local e = chaos.effects[n]

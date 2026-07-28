@@ -1904,6 +1904,13 @@ static int l_pd_player_set_health(lua_State *L)
 	return 1;
 }
 
+/* pd.show_health() -> bool. Pop the health bar without changing health. */
+static int l_pd_show_health(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaShowHealth() != 0);
+	return 1;
+}
+
 /* pd.dizzy([amount]) -> bool. Tranquiliser screen-sway (decays naturally). */
 static int l_pd_dizzy(lua_State *L)
 {
@@ -3575,6 +3582,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_alarm);         lua_setfield(L, -2, "alarm");
 	lua_pushcfunction(L, l_pd_boost);         lua_setfield(L, -2, "boost");
 	lua_pushcfunction(L, l_pd_player_set_health); lua_setfield(L, -2, "player_set_health");
+	lua_pushcfunction(L, l_pd_show_health);   lua_setfield(L, -2, "show_health");
 	lua_pushcfunction(L, l_pd_dizzy);         lua_setfield(L, -2, "dizzy");
 	lua_pushcfunction(L, l_pd_chr_cloak);     lua_setfield(L, -2, "chr_cloak");
 	lua_pushcfunction(L, l_pd_strip_ammo);    lua_setfield(L, -2, "strip_ammo");

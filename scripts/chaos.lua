@@ -959,8 +959,33 @@ chaos.effects = {
                    stop=function()
                      if pd.double_vision then pd.double_vision(false) end
                    end },
-  one_hp       = { label="Health roulette",   w=4, dur=0, start=function()
-                     pd.player_set_health(math.random(5, 60) / 100) end },
+  -- Health roulette: the bar pops FIRST at your current health, then a second
+  -- later the roll lands (5-60%) and the bar animates to it, with an hpup /
+  -- hpdn jingle for which way it went (needs hpup.mp3 / hpdn.mp3 dropped in
+  -- scripts/chaos/sounds/ — play_sound is a quiet no-op without them). Old
+  -- exes without pd.show_health fall back to the instant roll.
+  one_hp       = { label="Health roulette",   w=4, fixeddur=true, dur=3,
+                   start=function()
+                     if not pd.show_health then
+                       pd.player_set_health(math.random(5, 60) / 100)
+                       st.a_hp = nil
+                       return
+                     end
+                     pd.show_health()
+                     st.a_hp = { wait = TICKS }
+                   end,
+                   tick=function()
+                     local a = st.a_hp
+                     if not a then return true end -- old-exe path: already rolled
+                     a.wait = a.wait - (pd.lvupdate and pd.lvupdate() or 1)
+                     if a.wait > 0 then return end
+                     local cur = pd.player_health() or 0.5
+                     local target = math.random(5, 60) / 100
+                     play_sound(target >= cur and "hpup" or "hpdn")
+                     pd.player_set_health(target)
+                     return true
+                   end,
+                   stop=function() st.a_hp = nil end },
   dry_spell    = { label="Dry spell",         w=5, dur=0, start=function() pd.strip_ammo() end },
   quantum_leap = { label="Quantum leap",      w=5, dur=0, start=function()
                      local c = random_chr(); if c then pd.teleport_to_chr(c) end end },

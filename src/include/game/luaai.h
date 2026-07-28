@@ -310,6 +310,7 @@ s32 chraiLuaMetronomeClick(void);            /* Beat game click at half music vo
 s32 chraiLuaSetAlarm(s32 on);                 /* stage alarm on/off (server-side) */
 s32 chraiLuaBoost(f32 secs);                  /* Speed Pill boost for N secs (<=0 cancels) */
 s32 chraiLuaPlayerSetHealth(f32 frac);        /* health 0.01..1 (never kills) */
+s32 chraiLuaShowHealth(void);                 /* pop the health bar, no change */
 s32 chraiLuaDizzy(s32 amount);                /* tranq screen-sway, 0..4000 blur units */
 s32 chraiLuaChrCloak(s32 chrnum, s32 on);     /* toggle CHRHFLAG_CLOAKED on a chr */
 s32 chraiLuaStripAmmo(void);                  /* zero every ammo pool */

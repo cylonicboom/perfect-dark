@@ -9339,6 +9339,19 @@ s32 chraiLuaPlayerSetHealth(f32 frac)
 	return 1;
 }
 
+// pd.show_health(): pop the health bar WITHOUT changing anything — lets an
+// effect present the current value first, then animate to a new one on a
+// later player_set_health (whose own playerDisplayHealth call re-enters as
+// HEALTHSHOWMODE_UPDATING while the bar is still open).
+s32 chraiLuaShowHealth(void)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	playerDisplayHealth();
+	return 1;
+}
+
 // pd.dizzy(amount): apply the tranquiliser screen-sway to the local player
 // (chr->blurdrugamount — the same accumulator tranq/psychosis rounds feed;
 // decays naturally). Capped below the TICKS(5000) knockout band the drugged

@@ -410,13 +410,17 @@ void bgGetRoomBrightnessRange(s32 roomnum, u8 *min, u8 *max)
 
 struct drawslot *bgGetRoomDrawSlot(s32 roomnum)
 {
-	s32 index = 60;
-
+	// A room not registered this frame gets the full-screen sentinel. This must
+	// be g_BgSpecialDrawSlot, NOT a hardcoded index: the port widened
+	// g_BgDrawSlots to 256 and moved the sentinel from 60 to 255, so returning
+	// slot 60 handed out a slot whose box is never written (and which is a LIVE
+	// draw slot under /octree bigroom). Callers also pointer-compare the result
+	// against g_BgSpecialDrawSlot, which could never match.
 	if (g_BgFrameCount == g_BgDrawSlotsByRoom[roomnum].updatedframe) {
-		index = g_BgDrawSlotsByRoom[roomnum].slotnum;
+		return &g_BgDrawSlots[g_BgDrawSlotsByRoom[roomnum].slotnum];
 	}
 
-	return &g_BgDrawSlots[index];
+	return g_BgSpecialDrawSlot;
 }
 
 Gfx *bgRenderXrayData(Gfx *gdl, struct xraydata *xraydata)
@@ -6550,12 +6554,12 @@ void bgTickPortalsXray(void)
 	g_BgNumDrawSlots = 0;
 	g_BgNumAttemptedDrawSlots = 0;
 
-	g_BgDrawSlots[60].roomnum = -1;
-	g_BgDrawSlots[60].draworder = 255;
-	g_BgDrawSlots[60].box.xmin = xmin;
-	g_BgDrawSlots[60].box.ymin = ymin;
-	g_BgDrawSlots[60].box.xmax = xmax;
-	g_BgDrawSlots[60].box.ymax = ymax;
+	g_BgSpecialDrawSlot->roomnum = -1;
+	g_BgSpecialDrawSlot->draworder = 255;
+	g_BgSpecialDrawSlot->box.xmin = xmin;
+	g_BgSpecialDrawSlot->box.ymin = ymin;
+	g_BgSpecialDrawSlot->box.xmax = xmax;
+	g_BgSpecialDrawSlot->box.ymax = ymax;
 
 	g_BgMaxDrawOrder = 0;
 	g_BgMinDrawOrder = 0x7fff;
@@ -7013,8 +7017,8 @@ void bgTickPortals(void)
 		g_BgNumAttemptedDrawSlots = 0;
 		g_BgMaxDrawOrder = 0;
 		g_BgMinDrawOrder = 32767;
-		g_BgDrawSlots[60].roomnum = -1;
-		g_BgDrawSlots[60].draworder = 255;
+		g_BgSpecialDrawSlot->roomnum = -1;
+		g_BgSpecialDrawSlot->draworder = 255;
 		g_BgSnake.count = 0;
 		g_BgSnake.headindex = 0;
 		g_BgSnake.tailindex = 0;

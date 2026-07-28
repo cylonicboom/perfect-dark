@@ -165,12 +165,20 @@ char *resolveFontname(const u8 fontId)
 
 u8 getTexPath(char *dst, u8 type, u16 id, s32 texnum)
 {
-	struct ExtTexture *tex;
 	const char *name;
+	// Resolve through getExtTexture so the table bounds are checked in ONE
+	// place. This function used to re-index extTextures/fontExtTextures with
+	// the raw arguments and deref lookupModelTex's result unchecked — safe only
+	// because every caller happened to call extTexExists first, which nothing
+	// enforced (extTexLoad itself calls them in the opposite order).
+	struct ExtTexture *tex = getExtTexture(type, id, texnum);
+
+	if (tex == NULL) {
+		return 1;
+	}
 
 	switch (type) {
 		case G_TEXTYPE_GENERAL: {
-			tex = &extTextures[texnum];
 			snprintf(dst, FS_MAXPATH, "%s/%04x.%s", extTexPath, texnum, tex->extension);
 			return 0;
 		}
@@ -178,18 +186,15 @@ u8 getTexPath(char *dst, u8 type, u16 id, s32 texnum)
 			name = resolveFontname(id & ~IDMASK_FONT_OUTLINE);
 
 			if (id & IDMASK_FONT_OUTLINE) {
-				tex = &fontOutlineExtTextures[id & ~IDMASK_FONT_OUTLINE][texnum];
 				snprintf(dst, FS_MAXPATH, "%s/%s/" FONT_OUTLINES_DIR "/%02x.%s", extTexPath, name, texnum, tex->extension);
 				return 0;
 			}
 
-			tex = &fontExtTextures[id][texnum];
 			snprintf(dst, FS_MAXPATH, "%s/%s/%02x.%s", extTexPath, name, texnum, tex->extension);
 			return 0;
 		}
 		case G_TEXTYPE_MODEL: {
 			name = romdataFileGetName(id);
-			tex = lookupModelTex(id, texnum);
 			snprintf(dst, FS_MAXPATH, "%s/%s/%05x.%s", extTexPath, name, texnum, tex->extension);
 			return 0;
 		}
@@ -214,6 +219,17 @@ u8 *extTexLoad(u8 type, u16 id, s32 texnum, u32 *width, u32 *height)
 	}
 
 	u32 channels;
+
+	// Free any previous decode for this slot before replacing it. The fast3d
+	// texture cache evicts and re-requests external textures (and drops
+	// everything on a renderer state change), so this path is re-entered for
+	// the same slot repeatedly — overwriting the pointer leaked the whole
+	// previous RGBA image each time, megabytes per cache flush with an HD pack.
+	if (tex->texdata) {
+		stbi_image_free(tex->texdata);
+		tex->texdata = NULL;
+	}
+
 	tex->texdata = stbi_load(path, width, height, &channels, 4);
 	return tex->texdata;
 }
@@ -359,14 +375,26 @@ void readModelTextures(const char *path, s16 fileNum, s32 *modelOffset, struct M
 		// no extension: skip
 		if (err) continue;
 
+		// Grow BEFORE writing — numTextures is the index setTex is about to
+		// write, so the test must be >= against the current capacity. PD
+		// character models routinely carry 20-40 textures, well past the
+		// initial 16.
+		if (modelTex->numTextures >= MAX_TEX) {
+			struct ExtTexture *grown =
+					sysMemRealloc(modelTex->textures, MAX_TEX * 2 * sizeof(struct ExtTexture));
+
+			if (grown == NULL) {
+				sysLogPrintf(LOG_WARNING, "readModelTextures: out of memory at %d textures in %s",
+						modelTex->numTextures, path);
+				break;
+			}
+
+			MAX_TEX *= 2;
+			modelTex->textures = grown;
+		}
+
 		setTex(modelTex->textures, modelTex->numTextures, texNum, extension);
 		modelTex->numTextures++;
-
-		// allocate more memory for model textures if needed
-		if (modelTex->numTextures > MAX_TEX) {
-			MAX_TEX *= 2;
-			modelTex->textures = sysMemRealloc(modelTex->textures, MAX_TEX * sizeof(struct ExtTexture));
-		}
 	}
 	closedir(dr);
 
@@ -395,7 +423,7 @@ void readFontTextures(const char *path, const char *fontName)
 	}
 
 	char outlinesPath[FS_MAXPATH];
-	sprintf(outlinesPath , "%s/" FONT_OUTLINES_DIR, path);
+	snprintf(outlinesPath, sizeof(outlinesPath), "%s/" FONT_OUTLINES_DIR, path);
 	u8 outlines = false;
 
 	while (true) {
@@ -507,7 +535,7 @@ s32 extTexInit()
 		if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
 
 		struct stat stbuf;
-		sprintf(filepath , "%s/%s", extTexPath, de->d_name);
+		snprintf(filepath, sizeof(filepath), "%s/%s", extTexPath, de->d_name);
 		if (stat(filepath, &stbuf) == -1) {
 			sysLogPrintf(LOG_WARNING, "Unable to stat file: %s\n", filepath);
 			continue;
@@ -524,15 +552,26 @@ s32 extTexInit()
 					continue;
 				}
 
-				struct ModelTextures *modelTex = &modelTextures[numModels++];
-				readModelTextures(filepath, fileNum, &modelOffset, modelTex);
+				// Grow BEFORE writing: numModels is the index about to be used,
+				// so the capacity test has to be >= against the current size.
+				// (The old test ran after the write and passed an element COUNT
+				// where sysMemRealloc wants BYTES, shrinking the block instead
+				// of doubling it.)
+				if (numModels >= MAX_MODELS) {
+					struct ModelTextures *grown =
+							sysMemRealloc(modelTextures, MAX_MODELS * 2 * sizeof(struct ModelTextures));
 
-				// allocate more memory if necessary
-				if (numModels > MAX_MODELS) {
+					if (grown == NULL) {
+						sysLogPrintf(LOG_WARNING, "extTexInit: out of memory at %d model folders", numModels);
+						break;
+					}
+
 					MAX_MODELS *= 2;
-					modelTextures = sysMemRealloc(modelTextures, MAX_MODELS);
+					modelTextures = grown;
 				}
 
+				struct ModelTextures *modelTex = &modelTextures[numModels++];
+				readModelTextures(filepath, fileNum, &modelOffset, modelTex);
 			}
 			// fonts
 			else if (s == 'f') {

@@ -450,6 +450,32 @@ void propDelist(struct prop *prop)
  * good node, which may orphan a few props (leaked until stage reset) — strictly
  * better than a hang. Healthy lists return after one cheap walk.
  */
+/**
+ * Is this prop already sitting in the freelist?
+ *
+ * propFree overwrites prop->next with the freelist head and prop->prev with
+ * NULL, so a freed-but-still-listed prop CANNOT be identified by comparing its
+ * back-link against the walk (a corpse at the head of activeprops has
+ * prop->prev == NULL == prev and looks "consistent"). Membership has to be
+ * tested directly. Only called from the corpse branch below, which is already
+ * the rare path, so the walk cost doesn't land on any hot path.
+ */
+static bool propIsOnFreeList(struct prop *prop)
+{
+	struct prop *p = g_Vars.freeprops;
+	s32 guard = g_Vars.maxprops + 16;
+
+	while (p && guard-- > 0) {
+		if (p == prop) {
+			return true;
+		}
+
+		p = p->next;
+	}
+
+	return false;
+}
+
 void propsHealActiveList(void)
 {
 	struct prop *prop = g_Vars.activeprops;
@@ -501,33 +527,34 @@ void propsHealActiveList(void)
 					|| prop->type == PROPTYPE_DOOR || prop->type == PROPTYPE_EXPLOSION
 					|| prop->type == PROPTYPE_SMOKE)) {
 			struct prop *deadnext = prop->next;
+			const bool freed = propIsOnFreeList(prop);
 			propDeregisterRooms(prop);
-			if (deadnext == prop || prop->prev != prev) {
+			if (deadnext == prop || freed) {
 				g_NetAuditHealFires++; // soak auditor: corruption was masked here
 				static u32 lastwarn60f = 0;
 				if (g_Vars.lvframe60 - lastwarn60f > TICKS(60)) {
 					lastwarn60f = g_Vars.lvframe60;
 					sysLogPrintf(LOG_WARNING,
-							"propsheal: unlink corrupt corpse prop %d type %d flags 0x%x syncid %u (selfloop=%d)",
+							"propsheal: sever at corrupt corpse prop %d type %d flags 0x%x syncid %u (selfloop=%d freed=%d)",
 							(s32)(prop - g_Vars.props), prop->type, prop->flags, prop->syncid,
-							(deadnext == prop));
+							(deadnext == prop), freed);
 				}
-				if (deadnext == prop) {
-					deadnext = NULL; // self-loop: terminate the active list here
-				}
+				// The successor is UNRECOVERABLE here: propFree already
+				// overwrote prop->next with the freelist head, so following it
+				// would splice the ENTIRE freelist into the active chain (props
+				// would then be ticked while free, and propAllocate would hand
+				// out slots that are still listed). Terminate the chain instead
+				// — same trade-off as the out-of-pool branch above: this may
+				// orphan the tail until the stage resets, which is strictly
+				// better than corruption. The next frame's heal re-walks.
 				if (prev) {
-					prev->next = deadnext;
-					if (deadnext == NULL) {
-						g_Vars.activepropstail = prev;
-					}
+					prev->next = NULL;
+					g_Vars.activepropstail = prev;
 				} else {
-					g_Vars.activeprops = deadnext;
-					if (deadnext == NULL) {
-						g_Vars.activepropstail = g_Vars.pausedprops;
-					}
+					g_Vars.activeprops = NULL;
+					g_Vars.activepropstail = g_Vars.pausedprops;
 				}
-				prop = deadnext;
-				continue;
+				return;
 			}
 			// Consistent corpse — leave it for the tick-walk reap (rooms already
 			// deregistered above, so collision is safe this frame).

@@ -32,13 +32,36 @@
 #define MAX_SEQ_SIZE_8MB 1024 * 18
 
 #ifndef PLATFORM_N64
-// Port: this must stay >= sndpconfig.maxSounds (the simultaneous-SFX cap, raised
-// to 64 for positional netplay + chaos audio down in sndInit). Each concurrently
-// playing SFX pins its cache slot via sndAddRef; if more distinct sounds play at
-// once than there are slots, the eviction scan in sndLoadSound finds none free,
-// leaves oldestindex at -1, and the u16 cacheindex wraps to 0xffff -> OOB writes
-// across g_SndCache (crash). N64 keeps 45 (its maxSounds is 20, always < 45).
-#define NUM_CACHE_SLOTS 72
+// Port sound-player pool sizes. Raised from the N64's 64/64/20 for positional
+// audio (remote weapons + footsteps) and chaos SFX — this applies to
+// singleplayer as well as netplay, so these are unconditional on the port.
+//
+// These are the ONE definition: sndInit feeds sndpconfig from them and sndTick
+// sizes its walk buffers from them. Raising a pool without the other side is
+// what put a 192-entry list into a 64-entry stack array.
+#define SND_MAX_STATES 192
+#define SND_MAX_EVENTS 192
+#define SND_MAX_SOUNDS 64
+#else
+#define SND_MAX_STATES 64
+#define SND_MAX_EVENTS 64
+#define SND_MAX_SOUNDS 20
+#endif
+
+#ifndef PLATFORM_N64
+// Port: this must stay >= SND_MAX_STATES, NOT >= maxSounds. sndAddRef is called
+// from the sound-player's STATE allocator (n_sndplayer.c func00033390), not from
+// the play handler, so every allocated state can pin a distinct cache slot —
+// including states that never won a voice (maxSounds only gates voice
+// allocation; a state that loses stays in the list and retries). Sizing this
+// against maxSounds let all slots become refcounted at once, which drove the
+// eviction scan into its stomp-a-live-slot fallback below.
+//
+// If more distinct sounds are pinned than there are slots, the scan finds none
+// free, leaves oldestindex at -1, and the u16 cacheindex wraps to 0xffff -> OOB
+// writes across g_SndCache (crash). N64 keeps 45 (its maxStates is 64, but its
+// far smaller sound set never approaches it).
+#define NUM_CACHE_SLOTS SND_MAX_STATES
 #else
 #define NUM_CACHE_SLOTS 45
 #endif
@@ -1407,6 +1430,15 @@ ALSound *sndLoadSound(s16 soundnum)
 			if (oldestindex == -1) {
 				oldestindex = 0;
 			}
+
+			// Should now be unreachable: NUM_CACHE_SLOTS >= SND_MAX_STATES, so
+			// there can never be more pinned slots than slots. If this ever
+			// fires, the pool/cache invariant at the top of this file has been
+			// broken again — don't let it hide, because the eviction below
+			// overwrites sample data that a sounding voice is still decoding.
+			sysLogPrintf(LOG_WARNING,
+					"snd: cache full, evicting refcounted slot %d (sfx %d) — NUM_CACHE_SLOTS(%d) vs maxStates(%d)",
+					oldestindex, sfxnum, NUM_CACHE_SLOTS, SND_MAX_STATES);
 		}
 #endif
 
@@ -1618,22 +1650,17 @@ void sndInit(void)
 			synconfig.fxTypes[i] = 6;
 		}
 
-#ifndef PLATFORM_N64
 		// maxSounds is the simultaneous-SFX cap (over it, the sound player
 		// steals the oldest stealable sound — n_sndplayer.c AL_SNDP_PLAY_EVT).
 		// 20 was audibly tight once every remote weapon/footstep went through
 		// the positional channel. States/events pools sized to match: each
 		// playing sound holds a state and queues events, and running out of
 		// states makes sndStart return NULL (callers treat that as "didn't
-		// play").
-		sndpconfig.maxEvents = 192;
-		sndpconfig.maxStates = 192;
-		sndpconfig.maxSounds = 64;
-#else
-		sndpconfig.maxEvents = 64;
-		sndpconfig.maxStates = 64;
-		sndpconfig.maxSounds = 20;
-#endif
+		// play"). Constants live at the top of this file so sndTick's walk
+		// buffers stay in lockstep with the pool.
+		sndpconfig.maxEvents = SND_MAX_EVENTS;
+		sndpconfig.maxStates = SND_MAX_STATES;
+		sndpconfig.maxSounds = SND_MAX_SOUNDS;
 		sndpconfig.unk10 = NUM_KEYTHINGS;
 		sndpconfig.heap = &g_SndHeap;
 
@@ -1863,8 +1890,12 @@ void snd0000fe80(void)
 void sndTick(void)
 {
 #if VERSION >= VERSION_NTSC_1_0
-	struct sndstate *stateptrs[64];
-	struct sndstate states[64];
+	// Sized from the same constant that feeds sndpconfig.maxStates. On N64 these
+	// were 64 and maxStates was 64, so the walk below was safe by construction;
+	// the port's larger pool must be reflected here or the walk writes past both
+	// arrays (stack smash, including the return address).
+	struct sndstate *stateptrs[SND_MAX_STATES];
+	struct sndstate states[SND_MAX_STATES];
 	s32 i;
 	s32 curtime;
 	struct sndstate *state;
@@ -1889,7 +1920,7 @@ void sndTick(void)
 	g_SndNumPlaying = 0;
 	i = 0;
 
-	while (state) {
+	while (state && i < (s32)ARRAYCOUNT(states)) {
 		stateptrs[i] = state;
 		states[i] = *state;
 

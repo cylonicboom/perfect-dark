@@ -4650,16 +4650,27 @@ pd.on("weaponfire", function(weaponnum, playernum)
   end
 end)
 
--- Mediguns (alpha): any weapon pickup heals 10% of MAX HP. bondhealth is the
--- 0..1 fraction of max, so a flat +0.1 is exactly +10 on a 100 scale
--- (55 -> 65), capped at full — NOT 10% of remaining/missing. show_health
--- first pops the bar at the old value so the heal visibly animates up
--- (player_set_health's own display call re-enters as UPDATING).
-pd.on("weaponfound", function(weaponnum)
+-- Mediguns: any weapon pickup heals 10% of MAX HP. bondhealth is the 0..1
+-- fraction of max, so a flat +0.1 is exactly +10 on a 100 scale (55 -> 65),
+-- capped at full — NOT 10% of remaining/missing. show_health first pops the
+-- bar at the old value so the heal visibly animates up.
+--
+-- Rides "weaponpickup" (every local pickup, weaponPlayPickupSound) — the old
+-- "weaponfound" event is the Archipelago FIRST-DISCOVERY emitter gated on the
+-- persistent save's weaponsfound bits, so on a developed save it near-never
+-- fired (the "gun pickups give no HP" bug). Old exes without the new event
+-- keep the weaponfound fallback (first-ever pickups only, better than nothing).
+local function mediguns_heal()
   if st.active.mediguns then
     if pd.show_health then pd.show_health() end
     pd.player_set_health(math.min(1, (pd.player_health() or 0) + 0.1))
   end
+end
+pd.on("weaponpickup", mediguns_heal)
+pd.on("weaponfound", function(weaponnum)
+  -- fallback for exes predating the weaponpickup event; guarded so a new exe
+  -- (which fires both events on a first discovery) doesn't double-heal
+  if not pd.sfx_replace then mediguns_heal() end
 end)
 
 -- Vampire: damaging any chr while the effect is active feeds you.

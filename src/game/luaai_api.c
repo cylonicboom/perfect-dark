@@ -3894,6 +3894,17 @@ void luaEmitWeaponFound(s32 weaponnum)
 	luaEventDispatchInts("weaponfound", 1, a);
 }
 
+// EVERY local weapon-class pickup (weaponPlayPickupSound, propobj.c) — unlike
+// "weaponfound", which is the Archipelago first-discovery emitter gated on the
+// persistent g_GameFile.weaponsfound bits and so near-never fires on a
+// developed save (the Mediguns no-heal bug).
+void luaEmitWeaponPickup(s32 weaponnum)
+{
+	lua_Integer a[1];
+	a[0] = weaponnum;
+	luaEventDispatchInts("weaponpickup", 1, a);
+}
+
 void luaEmitObjective(s32 stageindex, s32 difficulty, s32 objindex, s32 status)
 {
 	lua_Integer a[4];

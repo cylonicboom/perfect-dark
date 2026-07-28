@@ -17667,6 +17667,15 @@ void weaponPlayPickupSound(s32 weaponnum)
 {
 	s32 sound;
 
+#ifndef PLATFORM_N64
+	// Chaos: per-pickup Lua event (Mediguns) — this is the local player's
+	// every-pickup chokepoint, unlike the first-discovery "weaponfound" emit.
+	{
+		extern void luaEmitWeaponPickup(s32 weaponnum);
+		luaEmitWeaponPickup(weaponnum);
+	}
+#endif
+
 	if (weaponnum == WEAPON_COMBATKNIFE || weaponnum == WEAPON_COMBATKNIFE) {
 		sound = SFX_PICKUP_KNIFE;
 	} else if (weaponnum == WEAPON_REMOTEMINE

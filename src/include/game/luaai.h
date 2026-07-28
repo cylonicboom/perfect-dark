@@ -162,6 +162,7 @@ void luaEmitRoomEnter(s32 room, s32 fromroom);
 void luaEmitMissionComplete(s32 stageindex, s32 difficulty, s32 secs, s32 cheated);
 void luaEmitFiringRange(s32 weaponindex, s32 medal);
 void luaEmitWeaponFound(s32 weaponnum);
+void luaEmitWeaponPickup(s32 weaponnum);      /* every local pickup, not just first discovery */
 void luaEmitObjective(s32 stageindex, s32 difficulty, s32 objindex, s32 status);
 void luaEmitCheatUnlock(s32 cheatid);
 void luaEmitChallengeComplete(s32 challengeindex, s32 numplayers);

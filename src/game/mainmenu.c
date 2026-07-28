@@ -5950,7 +5950,15 @@ struct menuitem g_MainMenuMenuItems[] = {
 #endif
 	},
 #ifndef PLATFORM_N64
-	// Port: "Exit Game" replaces "Change Agent" on the main menu.
+	// Port: keep "Change Agent" (the N64 item) and add "Exit Game" below it.
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT,
+		L_OPTIONS_187, // "Change Agent..."
+		0x00000007,
+		(void *)&g_ChangeAgentMenuDialog,
+	},
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

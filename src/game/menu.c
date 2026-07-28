@@ -4019,6 +4019,37 @@ void menuPushRootDialog(struct menudialogdef *dialogdef, s32 root)
 	}
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Is this dialog one of the Perfect Menu's carousel pages?
+ *
+ * The pages are a nextsibling chain rooted at g_CiMenuViaPcMenuDialog
+ * ("Perfect Menu" -> "Options", the Video/Input/... page). EVERY page carries
+ * the port-added MENUDIALOGFLAG_IGNOREBACK, so Back has to be intercepted for
+ * all of them or it silently does nothing on the pages we miss — which is
+ * exactly what happened on the Options page: the player could tab to it and
+ * then had no way back to the Carrington Institute.
+ *
+ * Walking the chain rather than naming the two dialogs means a future carousel
+ * page is covered automatically. Bounded so a malformed ring can't hang.
+ */
+static bool menuIsPerfectMenuPage(struct menudialogdef *dialogdef)
+{
+	struct menudialogdef *page = &g_CiMenuViaPcMenuDialog;
+	s32 guard = 8;
+
+	while (page != NULL && guard-- > 0) {
+		if (page == dialogdef) {
+			return true;
+		}
+
+		page = page->nextsibling;
+	}
+
+	return false;
+}
+#endif
+
 void func0f0f85e0(struct menudialogdef *dialogdef, s32 root)
 {
 	if (dialogdef == &g_CiMenuViaPcMenuDialog) {
@@ -4832,11 +4863,13 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 		if (inputs->back) {
 #ifndef PLATFORM_N64
-			// Port: Back on the main (Perfect) menu drops into the Carrington
-			// Institute instead of being ignored (MENUDIALOGFLAG_IGNOREBACK). The
-			// menu opens over the paused CI (via the in-game PC), so close it and
-			// resume; if the CI isn't loaded (shown over the title), load it.
-			if (dialog->definition == &g_CiMenuViaPcMenuDialog) {
+			// Port: Back on ANY Perfect Menu carousel page (the "Perfect Menu"
+			// page itself and the "Options" page holding Video/Input/...) drops
+			// into the Carrington Institute instead of being ignored
+			// (MENUDIALOGFLAG_IGNOREBACK). The menu opens over the paused CI (via
+			// the in-game PC), so close it and resume; if the CI isn't loaded
+			// (shown over the title), load it.
+			if (menuIsPerfectMenuPage(dialog->definition)) {
 				menuClose();
 				if (g_Vars.stagenum == STAGE_CITRAINING) {
 					playerUnpause();

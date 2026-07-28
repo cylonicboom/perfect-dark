@@ -16,6 +16,7 @@
 #include "utils.h"
 #include "net/net.h"
 #include "game/hudmsg.h"
+#include "game/menugfx.h"
 #include "game/game_1531a0.h"
 #include "lib/vi.h"
 
@@ -42,10 +43,107 @@ static s32 conButton = 0;
 // transient closed-console overlay (conRenderMsgs) is gated. Set to 1 to restore
 // the on-screen message popups.
 static s32 conShowMsgs = 0;
+// Console.OpaqueBg: 1 = solid backdrop behind the console instead of the
+// engine's translucent one, so log text stays readable over a bright scene.
+static s32 conBgOpaque = 0;
+
+// Console-only view filter. When set, only entries CONTAINING this substring
+// (case-insensitive) reach the console ring. sysLogPrintf writes pd.log and
+// stdout BEFORE calling us, so the file always keeps everything - this filters
+// the on-screen view alone. Not persisted: it's a debugging aid, not a setting.
+#define CON_FILTER_LEN 48
+static char conFilter[CON_FILTER_LEN] = "";
+
+// Submitted-command history, newest last. Up/Down walk it while the console is
+// open; conHistPos == conHistCount means "editing a fresh line".
+#define CON_HIST 24
+static char conHist[CON_HIST][CON_COLS + 1];
+static s32 conHistCount = 0;
+static s32 conHistPos = 0;
+
+// Per-row colour, so a row keeps the colour of the entry that wrote it.
+static u32 conRowColour[CON_ROWS];
+static u32 conVisColour[CON_VISROWS];
+
+// Entry colouring: first matching prefix wins, else the default green. Matched
+// against the whole entry text, so it works for both the sysLogPrintf prefixes
+// and the tags scripts print themselves ("[chaos] ...").
+static const struct { const char *tag; u32 colour; } conColourRules[] = {
+	{ "[chaos]",  0x80d0ffff }, // Lua / chaos - light blue
+	{ "[lua]",    0x80d0ffff },
+	{ "[ap]",     0x80d0ffff },
+	{ "NET:",     0xffd070ff }, // netplay - amber
+	{ "ERROR",    0xff6060ff }, // errors - red
+	{ "WARNING",  0xffc040ff }, // warnings - yellow
+	{ "SYSTEM",   0xffffffff }, // system - white
+};
+
 
 PD_CONSTRUCTOR static void consoleConfigInit(void)
 {
 	configRegisterInt("Console.ShowMessages", &conShowMsgs, 0, 1);
+	configRegisterInt("Console.OpaqueBg", &conBgOpaque, 0, 1);
+}
+
+// Case-insensitive substring test (no portable strcasestr across our targets).
+static s32 conStrCaseStr(const char *hay, const char *needle)
+{
+	if (!needle || !*needle) {
+		return 1;
+	}
+
+	for (; *hay; ++hay) {
+		const char *h = hay;
+		const char *n = needle;
+
+		while (*h && *n && tolower((u8)*h) == tolower((u8)*n)) {
+			++h;
+			++n;
+		}
+
+		if (!*n) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static u32 conColourFor(const char *str)
+{
+	for (u32 i = 0; i < ARRAYCOUNT(conColourRules); ++i) {
+		if (conStrCaseStr(str, conColourRules[i].tag)) {
+			return conColourRules[i].colour;
+		}
+	}
+
+	return conTextColour;
+}
+
+// Set from netConsoleCommand (/con filter ...). NULL or "" clears.
+void conSetFilter(const char *f)
+{
+	if (!f || !*f) {
+		conFilter[0] = '\0';
+	} else {
+		strncpy(conFilter, f, CON_FILTER_LEN - 1);
+		conFilter[CON_FILTER_LEN - 1] = '\0';
+	}
+}
+
+const char *conGetFilter(void)
+{
+	return conFilter;
+}
+
+void conSetOpaqueBg(s32 on)
+{
+	conBgOpaque = on ? 1 : 0;
+}
+
+s32 conGetOpaqueBg(void)
+{
+	return conBgOpaque;
 }
 // Scrollback offset in rows. 0 = pinned to the live tail (newest line at the
 // bottom). Positive values pan back through the ring buffer. PageUp/PageDown
@@ -67,6 +165,7 @@ static void conRebuildVisRows(void)
 			row += CON_ROWS;
 		}
 		conVisRows[i] = &conBuf[row][0];
+		conVisColour[i] = conRowColour[row];
 	}
 }
 
@@ -90,6 +189,25 @@ void conPrint(s32 showmsg, const char *str)
 	}
 
 	const s32 oldRow = conPrintRow;
+	const u32 colour = conColourFor(str);
+
+	// View filter: drop non-matching entries from the CONSOLE only (the log
+	// file and stdout were already written by the caller).
+	if (conFilter[0] && !conStrCaseStr(str, conFilter)) {
+		return;
+	}
+
+	// Start every entry on its own row. A caller that doesn't end its string
+	// with a newline used to leave the cursor mid-row, so the next unrelated
+	// entry continued on the same line and the two ran together. No-op for
+	// the normal conPrintLn path, which already appends one.
+	if (conPrintCol) {
+		conPrintCol = 0;
+		conPrintRow = (conPrintRow + 1) % CON_ROWS;
+		conBuf[conPrintRow][0] = '\0';
+	}
+
+	conRowColour[conPrintRow] = colour;
 
 	for (const char *s = str; *s; ++s) {
 		char ch = *s;
@@ -98,6 +216,7 @@ void conPrint(s32 showmsg, const char *str)
 				if (conPrintCol) {
 					conPrintCol = 0;
 					conPrintRow = (conPrintRow + 1) % CON_ROWS;
+					conRowColour[conPrintRow] = colour;
 				}
 				break;
 			case '\r':
@@ -117,6 +236,7 @@ void conPrint(s32 showmsg, const char *str)
 				if (conPrintCol == CON_COLS) {
 					conPrintCol = 0;
 					conPrintRow = (conPrintRow + 1) % CON_ROWS;
+					conRowColour[conPrintRow] = colour;
 				}
 				break;
 		}
@@ -217,13 +337,22 @@ Gfx *conRender(Gfx *gdl)
 	} else {
 		s32 x, y;
 		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, G_ASPECT_CENTER_EXT);
-		gdl = hudmsgRenderBox(gdl, 16, 0, SCREEN_WIDTH_LO - 16, 4 + 8 * (CON_VISROWS + 1), 1.f, conTextColour, 0.9f);
+		// hudmsgRenderBox's backdrop is translucent by construction (its text
+		// layer draws at 128*textopacity alpha), so for an opaque console the
+		// solid fill goes down first and the box supplies the border only.
+		if (conBgOpaque) {
+			gdl = menugfxDrawFilledRect(gdl, 16, 0, SCREEN_WIDTH_LO - 16,
+					4 + 8 * (CON_VISROWS + 1), 0x000000ff, 0x000000ff);
+			gdl = hudmsgRenderBox(gdl, 16, 0, SCREEN_WIDTH_LO - 16, 4 + 8 * (CON_VISROWS + 1), 1.f, conTextColour, 0.f);
+		} else {
+			gdl = hudmsgRenderBox(gdl, 16, 0, SCREEN_WIDTH_LO - 16, 4 + 8 * (CON_VISROWS + 1), 1.f, conTextColour, 0.9f);
+		}
 		for (s32 i = 0; i < CON_VISROWS; ++i) {
 			char *s = conVisRows[i];
 			if (s) {
 				x = 18;
 				y = 4 + 8 * (CON_VISROWS - i - 1);
-				gdl = textRenderProjected(gdl, &x, &y, s, g_CharsHandelGothicXs, g_FontHandelGothicXs, conTextColour, viGetWidth(), viGetHeight(), 0, 0);
+				gdl = textRenderProjected(gdl, &x, &y, s, g_CharsHandelGothicXs, g_FontHandelGothicXs, conVisColour[i], viGetWidth(), viGetHeight(), 0, 0);
 			}
 		}
 		char tmp[CON_COLS + 24];
@@ -255,13 +384,24 @@ Gfx *conRender(Gfx *gdl)
 
 void conTick(void)
 {
+	// '/' opens the console with the command prefix already typed, so a
+	// command is one keystroke closer. Only while CLOSED: with the console
+	// open, '/' must reach the text handler as an ordinary character.
+	const s32 slash = !conOpen && inputKeyJustPressed(VK_SLASH);
 	const s32 button = inputKeyPressed(VK_GRAVE);
-	if (button && !conButton) {
+
+	if (slash || (button && !conButton)) {
 		conOpen = !conOpen;
 		g_MenuKeyboardPlayer = -1;
 		if (conOpen) {
 			inputClearLastTextChar();
 			inputStartTextInput();
+			if (slash) {
+				conInput[0] = '/';
+				conInput[1] = '\0';
+				conInputCol = 1;
+			}
+			conHistPos = conHistCount;
 		} else {
 			inputStopTextInput();
 			// Snap back to the live tail when closing so the next open
@@ -299,7 +439,41 @@ void conTick(void)
 			conRebuildVisRows();
 		}
 
+		// Up/Down walk the submitted-command history. Down past the newest
+		// entry returns to an empty line so you can back out of browsing.
+		if (conHistCount > 0 && (inputKeyJustPressed(VK_UP) || inputKeyJustPressed(VK_DOWN))) {
+			if (inputKeyJustPressed(VK_UP)) {
+				if (conHistPos > 0) {
+					--conHistPos;
+				}
+			} else if (conHistPos < conHistCount) {
+				++conHistPos;
+			}
+
+			if (conHistPos >= conHistCount) {
+				conInput[0] = '\0';
+			} else {
+				strncpy(conInput, conHist[conHistPos], CON_COLS);
+				conInput[CON_COLS] = '\0';
+			}
+
+			conInputCol = (s32)strlen(conInput);
+		}
+
 		if (inputTextHandler(conInput, CON_COLS, &conInputCol, false)) {
+			// Remember non-empty submissions (skipping an exact repeat of the
+			// previous one) so Up recalls them.
+			if (conInput[0]
+					&& (conHistCount == 0 || strcmp(conHist[conHistCount - 1], conInput) != 0)) {
+				if (conHistCount == CON_HIST) {
+					memmove(conHist[0], conHist[1], sizeof(conHist) - sizeof(conHist[0]));
+					--conHistCount;
+				}
+				strncpy(conHist[conHistCount], conInput, CON_COLS);
+				conHist[conHistCount][CON_COLS] = '\0';
+				++conHistCount;
+			}
+			conHistPos = conHistCount;
 			// Lines starting with '/' are local netplay/debug commands,
 			// not chat. Handled even outside a net session so the user can
 			// pre-configure things like /lag before connecting.

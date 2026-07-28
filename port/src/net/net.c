@@ -5951,6 +5951,30 @@ s32 netConsoleCommand(const char *line)
 		} else {
 			sysLogPrintf(LOG_CHAT, "NET: diag log rate = %u (usage: /diagrate <ticks>)", g_NetDiagDumpRate);
 		}
+	} else if (strcmp(cmd, "con") == 0 || strcmp(cmd, "console") == 0) {
+		// Console VIEW controls. The filter affects the on-screen ring only:
+		// sysLogPrintf writes pd.log and stdout before the console ever sees the
+		// line, so the file always keeps everything.
+		if (strncmp(arg, "filter", 6) == 0) {
+			const char *f = arg + 6;
+			while (*f == ' ') { ++f; }
+			if (*f == '\0' || strcmp(f, "off") == 0 || strcmp(f, "clear") == 0) {
+				conSetFilter(NULL);
+				sysLogPrintf(LOG_CHAT, "console filter cleared");
+			} else {
+				conSetFilter(f);
+				sysLogPrintf(LOG_CHAT, "console filter = \"%s\" (view only, pd.log unfiltered)", conGetFilter());
+			}
+		} else if (strncmp(arg, "opaque", 6) == 0) {
+			const char *v = arg + 6;
+			while (*v == ' ') { ++v; }
+			conSetOpaqueBg(*v ? (strcmp(v, "on") == 0 || strcmp(v, "1") == 0) : !conGetOpaqueBg());
+			sysLogPrintf(LOG_CHAT, "console opaque background %s", conGetOpaqueBg() ? "ON" : "off");
+		} else {
+			sysLogPrintf(LOG_CHAT, "console: filter=%s opaque=%s",
+				conGetFilter()[0] ? conGetFilter() : "(none)", conGetOpaqueBg() ? "on" : "off");
+			sysLogPrintf(LOG_CHAT, "usage: /con filter <text>|off   /con opaque [on|off]");
+		}
 	} else if (strcmp(cmd, "netinfo") == 0) {
 		sysLogPrintf(LOG_CHAT, "NET: tick=%u mode=%s clients=%d sims=%d lag=%dms loss=1/%d diag='%s'",
 			g_NetTick,

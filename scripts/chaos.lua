@@ -1819,7 +1819,7 @@ chaos.effects = {
                        pd.hud_message(lines[math.random(#lines)], 1) -- centred, objective-pop style
                      end
                    end },
-  assert_authority = { label="Assert Authority", w=3, dur=20,
+  assert_authority = { label="Assert Dominance", w=3, dur=20,
                    -- every skeletal model drops into its bind pose; root
                    -- motion still applies, so T-posers glide around dominantly
                    start=function() pd.t_pose(true) end,

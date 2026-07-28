@@ -3318,7 +3318,10 @@ local alpha_effects = {
                    if not pd.player_push then error("needs new exe") end
                    pd.hud_message("CHAOS: mind the kick")
                  end },
-  -- Inverted Look: up is down (mouse, gyro and right stick).
+  -- Inverted Look: TOGGLES the player's own pitch-inversion setting (C side,
+  -- movedata.invertpitch), so it reads as "backwards from what YOU run"
+  -- whether they play normal or inverted. Covers mouse, gyro and stick via
+  -- the setting's own machinery; the stored option is never written.
   invert_look = { label="Inverted Look", dur=1,
                  start=function()
                    if not pd.invert_look then error("needs new exe") end

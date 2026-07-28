@@ -61,6 +61,13 @@ s32 g_ChaosGormless = 0;
 // renderer, so reverse the same movement + look axes as Gormless to keep the
 // controls matched to the flipped view. Shares Gormless's chokepoints via OR.
 s32 g_ChaosControlReverse = 0;
+// Chaos "Inverted Look" (pd.invert_look): TOGGLE the player's own
+// pitch-inversion setting at its single derivation point
+// (movedata.invertpitch) so every consumer — mouse dy, stick analogpitch,
+// aim-edge swivel — flips via the engine's own machinery, relative to
+// however the player normally runs. (Formerly a parallel input-layer dy
+// negate in input.c, which didn't ride the setting.)
+s32 g_ChaosInvertLook = 0;
 // Chaos "Cyclone Frenzy" (pd.gun_lock): for the effect's duration, force the
 // SECONDARY fire function on both hands, hold the trigger down (auto-fire), and
 // block weapon switching — the cycle offsets here + amOpen (the weapon menu) at
@@ -1108,6 +1115,14 @@ void bmoveResetMoveData(struct movedata *data)
 	data->zoomoutfovpersec = 0;
 	data->zoominfovpersec = 0;
 	data->invertpitch = !optionsGetForwardPitch(g_Vars.currentplayerstats->mpindex);
+#ifndef PLATFORM_N64
+	// Chaos "Inverted Look": flip whatever the player runs (see the global's
+	// comment). The stored option itself is never touched, so nothing can
+	// persist mid-effect.
+	if (g_ChaosInvertLook && !g_Vars.currentplayer->isremote) {
+		data->invertpitch = !data->invertpitch;
+	}
+#endif
 	data->disablelookahead = false;
 	data->c1stickxsafe = 0;
 	data->c1stickysafe = 0;

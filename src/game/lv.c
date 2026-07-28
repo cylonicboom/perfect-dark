@@ -373,7 +373,7 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosFreezeChrnum;    // chaos Weeping Skedar single freeze
 	extern s32 g_ChaosIpodAd;          // chaos iPod Ad silhouette
 	extern s32 g_ChaosUwuMode;         // chaos text transform (uwu/piglatin/buttsbot)
-	extern void inputSetChaosInvertLook(s32 on);    // chaos Inverted Look
+	extern s32 g_ChaosInvertLook;      // chaos Inverted Look (bondmove.c setting toggle)
 	extern void inputSetChaosInputDelay(s32 frames);// chaos Stadia Mode
 	extern void luaTexOverrideReset(void);          // chaos texture override
 	extern void inputSetChaosDeadzone(s32 dz); // chaos XBLA deadzone floor
@@ -443,7 +443,7 @@ void lvReset(s32 stagenum)
 	g_ChaosIpodAd = 0;
 	g_ChaosUwuMode = 0;
 	luaTexOverrideReset(); // chaos texture override — free the image + restore
-	inputSetChaosInvertLook(0);
+	g_ChaosInvertLook = 0;
 	inputSetChaosInputDelay(0);
 	inputSetChaosDeadzone(0);
 	g_ChaosSpaceProgram = 0;

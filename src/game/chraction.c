@@ -8942,9 +8942,9 @@ s32 chraiLuaOneBullet(s32 on)
 // stick (input.c).
 s32 chraiLuaInvertLook(s32 on)
 {
-	extern void inputSetChaosInvertLook(s32 on);
+	extern s32 g_ChaosInvertLook;
 
-	inputSetChaosInvertLook(on);
+	g_ChaosInvertLook = on ? 1 : 0;
 	return 1;
 }
 

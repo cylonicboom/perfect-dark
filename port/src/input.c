@@ -1038,14 +1038,9 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzoneCfg, const f32 scale)
 	}
 }
 
-// Chaos "Inverted Look" (pd.invert_look): flip vertical look — the mouse/gyro
-// dy in inputMouseGetScaledDelta plus the pad right stick below.
-static s32 chaosInvertLook = 0;
-
-void inputSetChaosInvertLook(s32 on)
-{
-	chaosInvertLook = on ? 1 : 0;
-}
+// (Chaos "Inverted Look" used to live here as an input-layer dy flip; it now
+// toggles movedata.invertpitch in bondmove.c — g_ChaosInvertLook — so it
+// rides the player's own pitch-inversion setting on every look path.)
 
 // Chaos "Stadia Mode" (pd.input_delay): buffer each pad's state and return it
 // N frames late. A zeroed OSContPad is neutral, so the first N frames replay
@@ -1180,12 +1175,6 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		if (rStickY) {
 			npad->rstick_y = (rStickY == 128) ? 127 : rStickY;
 		}
-	}
-
-	// Chaos "Inverted Look": flip the pad's vertical look stick (the mouse dy
-	// flips in inputMouseGetScaledDelta).
-	if (chaosInvertLook && npad->rstick_y) {
-		npad->rstick_y = (npad->rstick_y == -128) ? 127 : -npad->rstick_y;
 	}
 
 	inputChaosDelayApply(idx, npad);
@@ -1717,11 +1706,6 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 		if (mouseLocked && gyroAimEnabled) {
 				mdx += gyroDX;
 				mdy += gyroDY;
-		}
-		// Chaos "Inverted Look": flip the combined vertical look delta
-		// (mouse + gyro; the pad right stick flips in inputReadController).
-		if (chaosInvertLook) {
-				mdy = -mdy;
 		}
 		if (dx) *dx = mdx;
 		if (dy) *dy = mdy;

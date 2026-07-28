@@ -2660,7 +2660,8 @@ static int l_pd_one_bullet(lua_State *L)
 	return 1;
 }
 
-/* pd.invert_look(on) -> bool. Flip vertical look (mouse/gyro/right stick). */
+/* pd.invert_look(on) -> bool. Toggle the player's pitch-inversion setting
+ * (movedata.invertpitch) — flips relative to however they normally run. */
 static int l_pd_invert_look(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaInvertLook(lua_toboolean(L, 1)) != 0);

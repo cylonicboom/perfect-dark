@@ -352,7 +352,7 @@ f32 chraiLuaPlayerPitchGet(void);             /* view pitch in degrees (+up) */
 s32 chraiLuaPlayerPitchSet(f32 deg);          /* set view pitch (clamped +/-90) */
 s32 chraiLuaPlayerPush(f32 mag);              /* shove along facing (+fwd/-back, knockback-style) */
 s32 chraiLuaOneBullet(s32 on);                /* One Bullet Mags (equip-baked clip=1) */
-s32 chraiLuaInvertLook(s32 on);               /* flip vertical look (mouse/gyro/rstick) */
+s32 chraiLuaInvertLook(s32 on);               /* toggle the player's pitch-inversion setting */
 s32 chraiLuaInputDelay(s32 frames);           /* Stadia Mode: pad reads N frames late (0=off) */
 s32 chraiLuaUwuify(s32 on);                   /* uwuify every langGet string */
 s32 chraiLuaPigLatin(s32 on);                 /* pig-latin every langGet string (shared mode) */

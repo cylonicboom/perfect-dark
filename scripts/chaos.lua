@@ -2473,23 +2473,36 @@ local alpha_effects = {
                        if pd.stage_music then pd.stage_music(true) end -- restore music
                        st.a_silo = nil
                      end },
-  -- CAPTCHA: prove you're human — a random verification task (shots, crouch,
-  -- reload, weapon switch, or staring at the floor). Complete it and the
-  -- window closes; run out of time and the failed check hurts. Never deals
-  -- the same task twice in a row (st.cap_last).
-  captcha    = { label="CAPTCHA", fixeddur=true, dur=15,
+  -- CAPTCHA: prove you're human — a chain of TWO or THREE verification tasks
+  -- (shots, crouch, reload, weapon switch, staring at the floor), dealt one
+  -- at a time; no task repeats back to back, within the chain or across
+  -- consecutive CAPTCHAs (st.cap_last). Clear the whole chain and the window
+  -- closes; run out of time and the failed check hurts. dur covers the full
+  -- chain (~12s a task).
+  captcha    = { label="CAPTCHA", fixeddur=true, dur=35,
                  start=function()
                    if not pd.buttons_pressed then error("needs new exe") end
-                   st.a_cap = { task = task_random(false, true, st.cap_last) } -- deliberate-only
+                   st.a_cap = { task = task_random(false, true, st.cap_last), -- deliberate-only
+                                n = 1, total = math.random(2, 3) }
                    st.cap_last = st.a_cap.task.kind
                  end,
                  tick=function(left)
                    local c = st.a_cap
                    if not c or c.done then return end
+                   if c.flash and c.flash > 0 then
+                     c.flash = c.flash - (pd.lvupdate and pd.lvupdate() or 1)
+                   end
                    if task_tick(c.task) then
-                     c.done = true
-                     pd.hud_message("CHAOS: verified human")
-                     return true -- close the window early
+                     if c.n < (c.total or 1) then
+                       c.n = c.n + 1
+                       c.task = task_random(false, true, c.task.kind)
+                       st.cap_last = c.task.kind
+                       c.flash = TICKS -- the fresh task label blinks green: last one passed
+                     else
+                       c.done = true
+                       pd.hud_message("CHAOS: verified human")
+                       return true -- close the window early
+                     end
                    elseif left <= 10 then
                      c.done = true
                      pd.player_damage(4)
@@ -4804,11 +4817,15 @@ pd.on("draw", function()
     end
   end
 
-  -- CAPTCHA: the verification demand + the live task instruction.
+  -- CAPTCHA: the verification demand + the live task instruction, with the
+  -- chain progress in the header. A freshly dealt task blinks green for a
+  -- beat to acknowledge the one just passed.
   if st.active.captcha and st.a_cap and st.a_cap.task and not st.a_cap.done then
+    local c = st.a_cap
     pd.draw_box(96, 46, 128, 26, 0x000000a0)
-    centered_text(50, "PROVE YOU ARE HUMAN", 0xffe040ff)
-    centered_text(61, task_label(st.a_cap.task), 0xffffffff)
+    centered_text(50, string.format("PROVE YOU ARE HUMAN (%d/%d)", c.n or 1, c.total or 1), 0xffe040ff)
+    centered_text(61, task_label(c.task),
+        (c.flash and c.flash > 0) and 0x40ff40ff or 0xffffffff)
   end
 
   -- SPEED: pedometer bar.

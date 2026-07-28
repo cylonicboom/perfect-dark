@@ -262,7 +262,9 @@ static s32 netDemoPlayStart(const char *name)
 	for (s32 i = 0; i < NET_MAX_BOTS; i++) {
 		g_BotConfigsArray[i] = g_DemoPlayHdr.bots[i];
 	}
-	g_BotCount = (s32)g_DemoPlayHdr.botcount;
+	// Audit L1: the header botcount is an unchecked u32 from a local file —
+	// clamp so a corrupt/hand-edited demo can't index past g_BotConfigsArray.
+	g_BotCount = (g_DemoPlayHdr.botcount <= NET_MAX_BOTS) ? (s32)g_DemoPlayHdr.botcount : NET_MAX_BOTS;
 
 	g_DemoPlayState = DEMO_PLAY_LOADING;
 	g_DemoPlayHasFrame = false;

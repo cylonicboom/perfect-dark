@@ -656,6 +656,26 @@ s32 body0f02d3f8(void)
 	return g_BondBodies[var80062c80];
 }
 
+#ifndef PLATFORM_N64
+// Number of entries in g_HeadsAndBodies[] (the table is sentinel-terminated,
+// filenum == 0). Used by netmsg.c to validate wire body/head indices before
+// anything dereferences the table (audit M1 — a bad SVC_CHR_SPAWN index was
+// an OOB read/crash).
+s32 bodyGetHeadsAndBodiesCount(void)
+{
+	static s32 count = -1;
+
+	if (count < 0) {
+		s32 i = 0;
+		while (g_HeadsAndBodies[i].filenum) {
+			i++;
+		}
+		count = i;
+	}
+	return count;
+}
+#endif
+
 s32 bodyChooseHead(s32 bodynum)
 {
 	s32 head;

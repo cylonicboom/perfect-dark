@@ -540,6 +540,9 @@ u32 netmsgClcAuthRead(struct netbuf *src, struct netclient *srccl)
 	// for now use settings from our own client, remote is supposed to send CLC_SETTINGS after CLC_AUTH
 	srccl->settings = g_NetLocalClient->settings;
 	strncpy(srccl->settings.name, name, sizeof(srccl->settings.name) - 1);
+	// Audit M2: strncpy appends no NUL when src fills the buffer — terminate
+	// explicitly (the bot-config copies already do).
+	srccl->settings.name[sizeof(srccl->settings.name) - 1] = '\0';
 	srccl->state = CLSTATE_LOBBY;
 
 	sysLogPrintf(LOG_NOTE, "NET: CLC_AUTH from client %u (%s), responding", srccl->id, srccl->settings.name);
@@ -906,6 +909,7 @@ u32 netmsgClcSettingsRead(struct netbuf *src, struct netclient *srccl)
 	}
 
 	strncpy(srccl->settings.name, name, sizeof(srccl->settings.name) - 1);
+	srccl->settings.name[sizeof(srccl->settings.name) - 1] = '\0'; // audit M2
 	srccl->settings.options = options;
 	srccl->settings.bodynum = bodynum;
 	srccl->settings.headnum = headnum;
@@ -1504,6 +1508,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 			char *name = netbufReadStr(src);
 			if (name) {
 				strncpy(ncl->settings.name, name, sizeof(ncl->settings.name) - 1);
+				ncl->settings.name[sizeof(ncl->settings.name) - 1] = '\0'; // audit M2
 			} else {
 				sysLogPrintf(LOG_WARNING, "NET: malformed SVC_STAGE from server");
 				return 3;
@@ -1889,6 +1894,21 @@ u32 netmsgSvcChrSpawnRead(struct netbuf *src, struct netclient *srccl)
 	// unlikely, but a duplicate would create a second ghost).
 	if (netSyncIdToProp(syncid)) {
 		return src->error;
+	}
+
+	// Audit M1: bodynum/headnum come off the wire and index g_HeadsAndBodies[]
+	// unchecked all the way down — chrSpawnAtCoord reads the body entry
+	// immediately and bodyAllocateModel indexes both — so a malicious or
+	// corrupt index was an OOB read/crash. headnum < 0 stays legal (auto-pick
+	// / built-in-head bodies take the no-head path).
+	{
+		extern s32 bodyGetHeadsAndBodiesCount(void);
+		const s32 nbodies = bodyGetHeadsAndBodiesCount();
+		if (bodynum < 0 || bodynum >= nbodies || headnum >= nbodies) {
+			sysLogPrintf(LOG_WARNING, "NET: SVC_CHR_SPAWN with bad body %d / head %d (max %d), dropping",
+					bodynum, headnum, nbodies - 1);
+			return src->error;
+		}
 	}
 
 	// Create the runtime chr locally with the host's counter-based syncid so the

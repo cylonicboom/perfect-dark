@@ -194,11 +194,23 @@ are left untouched — they're separate bright sprites and only render outside m
 
 ## Limitations
 
-- **GL ES only**: `glPolygonMode` is desktop-GL only; on GL ES targets (e.g. Switch)
-  wireframe is a silent no-op. Desktop builds (Windows/Linux/macOS, compatibility or core
-  profile) work.
-- **Line thickness** uses `glLineWidth`. Widths > 1 are reliable in the compatibility
-  profile (the default here); a strict core profile may clamp to 1.0.
+- **Rendering path**: wireframe is drawn in the SHADER (`SHADER_OPT_WIREFRAME`,
+  a barycentric edge test) on both the OpenGL and SDL_GPU backends, so it looks
+  identical on GL, Vulkan, D3D12 and Metal and thickness is honoured everywhere.
+  The old `glPolygonMode` + `glLineWidth` path survives only as a GL fallback for
+  **GL ES and GLSL < 130** (no `gl_VertexID`); there wireframe is still a silent
+  no-op on ES, and thickness is still driver-clamped.
+- **Why the shader**: `SDL_GPURasterizerState` has no line-width field at all —
+  D3D12 and Metal have no line-width concept and Vulkan gates it behind the
+  optional `wideLines` feature — so `thick` could never work on SDL_GPU via
+  hardware line mode. `glLineWidth > 1` is also unreliable outside the GL
+  compatibility profile. The barycentric test has neither limitation.
+- **Cost**: the shader path renders filled triangles and `discard`s the interior,
+  which disables early-Z while the cheat is on. Only wireframe draws pay this —
+  it is a separate shader variant, so normal rendering is untouched.
+- **dlcache**: unchanged — `bg.c` already forces the display-list cache off while
+  wireframe is active, so all geometry (including static rooms) goes through the
+  immediate path and is wireframed.
 - By default wires use each surface's textured/shaded colour ("natural"); `/wireframe
   wire RRGGBB` forces a flat colour instead (`wire off` reverts).
 - Like all cheats, a mid-stage menu toggle takes effect at the next stage load

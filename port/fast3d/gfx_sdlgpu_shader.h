@@ -57,7 +57,8 @@ struct GfxSdlGpuFSUni {
     int32_t three_point_filter1;
     float wireframe_color[4];
     float emissive; // HDR dazzle multiplier on the final colour (1 = none)
-    float pad[3];
+    float wireframe_thickness; // barycentric wire width in px (SHADER_OPT_WIREFRAME)
+    float pad[2];
 };
 
 // Call once after the SDL_GPU device exists: initializes glslang, picks the

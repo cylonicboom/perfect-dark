@@ -614,8 +614,11 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = 
     // Cached draws stay solid under the wireframe cheat (parity with GL,
     // where glPolygonMode wireframe only wraps draw_triangles). force_line is
     // the iPod-Ad white-edge second pass (line-mode over the flat fill).
-    const bool fill_line = !cached && st.depth_test
-            && (gfx_wireframe_mode || gfx_wireframe_scope || force_line);
+    // Wireframe is drawn by the SHADER (SHADER_OPT_WIREFRAME barycentric edge
+    // test), so geometry stays FILLED — hardware line mode can't do thickness
+    // here and would double up with the shader outline. force_line is the
+    // iPod-Ad white-edge second pass, which still uses real line mode.
+    const bool fill_line = !cached && st.depth_test && force_line;
     // Backface culling exists only on the cached path (the immediate path is
     // CPU-culled by gfx_pc); set by cache_set_cull per replay segment.
     const uint32_t cull = cached ? st.cull_mode : 0;
@@ -1154,6 +1157,11 @@ static void gfx_sdlgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // iPod Ad silhouette: flat-fill 3D geometry with the scope colour, then a
     // second line-mode pass draws the white wireframe edges (both backends now).
     const bool sil_fill = gfx_silhouette && !(gfx_wireframe_mode || gfx_wireframe_scope) && st.depth_test;
+    // Barycentric wire width, consumed by the SHADER_OPT_WIREFRAME variant.
+    if (st.fs_uni.wireframe_thickness != gfx_wireframe_line_width) {
+        st.fs_uni.wireframe_thickness = gfx_wireframe_line_width;
+        st.fs_dirty = true;
+    }
     if (wire_colour || sil_fill) {
         const float *sc = sil_fill ? gfx_silhouette_color : gfx_wireframe_wire_color;
         st.fs_uni.wireframe_color[0] = sc[0];
@@ -3290,6 +3298,14 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int cmode, int clevels, 
     st.fs_dirty = true;
 }
 
+// SDL_GPU has no hardware line-width control at all (SDL_GPURasterizerState has
+// no such field, because D3D12/Metal have no line width and Vulkan gates it
+// behind the optional wideLines feature), so the shader path is the ONLY way to
+// honour /wireframe thick here. Always available.
+static bool gfx_sdlgpu_shader_wireframe_supported(void) {
+    return true;
+}
+
 struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_get_name,
     gfx_sdlgpu_get_max_texture_size,
@@ -3345,6 +3361,7 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_set_shade_routing,
     gfx_sdlgpu_rt_resolve,   // screen-space raytracing suite (docs/PORT_RAYTRACING.md)
     gfx_sdlgpu_retro_filter, // chaos pixelate (docs/PORT_CHAOS.md)
+    gfx_sdlgpu_shader_wireframe_supported,
 };
 
 #endif // USE_SDLGPU

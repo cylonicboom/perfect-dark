@@ -114,7 +114,10 @@ struct ColorCombiner {
     uint64_t shader_id0;
     uint32_t shader_id1;
     bool used_textures[2];
-    struct ShaderProgram* prg[16];
+    // [tm | wireframe<<4] — tm is the 4-bit texel-clamp mask; bit 4 selects the
+    // SHADER_OPT_WIREFRAME variant so toggling the cheat swaps programs instead
+    // of returning the cached non-wireframe one.
+    struct ShaderProgram* prg[32];
     uint8_t shader_input_mapping[2][7];
 };
 
@@ -2190,10 +2193,18 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
     }
 
-    struct ShaderProgram* prg = comb->prg[tm];
+    // Wireframe: depth-tested 3D geometry only (never the 2D HUD/menus, which
+    // run with depth test off). depth_test is derived above, before this point.
+    const uint32_t wf_on =
+            ((gfx_wireframe_mode || gfx_wireframe_scope) && depth_test && gfx_rapi->shader_wireframe_supported())
+                    ? 1u : 0u;
+    const uint32_t prg_slot = tm | (wf_on << 4);
+    struct ShaderProgram* prg = comb->prg[prg_slot];
     if (prg == NULL) {
-        comb->prg[tm] = prg =
-            gfx_lookup_or_create_shader_program(comb->shader_id0, comb->shader_id1 | (tm * SHADER_OPT_TEXEL0_CLAMP_S));
+        comb->prg[prg_slot] = prg =
+            gfx_lookup_or_create_shader_program(comb->shader_id0,
+                    comb->shader_id1 | (tm * SHADER_OPT_TEXEL0_CLAMP_S)
+                            | (wf_on ? SHADER_OPT_WIREFRAME : 0u));
     }
     if (prg != rendering_state.shader_program) {
         gfx_flush();

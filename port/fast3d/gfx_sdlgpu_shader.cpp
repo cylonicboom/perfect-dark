@@ -666,6 +666,9 @@ static size_t build_vs_source(char *vs_buf, const struct CCFeatures &cc, bool ca
         vs_len += sprintf(vs_buf + vs_len, "layout(location = %d) out vec4 vGrayscaleColor;\n", var_loc++);
         num_floats += 4;
     }
+    if (cc.opt_wireframe) {
+        vs_len += sprintf(vs_buf + vs_len, "layout(location = %d) out vec3 vBary;\n", var_loc++);
+    }
 
     for (int i = 0; i < cc.num_inputs; i++) {
         vs_len += sprintf(vs_buf + vs_len, "layout(location = %d) in vec%d aInput%d;\n", in_loc++,
@@ -746,6 +749,14 @@ static size_t build_vs_source(char *vs_buf, const struct CCFeatures &cc, bool ca
         }
     }
 
+    if (cc.opt_wireframe) {
+        // Non-indexed triangle lists everywhere in this renderer, so a vertex's
+        // corner within its triangle is just the index mod 3 - no extra vertex
+        // attribute. gl_VertexIndex is the Vulkan spelling; SPIRV-Cross maps it
+        // to SV_VertexID (HLSL) and [[vertex_id]] (MSL).
+        append_line(vs_buf, &vs_len, "    int bcorner = gl_VertexIndex % 3;");
+        append_line(vs_buf, &vs_len, "    vBary = vec3(bcorner == 0 ? 1.0 : 0.0, bcorner == 1 ? 1.0 : 0.0, bcorner == 2 ? 1.0 : 0.0);");
+    }
     append_line(vs_buf, &vs_len, "    gl_Position = uMVP * aVtxPos;");
 
     if (cc.opt_fog) {
@@ -824,6 +835,9 @@ bool gfx_sdlgpu_shader_compile(SDL_GPUDevice *device, uint64_t shader_id0, uint3
     if (cc_features.opt_grayscale) {
         fs_len += sprintf(fs_buf + fs_len, "layout(location = %d) in vec4 vGrayscaleColor;\n", var_loc++);
     }
+    if (cc_features.opt_wireframe) {
+        fs_len += sprintf(fs_buf + fs_len, "layout(location = %d) in vec3 vBary;\n", var_loc++);
+    }
     for (int i = 0; i < cc_features.num_inputs; i++) {
         fs_len += sprintf(fs_buf + fs_len, "layout(location = %d) in vec%d vInput%d;\n", var_loc++,
                           cc_features.opt_alpha ? 4 : 3, i + 1);
@@ -851,7 +865,7 @@ bool gfx_sdlgpu_shader_compile(SDL_GPUDevice *device, uint64_t shader_id0, uint3
     append_line(fs_buf, &fs_len, "    int three_point_filter1;");
     append_line(fs_buf, &fs_len, "    vec4 wireframe_color;");
     append_line(fs_buf, &fs_len, "    float uEmissive;");
-    append_line(fs_buf, &fs_len, "    float uFsPad0;");
+    append_line(fs_buf, &fs_len, "    float wireframe_thickness;");
     append_line(fs_buf, &fs_len, "    float uFsPad1;");
     append_line(fs_buf, &fs_len, "    float uFsPad2;");
     append_line(fs_buf, &fs_len, "};");
@@ -994,6 +1008,12 @@ bool gfx_sdlgpu_shader_compile(SDL_GPUDevice *device, uint64_t shader_id0, uint3
     }
 
     // Wireframe cheat: replace the surface colour with a flat wire colour when enabled.
+    if (cc_features.opt_wireframe) {
+        append_line(fs_buf, &fs_len, "    vec3 bw = fwidth(vBary);");
+        append_line(fs_buf, &fs_len, "    vec3 bedge = smoothstep(vec3(0.0), bw * wireframe_thickness, vBary);");
+        append_line(fs_buf, &fs_len, "    float bmin = min(min(bedge.x, bedge.y), bedge.z);");
+        append_line(fs_buf, &fs_len, "    if (bmin >= 1.0) discard;");
+    }
     append_line(fs_buf, &fs_len, "    if (wireframe_color.a > 0.5) texel.rgb = wireframe_color.rgb;");
 
     if (cc_features.opt_alpha) {

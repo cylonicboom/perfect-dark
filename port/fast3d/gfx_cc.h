@@ -40,6 +40,13 @@ enum {
 #define SHADER_OPT_TEXEL1_CLAMP_S (1 << 10)
 #define SHADER_OPT_TEXEL1_CLAMP_T (1 << 11)
 #define SHADER_OPT_BLUR (1 << 12)
+// Wireframe cheat drawn in the SHADER (barycentric edge test) rather than via
+// glPolygonMode/SDL_GPU_FILLMODE_LINE. Hardware line mode can't do thickness on
+// SDL_GPU at all (SDL_GPURasterizerState has no line-width field, because D3D12
+// and Metal have none and Vulkan gates it behind the optional wideLines feature),
+// and glLineWidth > 1 is unreliable outside the compatibility profile. Both
+// backends generate the same variant so wireframe looks identical everywhere.
+#define SHADER_OPT_WIREFRAME (1 << 13)
 
 struct ColorCombinerKey {
     uint64_t combine_mode;
@@ -61,6 +68,7 @@ struct CCFeatures {
     bool opt_invisible;
     bool opt_grayscale;
     bool opt_blur;
+    bool opt_wireframe;
     bool used_textures[2];
     bool clamp[2][2];
     int num_inputs;

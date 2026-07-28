@@ -115,6 +115,13 @@ struct GfxRenderingAPI {
 	// via gfx_retro_common.h. Runs from gfx_run's tail. Implemented by GL and
 	// SDL_GPU; NULL allowed — the dispatcher checks before calling.
 	void (*retro_filter)(int pixw, int pixh, int cmode, int clevels, int fx, float warp);
+
+	// Can this backend draw the wireframe cheat in the SHADER (barycentric edge
+	// test, SHADER_OPT_WIREFRAME) rather than with hardware line mode? Shader
+	// wireframe is the only way to get thickness on SDL_GPU and is not clamped by
+	// the driver, so it is preferred wherever it works. GL returns false on GL ES
+	// and below GLSL 130 (no gl_VertexID), where the old glPolygonMode path stays.
+	bool (*shader_wireframe_supported)(void);
 };
 
 #endif

@@ -36,6 +36,7 @@ struct ShaderProgram {
     GLint noise_scale_location;
     GLint three_point_filter_locations[2];
     GLint wireframe_color_location;
+    GLint wireframe_thickness_location;
     GLint mvp_location;
     GLint use_vertex_fog_location;
     GLint fog_mul_location;
@@ -73,6 +74,8 @@ static MipmapFilteringMode current_mipmap_filter_mode = MIPMAP_LINEAR;
 static bool current_textures_linear_filter[2] = {false, false};
 
 static int gl_glsl_version = 130;
+// Defined near the API table; used by the draw path above it.
+static bool gfx_opengl_shader_wireframe_supported(void);
 static char gl_glsl_version_str[16] = "130";
 static GLenum gl_mirror_clamp = GL_MIRROR_CLAMP_TO_EDGE;
 static bool gl_es = false;
@@ -415,6 +418,9 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         num_floats += 4;
     }
 
+    if (cc_features.opt_wireframe) {
+        append_line(vs_buf, &vs_len, "OUTPUT vec3 vBary;");
+    }
     if (cc_features.opt_grayscale) {
         append_line(vs_buf, &vs_len, "INPUT vec4 aGrayscaleColor;");
         append_line(vs_buf, &vs_len, "OUTPUT vec4 vGrayscaleColor;");
@@ -494,6 +500,14 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         }
     }
 
+    if (cc_features.opt_wireframe) {
+        // Every draw in this renderer is a NON-INDEXED triangle list starting at
+        // vertex 0 (glDrawArrays / SDL_DrawGPUPrimitives on both the immediate and
+        // the cached path), so a vertex's corner within its triangle is simply
+        // gl_VertexID % 3 — no extra vertex attribute needed.
+        append_line(vs_buf, &vs_len, "    int bcorner = gl_VertexID % 3;");
+        append_line(vs_buf, &vs_len, "    vBary = vec3(bcorner == 0 ? 1.0 : 0.0, bcorner == 1 ? 1.0 : 0.0, bcorner == 2 ? 1.0 : 0.0);");
+    }
     append_line(vs_buf, &vs_len, "    gl_Position = uMVP * aVtxPos;");
 
     if (cc_features.opt_fog) {
@@ -584,6 +598,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     append_line(fs_buf, &fs_len, "uniform float noise_scale;");
     // Wireframe cheat flat wire colour: rgb = colour, a > 0.5 enables the override.
     append_line(fs_buf, &fs_len, "uniform vec4 wireframe_color;");
+    if (cc_features.opt_wireframe) {
+        append_line(fs_buf, &fs_len, "INPUT vec3 vBary;");
+        append_line(fs_buf, &fs_len, "uniform float wireframe_thickness;");
+    }
 
     append_line(fs_buf, &fs_len, "float random(in vec3 value) {");
     append_line(fs_buf, &fs_len, "    float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));");
@@ -728,6 +746,19 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, &fs_len, "    texel.rgb = mix(texel.rgb, new_texel, vGrayscaleColor.a);");
     }
 
+    if (cc_features.opt_wireframe) {
+        // Single-pass barycentric wireframe: keep fragments within
+        // wireframe_thickness pixels of a triangle edge, discard the interior.
+        // fwidth() converts the barycentric gradient into screen space, so the
+        // wire is a constant pixel width at any depth or angle — and unlike
+        // glLineWidth it isn't clamped by the driver, and unlike hardware line
+        // mode it works on backends with no line-width concept at all.
+        append_line(fs_buf, &fs_len, "    vec3 bw = fwidth(vBary);");
+        append_line(fs_buf, &fs_len, "    vec3 bedge = smoothstep(vec3(0.0), bw * wireframe_thickness, vBary);");
+        append_line(fs_buf, &fs_len, "    float bmin = min(min(bedge.x, bedge.y), bedge.z);");
+        append_line(fs_buf, &fs_len, "    if (bmin >= 1.0) discard;");
+    }
+
     // Wireframe cheat: replace the surface colour with a flat wire colour when enabled.
     append_line(fs_buf, &fs_len, "    if (wireframe_color.a > 0.5) texel.rgb = wireframe_color.rgb;");
 
@@ -858,6 +889,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     prg->three_point_filter_locations[0] = glGetUniformLocation(shader_program, "three_point_filter0");
     prg->three_point_filter_locations[1] = glGetUniformLocation(shader_program, "three_point_filter1");
     prg->wireframe_color_location = glGetUniformLocation(shader_program, "wireframe_color");
+    prg->wireframe_thickness_location = glGetUniformLocation(shader_program, "wireframe_thickness");
     prg->mvp_location = glGetUniformLocation(shader_program, "uMVP");
     if (prg->mvp_location >= 0) {
         // Program is already bound (glUseProgram above); seed with the current
@@ -1068,7 +1100,16 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // the wireframe_color shader stage. Not while wireframe outlines are on.
     const bool sil_fill = gfx_silhouette && !wireframe && s_wireframe_depth_test
             && gfx_current_shader_program && gfx_current_shader_program->wireframe_color_location >= 0;
-    if (wireframe) {
+    // Shader wireframe (SHADER_OPT_WIREFRAME) draws the outline itself via the
+    // barycentric edge test, so the geometry stays FILLED and no hardware line
+    // state is touched — that is the only path that honours thickness reliably.
+    // The glPolygonMode path remains for GL ES / GLSL < 130, where gl_VertexID
+    // isn't available (there thickness is still driver-limited, as before).
+    const bool shader_wire = wireframe && gfx_opengl_shader_wireframe_supported()
+            && gfx_current_shader_program && gfx_current_shader_program->wireframe_thickness_location >= 0;
+    if (shader_wire) {
+        glUniform1f(gfx_current_shader_program->wireframe_thickness_location, gfx_wireframe_line_width);
+    } else if (wireframe) {
         glLineWidth(gfx_wireframe_line_width);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
@@ -1100,7 +1141,8 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         // Reset so subsequent draws sharing this program (e.g. the HUD) are unaffected.
         glUniform4f(gfx_current_shader_program->wireframe_color_location, 0.0f, 0.0f, 0.0f, 0.0f);
     }
-    if (wireframe) {
+    if (wireframe && !shader_wire) {
+        // Only the hardware-line fallback touched this state.
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         glLineWidth(1.0f);
     }
@@ -1728,6 +1770,13 @@ static void gfx_opengl_retro_filter(int pixw, int pixh, int cmode, int clevels, 
                      gl_glsl_version_str);
 }
 
+// Barycentric wireframe needs gl_VertexID (GLSL 130+) and is pointless on GL ES,
+// where glPolygonMode doesn't exist either. Below that we keep the old hardware
+// line path, so nothing regresses on the Switch / ancient-driver targets.
+static bool gfx_opengl_shader_wireframe_supported(void) {
+    return !gl_es && gl_glsl_version >= 130;
+}
+
 struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_get_name,
     gfx_opengl_get_max_texture_size,
@@ -1782,5 +1831,6 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_set_palette_enable,
     gfx_opengl_set_shade_routing,
     gfx_opengl_rt_resolve,
-    gfx_opengl_retro_filter
+    gfx_opengl_retro_filter,
+    gfx_opengl_shader_wireframe_supported
 };

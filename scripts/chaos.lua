@@ -4650,10 +4650,15 @@ pd.on("weaponfire", function(weaponnum, playernum)
   end
 end)
 
--- Mediguns (alpha): any weapon pickup heals a chunk.
+-- Mediguns (alpha): any weapon pickup heals 10% of MAX HP. bondhealth is the
+-- 0..1 fraction of max, so a flat +0.1 is exactly +10 on a 100 scale
+-- (55 -> 65), capped at full — NOT 10% of remaining/missing. show_health
+-- first pops the bar at the old value so the heal visibly animates up
+-- (player_set_health's own display call re-enters as UPDATING).
 pd.on("weaponfound", function(weaponnum)
   if st.active.mediguns then
-    pd.player_set_health(math.min(1, pd.player_health() + 0.1))
+    if pd.show_health then pd.show_health() end
+    pd.player_set_health(math.min(1, (pd.player_health() or 0) + 0.1))
   end
 end)
 

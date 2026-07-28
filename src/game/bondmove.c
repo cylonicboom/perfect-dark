@@ -49,10 +49,12 @@
 #include "net/net.h"
 #include "net/netmsg.h"
 
-// Chaos "Gormless" (docs/PORT_CHAOS.md, pd.gormless): flip movement AND look —
-// forward/back, strafe left/right, look left/right, look up/down all
-// inverted. Applied at the two input chokepoints in bmoveProcessInput (the
-// c1 stick negate + the mouse-look delta negate).
+// Chaos "Gormless" (docs/PORT_CHAOS.md, pd.gormless): LOOK inverted (stick
+// turn/pitch + mouse both axes) and FIRE/AIM swapped. Movement is deliberately
+// NOT reversed (user call 2026-07-28 — it used to flip walk/strafe too).
+// Applied at three chokepoints in bmoveProcessInput: the post-split
+// analogturn/analogpitch negate, the mouse-look delta negate, and the
+// shootbuttons/aimbuttons swap.
 s32 g_ChaosGormless = 0;
 // Chaos "Australia mode" (pd.upside_down): the frame is rotated 180 by the
 // renderer, so reverse the same movement + look axes as Gormless to keep the
@@ -1267,14 +1269,14 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	movedata.c1stickyraw = c1sticky;
 
 #ifndef PLATFORM_N64
-	// Chaos "Gormless": the c1 stick feeds walk/strafe (movement) AND
-	// turn/pitch (look) alike, so negating it here flips all four axes for
-	// both a gamepad stick and the port's keyboard-to-stick mapping; the
-	// mouse-look deltas are negated at the inputMouseGetScaledDelta site
-	// below. Local player only; scripted autowalk drives synthetic stick
-	// input aimed at a WORLD target (the CHEAT_MIRROR bwalkUpdateTheta
+	// Chaos "Australia" (g_ChaosControlReverse): the frame is rotated 180 by
+	// the renderer, so the whole stick reverses to keep controls matched to
+	// the flipped view. Local player only; scripted autowalk drives synthetic
+	// stick input aimed at a WORLD target (the CHEAT_MIRROR bwalkUpdateTheta
 	// exception), so it is exempt or the player would walk away from it.
-	if ((g_ChaosGormless || g_ChaosControlReverse) && !g_Vars.currentplayer->isremote
+	// (Gormless no longer negates the stick here — since 2026-07-28 it
+	// inverts LOOK only, after the analog split below, so walk/strafe stay.)
+	if (g_ChaosControlReverse && !g_Vars.currentplayer->isremote
 			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
 		movedata.c1stickxsafe = -movedata.c1stickxsafe;
 		movedata.c1stickysafe = -movedata.c1stickysafe;
@@ -1299,6 +1301,19 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	movedata.analogstrafe = movedata.c1stickxsafe;
 	movedata.analogpitch = movedata.c1stickysafe;
 	movedata.analogwalk = movedata.c1stickysafe;
+
+#ifndef PLATFORM_N64
+	// Chaos "Gormless": invert the stick's LOOK axes only, after the analog
+	// split so walk/strafe stay true. Modes that route the x-stick to strafe
+	// zero analogturn in the control-style routing below, so movement is
+	// never affected. Mouse look is negated at its read site below, and
+	// fire/aim swap at the shootbuttons/aimbuttons assignment site.
+	if (g_ChaosGormless && !g_Vars.currentplayer->isremote
+			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
+		movedata.analogturn = -movedata.analogturn;
+		movedata.analogpitch = -movedata.analogpitch;
+	}
+#endif
 
 #ifndef PLATFORM_N64
 	if (allowmlook) {
@@ -1758,6 +1773,19 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 					aimbuttons = L_TRIG | R_TRIG;
 					invbuttons = A_BUTTON;
 				}
+
+#ifndef PLATFORM_N64
+				// Chaos "Gormless": fire and aim swap places. Swapping the
+				// button-set variables covers every downstream read (shoot
+				// edges, aim toggle/hold) in the 1.x/PC styles — on PC that
+				// means mouse1 aims and mouse2 shoots. The 2.x dual-pad
+				// styles hardcode Z_TRIG per pad and keep normal mapping.
+				if (g_ChaosGormless && !g_Vars.currentplayer->isremote) {
+					u32 tmpbuttons = shootbuttons;
+					shootbuttons = aimbuttons;
+					aimbuttons = tmpbuttons;
+				}
+#endif
 
 				if (controlmode == CONTROLMODE_PC) {
 					if (!g_Vars.currentplayer->insightaimmode) {
@@ -2362,29 +2390,16 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	}
 
 #ifndef PLATFORM_N64
-	// Chaos "Gormless"/"Australia": the analog stick + mouse are reversed at
-	// their read sites above, but keyboard/gamepad DIGITAL movement never
-	// touches the stick — in CONTROLMODE_PC forward/back/strafe come from the
-	// U/D/L/R_CBUTTONS step buttons and land in digitalstep* inside the
-	// control-mode routing, so they were never reversed (the "movement doesn't
-	// flip, only look" bug). Swap the finalised step directions here, after
-	// routing and before the movement is consumed. Autowalk drives these toward
-	// a world target, so leave it exempt like the stick negate above.
-	if ((g_ChaosGormless || g_ChaosControlReverse) && !g_Vars.currentplayer->isremote
+	// Chaos "Australia": digital strafe left/right swaps to match the
+	// 180-rotated frame (forward stays forward — you still walk "into" the
+	// scene). Autowalk drives these toward a world target, so it stays
+	// exempt like the stick negate above. Gormless no longer touches
+	// movement at all (2026-07-28: look-only + the fire/aim swap).
+	if (g_ChaosControlReverse && !g_Vars.currentplayer->isremote
 			&& g_Vars.tickmode != TICKMODE_AUTOWALK) {
-		// Strafe left/right reverses for both effects — a 180-rotated screen
-		// (Australia) swaps left/right visually, and Gormless flips everything.
 		bool tmpstep = movedata.digitalstepleft;
 		movedata.digitalstepleft = movedata.digitalstepright;
 		movedata.digitalstepright = tmpstep;
-		// Forward/back reverses for Gormless only. In Australia mode you still
-		// walk "into" the scene (forward = forward) — only look + strafe flip —
-		// so leave walk alone when it's the control-reverse flag driving.
-		if (g_ChaosGormless) {
-			tmpstep = movedata.digitalstepforward;
-			movedata.digitalstepforward = movedata.digitalstepback;
-			movedata.digitalstepback = tmpstep;
-		}
 	}
 #endif
 

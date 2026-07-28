@@ -688,8 +688,14 @@ chaos.effects = {
                        pd.instrument_shuffle(false)
                        pd.song()
                      end },
+  -- Inverted look + fire/aim swapped (movement deliberately normal — C side).
+  -- The jingle needs scripts/chaos/sounds/gormless.mp3 dropped in; play_sound
+  -- is a quiet no-op without it.
   gormless       = { label="Gormless",            w=4, dur=20,
-                     start=function() pd.gormless(true) end,
+                     start=function()
+                       pd.gormless(true)
+                       play_sound("gormless")
+                     end,
                      stop=function() pd.gormless(false) end },
   one_punch      = { label="ONE PUNCH",           w=3, dur=25,
                      start=function()

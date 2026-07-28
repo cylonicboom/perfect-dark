@@ -195,7 +195,8 @@ local BODY = { MINISKEDAR=0x7b, SKEDAR=0x5c, THEKING=0x67, SKEDARKING=0x93,
                MRBLONDE=0x5b, DARKCOMBAT=0x56, DJBOND=0x00 }
 local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHARS=11,
   ENEMYSHIELDS=12, JOSHIELD=13, SUPERSHIELD=14, TEAMHEADS=16, ELVIS=17,
-  ENEMYROCKETS=18, MARQUIS=20, GOLDENEYE=45, WIREFRAME=46, MIRROR=47, TONAL=48 }
+  ENEMYROCKETS=18, MARQUIS=20, PDARK=21, GOLDENEYE=45, WIREFRAME=46, MIRROR=47,
+  TONAL=48 }
 -- Maian "argh" hit/death yelps (sfx.h SFX_ARGH_MAIAN_05DF..05E1; each enum value
 -- equals its hex-suffix sound id). Used by Giggle Bomb.
 local SFX_MAIAN_ARGH = { 0x05df, 0x05e0, 0x05e1 }
@@ -958,9 +959,10 @@ chaos.effects = {
   toxic        = { label="Toxic spill",        w=4, dur=25,
                    start=function() pd.room_tint(80, 255, 80) end,
                    stop=function() pd.room_tint() end },
-  blackout     = { label="Lights out",         w=4, dur=15,
-                   start=function() pd.room_tint(30, 30, 60) end,
-                   stop=function() pd.room_tint() end },
+  -- The real Perfect Darkness cheat (engine lighting blackout), not the
+  -- room-tint vertex shading it used before (user call 2026-07-28).
+  blackout     = setmetatable({ label="Lights out", w=4 },
+                   {__index=cheat_effect(CHEAT.PDARK, 15)}),
   disco        = { label="Disco inferno",      w=5, dur=20,
                    start=function() pd.room_tint(255, 64, 64) end,
                    tick=function(left)

@@ -54,7 +54,18 @@ s32 weatherChaosSet(s32 type, s32 intensity)
 
 	if (type <= 0) {
 		if (g_WeatherData) {
-			weatherStop(); // frees handles + nulls g_WeatherData
+			// weatherStop() stops the audio handles and NULLs g_WeatherData,
+			// but MEMPOOL_STAGE is a bump allocator with no free — so letting
+			// it null the global orphans this weatherdata AND its ~15.7KB
+			// particle block. Chaos toggles weather repeatedly within a single
+			// stage, so that burned ~15.7KB per off->on cycle out of the same
+			// pool the props and models come from, until mempAlloc returned 0
+			// and the unchecked particle alloc below wrote through NULL.
+			// Keep the block for reuse instead; the tick is gated on
+			// g_WeatherActive (lv.c), not on g_WeatherData being non-NULL.
+			struct weatherdata *keep = g_WeatherData;
+			weatherStop();
+			g_WeatherData = keep;
 		}
 		g_WeatherActive = false;
 		return 1;
@@ -66,6 +77,12 @@ s32 weatherChaosSet(s32 type, s32 intensity)
 			return 0;
 		}
 		g_WeatherData->particledata[0] = weatherAllocateParticles();
+		if (!g_WeatherData->particledata[0]) {
+			// weatherAllocateParticles writes through its result immediately,
+			// so an exhausted stage pool has to be caught here.
+			g_WeatherData = NULL;
+			return 0;
+		}
 		g_WeatherData->type = -1;
 		g_WeatherData->windanglerad = 0;
 		g_WeatherData->unk0c = 0;

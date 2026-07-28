@@ -254,8 +254,8 @@ bool explosionCreate(struct prop *sourceprop, struct coord *exppos, RoomNum *exp
 
 	// Bullet holes: only crate the flame (explosion) if within 4 metres
 	if (type == EXPLOSIONTYPE_BULLETHOLE) {
-		f32 lodscale = camGetLodScaleZ();
-		struct coord *campos = &g_Vars.currentplayer->cam_pos;
+		f32 lodscale;
+		struct coord *campos;
 		f32 xdist;
 
 #ifndef PLATFORM_N64
@@ -267,10 +267,21 @@ bool explosionCreate(struct prop *sourceprop, struct coord *exppos, RoomNum *exp
 		// other. Use the explosion position itself (distance 0 -> the
 		// near/full branch). Combatant slots are unaffected: playerTick
 		// maintains their cam_pos in the tick path.
+		//
+		// This test MUST come before the two reads below: camGetLodScaleZ()'s
+		// whole body is `return g_Vars.currentplayer->c_lodscalez;` and the
+		// campos initialiser takes &currentplayer->cam_pos, so with the guard
+		// underneath them a NULL currentplayer faulted three lines before the
+		// check meant to prevent it, leaving only the prop==NULL arm reachable.
 		if (g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+			lodscale = 1.0f;
 			campos = exppos;
-		}
+		} else
 #endif
+		{
+			lodscale = camGetLodScaleZ();
+			campos = &g_Vars.currentplayer->cam_pos;
+		}
 
 		xdist = exppos->x - campos->x;
 		f32 ydist = exppos->y - campos->y;

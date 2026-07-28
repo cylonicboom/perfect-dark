@@ -1093,12 +1093,23 @@ void bwalkUpdateVertical(void)
 	// Chaos "Trapdoor" (pd.trapdoor): for a few ticks the floor is yanked far
 	// below the player, so the fall branch runs and they plummet to the death
 	// plane (vv_manground <= -30000 -> playerDie). Local human only; clients get
-	// the authoritative death over the wire. Decrement once per frame (index 0).
+	// the authoritative death over the wire.
+	//
+	// Decrement exactly once per frame. This used to key on
+	// currentplayerindex == 0, which is the RENDER ORDER — a netplay client
+	// seated at wire slot >= 1 never has index 0, so the counter never reached
+	// zero and the floor stayed at -35000 forever: fall, die, respawn, fall,
+	// until a stage reload cleared the global. Stamp the frame instead, which
+	// is slot-independent and also correct in splitscreen.
 	{
 		extern s32 g_ChaosTrapdoorTicks;
+		static u32 lasttickframe = 0xffffffffu;
+
 		if (g_ChaosTrapdoorTicks > 0 && !g_Vars.currentplayer->isremote) {
 			ground = -35000.0f;
-			if (g_Vars.currentplayerindex == 0) {
+
+			if ((u32)g_Vars.lvframe60 != lasttickframe) {
+				lasttickframe = (u32)g_Vars.lvframe60;
 				g_ChaosTrapdoorTicks--;
 			}
 		}
@@ -1279,7 +1290,17 @@ void bwalkUpdateVertical(void)
 			// isfalling == false gates to first tick only so mid-air
 			// knockback (explosion, recoil) keeps falling instead of
 			// snapping back.
-			if (g_Vars.currentplayer->isfalling == false
+			// !isremote: a remote pawn's position is wire-authoritative
+			// (bwalkUpdateRemote wrote it from the owner's move a few lines
+			// up). Running the ledge snap on it makes THIS machine overwrite
+			// that with bondprevpos and, on the host, ship the result back out
+			// in SVC_PLAYER_MOVE — so a client that stepped off a ledge gets
+			// CSP-yanked back onto it and can never leave. It's also driven by
+			// classicOptionActive, which ORs in the LOCAL cheat bank; that bit
+			// never goes on the wire, so the two machines don't even agree the
+			// rule is on. The chaos trapdoor block above is gated the same way.
+			if (g_Vars.currentplayer->isremote == false
+					&& g_Vars.currentplayer->isfalling == false
 					&& classicOptionActive(CHEAT_CLASSIC_LEDGEWALL, MPOPTION_CLASSIC_LEDGEWALL)
 					&& ((g_Vars.currentplayer->bondprevpos.y - g_Vars.currentplayer->vv_height)
 							- g_Vars.currentplayer->vv_ground) > 60.0f) {

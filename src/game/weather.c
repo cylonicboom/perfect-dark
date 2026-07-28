@@ -266,6 +266,17 @@ struct weatherparticledata *weatherAllocateParticles(void)
 	struct weatherparticledata *data = mempAlloc(sizeof(struct weatherparticledata), MEMPOOL_STAGE);
 	u32 i;
 
+#ifndef PLATFORM_N64
+	// mempAlloc returns 0 on an exhausted pool (it only logs "memory pool is
+	// full"). The N64 path could rely on this succeeding because weather was
+	// allocated once at stage load; the port can reach it mid-stage via
+	// weatherChaosSet, where the pool may already be spent — and the very next
+	// line writes through the result at a fixed +0x3e80 offset.
+	if (!data) {
+		return NULL;
+	}
+#endif
+
 	data->unk3e80.x = 0;
 	data->unk3e80.y = 0;
 	data->unk3e80.z = 0;

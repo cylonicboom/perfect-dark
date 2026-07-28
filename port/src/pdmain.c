@@ -103,7 +103,9 @@ extern s32 g_CamRoom;
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
-extern bool gfx_external_textures_enabled;
+// NOTE: unsigned char, not bool — defined as a 1-byte C++ bool in
+// port/fast3d/gfx_pc.cpp, while types.h makes `bool` an s32 in this TU.
+extern unsigned char gfx_external_textures_enabled;
 
 void rngSetSeed(u32 seed);
 void rngCosmeticSetSeed(u64 seed); // cosmetic RNG stream (rngcosmetic_c.c)

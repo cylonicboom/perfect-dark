@@ -1390,6 +1390,17 @@ void scenarioReset(void)
 	case MPSCENARIO_RACE:
 		g_ScenarioData.race.hillcount = 0;
 		break;
+	case MPSCENARIO_PAINTROOM:
+		// roomowner is a per-stage MEMPOOL_STAGE array, freed wholesale when
+		// the stage unloads. Without this reset it stayed pointing at the dead
+		// allocation with the PREVIOUS stage's roomcount, and the 1s state
+		// broadcast kept serializing from it — clients then bounds-checked
+		// incoming room numbers against that stale count and wrote
+		// g_Rooms[roomnum].flags past the end of the new (smaller) room array.
+		// The broadcast is also gated on normmplayerisrunning now.
+		g_ScenarioData.paint.roomowner = NULL;
+		g_ScenarioData.paint.roomcount = 0;
+		break;
 #endif
 	case MPSCENARIO_CAPTURETHECASE:
 		for (i = 0; i < ARRAYCOUNT(g_ScenarioData.ctc.spawnpadsperteam); i++) {

@@ -226,6 +226,13 @@ static s32 netUpnpHttpBegin(const char *host, u16 port)
 		return 0;
 	}
 	enet_socket_set_option(s_httpSock, ENET_SOCKOPT_NONBLOCK, 1);
+	// Same reason as the SSDP socket below and the two netmaster sockets:
+	// enet_socket_create makes a PF_INET6 socket, and Windows defaults
+	// IPV6_V6ONLY to 1, so connecting to the router's v4-mapped address fails.
+	// This was the only aux socket missing it — SSDP discovery found the
+	// gateway and then every SOAP request died, so UPnP forwarding could never
+	// succeed on Windows. (Linux escaped it: bindv6only defaults to 0.)
+	enet_socket_set_option(s_httpSock, ENET_SOCKOPT_IPV6_V6ONLY, 0);
 
 	if (enet_socket_connect(s_httpSock, &addr) < 0) { // in-progress returns 0
 		netUpnpHttpAbort();

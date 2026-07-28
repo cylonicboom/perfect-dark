@@ -168,9 +168,13 @@ s32 videoInit(void)
 	// Persisted display-list-cache master enable (Video.DlCache). Default on; off
 	// skips the cache (correct on hardware where it mis-renders).
 	{
-		extern bool g_DlCacheEnabled;
+		// NOTE: s32, not bool — this is defined in src/game/bg.c, where
+		// types.h #defines bool to s32. video.c deliberately does not include
+		// types.h, so spelling it `bool` here would give a 1-byte _Bool view of
+		// a 4-byte object (the same ABI seam that made VR buttons read as held).
+		extern s32 g_DlCacheEnabled;
 		extern void gfx_dlcache_clear(void);
-		g_DlCacheEnabled = (bool)vidDlCache;
+		g_DlCacheEnabled = !!vidDlCache;
 		if (!vidDlCache) {
 			gfx_dlcache_clear();
 		}
@@ -781,16 +785,24 @@ void videoSetExternalTextures(s32 external)
 // Video.DlCache). Off skips the GPU-resident cache (byte-identical to non-cached).
 s32 videoGetDlCacheEnabled(void)
 {
-	extern bool g_DlCacheEnabled;
+	// NOTE: s32, not bool — this is defined in src/game/bg.c, where
+		// types.h #defines bool to s32. video.c deliberately does not include
+		// types.h, so spelling it `bool` here would give a 1-byte _Bool view of
+		// a 4-byte object (the same ABI seam that made VR buttons read as held).
+		extern s32 g_DlCacheEnabled;
 	return g_DlCacheEnabled;
 }
 
 void videoSetDlCacheEnabled(s32 on)
 {
-	extern bool g_DlCacheEnabled;
+	// NOTE: s32, not bool — this is defined in src/game/bg.c, where
+		// types.h #defines bool to s32. video.c deliberately does not include
+		// types.h, so spelling it `bool` here would give a 1-byte _Bool view of
+		// a 4-byte object (the same ABI seam that made VR buttons read as held).
+		extern s32 g_DlCacheEnabled;
 	extern void gfx_dlcache_clear(void);
 	vidDlCache = !!on;
-	g_DlCacheEnabled = (bool)vidDlCache;
+	g_DlCacheEnabled = !!vidDlCache;
 	if (!on) {
 		gfx_dlcache_clear(); // drop any recorded buffers when disabling
 	}

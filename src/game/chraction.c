@@ -9817,7 +9817,8 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses
 // effect can teleport them back when it ends.
 static struct coord g_ChaosSnatchHome;
 static RoomNum g_ChaosSnatchHomeRooms[8];
-// Non-static so lvInit() can clear it on stage load — a mid-snatch stage change
+// Non-static so lvResetChaosPerStage() can clear it on stage load (lvInit runs
+// only once at boot in this port) — a mid-snatch stage change
 // tears down the Lua state without calling stop(), and a stale "active" flag
 // would keep guards from ever firing (and break real disguise missions).
 s32 g_ChaosSnatchActive = 0;
@@ -10140,7 +10141,8 @@ s32 chraiLuaChrCalm(s32 chrnum)
 #define CHAOS_CIVILWAR_MAX 256
 static s16 g_ChaosCivilWarChr[CHAOS_CIVILWAR_MAX];
 static u8  g_ChaosCivilWarTeam[CHAOS_CIVILWAR_MAX];
-// Non-static so lvInit() can clear it on stage load — a mid-effect stage change
+// Non-static so lvResetChaosPerStage() can clear it on stage load (lvInit runs
+// only once at boot in this port) — a mid-effect stage change
 // tears down the Lua state without calling stop(), and a stale count would let a
 // later restore write teams onto the wrong (recycled-chrnum) chrs.
 s32 g_ChaosCivilWarCount = 0;

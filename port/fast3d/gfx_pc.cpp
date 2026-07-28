@@ -667,6 +667,17 @@ extern "C" void gfx_dlcache_invalidate_range(const void* start, const void* end)
     const uintptr_t s = (uintptr_t)start;
     const uintptr_t t = (uintptr_t)end;
 
+    // Abort any in-progress record first, exactly as dlcacheInvalidateAll does.
+    // g_DlCacheCur is a raw pointer INTO a map node; if a record is still open
+    // when a room unloads (a BEGIN whose END never ran, so g_DlCacheRecording
+    // stays true across gfx_run) the erase below frees that node and the next
+    // dlcacheCloseSegment pushes a segment into freed memory.
+    if (g_DlCacheRecording) {
+        g_DlCacheRecording = false;
+        g_DlCacheCur = NULL;
+        g_DlCacheAbort = true;
+    }
+
     for (auto it = g_DlCache.begin(); it != g_DlCache.end();) {
         const uintptr_t key = (uintptr_t)it->first;
 
@@ -3388,6 +3399,20 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
                     if (seg.tex_node[i]) {
                         gfx_texture_cache.lru.splice(gfx_texture_cache.lru.end(), gfx_texture_cache.lru,
                                                      seg.tex_node[i]->second.lru_location);
+                        // set_sampler_parameters mutates state owned by the TEXTURE
+                        // OBJECT on both backends (GL: glTexParameteri on the bound
+                        // texture; SDL_GPU: textures[id-1].skey), not by the binding.
+                        // The immediate path in gfx_sp_tri1 decides whether to
+                        // re-apply by comparing against this cache node's shadow
+                        // copy, so leaving it stale made it skip the re-apply and
+                        // draw props/chrs with the cached leaf's wrap/filter —
+                        // a texture that tiles correctly with /dlcache off renders
+                        // clamped in one axis with it on, and "fixes itself" when
+                        // you move away and back (that forces a re-import, which
+                        // changes the node). Keep the two views in sync here.
+                        seg.tex_node[i]->second.linear_filter = seg.tex_linear[i];
+                        seg.tex_node[i]->second.cms = seg.tex_cms[i];
+                        seg.tex_node[i]->second.cmt = seg.tex_cmt[i];
                     }
                 }
             }

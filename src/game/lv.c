@@ -2,7 +2,11 @@
 #include "constants.h"
 #include "bss.h"
 #include "data.h"
+#ifndef PLATFORM_N64
+// port-only: det.h lives in port/include and detPinTimestep is in port/src.
+// Unguarded, this made lv.c fail to compile at all for -DPLATFORM_N64.
 #include "det.h"
+#endif
 #include "game/activemenu.h"
 #include "game/atan2f.h"
 #include "game/bg.h"
@@ -151,23 +155,38 @@ void setVar80084040(u32 value)
 	var80084040 = value;
 }
 
-void lvInit(void)
+#ifndef PLATFORM_N64
+/**
+ * Clear the chaos state that must not survive a stage change.
+ *
+ * This lives in its own function called from lvReset, NOT from lvInit: in the
+ * port lvInit runs exactly ONCE, at boot (port/src/pdmain.c — src/lib/main.c,
+ * the other caller, is not compiled in). These clears used to sit in lvInit
+ * under comments claiming "clear on stage load", which was never true, so an
+ * effect still running at a stage change latched forever. The worst case was
+ * body-snatch: g_ChaosSnatchActive stuck at 1 makes chraction.c's weapon-fire
+ * handler early-return for every non-player chr in every mission for the rest
+ * of the process. g_ChaosMissionComplete had already been migrated on its own
+ * after hitting exactly this; the rest are moved here now.
+ *
+ * chaos.lua clears most of these too, but its lua_State is torn down on a stage
+ * change, so the C side has to be self-sufficient.
+ */
+void lvResetChaosPerStage(void)
 {
-	extern s32 g_ChaosSnatchActive;   // chaos body-snatch: clear on stage load
-	extern s32 g_ChaosCivilWarCount;  // chaos civil-war: clear on stage load
-	extern s32 g_ChaosControlReverse; // chaos Australia: clear on stage load
-	extern unsigned char gfx_rotate180_mode; // chaos Australia: clear on stage load
-	extern unsigned char gfx_doublevision_mode; // chaos One-too-many: clear on stage load
-	extern s32 g_ChaosGunLock;        // chaos Cyclone Frenzy: clear on stage load
-	extern s32 g_ChaosKnifeLock;      // chaos Knife fight: clear on stage load
-	extern s32 g_ChaosMagDump;        // chaos Mag Dump: clear on stage load
-	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch: clear on stage load
-	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry: clear on stage load
-	extern f32 g_ChaosPlayerSpeed;    // chaos Gotta go fast: reset on stage load
-	extern s32 g_ChaosMissionComplete; // chaos: mission-success flag, clear on stage load
+	extern s32 g_ChaosSnatchActive;   // chaos body-snatch
+	extern s32 g_ChaosCivilWarCount;  // chaos civil-war
+	extern s32 g_ChaosControlReverse; // chaos Australia
+	extern unsigned char gfx_rotate180_mode; // chaos Australia
+	extern unsigned char gfx_doublevision_mode; // chaos One-too-many
+	extern s32 g_ChaosGunLock;        // chaos Cyclone Frenzy
+	extern s32 g_ChaosKnifeLock;      // chaos Knife fight
+	extern s32 g_ChaosMagDump;        // chaos Mag Dump
+	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch
+	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry
+	extern f32 g_ChaosPlayerSpeed;    // chaos Gotta go fast
 	s32 twin_i;
-	g_Vars.lockscreen = 0;
-	g_Vars.joydisableframestogo = -1;
+
 	g_ChaosSnatchActive = 0;
 	g_ChaosCivilWarCount = 0;
 	g_ChaosControlReverse = 0;
@@ -178,10 +197,22 @@ void lvInit(void)
 	g_ChaosMagDump = 0;
 	g_ChaosMagDumpArmed = 0;
 	g_ChaosPlayerSpeed = 1.0f;
-	g_ChaosMissionComplete = 0;
+
 	for (twin_i = 0; twin_i < 8; twin_i++) {
 		g_ChaosTwinChrnums[twin_i] = -1;
 	}
+}
+#endif
+
+void lvInit(void)
+{
+	g_Vars.lockscreen = 0;
+	g_Vars.joydisableframestogo = -1;
+#ifndef PLATFORM_N64
+	// Boot-time clear. The per-stage clear is in lvResetChaosPerStage (called
+	// from lvReset) — lvInit does NOT run on a stage load in this port.
+	lvResetChaosPerStage();
+#endif
 }
 
 void lvResetMiscSfx(void)
@@ -353,6 +384,11 @@ void lvReset(s32 stagenum)
 	// mission-complete clear never re-arms — re-clear it here where the real
 	// per-stage reset runs, or a completed mission latches effects off forever.
 	g_ChaosMissionComplete = 0;
+	// The same reasoning applies to the rest of the chaos state that used to be
+	// cleared only in lvInit (body-snatch, civil-war, Australia, gun/knife lock,
+	// mag dump, evil-twin registry, player speed). Those comments claimed "clear
+	// on stage load" but never ran on one — see lvResetChaosPerStage.
+	lvResetChaosPerStage();
 	// Same reasoning: a home marked on the previous stage or a held objective
 	// override MUST NOT survive into a fresh mission (chaos.lua also clears
 	// these, but its Lua state can die mid-effect on a stage change).
@@ -2817,7 +2853,9 @@ void lvTick(void)
 	// before the rest of the derivation runs, so the lvupdate60/60f/freal values
 	// and the lvframe* counters below all advance deterministically. No-op during
 	// normal play. (Must be before the lvupdate60 derivation directly below.)
+#ifndef PLATFORM_N64
 	detPinTimestep();
+#endif
 
 	g_Vars.lvupdate60 = g_Vars.lvupdate240 + g_Vars.lvupdate240rem;
 	g_Vars.lvupdate240rem = g_Vars.lvupdate60 & 3;

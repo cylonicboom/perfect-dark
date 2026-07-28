@@ -34,6 +34,9 @@ extern s32 g_LvSlomoEngaged;
 
 u32 getVar80084040(void);
 void lvInit(void);
+#ifndef PLATFORM_N64
+void lvResetChaosPerStage(void);
+#endif
 void lvResetMiscSfx(void);
 s32 lvGetMiscSfxIndex(u32 arg0);
 void lvSetMiscSfxState(u32 type, bool play);

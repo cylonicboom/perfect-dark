@@ -3294,7 +3294,7 @@ void netEndFrame(void)
 			// (g_MpPaintDirty, raised by paintSetRoomOwner on the host) plus a
 			// 1s keep-alive at a free phase offset (35) so dropped packets and
 			// mid-match joiners heal.
-			if (g_MpSetup.scenario == MPSCENARIO_PAINTROOM
+			if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_PAINTROOM
 					&& (g_MpPaintDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 35u)) {
 				g_MpPaintDirty = 0;
 				netmsgSvcPaintStateWrite(&g_NetMsgRel);
@@ -3304,7 +3304,7 @@ void netEndFrame(void)
 			// on change (g_MpZonesDirty: zone flips and cycle awards) plus a 1s
 			// keep-alive at phase 20 (free — KoH 0, reconcile 10/40, score 15,
 			// lobby 30, paint 35, stats 45, timescale 50).
-			if (g_MpSetup.scenario == MPSCENARIO_ZONES
+			if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_ZONES
 					&& (g_MpZonesDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 20u)) {
 				g_MpZonesDirty = 0;
 				netmsgSvcZonesStateWrite(&g_NetMsgRel);
@@ -3323,7 +3323,7 @@ void netEndFrame(void)
 			// Race: broadcast per-racer progress + finish order + the finish
 			// timer on change (checkpoint passes, finishes) plus a 1s
 			// keep-alive at phase 5 (free, see the phase list above).
-			if (g_MpSetup.scenario == MPSCENARIO_RACE
+			if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_RACE
 					&& (g_MpRaceDirty || (g_NetTick % NET_HEARTBEAT_INTERVAL) == 5u)) {
 				g_MpRaceDirty = 0;
 				netmsgSvcRaceStateWrite(&g_NetMsgRel);

@@ -813,9 +813,21 @@ static const char *menutextHostOnlineStatus(struct menuitem *item)
 	return "\n";
 }
 
+// Forward decl: the dialog this handler belongs to, defined below. Needed for
+// the re-entry guard.
+static struct menudialogdef g_NetHostOnlineWaitDialog;
+
 static MenuItemHandlerResult menuhandlerHostOnlineWait(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	if (inputKeyPressed(VK_ESCAPE)
+	// Same re-entry hazard as menuhandlerJoining: this runs several times per
+	// frame (CHECKHIDDEN / CHECKDISABLED / size recalc as well as TICK) and
+	// inputKeyPressed is level-triggered, so one ESC tap popped this dialog and
+	// then kept popping its parents for the rest of the key-down.
+	if (!menuIsDialogOpen(&g_NetHostOnlineWaitDialog)) {
+		return 0;
+	}
+
+	if ((operation == MENUOP_TICK && inputKeyPressed(VK_ESCAPE))
 			|| (operation == MENUOP_SET && g_NetHostRequestState != NETHOSTREQ_REQUESTING)) {
 		netHostRequestClose();
 		menuPopDialog();
@@ -1189,7 +1201,25 @@ static struct menudialogdef g_NetCoopHostMenuDialog;
 
 static MenuItemHandlerResult menuhandlerJoining(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	if (inputKeyPressed(VK_ESCAPE)) {
+	// This handler is invoked several times per frame, not once: the item is a
+	// SELECTABLE without MENUITEMFLAG_SELECTABLE_OPENSDIALOG, so menu.c calls it
+	// for MENUOP_CHECKHIDDEN and MENUOP_CHECKDISABLED (and again from
+	// menuIsItemDisabled inside the size recalc) on top of MENUOP_TICK.
+	//
+	// inputKeyPressed reads raw keyboard STATE, so one ~100ms ESC tap is held
+	// across 5-9 frames. Without these guards the first invocation popped
+	// "Joining", and the remaining invocations in that same frame popped Join
+	// Network Game -> Network Game -> Combat Simulator and kept going until the
+	// menu closed entirely — calling netDisconnect() once per invocation, and
+	// mutating the dialog stack while menu.c was still walking it.
+	//
+	// menuIsDialogOpen is the same re-entry guard the sibling handlers in this
+	// file already use.
+	if (!menuIsDialogOpen(&g_NetJoiningDialog)) {
+		return 0;
+	}
+
+	if (operation == MENUOP_TICK && inputKeyPressed(VK_ESCAPE)) {
 		netDisconnect();
 		menuPopDialog();
 		return 0;
@@ -1197,9 +1227,13 @@ static MenuItemHandlerResult menuhandlerJoining(s32 operation, struct menuitem *
 
 	// #4: if the host's lobby state says this is a co-op game, swap the generic
 	// Combat-Sim "Joining Game..." window for the co-op Match Setup window (the
-	// player's own Body Type editable, host-only settings greyed). Happens once —
-	// once we pop this dialog, this handler stops running.
-	if (g_NetLobbyState.valid && g_NetLobbyState.iscoop
+	// player's own Body Type editable, host-only settings greyed). Happens once
+	// per frame at most, and the open-check above stops it re-firing after the
+	// swap (the comment used to claim popping the dialog was enough, but the
+	// later invocations in the SAME frame still saw the condition true and
+	// re-pushed into a live dialog slot).
+	if (operation == MENUOP_TICK
+			&& g_NetLobbyState.valid && g_NetLobbyState.iscoop
 			&& g_NetLocalClient && g_NetLocalClient->state >= CLSTATE_LOBBY) {
 		menuPopDialog();
 		menuPushDialog(&g_NetCoopHostMenuDialog);

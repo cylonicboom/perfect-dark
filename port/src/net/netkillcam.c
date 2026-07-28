@@ -44,9 +44,18 @@ static bool g_NetKillcamPlayedThisDeath = false;
 // pawn, else the solo / listen-host primary (slot 0).
 static struct player *netKillcamLocalPlayer(void)
 {
-	if (g_NetMode == NETMODE_CLIENT) {
+	// Prefer the net local client's own pawn in EVERY netmode. On a listen host
+	// with spectator mode enabled, spectatorAllocatePanels seats combatants at
+	// the low g_Vars.players[] slots and the host's panels at the high ones, so
+	// players[0] is a REMOTE client's pawn — the host would latch that client's
+	// death as its own, freeze recording, and run the replay rewind (below) on
+	// the authoritative world. A dedicated/spectator host has no pawn at all,
+	// which is a NULL return and no killcam, as intended.
+	if (g_NetMode != NETMODE_NONE) {
 		return g_NetLocalClient ? g_NetLocalClient->player : NULL;
 	}
+
+	// Offline: slot 0 is the primary local player.
 	return g_Vars.players[0];
 }
 
@@ -540,7 +549,19 @@ void netKillcamRenderEnd(void)
 		}
 	}
 
-	g_NetKillcam.playoffset++;
+	// Advance one recorded frame per LOGICAL tick, not per render frame. The
+	// recording side is already gated on g_Vars.lvframe60 (s_lastrecframe
+	// above); playback was not, so the 300-tick window was consumed at the
+	// render rate — 2x speed at the 120fps netplay cap, half speed at 30fps.
+	{
+		static u32 lastplayframe = 0xffffffffu;
+
+		if ((u32)g_Vars.lvframe60 != lastplayframe) {
+			lastplayframe = (u32)g_Vars.lvframe60;
+			g_NetKillcam.playoffset++;
+		}
+	}
+
 	if (g_NetKillcam.playoffset >= g_NetKillcam.windowlen) {
 		netKillcamStop(); // reached the death moment — hand back to the dead-cam
 	}

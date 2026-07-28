@@ -3108,7 +3108,17 @@ void netEndFrame(void)
 					struct prop *prop = &g_Vars.props[i];
 					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
 							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
-						if (!netPropWasSpawnBroadcast(prop->syncid)) {
+						// Only RUNTIME-spawned props (syncid at or above the
+						// stage-load watermark) may be spawn-broadcast. Static
+						// level objects already exist on the client from its own
+						// deterministic stage load, and the spawn READER has no
+						// constructor for a non-autogun OBJ — under "latest
+						// spawn wins" it frees its existing copy and then bails,
+						// so re-broadcasting crates/terminals/glass permanently
+						// deleted them client-side. No-op for the projectile
+						// passes (projectiles are always runtime).
+						if (prop->syncid >= g_NetFirstDynamicSyncId
+								&& !netPropWasSpawnBroadcast(prop->syncid)) {
 							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
 						}
 						const u32 b0 = g_NetMsg.wp;
@@ -3128,7 +3138,17 @@ void netEndFrame(void)
 					struct prop *prop = &g_Vars.props[i];
 					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
 							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE) == 0) {
-						if (!netPropWasSpawnBroadcast(prop->syncid)) {
+						// Only RUNTIME-spawned props (syncid at or above the
+						// stage-load watermark) may be spawn-broadcast. Static
+						// level objects already exist on the client from its own
+						// deterministic stage load, and the spawn READER has no
+						// constructor for a non-autogun OBJ — under "latest
+						// spawn wins" it frees its existing copy and then bails,
+						// so re-broadcasting crates/terminals/glass permanently
+						// deleted them client-side. No-op for the projectile
+						// passes (projectiles are always runtime).
+						if (prop->syncid >= g_NetFirstDynamicSyncId
+								&& !netPropWasSpawnBroadcast(prop->syncid)) {
 							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
 						}
 						const u32 b0 = g_NetMsg.wp;
@@ -3181,7 +3201,17 @@ void netEndFrame(void)
 							// world physics) — never wire their position; the
 							// fired projectile they become is what syncs.
 							&& (prop->obj->flags & OBJFLAG_HELDROCKET) == 0) {
-						if (!netPropWasSpawnBroadcast(prop->syncid)) {
+						// Only RUNTIME-spawned props (syncid at or above the
+						// stage-load watermark) may be spawn-broadcast. Static
+						// level objects already exist on the client from its own
+						// deterministic stage load, and the spawn READER has no
+						// constructor for a non-autogun OBJ — under "latest
+						// spawn wins" it frees its existing copy and then bails,
+						// so re-broadcasting crates/terminals/glass permanently
+						// deleted them client-side. No-op for the projectile
+						// passes (projectiles are always runtime).
+						if (prop->syncid >= g_NetFirstDynamicSyncId
+								&& !netPropWasSpawnBroadcast(prop->syncid)) {
 							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
 						}
 						const u32 b0 = g_NetMsg.wp;
@@ -3203,7 +3233,17 @@ void netEndFrame(void)
 							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
 							&& (prop->obj->hidden & (OBJHFLAG_PROJECTILE | OBJHFLAG_EMBEDDED)) == 0
 							&& (prop->obj->flags & OBJFLAG_HELDROCKET) == 0) {
-						if (!netPropWasSpawnBroadcast(prop->syncid)) {
+						// Only RUNTIME-spawned props (syncid at or above the
+						// stage-load watermark) may be spawn-broadcast. Static
+						// level objects already exist on the client from its own
+						// deterministic stage load, and the spawn READER has no
+						// constructor for a non-autogun OBJ — under "latest
+						// spawn wins" it frees its existing copy and then bails,
+						// so re-broadcasting crates/terminals/glass permanently
+						// deleted them client-side. No-op for the projectile
+						// passes (projectiles are always runtime).
+						if (prop->syncid >= g_NetFirstDynamicSyncId
+								&& !netPropWasSpawnBroadcast(prop->syncid)) {
 							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
 						}
 						const u32 b0 = g_NetMsg.wp;

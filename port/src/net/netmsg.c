@@ -3644,7 +3644,9 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 			const u8 clid = netbufReadU8(src);
 			struct netclient *ownercl = netResolveWireClient(clid);
 			if (!ownercl || !ownercl->player || !ownercl->player->prop || !ownercl->player->prop->chr) {
-				return 1;
+				// All four owner bytes were read, so the stream stays aligned —
+				// drop just this spawn, not the rest of the packet.
+				return src->error;
 			}
 			struct chrdata *ownerchr = ownercl->player->prop->chr;
 			struct autogunobj *obj = laptopDeploy(modelnum, NULL, ownerchr);
@@ -3663,7 +3665,12 @@ u32 netmsgSvcPropSpawnRead(struct netbuf *src, struct netclient *srccl)
 		sysLogPrintf(LOG_WARNING, "NET: spawn %u type %u objtype %u bound no obj; dropping", syncid, type, objtype);
 		netPropLogEvent(prop, NETPROP_EV_WIRE_SPAWN_DROP, NETPROP_DROP_NOOBJ);
 		propFree(prop);
-		return 1;
+		// return src->error, NOT 1: the message has been fully consumed by this
+		// point, so the stream is still aligned. Returning 1 made the dispatch
+		// loop log "malformed" and discard every REMAINING message in the same
+		// ENet packet — on the reliable buffer that meant losing unrelated prop
+		// spawns and frees.
+		return src->error;
 	}
 
 	if (prop) {

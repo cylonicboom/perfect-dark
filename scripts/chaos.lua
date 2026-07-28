@@ -66,7 +66,7 @@ local st = {
   trigsound = (pd.persist_get and pd.persist_get("chaos_trigsound")) or "select",
   -- nil = external file not tried yet, false = missing (stop retrying so the
   -- audio layer doesn't log a "can't load" warning on every single effect).
-  trigsound_ok = nil,
+  trigsound_extok = {},  -- per-file "did it load" cache for extfile stings
   -- Effects pinned ON by `set` — they never tick down and never wear off,
   -- until `unset`/`clear`, a stop_all (Chaos off, supersonic flush) or a
   -- stage change. name -> true.
@@ -266,8 +266,12 @@ local TRIGSOUNDS = {
   { key="charge",   label="Mauler Charge",   sfx=0x8065 },
   { key="maian",    label="Maian Scream",    sfx=0x05df },
   { key="throw",    label="Throw",           sfx=0x80a9 },
+  -- file-backed stings (scripts/chaos/sounds/<extfile>.wav or .mp3,
+  -- user-supplied): they join the Random pool too, until a missing file
+  -- drops them out for the session
+  { key="achoo",    label="Achoo",           extfile="achoo" },
   { key="random",   label="Random Each Time", random=true },
-  { key="external", label="External File",   ext=true },
+  { key="external", label="External File",   extfile="chaostrigger" },
 }
 
 local TRIGSOUND_DEFAULT = "select"
@@ -292,7 +296,12 @@ local function play_trigger_sting()
   if t.random then
     local pool = {}
     for i = 1, #TRIGSOUNDS do
-      if TRIGSOUNDS[i].sfx then pool[#pool + 1] = TRIGSOUNDS[i] end
+      local e = TRIGSOUNDS[i]
+      -- file-backed entries ride along until one fails to load (missing
+      -- file), then drop out of the pool for the session
+      if e.sfx or (e.extfile and st.trigsound_extok[e.key] ~= false) then
+        pool[#pool + 1] = e
+      end
     end
     if #pool == 0 then return end
     t = pool[math.random(#pool)]
@@ -300,14 +309,16 @@ local function play_trigger_sting()
 
   if t.sfx then
     if pd.sound then pd.sound(t.sfx) end
-  elseif t.ext then
-    -- Cached: with no file present the audio layer logs a "can't load" warning
-    -- per attempt, which would otherwise spam the log on every single effect.
-    if st.trigsound_ok == false then return end
-    local ok = play_sound("chaostrigger")
-    st.trigsound_ok = ok
+  elseif t.extfile then
+    -- Cached per file: with no file present the audio layer logs a "can't
+    -- load" warning per attempt, which would otherwise spam the log on
+    -- every single effect.
+    if st.trigsound_extok[t.key] == false then return end
+    local ok = play_sound(t.extfile)
+    st.trigsound_extok[t.key] = ok
     if not ok then
-      pd.log("[chaos] External trigger sound needs scripts/chaos/sounds/chaostrigger.wav or .mp3 - disabled for this session")
+      pd.log("[chaos] trigger sound '" .. t.label .. "' needs scripts/chaos/sounds/"
+          .. t.extfile .. ".wav or .mp3 - disabled for this session")
     end
   end
 end
@@ -4143,7 +4154,7 @@ function chaos.handle(source, text)
         end
         st.trigsound = found
       end
-      st.trigsound_ok = nil -- re-test the external file after a switch
+      st.trigsound_extok = {} -- re-test the external files after a switch
       persist()
       local t = trigsound_entry(st.trigsound)
       pd.log("[chaos] trigger sound = " .. t.label)
@@ -5190,13 +5201,13 @@ if pd.menu_add then
         local idx = i
         ids[idx] = pd.menu_add(slbl(idx), function()
           st.trigsound = TRIGSOUNDS[idx].key
-          st.trigsound_ok = nil -- re-test the external file after a switch
+          st.trigsound_extok = {} -- re-test the external files after a switch
           persist()
           srelabel()
           play_trigger_sting()
-        end, GROUP .. "/Trigger Sound", TRIGSOUNDS[idx].ext
-            and "Plays scripts/chaos/sounds/chaostrigger.wav or .mp3 - drop your own file in that folder. Never interrupts the music."
-            or (TRIGSOUNDS[idx].random and "Picks a different built-in sting every time an effect fires."
+        end, GROUP .. "/Trigger Sound", TRIGSOUNDS[idx].extfile
+            and ("Plays scripts/chaos/sounds/" .. TRIGSOUNDS[idx].extfile .. ".wav or .mp3 - drop your own file in that folder. Never interrupts the music.")
+            or (TRIGSOUNDS[idx].random and "Picks a different sting every time an effect fires (file-backed ones included when their file exists)."
             or (TRIGSOUNDS[idx].key == "off" and "No sound when an effect fires."
             or "Built-in game sound. Selecting it plays a preview.")))
       end

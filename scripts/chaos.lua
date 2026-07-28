@@ -1456,8 +1456,13 @@ chaos.effects = {
                      st.a_dj = nil
                      if pd.audio_pitch then pd.audio_pitch() end
                    end },
+  -- relax.mp3 (scripts/chaos/sounds/, user-supplied) sets the mood; quiet
+  -- no-op until the file is dropped in.
   take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
-                   start=function() pd.player_freeze(true) end,
+                   start=function()
+                     pd.player_freeze(true)
+                     play_sound("relax")
+                   end,
                    stop=function() pd.player_freeze(false) end },
   vampire      = { label="Vampire",           w=4, dur=30,
                    -- drain ~2%/s; damaging enemies feeds you (see the

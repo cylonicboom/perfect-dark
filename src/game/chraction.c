@@ -11486,6 +11486,20 @@ s32 chraiLuaPlayFile(const char *path, s32 loop, s32 followMusic)
 	return audioPlayExternal(path, loop, followMusic);
 }
 
+// pd.ext_volume([pct]): volume of ALL external one-shots as a percentage OF
+// the music slider (the slider stays the ceiling). pct < 0 = just read.
+// Persists as Audio.ExtVolume in pd.ini.
+s32 chraiLuaExtVolume(s32 pct)
+{
+	extern void audioSetExtVolume(s32 pct);
+	extern s32 audioGetExtVolume(void);
+
+	if (pct >= 0) {
+		audioSetExtVolume(pct);
+	}
+	return audioGetExtVolume();
+}
+
 // pd.stop_file(): stop the external sound started by pd.play_file (e.g. the
 // phone ringtone when the call is answered).
 void chraiLuaStopFile(void)

@@ -422,6 +422,7 @@ s32 chraiLuaAudioRadio(s32 on);               /* AM-radio bandpass + overdrive *
 s32 chraiLuaAudioReverb(f32 wet);             /* cathedral reverb, wet 0..1; 0 = off */
 s32 chraiLuaAudioReverse(s32 on);             /* audio plays backwards in ~0.74s granules */
 s32 chraiLuaAudioPitch(f32 rate);             /* constant-tempo pitch shift; 1 = off */
+s32 chraiLuaExtVolume(s32 pct);               /* external-sound volume, % of music slider; <0 = get */
 s32 chraiLuaForceSecondary(s32 on);           /* pin both hands to the secondary weapon function */
 s32 chraiLuaButtonMask(u32 mask);             /* strip pad buttons from gameplay input; 0 = off */
 s32 chraiLuaAmmoCost(s32 mult);               /* each shot spends mult clip rounds; 1 = normal */

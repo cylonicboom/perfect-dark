@@ -5189,6 +5189,14 @@ if pd.menu_add then
       function() return st.toasts end,
       function(v) st.toasts = (v and true or false); persist() end,
       GROUP, "Show the corner notification naming each effect as it starts and ends. Turn OFF for a clean screen - effects then fire with no on-screen hint that Chaos did it.")
+    -- External-sound volume: persisted C-side as Audio.ExtVolume (pd.ini),
+    -- so no chaos persist() call — the config system owns it.
+    if pd.ext_volume then
+      pd.menu_add_slider("Sound FX Volume (%)",
+        function() return pd.ext_volume() end,
+        function(v) pd.ext_volume(v) end,
+        0, 100, GROUP, "Volume of the external chaos sounds (memes, ringtones, jingles) as a percentage OF the music volume slider - music volume stays the ceiling. Saved to pd.ini.")
+    end
 
     -- Trigger sting picker: one row per sound in a "Chaos/Trigger Sound"
     -- sub-folder. Selecting a row PLAYS it immediately — you shouldn't have to

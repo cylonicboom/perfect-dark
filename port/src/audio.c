@@ -52,6 +52,10 @@ struct extvoice {
 	s32 followMusic;  // scale by music volume + pause with the game
 };
 static struct extvoice extVoices[EXT_VOICES];
+// Audio.ExtVolume: every external voice's gain is extVolume% OF the current
+// music-slider level — the music slider is the CEILING (user call
+// 2026-07-28), this scales below it. 100 = exactly the music volume.
+static s32 extVolume = 100;
 
 #ifndef DEDICATED_SERVER
 static s32 extAnyActive(void)
@@ -129,6 +133,24 @@ void audioSetMuted(s32 on)
 {
 #ifndef DEDICATED_SERVER
 	audioMuted = on;
+#endif
+}
+
+void audioSetExtVolume(s32 pct)
+{
+#ifndef DEDICATED_SERVER
+	extVolume = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+#else
+	(void)pct;
+#endif
+}
+
+s32 audioGetExtVolume(void)
+{
+#ifndef DEDICATED_SERVER
+	return extVolume;
+#else
+	return 100;
 #endif
 }
 
@@ -615,10 +637,19 @@ void audioEndFrame(void)
 							struct extvoice *v = &extVoices[vi];
 							const s16 *ext;
 							u32 bytes, i, n;
-							// 8.8 fixed-point gain: 256 = unity. followMusic voices
-							// scale by the current music slider (0..0x5000) so they
-							// duck/mute with the player's music setting.
-							s32 gain256 = 256;
+							// 8.8 fixed-point gain: 256 = unity. EVERY voice now
+							// scales by extVolume% of the current music slider
+							// (0..0x5000) — the music slider is the CEILING and
+							// Audio.ExtVolume scales under it, so external sounds
+							// can never play louder than the player's music
+							// setting. followMusic voices now differ only in the
+							// pause-hold semantics below.
+							s32 mv = (s32)optionsGetMusicVolume();
+							s32 gain256 = (mv * 256) / AUDIO_MUSICVOL_MAX;
+
+							if (gain256 > 256) gain256 = 256;
+							if (gain256 < 0) gain256 = 0;
+							gain256 = (gain256 * extVolume) / 100;
 
 							if (!v->data || v->pos >= v->len) {
 								continue;
@@ -629,13 +660,6 @@ void audioEndFrame(void)
 
 							ext = (const s16 *)(v->data + v->pos);
 							bytes = v->len - v->pos;
-
-							if (v->followMusic) {
-								s32 mv = (s32)optionsGetMusicVolume();
-								gain256 = (mv * 256) / AUDIO_MUSICVOL_MAX;
-								if (gain256 > 256) gain256 = 256;
-								if (gain256 < 0) gain256 = 0;
-							}
 
 							if (bytes > nextSize) {
 								bytes = nextSize;
@@ -726,4 +750,7 @@ PD_CONSTRUCTOR static void audioConfigInit(void)
 {
 	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 1 * 1024 * 1024);
+#ifndef DEDICATED_SERVER
+	configRegisterInt("Audio.ExtVolume", &extVolume, 0, 100);
+#endif
 }

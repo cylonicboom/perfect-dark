@@ -2365,6 +2365,16 @@ static int l_pd_stop_file(lua_State *L)
 	return 0;
 }
 
+/* pd.ext_volume([pct]) -> pct. Volume of all external sounds as a % of the
+ * music slider (the slider is the ceiling). With arg: set 0..100 (persisted
+ * as Audio.ExtVolume). Always returns the current value. */
+static int l_pd_ext_volume(lua_State *L)
+{
+	s32 pct = (s32)luaL_optinteger(L, 1, -1);
+	lua_pushinteger(L, chraiLuaExtVolume(pct));
+	return 1;
+}
+
 /* pd.weapon_rename(weaponnum [, name]). Relabel a weapon everywhere it's
  * shown; no name / nil restores the real one. */
 static int l_pd_weapon_rename(lua_State *L)
@@ -3633,6 +3643,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_mute);          lua_setfield(L, -2, "mute");
 	lua_pushcfunction(L, l_pd_play_file);     lua_setfield(L, -2, "play_file");
 	lua_pushcfunction(L, l_pd_stop_file);     lua_setfield(L, -2, "stop_file");
+	lua_pushcfunction(L, l_pd_ext_volume);    lua_setfield(L, -2, "ext_volume");
 	lua_pushcfunction(L, l_pd_weapon_rename); lua_setfield(L, -2, "weapon_rename");
 	lua_pushcfunction(L, l_pd_menu_lore);     lua_setfield(L, -2, "menu_lore");
 	lua_pushcfunction(L, l_pd_game_over);     lua_setfield(L, -2, "game_over");

@@ -24,6 +24,8 @@ void audioEndFrame(void);
 void audioSetMuted(s32 on);
 s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic);
 void audioStopExternal(void);
+void audioSetExtVolume(s32 pct); /* external-voice volume, % of the music slider (0..100) */
+s32 audioGetExtVolume(void);
 void audioSetCrush(s32 step, s32 bits);
 void audioSetRadio(s32 on);
 void audioSetReverb(f32 wet);

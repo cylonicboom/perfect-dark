@@ -149,7 +149,11 @@ static s32 elimFactionIndex(s32 chrnum)
 static void elimLazyInit(void)
 {
 	struct elimdata *elim = &g_ElimData;
-	u32 seen = 0;
+	// u64, not u32: in free-for-all elimFactionIndex returns the combatant's own
+	// packed index, which reaches MAX_MPCHRS (48) offline with 1 human + 32
+	// sims. A 32-bit mask silently dropped factions 32+, so the match could end
+	// while combatants with lives remaining were still alive.
+	u64 seen = 0;
 	s32 i;
 
 	for (i = 0; i < MAX_TEAMS; i++) {
@@ -169,8 +173,8 @@ static void elimLazyInit(void)
 			elim->teamlives[team] = elimSaneLives();
 		}
 
-		if (faction >= 0 && faction < 32 && (seen & (1u << faction)) == 0) {
-			seen |= 1u << faction;
+		if (faction >= 0 && faction < 64 && (seen & (1ULL << faction)) == 0) {
+			seen |= 1ULL << faction;
 			elim->startfactions++;
 		}
 	}
@@ -318,7 +322,11 @@ void elimTick(void)
 bool elimShouldEndMatch(void)
 {
 	struct elimdata *elim = &g_ElimData;
-	u32 seen = 0;
+	// u64, not u32: in free-for-all elimFactionIndex returns the combatant's own
+	// packed index, which reaches MAX_MPCHRS (48) offline with 1 human + 32
+	// sims. A 32-bit mask silently dropped factions 32+, so the match could end
+	// while combatants with lives remaining were still alive.
+	u64 seen = 0;
 	s32 remaining = 0;
 	s32 i;
 
@@ -335,8 +343,8 @@ bool elimShouldEndMatch(void)
 
 		faction = elimFactionIndex(i);
 
-		if (faction >= 0 && faction < 32 && (seen & (1u << faction)) == 0) {
-			seen |= 1u << faction;
+		if (faction >= 0 && faction < 64 && (seen & (1ULL << faction)) == 0) {
+			seen |= 1ULL << faction;
 			remaining++;
 		}
 	}
@@ -411,14 +419,14 @@ struct elimdata *elimGetData(void)
  * eliminated set. initdone is forced so the HUD renders from wire state even
  * before the local lazy seed ran.
  */
-void elimApplyWireState(const u8 *lives, const u8 *teamlives, u16 elimmask)
+void elimApplyWireState(const u8 *lives, const u8 *teamlives, const u8 *eliminated)
 {
 	struct elimdata *elim = &g_ElimData;
 	s32 i;
 
 	for (i = 0; i < (s32)ARRAYCOUNT(elim->lives); i++) {
 		elim->lives[i] = lives[i];
-		elim->eliminated[i] = (elimmask >> i) & 1;
+		elim->eliminated[i] = eliminated[i] ? 1 : 0;
 	}
 
 	for (i = 0; i < MAX_TEAMS; i++) {

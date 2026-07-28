@@ -1961,7 +1961,7 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 	// clients defer entirely to the SVC_PROP_PICKUP echo, so a request that
 	// races the host's own proximity scan is harmless (first grant frees the
 	// prop, the loser resolves a dead syncid below).
-	const u16 syncid = netbufReadU16(src);
+	const u32 syncid = netbufReadU32(src);
 	if (src->error || g_NetMode != NETMODE_SERVER
 			|| srccl->state < CLSTATE_GAME || srccl->is_spectator
 			|| !srccl->player || !srccl->player->prop
@@ -2011,7 +2011,10 @@ u32 netmsgClcPickupRequestRead(struct netbuf *src, struct netclient *srccl)
 u32 netmsgClcDoorActivateWrite(struct netbuf *dst, struct prop *prop)
 {
 	netbufWriteU8(dst, CLC_DOOR_ACTIVATE);
-	netbufWriteU16(dst, prop->syncid);
+// prop->syncid is u32 and g_NetNextSyncId free-runs for the whole stage, so a
+// long high-churn round passes 65535. Truncating to u16 made the server
+// resolve a DIFFERENT prop (id 70000 -> 4464) and act on it as that client.
+	netbufWriteU32(dst, prop->syncid);
 	return dst->error;
 }
 
@@ -2026,7 +2029,7 @@ u32 netmsgClcDoorActivateRead(struct netbuf *src, struct netclient *srccl)
 	// picks the swing direction, toggles the door, and broadcasts SVC_PROP_DOOR to all
 	// (doorSetMode on the server). The requesting client already predicted it; its
 	// reconcile skips the echoed keyframe.
-	const u16 syncid = netbufReadU16(src);
+	const u32 syncid = netbufReadU32(src);
 	if (src->error || g_NetMode != NETMODE_SERVER || srccl->state < CLSTATE_GAME
 			|| srccl->is_spectator || !srccl->player || !srccl->player->prop
 			|| srccl->playernum >= MAX_PLAYERS) {
@@ -5142,7 +5145,6 @@ u32 netmsgSvcElimStateWrite(struct netbuf *dst)
 	u8 localelim[MAX_MPCHRS];
 	u8 wirelives[MAX_MPCHRS];
 	u8 wireelim[MAX_MPCHRS];
-	u16 elimmask = 0;
 	s32 i;
 
 	// translate the per-combatant slices to wire keying (see netChrArrayToWire)
@@ -5159,10 +5161,6 @@ u32 netmsgSvcElimStateWrite(struct netbuf *dst)
 
 	for (i = 0; i < MAX_MPCHRS; i++) {
 		netbufWriteU8(dst, wirelives[i]);
-
-		if (wireelim[i]) {
-			elimmask |= 1u << i;
-		}
 	}
 
 	for (i = 0; i < MAX_TEAMS; i++) {
@@ -5171,7 +5169,13 @@ u32 netmsgSvcElimStateWrite(struct netbuf *dst)
 		netbufWriteU8(dst, (u8)(pool < 0 ? 0 : (pool > 0xff ? 0xff : pool)));
 	}
 
-	netbufWriteU16(dst, elimmask);
+	// One byte per combatant, not a bitmask. MAX_MPCHRS is 48 and bots
+	// wire-key at MAX_PLAYERS+ordinal (16..47), so the old u16 truncated away
+	// every simulant's eliminated flag (host said out, clients never did) and
+	// `1u << i` for i >= 32 was undefined behaviour on both sides.
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		netbufWriteU8(dst, wireelim[i] ? 1 : 0);
+	}
 
 	return dst->error;
 }
@@ -5183,7 +5187,6 @@ u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
 	u8 lives[MAX_MPCHRS];
 	u8 localelim[MAX_MPCHRS];
 	u8 teamlives[MAX_TEAMS];
-	u16 localmask = 0;
 	s32 i;
 
 	for (i = 0; i < MAX_MPCHRS; i++) {
@@ -5194,7 +5197,9 @@ u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
 		teamlives[i] = netbufReadU8(src);
 	}
 
-	const u16 elimmask = netbufReadU16(src);
+	for (i = 0; i < MAX_MPCHRS; i++) {
+		wireelim[i] = netbufReadU8(src) ? 1 : 0;
+	}
 
 	if (src->error) {
 		return src->error;
@@ -5202,20 +5207,10 @@ u32 netmsgSvcElimStateRead(struct netbuf *src, struct netclient *srccl)
 
 	if (srccl->state >= CLSTATE_GAME && g_MpSetup.elimlives > 0) {
 		// translate wire keying back to LOCAL slots before applying
-		for (i = 0; i < MAX_MPCHRS; i++) {
-			wireelim[i] = (elimmask >> i) & 1;
-		}
-
 		netChrArrayFromWire(lives, wirelives);
 		netChrArrayFromWire(localelim, wireelim);
 
-		for (i = 0; i < MAX_MPCHRS; i++) {
-			if (localelim[i]) {
-				localmask |= 1u << i;
-			}
-		}
-
-		elimApplyWireState(lives, teamlives, localmask);
+		elimApplyWireState(lives, teamlives, localelim);
 	}
 
 	return src->error;
@@ -5323,7 +5318,7 @@ u32 netmsgSvcCarryStateWrite(struct netbuf *dst)
 {
 	s32 holdermpchr[4];
 	u8 caseteams[4];
-	u16 groundsyncids[4];
+	u32 groundsyncids[4];
 	const s32 count = carryGetHolders(holdermpchr, caseteams, groundsyncids);
 
 	netbufWriteU8(dst, SVC_CARRY_STATE);
@@ -5335,7 +5330,7 @@ u32 netmsgSvcCarryStateWrite(struct netbuf *dst)
 		netbufWriteU8(dst, caseteams[i]);
 		// On-ground case syncid (0 when held) — the client resolves it directly so a
 		// dropped/returned CTC case (whose weapon->team isn't on the wire) is found.
-		netbufWriteU16(dst, kind ? 0 : groundsyncids[i]);
+		netbufWriteU32(dst, kind ? 0u : groundsyncids[i]);
 	}
 	return dst->error;
 }
@@ -5357,7 +5352,7 @@ u32 netmsgSvcCarryStateRead(struct netbuf *src, struct netclient *srccl)
 		const u8 key = netbufReadU8(src);
 		holdermpchr[i] = (holderkinds[i] != 0) ? netCarryHolderFromWire(key) : -1;
 		caseteams[i] = netbufReadU8(src);
-		const u16 syncid = netbufReadU16(src);
+		const u32 syncid = netbufReadU32(src);
 		groundprops[i] = syncid ? netSyncIdToProp(syncid) : NULL;
 	}
 	if (src->error) {
@@ -5907,8 +5902,8 @@ u32 netmsgSvcVoteOpenWrite(struct netbuf *dst)
 	netbufWriteU8(dst, g_NetVote.vote_seconds);
 	for (s32 i = 0; i < g_NetVote.num_candidates; ++i) {
 		const struct netvotecandidate *c = &g_NetVote.candidates[i];
-		// playlist_index: -1 sentinel marshals to 0xFF on the wire
-		netbufWriteU8(dst, (u8)(c->playlist_index < 0 ? 0xFFu : (u8)c->playlist_index));
+		// playlist_index: -1 sentinel marshals to 0xFFFF on the wire
+		netbufWriteU16(dst, (u16)(c->playlist_index < 0 ? 0xFFFFu : (u16)c->playlist_index));
 		netbufWriteU8(dst, c->stagenum);
 		netbufWriteU8(dst, c->scenario);
 		netbufWriteU8(dst, c->preset_index);
@@ -5936,7 +5931,7 @@ u32 netmsgSvcVoteOpenRead(struct netbuf *src, struct netclient *srccl)
 	for (s32 i = 0; i < num; ++i) {
 		struct netvotecandidate *c = &g_NetVote.candidates[i];
 		const u8 pl_idx = netbufReadU8(src);
-		c->playlist_index = (pl_idx == 0xFF) ? -1 : (s8)pl_idx;
+		c->playlist_index = (pl_idx == 0xFFFF) ? -1 : (s16)pl_idx;
 		c->stagenum = netbufReadU8(src);
 		c->scenario = netbufReadU8(src);
 		c->preset_index = netbufReadU8(src);

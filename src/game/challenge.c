@@ -253,7 +253,17 @@ void challengePerformSanityChecks(void)
 
 		// Turn off all simulants (and players 5-8 if supported) and turn them on if enabled
 		// for this number of players
+#ifndef PLATFORM_N64
+		// MPCHRSLOTS_PLAYERS_MASK, not the literal 0x000f: MAX_PLAYERS is 16 on
+		// the port, and this runs every tick from menutick's MPSETUP block, so
+		// the stale 4-player literal stripped players 4-15 out of chrslots for
+		// the rest of a 5+ player lobby session (the client enumeration only
+		// repopulates them on a menu-root change). The sibling branch at the
+		// bottom of this function was already netplay-corrected.
+		g_MpSetup.chrslots &= MPCHRSLOTS_PLAYERS_MASK;
+#else
 		g_MpSetup.chrslots &= 0x000f;
+#endif
 
 #ifndef PLATFORM_N64
 		// Port-only: challenge difficulty override. Force the effective player
@@ -268,7 +278,21 @@ void challengePerformSanityChecks(void)
 				numplayers = 4;
 			}
 		}
+
+		// g_MpSimulantDifficultiesPerNumPlayers rows are MAX_LOCAL_PLAYERS (4)
+		// wide, but numplayers is counted over MAX_PLAYERS (16) chrslot bits —
+		// so 5+ connected clients indexed past the row and read a NEIGHBOURING
+		// bot's difficulty, silently changing sims' difficulty or disabling them
+		// (BOTDIFF_DISABLED also drives the chrslots bit below). The table only
+		// ever described the 1-4 player case; clamp to it.
+		if (numplayers > MAX_LOCAL_PLAYERS) {
+			numplayers = MAX_LOCAL_PLAYERS;
+		}
 #endif
+
+		if (numplayers < 1) {
+			numplayers = 1;
+		}
 
 		for (i = 0; i < MAX_BOTS_PRESET; i++) {
 			g_BotConfigsArray[i].difficulty = g_MpSimulantDifficultiesPerNumPlayers[i][numplayers - 1];

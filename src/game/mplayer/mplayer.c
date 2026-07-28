@@ -4270,12 +4270,24 @@ void mpGenerateBotNames(void)
 					// Multiple bots using this profile - append the number
 					counts[profilenum]++;
 					sprintf(name, "%s:%d\n", langGet(g_BotProfiles[profilenum].name), counts[profilenum]);
-					strcpy(g_BotConfigsArray[i - MAX_PLAYERS].base.name, name);
 				} else {
 					// One bots using this profile - just use the profile name
 					sprintf(name, "%s\n", langGet(g_BotProfiles[profilenum].name));
-					strcpy(g_BotConfigsArray[i - MAX_PLAYERS].base.name, name);
 				}
+
+#ifndef PLATFORM_N64
+				// base.name is char[MAX_PLAYERNAME] (15) with mpheadnum packed
+				// immediately after it at 0x0f. The longest profile string is 11
+				// chars ("VendettaSim"), so a TWO-digit count produces
+				// "VendettaSim:10\n" = 15 chars + NUL = 16 bytes, and the strcpy
+				// put that NUL on mpheadnum — zeroing the sim's configured head.
+				// Upstream capped at 8 sims (single digit, exactly 15 bytes and
+				// no overflow); the 32-simulant bump made it reachable.
+				strncpy(g_BotConfigsArray[i - MAX_PLAYERS].base.name, name, MAX_PLAYERNAME - 1);
+				g_BotConfigsArray[i - MAX_PLAYERS].base.name[MAX_PLAYERNAME - 1] = '\0';
+#else
+				strcpy(g_BotConfigsArray[i - MAX_PLAYERS].base.name, name);
+#endif
 			}
 		}
 	}

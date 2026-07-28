@@ -52,7 +52,10 @@ struct playlistentry {
 
 struct playlist {
 	struct playlistentry entries[PLAYLIST_MAX_ENTRIES];
-	u8 count;
+	// s16, not u8: PLAYLIST_MAX_ENTRIES is 256, so `count >= 256` on a u8 is
+	// always false — the "too many entries" guard was unreachable, count++
+	// wrapped 255 -> 0, and a long playlist silently overwrote its own start.
+	s16 count;
 
 	// Server header settings — read from the [server] section of the
 	// playlist file. vote_candidates is clamped to [2, num_entries]; if the
@@ -91,7 +94,7 @@ s32 playlistPick(const struct playlist *pl, u64 *rng_state);
 // per-entry weights but guarantees no duplicates. If pl->random_in_pool is
 // set and n > 1, the last slot is reserved for a sentinel RANDOM choice that
 // the caller resolves at apply time.
-s32 playlistPickBallot(const struct playlist *pl, u64 *rng_state, s32 n, s8 *out_indices);
+s32 playlistPickBallot(const struct playlist *pl, u64 *rng_state, s32 n, s16 *out_indices);
 
 // Resolve RANDOM sentinels in the entry into concrete picks (stage, scenario,
 // preset). The output is a copy of the input with sentinels replaced; the

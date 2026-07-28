@@ -480,12 +480,18 @@ Gfx *raceRenderHud(Gfx *gdl)
 void raceCalculatePlayerScore(struct mpchrconfig *mpchr, s32 mpchrnum, s32 *score, s32 *deaths)
 {
 	struct scenariodata_race *race = &g_ScenarioData.race;
+	// mpchrnum is a chrslots SLOT index (bots sit at 16+), but raceTick writes
+	// nextcp/lapsdone/finishpos indexed by the PACKED g_MpAllChrPtrs position.
+	// Reading them with the raw slot returned another combatant's progress
+	// whenever the two differ. htmCalculatePlayerScore does this conversion;
+	// race didn't. (Same class as the packed-vs-slot bug noted for proto 82.)
+	s32 index = func0f18d0e8(mpchrnum);
 
-	if (mpchrnum >= 0 && mpchrnum < (s32)ARRAYCOUNT(race->nextcp)) {
-		if (race->finishpos[mpchrnum] != 0) {
-			*score = 2000 - race->finishpos[mpchrnum];
+	if (index >= 0 && index < (s32)ARRAYCOUNT(race->nextcp)) {
+		if (race->finishpos[index] != 0) {
+			*score = 2000 - race->finishpos[index];
 		} else {
-			*score = race->lapsdone[mpchrnum] * 20 + race->nextcp[mpchrnum];
+			*score = race->lapsdone[index] * 20 + race->nextcp[index];
 		}
 	} else {
 		*score = 0;

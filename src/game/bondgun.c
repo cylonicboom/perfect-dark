@@ -8654,7 +8654,23 @@ void bgunCreateFx(struct hand *hand, s32 handnum, struct weaponfunc *funcdef, s3
 // and the viewmodel sits exactly where it does on N64.
 static inline f32 bgunGetRenderFovY(void)
 {
-	f32 gunfovy = PLAYER_EXTCFG().gunfovy;
+	f32 gunfovy;
+
+	// A REMOTE pawn's bgunTick runs locally on this machine (driven by wire
+	// input), and this value feeds bgunGetFovOffsetY/Z, which shift the hand
+	// translation that becomes hand->cammtx and ultimately hand->muzzlepos —
+	// the literal spawn position of fired projectiles. Two problems for remote
+	// pawns: the Gun FOV slider is a LOCAL cosmetic preference that never goes
+	// on the wire, and PLAYER_EXTCFG() indexes by `mpindex & 3`, so a listen
+	// host would derive a remote client's rocket/grenade origin from a local
+	// splitscreen player's slider. Chaos "WAYTOODANK Viewmodel" at 170 deg is
+	// worth ~37 units of forward muzzle displacement. Keep remote pawns on the
+	// default so their projectile origins match what the owner simulated.
+	if (g_Vars.currentplayer && g_Vars.currentplayer->isremote) {
+		return PLAYER_DEFAULT_FOV;
+	}
+
+	gunfovy = PLAYER_EXTCFG().gunfovy;
 
 	// Chaos "WAYTOODANK Viewmodel": chaos override wins over the config
 	if (g_ChaosGunFovOverride > 0.0f) {

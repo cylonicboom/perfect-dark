@@ -74,6 +74,13 @@ static const struct namedid s_scenarios[] = {
 	{ "KINGOFTHEHILL", MPSCENARIO_KINGOFTHEHILL },
 	{ "CTC",        MPSCENARIO_CAPTURETHECASE },
 	{ "CAPTURETHECASE", MPSCENARIO_CAPTURETHECASE },
+	// Port-only scenarios. Without these, `scenario = ZONES` in a playlist file
+	// fell through parseScenario's strtol fallback to 0 = Combat, silently.
+	{ "GRAFFITI",   MPSCENARIO_PAINTROOM },
+	{ "PAINTROOM",  MPSCENARIO_PAINTROOM },
+	{ "PAINT",      MPSCENARIO_PAINTROOM },
+	{ "ZONES",      MPSCENARIO_ZONES },
+	{ "RACE",       MPSCENARIO_RACE },
 	{ NULL, 0 }
 };
 
@@ -270,6 +277,9 @@ static const char *scenarioName(s32 sc)
 		case MPSCENARIO_POPACAP: return "PAC";
 		case MPSCENARIO_KINGOFTHEHILL: return "KOH";
 		case MPSCENARIO_CAPTURETHECASE: return "CTC";
+		case MPSCENARIO_PAINTROOM: return "GRAFFITI";
+		case MPSCENARIO_ZONES: return "ZONES";
+		case MPSCENARIO_RACE: return "RACE";
 		default: return "?";
 	}
 }
@@ -720,7 +730,7 @@ s32 playlistPick(const struct playlist *pl, u64 *rng_state)
 	return pl->count - 1;
 }
 
-s32 playlistPickBallot(const struct playlist *pl, u64 *rng_state, s32 n, s8 *out_indices)
+s32 playlistPickBallot(const struct playlist *pl, u64 *rng_state, s32 n, s16 *out_indices)
 {
 	if (!pl || pl->count == 0 || n <= 0) return 0;
 
@@ -737,11 +747,11 @@ s32 playlistPickBallot(const struct playlist *pl, u64 *rng_state, s32 n, s8 *out
 		if (idx < 0) break;
 		if (used[idx]) continue;
 		used[idx] = 1;
-		out_indices[written++] = (s8)idx;
+		out_indices[written++] = (s16)idx;
 	}
 
 	if (randslot >= 0) {
-		out_indices[written++] = (s8)-1; // RANDOM sentinel
+		out_indices[written++] = (s16)-1; // RANDOM sentinel
 	}
 
 	return written;
@@ -757,7 +767,9 @@ void playlistResolveRandoms(const struct playlistentry *in, struct playlistentry
 	if (out->scenario == PLAYLIST_RANDOM_SCENARIO) {
 		// Pick uniform from 0..5 using lib RNG (server-authoritative — this
 		// runs before SVC_STAGE_START so seeds aren't yet synced).
-		out->scenario = (s8)(((u32)sysGetMicroseconds()) % 6u);
+		// MPSCENARIO_COUNT, not a hardcoded 6 — RANDOM could never pick
+		// Graffiti/Zones/Race.
+		out->scenario = (s8)(((u32)sysGetMicroseconds()) % (u32)MPSCENARIO_COUNT);
 	}
 	if (out->weaponpreset == PLAYLIST_RANDOM_PRESET) {
 		if (g_MpWeaponPresetCount > 0) {

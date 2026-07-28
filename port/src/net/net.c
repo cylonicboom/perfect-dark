@@ -1790,7 +1790,10 @@ void netClientRequestPickup(struct prop *prop)
 
 	netbufStartWrite(&g_NetMsgRel);
 	netbufWriteU8(&g_NetMsgRel, CLC_PICKUP_REQUEST);
-	netbufWriteU16(&g_NetMsgRel, (u16)prop->syncid);
+// prop->syncid is u32 and g_NetNextSyncId free-runs for the whole stage, so a
+// long high-churn round passes 65535. Truncating to u16 made the server
+// resolve a DIFFERENT prop (id 70000 -> 4464) and act on it as that client.
+	netbufWriteU32(&g_NetMsgRel, prop->syncid);
 	netSend(g_NetLocalClient, &g_NetMsgRel, true, NETCHAN_CONTROL);
 }
 
@@ -4839,7 +4842,7 @@ void netServerVoteOpen(void)
 	// Seed from current tick so successive ballots aren't identical.
 	u64 rng = ((u64)g_NetTick * 0x9E3779B97F4A7C15ULL) ^ sysGetMicroseconds();
 
-	s8 picks[NET_VOTE_MAX_CANDIDATES];
+	s16 picks[NET_VOTE_MAX_CANDIDATES];
 	const s32 chosen = playlistPickBallot(&g_NetPlaylist, &rng, n, picks);
 	if (chosen <= 0) return;
 
@@ -4928,7 +4931,7 @@ void netServerVoteClose(void)
 	// Resolve and apply the winning entry. RANDOM slot: pick a fresh
 	// playlist entry now (weighted) and resolve its random sub-fields.
 	struct playlistentry resolved;
-	const s8 pl_idx = g_NetVote.candidates[best].playlist_index;
+	const s16 pl_idx = g_NetVote.candidates[best].playlist_index;
 	if (pl_idx < 0) {
 		u64 rng = ((u64)g_NetTick * 0xBF58476D1CE4E5B9ULL) ^ sysGetMicroseconds();
 		const s32 picked = playlistPick(&g_NetPlaylist, &rng);

@@ -260,7 +260,7 @@ static struct prop *carryResolveToken(u8 holderkind, s32 holdermpchr, s32 weapon
 // SVC_PROP_SPAWN doesn't carry weapon->team and scenarioHandleDroppedToken sets it AFTER
 // the spawn broadcast, so a client's dropped case has team 0 and can't be matched. The
 // syncid is re-derived from ctc.tokens[] every broadcast, so it's always current.
-s32 carryGetHolders(s32 *holdermpchr, u8 *caseteams, u16 *groundsyncids)
+s32 carryGetHolders(s32 *holdermpchr, u8 *caseteams, u32 *groundsyncids)
 {
 	s32 i;
 	struct prop *tok;

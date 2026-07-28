@@ -347,6 +347,17 @@ void spectatorReadInput(void)
 	}
 	s32 ord = 0;
 	for (s32 i = 0; i < panels && ord < MAX_PLAYERS; i++) {
+		// Bound the VALUE, not just the write index: playerorder entries are
+		// used as `g_Vars.players[g_Vars.playerorder[i]]` by
+		// playermgrGetPlayerAtOrder, and players[] is MAX_PLAYERS wide. On a
+		// full dedicated server `combatants` reaches MAX_PLAYERS, so
+		// combatants + i indexed one past the end and could hand back a wild
+		// pointer for setCurrentPlayerNum. (`panels` is forced to >= 1 above,
+		// before the dedicated early-return below, so this runs there too.)
+		if (combatants + i >= MAX_PLAYERS) {
+			break;
+		}
+
 		g_Vars.playerorder[ord++] = (u32)(combatants + i);
 	}
 	for (s32 i = 0; i < combatants && ord < MAX_PLAYERS; i++) {

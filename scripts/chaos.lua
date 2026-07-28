@@ -1704,8 +1704,13 @@ chaos.effects = {
   demon        = { label="Demonic presence",  w=2, dur=20,
                    start=function() pd.audio_pitch(0.65); pd.audio_reverb(0.5) end,
                    stop=function() pd.audio_pitch(); pd.audio_reverb() end },
-  australia    = { label="Australia mode",    w=3, dur=20,
-                   start=function() pd.upside_down(true) end,
+  -- aussie.mp3 (scripts/chaos/sounds/, user-supplied) on trigger; quiet
+  -- no-op until the file is dropped in.
+  australia    = { label="Australia",         w=3, dur=20,
+                   start=function()
+                     pd.upside_down(true)
+                     play_sound("aussie")
+                   end,
                    stop=function() pd.upside_down(false) end },
   giants       = { label="Attack of the giants", w=3, dur=25,
                    start=function()

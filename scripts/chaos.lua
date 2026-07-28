@@ -2144,7 +2144,7 @@ end
 local alpha_effects = {
   -- Hurricane v2: much smaller gust force, repeated through the effect, plus
   -- storm weather for the duration. (Faster weather animation needs C.)
-  hurricane2 = { label="Hurricane v2", dur=1,
+  hurricane2 = { label="Fuggin Wimdy", dur=1,
                  start=function() pd.weather(1, 2); st.weather_set = true; pd.gust(45) end,
                  tick=function(left) if left % 90 == 0 then pd.gust(45) end end,
                  stop=function() pd.weather(0); st.weather_set = false end },

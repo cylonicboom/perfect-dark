@@ -4546,9 +4546,9 @@ struct menudialogdef g_SoloMissionInventoryMenuDialog = {
 	g_SoloMissionInventoryMenuItems,
 	inventoryMenuDialog,
 #if VERSION >= VERSION_JPN_FINAL
-	MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_DISABLERESIZE | MENUDIALOGFLAG_0400 | MENUDIALOGFLAG_1000,
+	MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_DISABLERESIZE | MENUDIALOGFLAG_0400 | MENUDIALOGFLAG_1000 | MENUDIALOGFLAG_WEAPONLOCK_HIDDEN,
 #else
-	MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_DISABLERESIZE | MENUDIALOGFLAG_0400,
+	MENUDIALOGFLAG_0002 | MENUDIALOGFLAG_DISABLERESIZE | MENUDIALOGFLAG_0400 | MENUDIALOGFLAG_WEAPONLOCK_HIDDEN,
 #endif
 	&g_SoloMissionOptionsMenuDialog,
 };
@@ -4613,6 +4613,16 @@ MenuItemHandlerResult menuhandlerInventoryList(s32 operation, struct menuitem *i
 		return (uintptr_t)invGetNameByIndex(data->list.value);
 	case MENUOP_SET:
 		{
+#ifndef PLATFORM_N64
+			// Chaos weapon locks: refuse the equip if the lock engaged while
+			// this screen was already open (a freshly-opened pause menu hides
+			// the screen entirely — MENUDIALOGFLAG_WEAPONLOCK_HIDDEN).
+			extern s32 g_ChaosGunLock;
+			extern s32 g_ChaosKnifeLock;
+			if (g_ChaosGunLock || g_ChaosKnifeLock) {
+				break;
+			}
+#endif
 			s32 weaponnum = invGetWeaponNumByIndex(data->list.value);
 			bool equippable = true;
 

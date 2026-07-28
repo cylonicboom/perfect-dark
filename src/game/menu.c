@@ -1826,6 +1826,21 @@ void menuPushDialog(struct menudialogdef *dialogdef)
 					sibling = sibling->nextsibling;
 					continue;
 				}
+				// Chaos weapon locks (Knife fight / Cyclone Frenzy / the
+				// knife_lock effects): the pause-menu Inventory is a weapon-
+				// switch avenue (its Equip calls bgunEquipWeapon2 directly),
+				// so flagged dialogs vanish from the carousel while a lock
+				// is active. A menu already open when the lock engages is
+				// covered by the equip refusal in menuhandlerInventoryList.
+				{
+					extern s32 g_ChaosGunLock;
+					extern s32 g_ChaosKnifeLock;
+					if ((g_ChaosGunLock || g_ChaosKnifeLock)
+							&& (sibling->flags & MENUDIALOGFLAG_WEAPONLOCK_HIDDEN)) {
+						sibling = sibling->nextsibling;
+						continue;
+					}
+				}
 #endif
 				// @bug:
 				// If this limit were to be reached, the game would soft lock

@@ -1744,6 +1744,10 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 // Sibling skipped by menuPushDialog's carousel walk when g_NetMode !=
 // NETMODE_NONE (the offline-only Simulants pages 2-4).
 #define MENUDIALOGFLAG_NETPLAY_HIDDEN    0x4000
+// Port-only: dialog is skipped from the pause-menu carousel while a chaos
+// weapon lock (g_ChaosGunLock / g_ChaosKnifeLock) is active — the pause-menu
+// Inventory's Equip is a weapon-switch avenue the locks must close.
+#define MENUDIALOGFLAG_WEAPONLOCK_HIDDEN 0x8000
 #endif
 #endif
 

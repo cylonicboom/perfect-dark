@@ -547,7 +547,7 @@ struct menudialogdef g_2PMissionInventoryHMenuDialog = {
 	L_MPMENU_284, // "Inventory"
 	g_Mp2PMissionInventoryMenuItems,
 	NULL,
-	0,
+	MENUDIALOGFLAG_WEAPONLOCK_HIDDEN,
 	&g_2PMissionOptionsHMenuDialog,
 };
 
@@ -556,7 +556,7 @@ struct menudialogdef g_2PMissionInventoryVMenuDialog = {
 	L_MPMENU_284, // "Inventory"
 	g_Mp2PMissionInventoryMenuItems,
 	NULL,
-	0,
+	MENUDIALOGFLAG_WEAPONLOCK_HIDDEN,
 	&g_2PMissionOptionsVMenuDialog,
 };
 

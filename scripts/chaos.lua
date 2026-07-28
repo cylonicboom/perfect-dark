@@ -1616,7 +1616,9 @@ chaos.effects = {
                    start=function()
                      if not pd.vertex_wobble then error("needs new exe") end
                      st.a_jelly = {}
-                     pd.vertex_wobble(0, 0.045, 0, 0, 0.6) -- 0 amp: the tick eases it in
+                     -- near-fade like Acid trip: geometry close to the camera
+                     -- barely strays, the far scene does the wobbling
+                     pd.vertex_wobble(0, 0.045, 0, 0, 0.6, ACID_NEARFADE) -- 0 amp: the tick eases it in
                    end,
                    tick=function(left)
                      local j = st.a_jelly
@@ -1630,7 +1632,7 @@ chaos.effects = {
                      local amp   = 14 * warp                  -- 0 → full → 0
                      local freq  = 0.045 - 0.015 * prog       -- wavelength morphs A → B
                      local phase = 3.0 * math.pi * prog       -- slow one-way sweep (~1.5 turns)
-                     pd.vertex_wobble(amp, freq, phase, 0, 0.6) -- desync: per-vertex rate + offset
+                     pd.vertex_wobble(amp, freq, phase, 0, 0.6, ACID_NEARFADE) -- desync: per-vertex rate + offset
                    end,
                    stop=function()
                      if pd.vertex_wobble then pd.vertex_wobble(0) end

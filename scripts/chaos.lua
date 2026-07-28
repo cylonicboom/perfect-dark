@@ -549,8 +549,25 @@ chaos.effects = {
                      start=function() pd.nbomb() end },
   -- (hurricane removed 2026-07-19 — superseded by hurricane2's repeated
   -- smaller gusts + storm weather.)
+  -- Equipping while the player is mid-fire (holding a secondary function,
+  -- say) could lock onto the WRONG gun: PD defers weapon switches while
+  -- firing, and gun_lock then holds fire forever so the deferred switch
+  -- never lands. So FIRE is blocked for half a second first (the hands go
+  -- quiet, any deferred switch clears), and the cyclones + gun_lock arrive
+  -- from the tick. Shares the single button_block mask quirk like the
+  -- popups/thief.
   cyclone_frenzy = { label="CYCLONE FRENZY",      w=3, dur=30,
                      start=function()
+                       if pd.button_block then pd.button_block(0x2000) end
+                       st.a_cyc = { arm = math.floor(TICKS / 2) }
+                     end,
+                     tick=function()
+                       local a = st.a_cyc
+                       if not a or not a.arm then return end
+                       a.arm = a.arm - (pd.lvupdate and pd.lvupdate() or 1)
+                       if a.arm > 0 then return end
+                       a.arm = nil
+                       if pd.button_block then pd.button_block(0) end
                        pd.dual_wield(W.CYCLONE, 1)    -- both hands, Magazine Discharge
                        pd.cheat(CHEAT.NORELOAD, true) -- unlimited ammo, no reloads
                        give_ammo_mags()
@@ -558,6 +575,8 @@ chaos.effects = {
                        if pd.gun_lock then pd.gun_lock(true) end
                      end,
                      stop=function()
+                       st.a_cyc = nil
+                       if pd.button_block then pd.button_block(0) end -- in case we stop while still armed
                        pd.cheat(CHEAT.NORELOAD, false)
                        if pd.gun_lock then pd.gun_lock(false) end
                        pd.take_weapon(W.CYCLONE) -- take the cyclones back

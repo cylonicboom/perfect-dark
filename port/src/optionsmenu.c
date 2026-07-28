@@ -3066,6 +3066,213 @@ struct menudialogdef g_ExtendedRTMenuDialog = {
 	NULL,
 };
 
+// ---------------------------------------------------------------------------
+// Extended Options > Experiments > Collision View (docs/PORT_COLLISION_VIEW.md).
+// Debug visualiser for the collision/hit data the SIMULATION uses. The globals
+// live in src/game/collisionview.c and are s32, not bool: that's a game TU and
+// this is a port TU, and the two disagree on bool's width (the VR bring-up bug).
+// NOT a cheat — a debug overlay has no business touching the cheat-save banks,
+// so these are plain runtime toggles like the Raytracing page's.
+
+extern s32 g_ColViewEnabled, g_ColViewGeo, g_ColViewHitboxes, g_ColViewOutlines;
+extern s32 g_ColViewProps, g_ColViewXray, g_ColViewAlpha, g_ColViewRange;
+
+static MenuItemHandlerResult menuhandlerColViewCheckbox(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// param3 holds a pointer to the s32 toggle global.
+	s32 *flag = (s32 *)item->param3;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return *flag != 0;
+	case MENUOP_SET:
+		*flag = data->checkbox.value;
+		// Ticking a layer implies the master switch, like /collision does.
+		if (data->checkbox.value && flag != &g_ColViewEnabled) {
+			g_ColViewEnabled = 1;
+		}
+		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerColViewAlpha(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// 16 steps of 16 => 16..256, clamped to 255 on apply.
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_ColViewAlpha / 16;
+		break;
+	case MENUOP_SET:
+		g_ColViewAlpha = data->slider.value * 16;
+		if (g_ColViewAlpha < 16) {
+			g_ColViewAlpha = 16;
+		} else if (g_ColViewAlpha > 255) {
+			g_ColViewAlpha = 255;
+		}
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d%%", (data->slider.value * 16) * 100 / 255);
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerColViewRange(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// 0..16 steps of 500 world units; the renderer clamps to 200..8000 (the
+	// s16 vertex range divided by the vertex scale).
+	switch (operation) {
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_ColViewRange / 500;
+		break;
+	case MENUOP_SET:
+		g_ColViewRange = data->slider.value * 500;
+		if (g_ColViewRange < 500) {
+			g_ColViewRange = 500;
+		}
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		sprintf(data->slider.label, "%d", data->slider.value < 1 ? 500 : data->slider.value * 500);
+	}
+
+	return 0;
+}
+
+struct menuitem g_ExtendedColViewMenuItems[] = {
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Debug view of the data\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"collision and hit tests\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_LABEL,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"actually use.\n",
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Enable Collision View\n",
+		(uintptr_t)&g_ColViewEnabled,
+		menuhandlerColViewCheckbox,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"World Geometry\n",
+		(uintptr_t)&g_ColViewGeo,
+		menuhandlerColViewCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Objects and Doors\n",
+		(uintptr_t)&g_ColViewProps,
+		menuhandlerColViewCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Character Hitboxes\n",
+		(uintptr_t)&g_ColViewHitboxes,
+		menuhandlerColViewCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Hitbox Outlines\n",
+		(uintptr_t)&g_ColViewOutlines,
+		menuhandlerColViewCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"See Through Walls\n",
+		(uintptr_t)&g_ColViewXray,
+		menuhandlerColViewCheckbox,
+	},
+	{
+		MENUITEMTYPE_SEPARATOR,
+		0,
+		0,
+		0,
+		0,
+		NULL,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Opacity\n",
+		16,
+		menuhandlerColViewAlpha,
+	},
+	{
+		MENUITEMTYPE_SLIDER,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Draw Distance\n",
+		16,
+		menuhandlerColViewRange,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+		L_OPTIONS_213, // "Back"
+		0,
+		NULL,
+	},
+	{ MENUITEMTYPE_END },
+};
+
+struct menudialogdef g_ExtendedColViewMenuDialog = {
+	MENUDIALOGTYPE_DEFAULT,
+	(uintptr_t)"Collision View",
+	g_ExtendedColViewMenuItems,
+	NULL,
+	MENUDIALOGFLAG_LITERAL_TEXT,
+	NULL,
+};
+
 // Extended Options > Experiments: the port-added cheats relocated out of the
 // original Cheats > Gameplay menu (they stay cheats under the hood — only
 // the menu moved), plus the Classic Options sub-menu. (The "Unlock All
@@ -3118,6 +3325,14 @@ struct menuitem g_ExtendedExperimentsMenuItems[] = {
 		(uintptr_t)"Raytracing (WIP)\n",
 		0,
 		(void *)&g_ExtendedRTMenuDialog,
+	},
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Collision View\n",
+		0,
+		(void *)&g_ExtendedColViewMenuDialog,
 	},
 	{
 		MENUITEMTYPE_DROPDOWN,

@@ -17,6 +17,7 @@
 #include "game/game_097aa0.h"
 #include "game/bondgun.h"
 #include "game/gunfx.h"
+#include "game/collisionview.h"
 #include "game/game_0b0fd0.h"
 #include "game/modeldef.h"
 #include "game/modelmgr.h"
@@ -12305,6 +12306,14 @@ void bgunRender(Gfx **gdlptr)
 	if ((PLAYERCOUNT() == 1 || (LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning)) && IS8MB()) {
 		gdl = lasersightRenderBeam(gdl);
 	}
+
+#ifndef PLATFORM_N64
+	// Collision View debug overlay (docs/PORT_COLLISION_VIEW.md). Must run
+	// BEFORE the viewmodel below: the world is rendered and the depth buffer is
+	// still intact here, and bgunRender clears depth for the gun. Self-gates on
+	// g_ColViewEnabled, so this is a single branch when off.
+	gdl = colviewRender(gdl);
+#endif
 
 	for (i = 0; i < 2; i++) {
 		struct hand *hand;

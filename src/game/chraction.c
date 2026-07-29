@@ -10201,6 +10201,15 @@ static void chraiLuaDirtyAllRooms(void)
 {
 	s32 i;
 
+	// The chaos reset path calls pd.env()/pd.fog() from menus and boot,
+	// where no stage is loaded: g_Rooms is NULL (MEMPOOL_STAGE alloc) and
+	// roomcount can be stale from the previous stage — dereferencing here
+	// was the 2026-07-29 crash-on-load (read at 0xd0 = NULL + flags
+	// offset). Nothing to reshade without a stage.
+	if (g_Rooms == NULL || g_Vars.roomcount <= 0) {
+		return;
+	}
+
 	for (i = 1; i < g_Vars.roomcount; i++) {
 		g_Rooms[i].flags |= ROOMFLAG_BRIGHTNESS_DIRTY_TEMP;
 	}

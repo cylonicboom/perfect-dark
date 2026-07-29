@@ -2786,6 +2786,16 @@ bool bgunTickIncAttackingMelee(s32 handnum, struct hand *hand)
 			hand->firing = true;
 			hand->attacktype = HANDATTACKTYPE_MELEENOUNCLOAK;
 
+#ifndef PLATFORM_N64
+			{
+				/* chaos Pacifists: melee swings never reach the shoot-sound
+				 * weaponfire emit, so report them as their own "punch" event
+				 * (fists and knife alike — listeners filter by weaponnum) */
+				extern void luaEmitPunch(s32 weaponnum, s32 playernum);
+				luaEmitPunch((s32)hand->gset.weaponnum, g_Vars.currentplayernum);
+			}
+#endif
+
 			if (func->fire_animation) {
 				bgunStartAnimation(func->fire_animation, handnum, hand);
 				hand->unk0cc8_01 = true;

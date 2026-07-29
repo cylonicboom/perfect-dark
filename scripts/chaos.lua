@@ -4656,12 +4656,22 @@ pd.on("weaponfire", function(weaponnum, playernum)
   end
 end)
 
--- Pacifists, NPC half: any NPC/simulant gun discharge kills the shooter
--- (chrfire = chraction.c chrTickShoot -> luaEmitChrFire; new exe only —
--- old exes just get the player half from the weaponfire hook above).
+-- Pacifists, NPC half: any NPC/simulant gun discharge OR punch/kick kills
+-- them (chrfire = chraction.c chrTickShoot + chrTryPunch -> luaEmitChrFire;
+-- new exe only — old exes just get the player half from the hooks above).
 pd.on("chrfire", function(chrnum, weaponnum)
   if st.active.pacifist and chrnum and chrnum >= 0 and pd.chr_damage then
     pd.chr_damage(chrnum, 100)
+  end
+end)
+
+-- Pacifists, player melee half: throwing a PUNCH is violence too (punch =
+-- bondgun.c melee-swing start, fists and knife alike; the rule kills only
+-- bare-fist swings — the knife stays a knife).
+pd.on("punch", function(weaponnum, playernum)
+  if st.active.pacifist and playernum == 0 and weaponnum == W.UNARMED then
+    pd.hud_message("CHAOS: violence has a price")
+    pd.player_damage(100)
   end
 end)
 

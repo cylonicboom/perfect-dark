@@ -12579,6 +12579,15 @@ bool chrTryPunch(struct chrdata *chr, u8 reverse)
 	if (ok) {
 		struct prop *targetprop = chrGetTargetProp(chr);
 
+#ifndef PLATFORM_N64
+		{
+			// Chaos "Pacifists": an NPC punch/kick counts like a gun
+			// discharge (weaponnum UNARMED marks it as melee).
+			extern void luaEmitChrFire(s32 chrnum, s32 weaponnum);
+			luaEmitChrFire(chr->chrnum, WEAPON_UNARMED);
+		}
+#endif
+
 		if (targetprop->type == PROPTYPE_EYESPY || targetprop->type == PROPTYPE_PLAYER) {
 			chr->act_anim.hitradius = playerhitradius;
 		} else {

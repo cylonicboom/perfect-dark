@@ -154,6 +154,7 @@ void luaApiRecordChr(s32 chrnum, s32 ailistid, s32 aioffset, s32 alertness, s32 
 /** Event emitters, called from game code (no-op if no script is listening). */
 void luaEmitWeaponFire(s32 weaponnum, s32 playernum);
 void luaEmitChrFire(s32 chrnum, s32 weaponnum);
+void luaEmitPunch(s32 weaponnum, s32 playernum);
 void luaEmitAlert(s32 chrnum, s32 playernum);
 void luaEmitKill(s32 chrnum, s32 killerplayernum);
 void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount);

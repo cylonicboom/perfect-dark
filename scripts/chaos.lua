@@ -2948,18 +2948,9 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() st.a_thief = nil; pd.button_block(0) end },
-  -- Perfect hills: extreme fog rolls in (values are per-mille of the z-range;
-  -- stock stages sit ~950..1050 — tune here). Fog position is ~linear in
-  -- 1/distance, so each "×3 view distance" = close 2/3 of the gap to 1000:
-  -- (500,850) → (833,950) → (944,983) (user calls 2026-07-29 — still too
-  -- close after the first push; note the pre-dlcache-flush builds also made
-  -- the wall look closer than the numbers really were).
-  perfect_hills = { label="Perfect hills", dur=1,
-                 start=function()
-                   if not pd.fog then error("needs new exe") end
-                   pd.fog(944, 983, 190, 195, 205)
-                 end,
-                 stop=function() pd.fog() end },
+  -- (Perfect hills lived here — removed 2026-07-29, user call. The engine
+  -- fixes it prompted stay: live-fog dlcache replay + the pd.fog/pd.env
+  -- cache flush and whole-stage reshade, which Brandon's mod still rides.)
   -- Max blood: every hit erupts, wounded guards drip at the maximum rate.
   max_blood  = { label="Max blood", dur=1,
                  start=function()
@@ -5178,7 +5169,7 @@ if pd.menu_add then
       drunk=1, blink=1, assert_authority=1, giants=1, ant_farm=1,
       monsoon=1, blizzard=1, ring_ring=1, negative_zoom=1,
       -- graduated alpha batch
-      vertigo2=1, blooper=1, dvd=1, hudvd=1, perfect_hills=1, max_blood=1,
+      vertigo2=1, blooper=1, dvd=1, hudvd=1, max_blood=1,
       blood_rainbow=1, brandons_mod=1, teen_angst=1, wireframe_enemies=1,
       fake_objective=1, fake_objective_fail=1, hurricane2=1,
       bayblade=1, speen=1, barrel_roll=1, banana_peel=1,

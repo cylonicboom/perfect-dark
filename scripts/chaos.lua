@@ -2552,6 +2552,8 @@ local alpha_effects = {
                      if dt > 0 then
                        local dx, dz = x - r.x, z - r.z
                        local spd = math.sqrt(dx * dx + dz * dz) * TICKS / dt
+                       -- smoothed needle for the speedometer HUD (draw hook)
+                       r.spd = (r.spd or spd) * 0.7 + spd * 0.3
                        if not r.armed then
                          if spd >= r.minspeed then
                            r.armed = true
@@ -5150,6 +5152,37 @@ pd.on("draw", function()
       col = 0xff4040ff -- ~5Hz red blink at the end
     end
     centered_text(20, text, col)
+  end
+
+  -- SPEED: the speedometer. A centered gauge (0..2x the limit, so the white
+  -- "50 mph" tick sits at the middle) — blue while arming, green above the
+  -- limit, blinking red while under it; a thin amber bar underneath drains
+  -- as the grace runs out (recovering refills it instantly).
+  if st.active.speed and st.a_run and not st.a_run.fired then
+    local r = st.a_run
+    local W2, H = 120, 8
+    local X, Y = math.floor((320 - W2) / 2), 26
+    local maxshow = r.minspeed * 2
+    local spd = math.min(r.spd or 0, maxshow)
+    local fillw = math.floor(W2 * spd / maxshow)
+    local col
+    if not r.armed then
+      col = 0x40c0ffb0
+    elseif (r.below or 0) > 0 then
+      col = (math.floor((r.left or 0) / 6) % 2 == 0) and 0xff4040e0 or 0xffa040e0
+    else
+      col = 0x40ff40b0
+    end
+    pd.draw_box(X, Y, W2, H, 0x000000a0)
+    if fillw > 0 then pd.draw_box(X, Y, fillw, H, col) end
+    pd.draw_box(X + math.floor(W2 / 2) - 1, Y - 2, 2, H + 4, 0xffffffff)
+    if r.armed and (r.below or 0) > 0 then
+      local gw = math.floor(W2 * math.max(0, 1 - r.below / r.grace))
+      pd.draw_box(X, Y + H + 2, W2, 3, 0x000000a0)
+      if gw > 0 then pd.draw_box(X, Y + H + 2, gw, 3, 0xff8020e0) end
+    end
+    centered_text(Y + H + 7, string.format("SPEED  %d", math.floor((r.spd or 0) + 0.5)),
+                  r.armed and 0xffffffff or 0x80c0ffff)
   end
 
   -- Beat game: a pulse that swells + turns green ON the beat, framed by the

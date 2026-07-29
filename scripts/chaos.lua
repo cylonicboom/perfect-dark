@@ -963,17 +963,17 @@ chaos.effects = {
   -- room-tint vertex shading it used before (user call 2026-07-28). Drops the
   -- NVG ITEM in the inventory (not auto-activated — the player learns to go
   -- equip it, user call 2026-07-29); only lends it if they don't already own
-  -- one, and takes back only what it lent. If the player is WEARING the NVGs
-  -- when the timer ends, the darkness lingers until they manually unequip
-  -- (the afterglow watcher in the main tick), then lights + goggles revert
-  -- together (user call 2026-07-29).
+  -- one, and takes back only what it lent. The lights ALWAYS come back at
+  -- the end of the timer (user call 2026-07-29); if the player is still
+  -- WEARING lent NVGs at that point they keep them until they manually
+  -- unequip, then the goggles vanish (the afterglow watcher in the main tick).
   blackout     = { label="Lights out", w=4, dur=15,
                    start=function()
                      pd.cheat(CHEAT.PDARK, true)
                      if st.blk_wait then
-                       -- re-triggered during an afterglow: goggles are still
-                       -- out there, just carry over whether they were lent
-                       st.a_blk_lent = st.blk_wait.lent
+                       -- re-triggered while lent goggles were still worn:
+                       -- they're already out there, keep them lent
+                       st.a_blk_lent = true
                        st.blk_wait = nil
                      else
                        st.a_blk_lent = not pd.has_weapon(W.NIGHTVISION)
@@ -981,12 +981,13 @@ chaos.effects = {
                      end
                    end,
                    stop=function()
-                     if pd.device_active and pd.device_active(W.NIGHTVISION) then
-                       -- wearing them: hand off to the afterglow watcher
-                       st.blk_wait = { lent = st.a_blk_lent }
-                     else
-                       pd.cheat(CHEAT.PDARK, false)
-                       if st.a_blk_lent then
+                     pd.cheat(CHEAT.PDARK, false)
+                     if st.a_blk_lent then
+                       if pd.device_active and pd.device_active(W.NIGHTVISION) then
+                         -- still wearing the lent pair: let them keep it on;
+                         -- the watcher reclaims it on manual unequip
+                         st.blk_wait = true
+                       else
                          -- deactivate first: eyewear isn't hand-held, so
                          -- take_weapon alone wouldn't clear devicesactive
                          pd.device_off(W.NIGHTVISION)
@@ -3894,12 +3895,9 @@ local function reset_all_modes()
   -- Run each active effect's own stop() cleanup, then drop bookkeeping and
   -- re-arm the timer so the first effect isn't instant on the next stage.
   stop_all()
-  -- A blackout afterglow (NVGs still worn) survives stop_all by design —
-  -- but not a stage/menu transition. Kill the darkness for real here.
-  if st.blk_wait then
-    pd.cheat(CHEAT.PDARK, false)
-    st.blk_wait = nil
-  end
+  -- A blackout afterglow is now only lent-goggle bookkeeping (the darkness
+  -- already ended with the timer); inventory resets across stages anyway.
+  st.blk_wait = nil
   st.active = {}
   st.duration = {}
   st.oneoff = {}
@@ -4482,13 +4480,12 @@ pd.on("tick", function()
     end
   end
 
-  -- Lights out afterglow: the effect timer is over but the player is still
-  -- wearing the NVGs, so the world stays perfectly dark. The moment they
-  -- manually unequip, the lights come back and any lent goggles vanish.
+  -- Lights out afterglow: the lights are back but the player is still
+  -- wearing the lent NVGs. The moment they manually unequip, the goggles
+  -- vanish from the inventory.
   if st.blk_wait and not st.active.blackout then
     if not pd.device_active(W.NIGHTVISION) then
-      pd.cheat(CHEAT.PDARK, false)
-      if st.blk_wait.lent then pd.take_weapon(W.NIGHTVISION) end
+      pd.take_weapon(W.NIGHTVISION)
       st.blk_wait = nil
     end
   end

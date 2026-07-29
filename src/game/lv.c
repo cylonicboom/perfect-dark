@@ -217,20 +217,25 @@ void lvResetChaosPerStage(void)
 // per stage and by the effect's stop().
 s32 g_ChaosTimeStop = 0;
 
-// How fast should time run this frame, 0..1 (user call 2026-07-29: analog,
-// looped onto the player's ACTUAL movement speed, not a binary gate).
+// SUPERHOT look 1:1 compensation (consumed in bondmove.c): hip look is a
+// VELOCITY integrated with the tick scale, so at reduced time rate the
+// camera would turn proportionally slower, and frames that emit zero sim
+// ticks would drop their mouse delta outright. bondmove multiplies the
+// frame's look delta by LookScale (the inverse time rate) and adds the
+// deltas banked from zero-tick frames, so the net camera motion tracks the
+// mouse 1:1 — "look as if SUPERHOT were deactivated" (user call).
+f32 g_ChaosLookScale = 1.0f;
+f32 g_ChaosLookBankX = 0.0f;
+f32 g_ChaosLookBankY = 0.0f;
+
+// Movement/button rate only, 0..1 (analog — looped onto the player's ACTUAL
+// input magnitude). The mouse-look trickle is handled in the lvTick hook
+// (instant, never smoothed) and look 1:1 via the bank/scale above.
 // - Held buttons = full rate (firing/interacting/pausing tick normally).
 // - Move stick = proportional to deflection (walk slowly, time crawls).
-// - Mouse/gyro LOOK = a SLIGHT advance (0.2) — look processing lives in the
-//   player tick, so a hard 0 froze the camera too ("can not look unless
-//   moving"); and looking moving you slightly is SUPERHOT-authentic.
-//   inputMouseGetScaledDelta is a non-consuming getter, already gated to
-//   gameplay (mouseLocked) so menu/console mouse motion doesn't count.
-static f32 chaosTimeStopRate(void)
+static f32 chaosTimeStopMoveRate(void)
 {
 	f32 rate = 0.0f;
-	f32 mdx;
-	f32 mdy;
 	s32 pad;
 
 	for (pad = 0; pad < 2; pad++) {
@@ -259,12 +264,6 @@ static f32 chaosTimeStopRate(void)
 		if (mag > rate) {
 			rate = mag;
 		}
-	}
-
-	inputMouseGetScaledDelta(&mdx, &mdy);
-
-	if ((mdx != 0.0f || mdy != 0.0f) && rate < 0.2f) {
-		rate = 0.2f;
 	}
 
 	return rate;
@@ -2789,25 +2788,62 @@ void lvTick(void)
 		// advances only as fast as the player is acting (the lvIsPaused
 		// mechanism above, not slow-mo; lvupdate60/freal derive from this
 		// below, so the whole sim scales: chrs, projectiles, everything).
-		// Analog: the tick rate follows the raw input magnitude (stick
-		// fraction, full for buttons, a 0.2 trickle for mouse-look — see
-		// chaosTimeStopRate; raw input because a frozen tick never changes
-		// the player's position). Fractional ticks accumulate so a slow walk
-		// yields e.g. one sim tick every few frames instead of rounding to
-		// zero forever.
+		// The MOVEMENT rate eases in and out (~1/3s ramp — time swells as
+		// you start moving and drains as you stop, user call); the
+		// mouse-look trickle (0.2) is INSTANT and unsmoothed, and look
+		// stays 1:1 via g_ChaosLookScale/Bank (see their definition).
+		// Fractional ticks accumulate so low rates emit one sim tick every
+		// few frames instead of rounding to zero forever.
 		if (g_ChaosTimeStop && !g_NetMode && !g_Vars.in_cutscene) {
 			static f32 acc = 0.0f;
-			f32 rate = chaosTimeStopRate();
+			static f32 smoothed = 0.0f;
+			f32 mdx;
+			f32 mdy;
+			f32 rate;
+			f32 k;
 			s32 ticks;
+			s32 orig = g_Vars.lvupdate240;
 
-			acc += g_Vars.lvupdate240 * rate;
+			// frame-rate-independent ease toward the raw movement rate
+			k = 0.1f * orig * 0.25f;
+			if (k > 1.0f) {
+				k = 1.0f;
+			}
+			smoothed += (chaosTimeStopMoveRate() - smoothed) * k;
+			rate = smoothed;
+
+			// looking advances time slightly, immediately (never smoothed —
+			// a head turn must not spool time up or leave it running down)
+			inputMouseGetScaledDelta(&mdx, &mdy);
+			if ((mdx != 0.0f || mdy != 0.0f) && rate < 0.2f) {
+				rate = 0.2f;
+			}
+
+			acc += orig * rate;
 			ticks = (s32)acc;
 			acc -= ticks;
 
-			if (ticks > g_Vars.lvupdate240) {
-				ticks = g_Vars.lvupdate240;
+			if (ticks > orig) {
+				ticks = orig;
 			}
+
+			if (ticks > 0) {
+				// bondmove runs this frame: scale its look delta up by the
+				// inverse time rate so the camera tracks the mouse 1:1
+				g_ChaosLookScale = (f32)orig / (f32)ticks;
+			} else {
+				// no sim tick this frame: bank the look delta so it isn't
+				// lost (released, scaled, on the next ticking frame)
+				g_ChaosLookScale = 1.0f;
+				g_ChaosLookBankX += mdx;
+				g_ChaosLookBankY += mdy;
+			}
+
 			g_Vars.lvupdate240 = ticks;
+		} else {
+			g_ChaosLookScale = 1.0f;
+			g_ChaosLookBankX = 0.0f;
+			g_ChaosLookBankY = 0.0f;
 		}
 #endif
 

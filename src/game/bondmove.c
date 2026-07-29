@@ -1328,6 +1328,32 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 #ifndef PLATFORM_N64
 	if (allowmlook) {
 		inputMouseGetScaledDelta(&movedata.freelookdx, &movedata.freelookdy);
+
+		// Chaos SUPERHOT look 1:1 (lv.c g_ChaosLook*): add the deltas banked
+		// on zero-tick frames, and outside aim mode scale by the inverse
+		// time rate — hip look is a velocity integrated with the tick scale
+		// and would otherwise slow down with time. Aim-mode swivel is a
+		// DIRECT per-frame add (no tick scaling), so it takes the banked
+		// deltas but not the scale.
+		{
+			extern s32 g_ChaosTimeStop;
+			extern f32 g_ChaosLookScale;
+			extern f32 g_ChaosLookBankX;
+			extern f32 g_ChaosLookBankY;
+
+			if (g_ChaosTimeStop && !g_Vars.currentplayer->isremote) {
+				movedata.freelookdx += g_ChaosLookBankX;
+				movedata.freelookdy += g_ChaosLookBankY;
+				g_ChaosLookBankX = 0.0f;
+				g_ChaosLookBankY = 0.0f;
+
+				if (!g_Vars.currentplayer->insightaimmode && g_ChaosLookScale > 1.0f) {
+					movedata.freelookdx *= g_ChaosLookScale;
+					movedata.freelookdy *= g_ChaosLookScale;
+				}
+			}
+		}
+
 		allowmcross = (PLAYER_EXTCFG().mouseaimmode == MOUSEAIM_CLASSIC) &&
 			(movedata.freelookdx || movedata.freelookdy || g_Vars.currentplayer->swivelpos[0] || g_Vars.currentplayer->swivelpos[1]);
 		if (movedata.invertpitch) {

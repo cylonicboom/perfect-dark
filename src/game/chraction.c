@@ -10168,6 +10168,20 @@ static void chraiLuaDirtyAllRooms(void)
 }
 #endif
 
+#ifndef PLATFORM_N64
+// Fog params are RECORDED into dlcache segments at record time (gfx_pc.cpp
+// g_DlCacheSegFogMul/Off), so cached room geometry keeps STALE fog until each
+// room happens to re-record — a mid-stage fog change rendered in gradually
+// and inconsistently (actors/props take the new fog instantly via the
+// immediate path while the world lags; restore looked asymmetric). Drop the
+// cache so every visible room re-records with the new fog next frame.
+static void chraiLuaFogCacheFlush(void)
+{
+	extern void gfx_dlcache_clear(void);
+	gfx_dlcache_clear();
+}
+#endif
+
 // pd.env(stagenum): apply another stage's sky/fog/cloud environment (Brandon's
 // mod). pd.env() / stagenum -1 restores the current stage's own environment.
 s32 chraiLuaEnv(s32 stagenum)
@@ -10175,6 +10189,7 @@ s32 chraiLuaEnv(s32 stagenum)
 	envChooseAndApply(stagenum >= 0 ? stagenum : chraiLuaGetStageNum(), false);
 #ifndef PLATFORM_N64
 	chraiLuaDirtyAllRooms();
+	chraiLuaFogCacheFlush();
 #endif
 	return 1;
 }
@@ -10191,6 +10206,7 @@ s32 chraiLuaFog(s32 fogmin, s32 fogmax, s32 r, s32 g, s32 b)
 #ifndef PLATFORM_N64
 	envChaosFog(chraiLuaGetStageNum(), fogmin, fogmax, (u8)r, (u8)g, (u8)b);
 	chraiLuaDirtyAllRooms();
+	chraiLuaFogCacheFlush();
 	return 1;
 #else
 	return 0;

@@ -2950,13 +2950,14 @@ local alpha_effects = {
                  stop=function() st.a_thief = nil; pd.button_block(0) end },
   -- Perfect hills: extreme fog rolls in (values are per-mille of the z-range;
   -- stock stages sit ~950..1050 — tune here). Fog position is ~linear in
-  -- 1/distance, so "triple the view distance" = close 2/3 of the gap to
-  -- 1000: (500,850) → (833,950) (user call 2026-07-29 — the wall was too
-  -- close).
+  -- 1/distance, so each "×3 view distance" = close 2/3 of the gap to 1000:
+  -- (500,850) → (833,950) → (944,983) (user calls 2026-07-29 — still too
+  -- close after the first push; note the pre-dlcache-flush builds also made
+  -- the wall look closer than the numbers really were).
   perfect_hills = { label="Perfect hills", dur=1,
                  start=function()
                    if not pd.fog then error("needs new exe") end
-                   pd.fog(833, 950, 190, 195, 205)
+                   pd.fog(944, 983, 190, 195, 205)
                  end,
                  stop=function() pd.fog() end },
   -- Max blood: every hit erupts, wounded guards drip at the maximum rate.
@@ -2985,8 +2986,8 @@ local alpha_effects = {
                  end },
   -- Brandon's mod: the sky goes full random — bright random sky, cloud and
   -- fog colours instead of any stage's prebaked look. Bright hues only
-  -- (hsv picks fully-saturated colours). Fog start tripled out like Perfect
-  -- hills: (900,1000) → (967,1000) (user call 2026-07-29).
+  -- (hsv picks fully-saturated colours). Fog start pushed out like Perfect
+  -- hills: (900,1000) → (967,1000) → (989,1000) (user calls 2026-07-29).
   brandons_mod = { label="Brandon's mod", dur=1,
                  start=function()
                    if not pd.env_colours then error("needs new exe") end
@@ -2994,7 +2995,7 @@ local alpha_effects = {
                    local cr, cg, cb = hsv(math.random(0, 359))
                    local fr, fg, fb = hsv(math.random(0, 359))
                    pd.env_colours(sr, sg, sb, cr, cg, cb)
-                   if pd.fog then pd.fog(967, 1000, fr, fg, fb) end
+                   if pd.fog then pd.fog(989, 1000, fr, fg, fb) end
                  end,
                  stop=function()
                    pd.env()          -- re-apply the stage's authored environment

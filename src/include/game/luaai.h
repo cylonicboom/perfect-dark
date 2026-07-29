@@ -400,7 +400,7 @@ s32 chraiLuaNbomb(void);                      /* N-Bomb storm on the player */
 s32 chraiLuaGust(f32 force);                  /* shove chrs/objects/player in one random direction */
 s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum); /* dual-equip a weapon; funcnum 0/1 forces fire func */
 s32 chraiLuaAspectScale(f32 mult);            /* projection aspect multiplier (1.0 = normal) */
-s32 chraiLuaPlaySong(s32 slot);               /* play an unlocked MP track over the stage music; -1 stops */
+s32 chraiLuaPlaySong(s32 slot, f32 frac);     /* play an unlocked MP track over the stage music; -1 stops; frac>0 = start that far in */
 s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses); /* hostile chr at player + offset */
 s32 chraiLuaBodySnatch(s32 chrnum);           /* lite Counter-Op takeover of a chr (solo) */
 s32 chraiLuaBodyUnsnatch(void);               /* end body_snatch: un-disguise + teleport home */

@@ -1737,6 +1737,152 @@ void snd0000fc40(s32 arg0)
 	// empty
 }
 
+#ifndef PLATFORM_N64
+// One-shot "start this track at a fraction of its length" latch (pd.song's
+// random-start jukebox). Keyed by tracknum so it can only be consumed by the
+// seqPlay that starts THAT track — the pause menu starting a different menu
+// track can't pick up a stale latch. Armed via seqSetNextSeek, consumed (or
+// discarded) by the next seqPlay of the matching track.
+s32 g_SeqSeekTracknum = -1;
+f32 g_SeqSeekFrac = 0.0f;
+
+void seqSetNextSeek(s32 tracknum, f32 frac)
+{
+	g_SeqSeekTracknum = tracknum;
+	g_SeqSeekFrac = frac;
+}
+
+// Jump a freshly-loaded sequence to frac (0..1) of its linear length before
+// n_alCSPPlay. Two scan passes with n_alCSeqNextEvent in marker mode (arg 0):
+// loop-end events FALL THROUGH instead of jumping back (n_csq.c resets the
+// loop count and steps past), so both passes terminate at AL_SEQ_END_EVT even
+// on loop-forever music, and the loop stays armed for real playback after the
+// seek point. Pass 1 measures the length; pass 2 replicates the
+// n_alCSeqNewMarker capture loop up to the target tick while chasing the
+// channel state a naive seek would skip (program changes, controllers, pitch
+// bend, channel pressure, tempo), which is then injected into the player
+// (n_alCSPSendMidi at 0 ticks / n_alCSPSetTempo) so instruments and speed are
+// correct mid-song. Skipped note-ons are simply lost (no hanging notes).
+static void seqSeekToFrac(struct seqinstance *seq, f32 frac)
+{
+	// static: seqPlay is single-context (music event queue) and this keeps
+	// ~4.5KB of chase tables off a stack that already carries seqPlay's 5KB
+	// scratch buffer
+	static u8 ccval[16][128];
+	static u8 ccset[16][128];
+	ALCSeq scan;
+	ALCSeqMarker marker;
+	N_ALEvent evt;
+	u8 prog[16], progset[16];
+	u8 press[16], pressset[16];
+	u8 bendlo[16], bendhi[16], bendset[16];
+	s32 tempo = -1;
+	u32 length;
+	u32 target;
+	s32 guard;
+	s32 i;
+	s32 j;
+
+	// Pass 1: linear length in sequence ticks
+	n_alCSeqNew(&scan, seq->data);
+	guard = 0;
+	do {
+		n_alCSeqNextEvent(&scan, &evt, 0);
+	} while (evt.type != AL_SEQ_END_EVT && ++guard < 0x80000);
+
+	if (guard >= 0x80000 || scan.lastTicks == 0) {
+		return;
+	}
+
+	length = scan.lastTicks;
+	target = (u32)(length * frac);
+
+	if (target == 0) {
+		return;
+	}
+
+	for (i = 0; i < 16; i++) {
+		progset[i] = pressset[i] = bendset[i] = 0;
+		for (j = 0; j < 128; j++) {
+			ccset[i][j] = 0;
+		}
+	}
+
+	// Pass 2: chase state and capture the marker just before the target tick
+	n_alCSeqNew(&scan, seq->data);
+	guard = 0;
+
+	for (;;) {
+		marker.validTracks = scan.validTracks;
+		marker.lastTicks = scan.lastTicks;
+		marker.lastDeltaTicks = scan.lastDeltaTicks;
+
+		for (i = 0; i < 16; i++) {
+			marker.curLoc[i] = scan.curLoc[i];
+			marker.curBUPtr[i] = scan.curBUPtr[i];
+			marker.curBULen[i] = scan.curBULen[i];
+			marker.lastStatus[i] = scan.lastStatus[i];
+			marker.evtDeltaTicks[i] = scan.evtDeltaTicks[i];
+		}
+
+		n_alCSeqNextEvent(&scan, &evt, 0);
+
+		if (evt.type == AL_SEQ_END_EVT || scan.lastTicks >= target || ++guard >= 0x80000) {
+			break;
+		}
+
+		if (evt.type == AL_TEMPO_EVT) {
+			tempo = ((s32)evt.msg.tempo.byte1 << 16) | ((s32)evt.msg.tempo.byte2 << 8) | evt.msg.tempo.byte3;
+		} else if (evt.type == AL_SEQ_MIDI_EVT) {
+			u8 st = evt.msg.midi.status & 0xf0;
+			u8 ch = evt.msg.midi.status & 0x0f;
+
+			if (st == AL_MIDI_ProgramChange) {
+				prog[ch] = evt.msg.midi.byte1;
+				progset[ch] = 1;
+			} else if (st == AL_MIDI_ControlChange) {
+				ccval[ch][evt.msg.midi.byte1 & 0x7f] = evt.msg.midi.byte2;
+				ccset[ch][evt.msg.midi.byte1 & 0x7f] = 1;
+			} else if (st == AL_MIDI_ChannelPressure) {
+				press[ch] = evt.msg.midi.byte1;
+				pressset[ch] = 1;
+			} else if (st == AL_MIDI_PitchBendChange) {
+				bendlo[ch] = evt.msg.midi.byte1;
+				bendhi[ch] = evt.msg.midi.byte2;
+				bendset[ch] = 1;
+			}
+		}
+	}
+
+	alCSeqSetLoc(&seq->seq, &marker);
+
+	if (tempo >= 0) {
+		// n_alCSPSetTempo isn't compiled into this tree; the player's own
+		// tempo-event handler boils down to this call (n_csplayer.c), and
+		// seqp->target (needed for qnpt) is set by n_alCSPSetSeq above
+		extern void __n_setUsptFromTempo(N_ALCSPlayer *seqp, f32 tempo);
+		__n_setUsptFromTempo(seq->seqp, (f32)tempo);
+	}
+
+	for (i = 0; i < 16; i++) {
+		if (progset[i]) {
+			n_alCSPSendMidi(seq->seqp, 0, AL_MIDI_ProgramChange | i, prog[i], 0);
+		}
+		for (j = 0; j < 128; j++) {
+			if (ccset[i][j]) {
+				n_alCSPSendMidi(seq->seqp, 0, AL_MIDI_ControlChange | i, j, ccval[i][j]);
+			}
+		}
+		if (pressset[i]) {
+			n_alCSPSendMidi(seq->seqp, 0, AL_MIDI_ChannelPressure | i, press[i], 0);
+		}
+		if (bendset[i]) {
+			n_alCSPSendMidi(seq->seqp, 0, AL_MIDI_PitchBendChange | i, bendlo[i], bendhi[i]);
+		}
+	}
+}
+#endif
+
 bool seqPlay(struct seqinstance *seq, s32 tracknum)
 {
 	u32 stack;
@@ -1842,6 +1988,17 @@ bool seqPlay(struct seqinstance *seq, s32 tracknum)
 	n_alCSeqNew(&seq->seq, seq->data);
 	n_alCSPSetSeq(seq->seqp, &seq->seq);
 	seqSetVolume(seq, seqGetVolume(seq));
+
+#ifndef PLATFORM_N64
+	if (tracknum == g_SeqSeekTracknum) {
+		if (g_SeqSeekFrac > 0.0f && g_SeqSeekFrac < 1.0f) {
+			seqSeekToFrac(seq, g_SeqSeekFrac);
+		}
+		g_SeqSeekTracknum = -1;
+		g_SeqSeekFrac = 0.0f;
+	}
+#endif
+
 	n_alCSPPlay(seq->seqp);
 
 	return true;

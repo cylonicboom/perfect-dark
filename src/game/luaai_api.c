@@ -3316,7 +3316,8 @@ static int l_pd_aspect_scale(lua_State *L)
 static int l_pd_song(lua_State *L)
 {
 	s32 slot = (s32)luaL_optinteger(L, 1, -1);
-	lua_pushboolean(L, chraiLuaPlaySong(slot) != 0);
+	f32 frac = (f32)luaL_optnumber(L, 2, 0.0);
+	lua_pushboolean(L, chraiLuaPlaySong(slot, frac) != 0);
 	return 1;
 }
 

@@ -24,6 +24,9 @@ void sndInit(void);
 bool sndIsMp3(s16 soundnum);
 bool sndStopMp3(s16 arg0);
 bool seqPlay(struct seqinstance *seq, s32 tracknum);
+#ifndef PLATFORM_N64
+void seqSetNextSeek(s32 tracknum, f32 frac);
+#endif
 u16 seqGetVolume(struct seqinstance *seq);
 void seqSetVolume(struct seqinstance *seq, u16 volume);
 void sndHandleRetrace(void);

@@ -9696,13 +9696,20 @@ s32 chraiLuaKnifeLock(s32 on)
 	return 1;
 }
 
-// pd.song(slot) / pd.song(): play an unlocked Combat Sim music track over the
-// stage music (musicStartTrackAsMenu — the credits-roll mechanism; the stage
-// music pauses underneath and resumes when the menu track ends). slot is
-// wrapped into the unlocked-track range; no arg / negative stops the song.
-s32 chraiLuaPlaySong(s32 slot)
+// pd.song(slot [, frac]) / pd.song(): play an unlocked Combat Sim music track
+// over the stage music (musicStartTrackAsMenu — the credits-roll mechanism;
+// the stage music pauses underneath and resumes when the menu track ends).
+// slot is wrapped into the unlocked-track range; no arg / negative stops the
+// song. frac > 0 starts the song that far into its length (the seqPlay seek
+// latch, snd.c seqSeekToFrac) — only armed when the start will actually be
+// queued (not suppressed, not the already-playing menu track), so a stale
+// latch can't hijack a later pause-menu track start.
+s32 chraiLuaPlaySong(s32 slot, f32 frac)
 {
+	extern s32 g_MusicSuppressed;
+	extern s32 g_MenuTrack;
 	s32 numtracks;
+	s32 tracknum;
 
 	if (slot < 0) {
 		musicEndMenu();
@@ -9712,7 +9719,14 @@ s32 chraiLuaPlaySong(s32 slot)
 	if (numtracks <= 0) {
 		return 0;
 	}
-	musicStartTrackAsMenu(mpGetTrackMusicNum(slot % numtracks));
+	tracknum = mpGetTrackMusicNum(slot % numtracks);
+	if (frac > 0.0f && !g_MusicSuppressed && tracknum != g_MenuTrack) {
+		if (frac > 0.95f) {
+			frac = 0.95f;
+		}
+		seqSetNextSeek(tracknum, frac);
+	}
+	musicStartTrackAsMenu(tracknum);
 	return 1;
 }
 

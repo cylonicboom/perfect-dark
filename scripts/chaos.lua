@@ -623,9 +623,11 @@ chaos.effects = {
   -- One-shot (user call 2026-07-29): fire a random Combat Sim track and let
   -- it ride instead of a 60s timer cutting it off mid-song. The stage music
   -- is paused under the menu-track layer and comes back when the song ends;
-  -- reset_all_modes still clears it on stage/menu transitions.
+  -- reset_all_modes still clears it on stage/menu transitions. The second
+  -- arg drops the needle at a random point in the first ~3/4 of the song
+  -- (seeded chaos RNG; old exes without the arg just play from the start).
   jukebox        = { label="Jukebox",             w=5, dur=0,
-                     start=function() pd.song(math.random(0, 255)) end },
+                     start=function() pd.song(math.random(0, 255), math.random() * 0.75) end },
   skedar_ring    = { label="Skedar ambush",       w=3, dur=0,
                      start=function()
                        for i = 0, 3 do

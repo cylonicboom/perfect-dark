@@ -2628,7 +2628,37 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() st.a_cap = nil end },
-  -- (skedar_king removed 2026-07-18 round 2 — "does not work for now".)
+  -- Skedar King: the WAR!/Skedar Ruins boss spawns in and charges you. Gone
+  -- when the timer ends. (Removed 2026-07-18 as "does not work" — the spawn
+  -- failures were C-side and fixed since: spawn_body was missing the
+  -- bodyLoad force-load, and wedged a human head onto headless
+  -- skedar-skeleton bodies, which failed the model build. Resurrected
+  -- 2026-07-29.) Tries four directions x two distances in case the rolled
+  -- spot has no floor space for a King-sized chr.
+  skedar_king = { label="Skedar King", w=3, dur=1,
+                 start=function()
+                   local c
+                   local a = math.random() * 2 * math.pi
+                   for try = 0, 3 do
+                     local ang = a + try * (math.pi / 2)
+                     for _, dist in ipairs({ 350, 220 }) do
+                       c = pd.spawn_body(BODY.SKEDARKING, -1,
+                                         math.sin(ang) * dist, math.cos(ang) * dist)
+                       if c and c >= 0 then break end
+                     end
+                     if c and c >= 0 then break end
+                   end
+                   if not c or c < 0 then error("the King won't fit here") end
+                   pd.chr_set_shield(c, 20)
+                   pd.chr_alert(c)
+                   st.a_king = c
+                 end,
+                 tick=function(left)
+                   if left % 90 == 0 and st.a_king then pd.chr_alert(st.a_king) end
+                 end,
+                 stop=function()
+                   if st.a_king then pd.chr_damage(st.a_king, 1000); st.a_king = nil end
+                 end },
   -- (sea_groans removed 2026-07-18: needed an external sound file that never
   -- shipped; "does not work, just remove it".)
   -- Feeling lucky? All weapons gone, have a Magnum. 20% it's the LX.
@@ -3878,6 +3908,7 @@ local function reset_all_modes()
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
   st.a_fadeout, st.a_sleep, st.a_weep, st.a_itchy = nil
+  st.a_king = nil -- Skedar King target (stop() kills it)
   st.a_son = nil -- drop the "Me and my son" death-watch on teardown
   st.a_silo = nil -- drop the Silo Countdown HUD state (stop() restores music)
   st.a_helpson = nil -- drop the Helpful son input FSM
@@ -5197,7 +5228,7 @@ if pd.menu_add then
       self_destruct=1, misfire=1, weapon_jam=1, vampire=1, plague=1,
       thanos_snap=1, airstrike=1, boom=1, panic=1, intruder=1, predators=1,
       take_a_break=1, one_hp=1, dry_spell=1, amnesia=1, disarm=1,
-      evil_twin=1, clone_army=1, skedar_ring=1, enemyrockets=1, karma=1,
+      evil_twin=1, clone_army=1, skedar_ring=1, skedar_king=1, enemyrockets=1, karma=1,
       glass_cannon=1, backfire=1, nbomb_me=1, earthquake=1,
       quantum_leap=1, quantum_instability=1, gormless=1, woof_gas=1,
       -- graduated alpha batch

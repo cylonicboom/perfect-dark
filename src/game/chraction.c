@@ -12235,16 +12235,31 @@ s32 chraiLuaChrSetShield(s32 chrnum, f32 value)
 s32 chraiLuaChrAlert(s32 chrnum)
 {
 	struct chrdata *chr;
+	struct chrdata *pl;
 
 	if (g_NetMode == NETMODE_CLIENT) {
 		return 0;
 	}
 	chr = (chrnum < 0) ? NULL : chrFindByLiteralId(chrnum);
-	if (chr == NULL) {
+	if (chr == NULL || chrIsDead(chr)) {
 		return 0;
 	}
-	// Same flag the damage path sets to make a chr switch to its shot/alert list.
+	// Same flag the damage path sets to make a chr switch to its shot/alert
+	// list — but the flag alone reproduces only PART of being shot: chrDamage
+	// also raises alertness and identifies the attacker. Without those the
+	// shot list ran with no target and settled straight back to idle (the
+	// PANIC! visible-no-op bug, fixed 2026-07-29).
 	chr->chrflags |= CHRCFLAG_TRIGGERSHOTLIST;
+	chr->alertness = 100;
+
+	pl = apLuaPlayerChr();
+	if (pl != NULL && chr != pl
+			&& (chr->team & TEAM_NONCOMBAT) == 0
+			&& chrCompareTeams(pl, chr, COMPARE_ENEMIES)) {
+		// Hostile combatants learn WHO to hunt; civilians/allies just panic
+		// (never force targets onto non-combatants — the civil-war lesson).
+		chr->target = propGetIndexByChrId(chr, pl->chrnum);
+	}
 	return 1;
 }
 

@@ -2498,23 +2498,43 @@ local alpha_effects = {
                    pd.take_weapon(W.LX)
                  end },
   -- Tank: dual rocket launchers, UNLIMITED rockets, barely able to walk —
-  -- and you're welded to them: knife_lock blocks switching + the gadget
-  -- menu (the Knife fight pattern) and the tick snaps back the one avenue
-  -- left (PC number-key direct select) while keeping the rocket reserve
-  -- topped up (give_ammo clamps at pool capacity). (User call 2026-07-29.)
+  -- and you're welded to them. The Cyclone Frenzy arm pattern: the dual
+  -- equip is a DEFERRED switch that takes real frames, so knife_lock only
+  -- engages after a ~0.75s arm delay (locking mid-equip strands you on ONE
+  -- launcher), and the snap-back re-duals only on an actual weapon CHANGE —
+  -- calling dual_wield every frame while weapon_held still reports the old
+  -- gun restarts the equip forever (the single-launcher regression,
+  -- 2026-07-29). Rocket reserve topped up each second (clamps at pool cap).
   tank       = { label="Tank mode", dur=1,
                  start=function()
+                   st.a_tank = { arm = 45 }
                    pd.dual_wield(W.ROCKET); give_ammo_mags()
                    pd.give_ammo(AMMO.ROCKET, 20)
                    pd.player_speed(0.25)
-                   if pd.knife_lock then pd.knife_lock(true) end
                  end,
                  tick=function(left)
+                   local t = st.a_tank
+                   if not t then return end
                    if left % 60 == 0 then pd.give_ammo(AMMO.ROCKET, 20) end
+                   if t.arm then
+                     t.arm = t.arm - (pd.lvupdate and pd.lvupdate() or 1)
+                     if t.arm <= 0 then
+                       t.arm = nil
+                       if pd.knife_lock then pd.knife_lock(true) end
+                     end
+                     return
+                   end
+                   -- armed: snap back the number-key escape, once per change
                    local h = pd.weapon_held and pd.weapon_held()
-                   if h and h ~= W.ROCKET then pd.dual_wield(W.ROCKET) end
+                   if h == W.ROCKET then
+                     t.last = nil
+                   elseif h and h ~= t.last then
+                     t.last = h
+                     pd.dual_wield(W.ROCKET)
+                   end
                  end,
                  stop=function()
+                   st.a_tank = nil
                    if pd.knife_lock then pd.knife_lock(false) end
                    pd.player_speed(1)
                    pd.take_weapon(W.ROCKET)
@@ -4062,7 +4082,7 @@ local function reset_all_modes()
   -- Chaos Alpha state (belt and braces — each effect's stop() already ran).
   if pd.explosions_around then pd.explosions_around(false) end
   st.a_boom_off = nil
-  st.a_bloop, st.a_twoh = nil
+  st.a_bloop, st.a_twoh, st.a_tank = nil
   st.a_ltk, st.a_run, st.a_cap, st.a_rr = nil
   st.a_touch = nil -- Touchscreen Calibration target drill
   st.a_simon = nil -- Simon Says command drill

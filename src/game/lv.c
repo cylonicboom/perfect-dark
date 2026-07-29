@@ -217,22 +217,57 @@ void lvResetChaosPerStage(void)
 // per stage and by the effect's stop().
 s32 g_ChaosTimeStop = 0;
 
-// Any held button or a deflected move stick on pads 0/1 counts as "time
-// moves" (the lv.c idle-detector idiom below). Held, not pressed-this-frame:
-// holding forward must keep time running, not just the press edge.
-static bool chaosTimeStopInputActive(void)
+// How fast should time run this frame, 0..1 (user call 2026-07-29: analog,
+// looped onto the player's ACTUAL movement speed, not a binary gate).
+// - Held buttons = full rate (firing/interacting/pausing tick normally).
+// - Move stick = proportional to deflection (walk slowly, time crawls).
+// - Mouse/gyro LOOK = a SLIGHT advance (0.2) — look processing lives in the
+//   player tick, so a hard 0 froze the camera too ("can not look unless
+//   moving"); and looking moving you slightly is SUPERHOT-authentic.
+//   inputMouseGetScaledDelta is a non-consuming getter, already gated to
+//   gameplay (mouseLocked) so menu/console mouse motion doesn't count.
+static f32 chaosTimeStopRate(void)
 {
+	f32 rate = 0.0f;
+	f32 mdx;
+	f32 mdy;
 	s32 pad;
 
 	for (pad = 0; pad < 2; pad++) {
-		if (joyGetButtons(pad, 0xffffffff) != 0
-				|| joyGetStickX(pad) > 12 || joyGetStickX(pad) < -12
-				|| joyGetStickY(pad) > 12 || joyGetStickY(pad) < -12) {
-			return true;
+		s32 sx = joyGetStickX(pad);
+		s32 sy = joyGetStickY(pad);
+		f32 mag;
+
+		if (joyGetButtons(pad, 0xffffffff) != 0) {
+			return 1.0f;
+		}
+
+		if (sx < 0) {
+			sx = -sx;
+		}
+		if (sy < 0) {
+			sy = -sy;
+		}
+		if (sy > sx) {
+			sx = sy;
+		}
+		// deadzone 12, full speed around 60 (the keyboard/stick walk range)
+		mag = (sx > 12) ? sx * (1.0f / 60.0f) : 0.0f;
+		if (mag > 1.0f) {
+			mag = 1.0f;
+		}
+		if (mag > rate) {
+			rate = mag;
 		}
 	}
 
-	return false;
+	inputMouseGetScaledDelta(&mdx, &mdy);
+
+	if ((mdx != 0.0f || mdy != 0.0f) && rate < 0.2f) {
+		rate = 0.2f;
+	}
+
+	return rate;
 }
 #endif
 
@@ -2750,18 +2785,29 @@ void lvTick(void)
 		g_Vars.lvupdate240 = g_Vars.diffframe240;
 
 #ifndef PLATFORM_N64
-		// Chaos SUPERHOT (pd.time_stop): a LITERAL time stop — while the
-		// player gives no input, the game tick does not advance (the
-		// lvIsPaused mechanism above, not slow-mo; lvupdate60/freal derive
-		// from this below, so the whole sim freezes: chrs, projectiles,
-		// everything). Raw INPUT has to be the release trigger — with the
-		// tick at 0 the player's position never changes, so a
-		// position-delta detector could never unfreeze. Any button counts
-		// (fire/interact/pause tick the frame so the action happens);
-		// mouse-look alone doesn't, so surveying the frozen scene is free.
-		if (g_ChaosTimeStop && !g_NetMode && !g_Vars.in_cutscene
-				&& !chaosTimeStopInputActive()) {
-			g_Vars.lvupdate240 = 0;
+		// Chaos SUPERHOT (pd.time_stop): a LITERAL time stop — the game tick
+		// advances only as fast as the player is acting (the lvIsPaused
+		// mechanism above, not slow-mo; lvupdate60/freal derive from this
+		// below, so the whole sim scales: chrs, projectiles, everything).
+		// Analog: the tick rate follows the raw input magnitude (stick
+		// fraction, full for buttons, a 0.2 trickle for mouse-look — see
+		// chaosTimeStopRate; raw input because a frozen tick never changes
+		// the player's position). Fractional ticks accumulate so a slow walk
+		// yields e.g. one sim tick every few frames instead of rounding to
+		// zero forever.
+		if (g_ChaosTimeStop && !g_NetMode && !g_Vars.in_cutscene) {
+			static f32 acc = 0.0f;
+			f32 rate = chaosTimeStopRate();
+			s32 ticks;
+
+			acc += g_Vars.lvupdate240 * rate;
+			ticks = (s32)acc;
+			acc -= ticks;
+
+			if (ticks > g_Vars.lvupdate240) {
+				ticks = g_Vars.lvupdate240;
+			}
+			g_Vars.lvupdate240 = ticks;
 		}
 #endif
 

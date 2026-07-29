@@ -3224,8 +3224,10 @@ local alpha_effects = {
                  start=function()
                    pd.hud_message("CHAOS: you shoot, you DIE")
                  end },
-  -- Pacifist: violence has a price — every shot costs health (weaponfire hook).
-  pacifist   = { label="Pacifist", dur=1,
+  -- Pacifists: violence is banned for EVERYONE — any gun discharge kills the
+  -- shooter, player and NPC alike (weaponfire + chrfire hooks; user call
+  -- 2026-07-29 — was a player-only per-shot health tax named "Pacifist").
+  pacifist   = { label="Pacifists", dur=1,
                  start=function()
                    pd.hud_message("CHAOS: violence has a price")
                  end },
@@ -4614,16 +4616,18 @@ pd.on("weaponfire", function(weaponnum, playernum)
       and st.a_cap.task.kind == "fire" and playernum == 0 then
     st.a_cap.task.shots = (st.a_cap.task.shots or 0) + 1
   end
-  -- SA batch: No Shooting Allowed (instant death), Pacifist (a health tax),
-  -- Heavy Recoil (every shot launches you backward). weaponnum > 1 skips
-  -- fists/knife, the glass-cannon convention.
+  -- SA batch: No Shooting Allowed (instant death), Pacifists (ANY shooter
+  -- dies — the NPC half lives in the chrfire hook below), Heavy Recoil
+  -- (every shot launches you backward). weaponnum > 1 skips fists/knife,
+  -- the glass-cannon convention.
   if playernum == 0 and weaponnum and weaponnum > 1 then
     if st.active.no_shooting then
       pd.hud_message("CHAOS: told you.")
       pd.player_damage(100)
     end
     if st.active.pacifist then
-      pd.player_damage(0.4)
+      pd.hud_message("CHAOS: violence has a price")
+      pd.player_damage(100)
     end
     if st.active.heavy_recoil then
       -- FLAG only — the kick applies from the MAIN tick, one frame later,
@@ -4649,6 +4653,15 @@ pd.on("weaponfire", function(weaponnum, playernum)
       pd.hud_message("CHAOS: click... someone else was less lucky")
     end
     stop_effect("russian_roulette")
+  end
+end)
+
+-- Pacifists, NPC half: any NPC/simulant gun discharge kills the shooter
+-- (chrfire = chraction.c chrTickShoot -> luaEmitChrFire; new exe only —
+-- old exes just get the player half from the weaponfire hook above).
+pd.on("chrfire", function(chrnum, weaponnum)
+  if st.active.pacifist and chrnum and chrnum >= 0 and pd.chr_damage then
+    pd.chr_damage(chrnum, 100)
   end
 end)
 

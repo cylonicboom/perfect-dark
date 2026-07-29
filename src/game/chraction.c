@@ -14766,6 +14766,15 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 			if (g_ChaosFragOut && chrConsiderGrenadeThrow(chr, attackflags, 0)) {
 				return;
 			}
+
+			// Chaos "Pacifists" (pd.on "chrfire"): report the discharge to Lua.
+			// Same chokepoint as Frag Out — campaign guards and simulants alike.
+			// Player shots report via luaEmitWeaponFire (bondgun.c); the
+			// PROPTYPE_PLAYER gate avoids double counting them here.
+			if (chrprop->type != PROPTYPE_PLAYER) {
+				extern void luaEmitChrFire(s32 chrnum, s32 weaponnum);
+				luaEmitChrFire(chr->chrnum, gset.weaponnum);
+			}
 #endif
 
 			roty = chrGetAimAngle(chr);

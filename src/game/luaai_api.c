@@ -5,7 +5,7 @@
  * This sits on top of luaai.c (which owns the lua_State and the ailist
  * transpile/execute loop) and adds the developer-facing surface:
  *
- *   pd.on(event, fn)            -- "weaponfire" | "alert" | "kill" | "draw"
+ *   pd.on(event, fn)            -- "weaponfire" | "chrfire" | "alert" | "kill" | "draw"
  *   pd.draw_box(x,y,w,h,color[,secs])
  *   pd.draw_text(x,y,text,color[,secs])
  *   pd.each_chr(fn)             -- fn(chrnum, ailistid, aioffset, alertness, islua)
@@ -3845,6 +3845,16 @@ void luaEmitWeaponFire(s32 weaponnum, s32 playernum)
 	a[0] = weaponnum;
 	a[1] = playernum;
 	luaEventDispatchInts("weaponfire", 2, a);
+}
+
+/* NPC/simulant gun discharge (chraction.c chrTickShoot; players report via
+ * luaEmitWeaponFire instead). Backs the chaos "Pacifists" shooter-dies rule. */
+void luaEmitChrFire(s32 chrnum, s32 weaponnum)
+{
+	lua_Integer a[2];
+	a[0] = chrnum;
+	a[1] = weaponnum;
+	luaEventDispatchInts("chrfire", 2, a);
 }
 
 void luaEmitAlert(s32 chrnum, s32 playernum)

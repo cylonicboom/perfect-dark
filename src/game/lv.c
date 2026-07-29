@@ -181,6 +181,7 @@ void lvResetChaosPerStage(void)
 	extern unsigned char gfx_doublevision_mode; // chaos One-too-many
 	extern s32 g_ChaosGunLock;        // chaos Cyclone Frenzy
 	extern s32 g_ChaosKnifeLock;      // chaos Knife fight
+	extern s32 g_ChaosCloakLock;      // chaos Now you see me
 	extern s32 g_ChaosMagDump;        // chaos Mag Dump
 	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch
 	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry
@@ -196,6 +197,7 @@ void lvResetChaosPerStage(void)
 	gfx_doublevision_mode = 0;
 	g_ChaosGunLock = 0;
 	g_ChaosKnifeLock = 0;
+	g_ChaosCloakLock = 0;
 	g_ChaosMagDump = 0;
 	g_ChaosMagDumpArmed = 0;
 	g_ChaosPlayerSpeed = 1.0f;

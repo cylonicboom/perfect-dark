@@ -3302,6 +3302,13 @@ static int l_pd_knife_lock(lua_State *L)
 	return 1;
 }
 
+/* pd.cloak_lock(on) -> bool. Unbreakable no-ammo player cloak. */
+static int l_pd_cloak_lock(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaCloakLock(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.aspect_scale([mult]) -> bool. Projection aspect multiplier: 2 = extra
  * wide, 0.5 = extra tall, 1 / no arg = normal. */
 static int l_pd_aspect_scale(lua_State *L)
@@ -3726,6 +3733,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_yassify);       lua_setfield(L, -2, "yassify");
 	lua_pushcfunction(L, l_pd_mag_dump);      lua_setfield(L, -2, "mag_dump");
 	lua_pushcfunction(L, l_pd_knife_lock);    lua_setfield(L, -2, "knife_lock");
+	lua_pushcfunction(L, l_pd_cloak_lock);    lua_setfield(L, -2, "cloak_lock");
 	lua_pushcfunction(L, l_pd_aspect_scale);  lua_setfield(L, -2, "aspect_scale");
 	lua_pushcfunction(L, l_pd_song);          lua_setfield(L, -2, "song");
 	lua_pushcfunction(L, l_pd_stage_music);   lua_setfield(L, -2, "stage_music");

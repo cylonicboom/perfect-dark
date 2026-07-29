@@ -386,6 +386,7 @@ s32 chraiLuaRubberObjects(s32 on);            /* Rubber Objects: newly-dropped i
 s32 chraiLuaYassify(s32 on);                  /* Yassify: cinched waist + broader shoulders + bigger head */
 s32 chraiLuaMagDump(s32 on);                  /* Mag Dump: one trigger press empties the clip (hold auto / pulse semi) */
 s32 chraiLuaKnifeLock(s32 on);                /* Knife fight: block weapon switching only (knife used normally) */
+s32 chraiLuaCloakLock(s32 on);                /* unbreakable no-ammo player cloak (Now you see me) */
 s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */
 s32 chraiLuaGas(s32 on);                      /* nerve gas on any stage (wash + cough + damage) */
 s32 chraiLuaTPose(s32 on);                    /* all skeletal models render in bind pose */

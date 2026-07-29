@@ -514,9 +514,19 @@ chaos.effects = {
   godmode      = { label="Invincible!",       w=4, dur=10,
                    start=function() pd.invincible(true) end,
                    stop=function() pd.invincible(false) end },
+  -- Unbreakable cloak (user call 2026-07-29): pd.cloak_lock makes it need no
+  -- cloak ammo (a bare device_on grants none, so the vanilla path switched
+  -- the device straight back off) and firing doesn't drop it. Old exes
+  -- without the binding fall back to the plain breakable device.
   cloak        = { label="Now you see me...", w=5, dur=20,
-                   start=function() pd.device_on(W.CLOAK) end,
-                   stop=function() pd.device_off(W.CLOAK) end },
+                   start=function()
+                     pd.device_on(W.CLOAK)
+                     if pd.cloak_lock then pd.cloak_lock(true) end
+                   end,
+                   stop=function()
+                     if pd.cloak_lock then pd.cloak_lock(false) end
+                     pd.device_off(W.CLOAK)
+                   end },
   xray         = { label="X-ray specs",       w=4, dur=20,
                    start=function() pd.device_on(W.XRAY) end,
                    stop=function() pd.device_off(W.XRAY) end },

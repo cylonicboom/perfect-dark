@@ -9696,6 +9696,17 @@ s32 chraiLuaKnifeLock(s32 on)
 	return 1;
 }
 
+// pd.cloak_lock(on): make the player's cloak unbreakable — firing doesn't
+// drop it and it needs no cloak ammo (chr.c chrUncloakTemporarily +
+// chrUpdateCloak gates). Backs "Now you see me..." paired with
+// pd.device_on(WEAPON_CLOAKINGDEVICE).
+s32 chraiLuaCloakLock(s32 on)
+{
+	extern s32 g_ChaosCloakLock;
+	g_ChaosCloakLock = on ? 1 : 0;
+	return 1;
+}
+
 // pd.song(slot [, frac]) / pd.song(): play an unlocked Combat Sim music track
 // over the stage music (musicStartTrackAsMenu — the credits-roll mechanism;
 // the stage music pauses underneath and resumes when the menu track ends).

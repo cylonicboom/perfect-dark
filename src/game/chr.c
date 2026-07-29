@@ -2253,8 +2253,21 @@ void chrUncloak(struct chrdata *chr, bool value)
 	}
 }
 
+#ifndef PLATFORM_N64
+// Chaos "Now you see me..." (pd.cloak_lock): while set, the player's cloak is
+// unbreakable — firing doesn't drop it (chrUncloakTemporarily no-ops) and it
+// neither drains nor requires cloak ammo (chrUpdateCloak gate below). Reset
+// per stage in lvResetChaosPerStage.
+s32 g_ChaosCloakLock = 0;
+#endif
+
 void chrUncloakTemporarily(struct chrdata *chr)
 {
+#ifndef PLATFORM_N64
+	if (g_ChaosCloakLock && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
+		return;
+	}
+#endif
 	chrUncloak(chr, true);
 	chr->cloakpause = TICKS(120);
 }
@@ -2368,6 +2381,13 @@ void chrUpdateCloak(struct chrdata *chr)
 		prevplayernum = g_Vars.currentplayernum;
 		setCurrentPlayerNum(playermgrGetPlayerNumByProp(chr->prop));
 
+#ifndef PLATFORM_N64
+		if (g_ChaosCloakLock && (g_Vars.currentplayer->devicesactive & DEVICE_CLOAKDEVICE)) {
+			// Chaos cloak lock: infinite cloak — skip the ammo drain and the
+			// out-of-ammo auto-off (a chaos device_on grants no cloak ammo,
+			// so the vanilla path would switch the device straight back off)
+		} else
+#endif
 		if (g_Vars.currentplayer->devicesactive & DEVICE_CLOAKDEVICE) {
 			// Cloak is active - but may or may not be in effect due to recent shooting
 			s32 qty = bgunGetReservedAmmoCount(AMMOTYPE_CLOAK);

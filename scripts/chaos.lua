@@ -1934,7 +1934,7 @@ W.PSYCHOSIS = 0x2c
 local CLASSICS = { 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b } -- PP9i..RCP45
 local GOGGLES  = { W.NIGHTVISION, W.XRAY, W.IR, W.CLOAK }
 local AMMO = { PSYCHOSIS=0x16, REMOTEMINE=0x0c, PROXYMINE=0x0d, TIMEDMINE=0x0e,
-               MAGNUM=0x0a }
+               MAGNUM=0x0a, ROCKET=0x08 }
 
 -- ---- interactive task library (EULA / CAPTCHA accept requirements) --------
 -- A task is a little sensor the player must satisfy: press FIRE, fire real
@@ -2497,13 +2497,25 @@ local alpha_effects = {
                    if pd.knife_lock then pd.knife_lock(false) end
                    pd.take_weapon(W.LX)
                  end },
-  -- Tank: dual rocket launchers, barely able to walk.
+  -- Tank: dual rocket launchers, UNLIMITED rockets, barely able to walk —
+  -- and you're welded to them: knife_lock blocks switching + the gadget
+  -- menu (the Knife fight pattern) and the tick snaps back the one avenue
+  -- left (PC number-key direct select) while keeping the rocket reserve
+  -- topped up (give_ammo clamps at pool capacity). (User call 2026-07-29.)
   tank       = { label="Tank mode", dur=1,
                  start=function()
                    pd.dual_wield(W.ROCKET); give_ammo_mags()
+                   pd.give_ammo(AMMO.ROCKET, 20)
                    pd.player_speed(0.25)
+                   if pd.knife_lock then pd.knife_lock(true) end
+                 end,
+                 tick=function(left)
+                   if left % 60 == 0 then pd.give_ammo(AMMO.ROCKET, 20) end
+                   local h = pd.weapon_held and pd.weapon_held()
+                   if h and h ~= W.ROCKET then pd.dual_wield(W.ROCKET) end
                  end,
                  stop=function()
+                   if pd.knife_lock then pd.knife_lock(false) end
                    pd.player_speed(1)
                    pd.take_weapon(W.ROCKET)
                  end },

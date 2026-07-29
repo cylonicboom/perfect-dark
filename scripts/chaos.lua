@@ -522,7 +522,10 @@ chaos.effects = {
                    stop=function() pd.device_off(W.XRAY) end },
   nightvision  = { label="Night vision",      w=4, dur=20,
                    start=function() pd.device_on(W.NIGHTVISION) end,
-                   stop=function() pd.device_off(W.NIGHTVISION) end },
+                   -- Lights out grants NVG too — don't strip it mid-blackout.
+                   stop=function()
+                     if not st.active.blackout then pd.device_off(W.NIGHTVISION) end
+                   end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
   blink        = { label="Blink",             w=5, fixeddur=true, dur=3,
                    -- flash white, hold 1s, then fade back to gameplay over 2s
@@ -960,9 +963,18 @@ chaos.effects = {
                    start=function() pd.room_tint(80, 255, 80) end,
                    stop=function() pd.room_tint() end },
   -- The real Perfect Darkness cheat (engine lighting blackout), not the
-  -- room-tint vertex shading it used before (user call 2026-07-28).
-  blackout     = setmetatable({ label="Lights out", w=4 },
-                   {__index=cheat_effect(CHEAT.PDARK, 15)}),
+  -- room-tint vertex shading it used before (user call 2026-07-28). Hands the
+  -- player night vision for the duration (the cheat's intended pairing); the
+  -- stop guard keeps it from ending a concurrently-running Night vision effect.
+  blackout     = { label="Lights out", w=4, dur=15,
+                   start=function()
+                     pd.cheat(CHEAT.PDARK, true)
+                     pd.device_on(W.NIGHTVISION)
+                   end,
+                   stop=function()
+                     pd.cheat(CHEAT.PDARK, false)
+                     if not st.active.nightvision then pd.device_off(W.NIGHTVISION) end
+                   end },
   disco        = { label="Disco inferno",      w=5, dur=20,
                    start=function() pd.room_tint(255, 64, 64) end,
                    tick=function(left)

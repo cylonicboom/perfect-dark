@@ -1098,7 +1098,8 @@ chaos.effects = {
                      for i = 1, math.min(4, #list) do
                        pd.explosion(list[math.random(#list)])
                      end end },
-  panic        = { label="PANIC!",            w=6, dur=0, start=function()
+  -- (was "PANIC!"; renamed 2026-07-29 — every guard on the map comes for you)
+  panic        = { label="Swiggity Swooty",   w=6, dur=0, start=function()
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
   boom         = { label="Incoming!",         w=5, dur=0, start=function()
                      local c = random_chr(); if c then pd.explosion(c) end end },

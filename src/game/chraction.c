@@ -9731,6 +9731,21 @@ s32 chraiLuaCloakLock(s32 on)
 	return 1;
 }
 
+// pd.time_stop(on): chaos SUPERHOT — a literal time stop. While set, lvTick
+// freezes the game tick entirely (lvupdate240 = 0, the pause mechanism, so
+// chrs/projectiles/everything hold still) whenever the player gives no
+// input; any input lets frames tick. Solo only.
+s32 chraiLuaTimeStop(s32 on)
+{
+	extern s32 g_ChaosTimeStop;
+
+	if (g_NetMode != NETMODE_NONE) {
+		return 0;
+	}
+	g_ChaosTimeStop = on ? 1 : 0;
+	return 1;
+}
+
 // pd.song(slot [, frac]) / pd.song(): play an unlocked Combat Sim music track
 // over the stage music (musicStartTrackAsMenu — the credits-roll mechanism;
 // the stage music pauses underneath and resumes when the menu track ends).

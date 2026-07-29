@@ -3325,16 +3325,24 @@ local alpha_effects = {
                      pd.hud_message("CHAOS: ...you live. this time")
                    end
                  end },
-  -- SUPERHOT: time moves when you move. Standing still now LITERALLY pauses
-  -- the NPCs (pd.chr_freeze — the FREEZE!/Musical-statues gate: no anim
-  -- advance, no firing; PD chr movement is anim-driven so frozen = zero
-  -- motion) instead of just slo-mo creeping (user call 2026-07-29). Slo-mo
-  -- stays on top so the non-chr world (projectiles in flight) crawls.
-  -- Guarded against a concurrent FREEZE! effect: superhot never touches
-  -- chr_freeze while that effect owns it, so moving can't release statues
-  -- that Musical statues still wants frozen.
+  -- SUPERHOT: time moves when you move — LITERALLY. pd.time_stop freezes the
+  -- game tick outright (the pause mechanism: chrs, projectiles, everything
+  -- holds; lv.c gates lvupdate240 to 0) whenever the player gives no input;
+  -- any stick/button input lets frames tick, so firing/interacting/pausing
+  -- all work by advancing time (user call 2026-07-29 — "not the slowmo
+  -- cheat, literally pause the tickrate"). Mouse-look alone doesn't advance
+  -- time: survey the frozen scene freely. NOTE: effect timers run on game
+  -- ticks too, so the countdown ALSO only moves when you move. Old exes
+  -- without the binding fall back to slo-mo + statue NPCs when still.
   superhot   = { label="SUPERHOT", dur=1,
-                 start=function() st.a_shot = { on = false } end,
+                 start=function()
+                   if pd.time_stop then
+                     pd.time_stop(true)
+                     pd.hud_message("CHAOS: time moves when you move")
+                   else
+                     st.a_shot = { on = false } -- old-exe fallback
+                   end
+                 end,
                  tick=function(left)
                    local s = st.a_shot
                    if not s then return end
@@ -3352,10 +3360,13 @@ local alpha_effects = {
                    end
                  end,
                  stop=function()
-                   st.a_shot = nil
-                   pd.cheat(CHEAT.SLOMO, false)
-                   if pd.chr_freeze and not st.active.freeze then
-                     pd.chr_freeze(false)
+                   if pd.time_stop then pd.time_stop(false) end
+                   if st.a_shot then
+                     st.a_shot = nil
+                     pd.cheat(CHEAT.SLOMO, false)
+                     if pd.chr_freeze and not st.active.freeze then
+                       pd.chr_freeze(false)
+                     end
                    end
                  end },
   -- (mitosis removed 2026-07-19 — spawn-at-corpse never worked, retired
@@ -4055,6 +4066,7 @@ local function reset_all_modes()
   if pd.input_delay then pd.input_delay(0) end
   if pd.uwuify then pd.uwuify(false) end -- zeroes the shared text mode (covers piglatin)
   if pd.forced_march then pd.forced_march(false) end
+  if pd.time_stop then pd.time_stop(false) end -- SUPERHOT tick freeze
   st.home_marked = false -- re-mark the start point on the next stage entered
   st.worst_day = nil -- "Worst Day" ends on restart/completion
   st.supersonic = nil; st.super_stack_timer = nil; st.super_window = nil -- "Supersonic" ends too

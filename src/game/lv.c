@@ -182,6 +182,7 @@ void lvResetChaosPerStage(void)
 	extern s32 g_ChaosGunLock;        // chaos Cyclone Frenzy
 	extern s32 g_ChaosKnifeLock;      // chaos Knife fight
 	extern s32 g_ChaosCloakLock;      // chaos Now you see me
+	extern s32 g_ChaosTimeStop;       // chaos SUPERHOT (defined below in this file)
 	extern s32 g_ChaosMagDump;        // chaos Mag Dump
 	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch
 	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry
@@ -198,6 +199,7 @@ void lvResetChaosPerStage(void)
 	g_ChaosGunLock = 0;
 	g_ChaosKnifeLock = 0;
 	g_ChaosCloakLock = 0;
+	g_ChaosTimeStop = 0;
 	g_ChaosMagDump = 0;
 	g_ChaosMagDumpArmed = 0;
 	g_ChaosPlayerSpeed = 1.0f;
@@ -207,6 +209,30 @@ void lvResetChaosPerStage(void)
 	for (twin_i = 0; twin_i < 8; twin_i++) {
 		g_ChaosTwinChrnums[twin_i] = -1;
 	}
+}
+
+// Chaos SUPERHOT (pd.time_stop, chraction.c): while set, lvTick freezes the
+// game tick (lvupdate240 = 0, the pause mechanism) whenever the local player
+// is giving no input. Non-static: chraiLuaTimeStop writes it; cleared above
+// per stage and by the effect's stop().
+s32 g_ChaosTimeStop = 0;
+
+// Any held button or a deflected move stick on pads 0/1 counts as "time
+// moves" (the lv.c idle-detector idiom below). Held, not pressed-this-frame:
+// holding forward must keep time running, not just the press edge.
+static bool chaosTimeStopInputActive(void)
+{
+	s32 pad;
+
+	for (pad = 0; pad < 2; pad++) {
+		if (joyGetButtons(pad, 0xffffffff) != 0
+				|| joyGetStickX(pad) > 12 || joyGetStickX(pad) < -12
+				|| joyGetStickY(pad) > 12 || joyGetStickY(pad) < -12) {
+			return true;
+		}
+	}
+
+	return false;
 }
 #endif
 
@@ -2722,6 +2748,22 @@ void lvTick(void)
 	} else {
 		s32 slowmo = lvGetSlowMotionType();
 		g_Vars.lvupdate240 = g_Vars.diffframe240;
+
+#ifndef PLATFORM_N64
+		// Chaos SUPERHOT (pd.time_stop): a LITERAL time stop — while the
+		// player gives no input, the game tick does not advance (the
+		// lvIsPaused mechanism above, not slow-mo; lvupdate60/freal derive
+		// from this below, so the whole sim freezes: chrs, projectiles,
+		// everything). Raw INPUT has to be the release trigger — with the
+		// tick at 0 the player's position never changes, so a
+		// position-delta detector could never unfreeze. Any button counts
+		// (fire/interact/pause tick the frame so the action happens);
+		// mouse-look alone doesn't, so surveying the frozen scene is free.
+		if (g_ChaosTimeStop && !g_NetMode && !g_Vars.in_cutscene
+				&& !chaosTimeStopInputActive()) {
+			g_Vars.lvupdate240 = 0;
+		}
+#endif
 
 #ifndef PLATFORM_N64
 		// Re-decide slow-motion engagement each frame (server/local only;

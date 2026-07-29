@@ -1329,15 +1329,15 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	if (allowmlook) {
 		inputMouseGetScaledDelta(&movedata.freelookdx, &movedata.freelookdy);
 
-		// Chaos SUPERHOT look 1:1 (lv.c g_ChaosLook*): add the deltas banked
-		// on zero-tick frames, and outside aim mode scale by the inverse
-		// time rate — hip look is a velocity integrated with the tick scale
-		// and would otherwise slow down with time. Aim-mode swivel is a
-		// DIRECT per-frame add (no tick scaling), so it takes the banked
-		// deltas but not the scale.
+		// Chaos SUPERHOT look continuity (lv.c g_ChaosLookBank*): add the
+		// deltas banked on zero-tick frames so no mouse motion is lost.
+		// NO extra scaling — mlookscale above is already 4/lvupdate240, so
+		// hip look is tick-rate-independent by design; a second inverse
+		// scale here made frozen look 4-5x too sensitive (the 2026-07-29
+		// regression). The banked delta rides the same mlookscale math on
+		// the frame it's released, which lands it 1:1.
 		{
 			extern s32 g_ChaosTimeStop;
-			extern f32 g_ChaosLookScale;
 			extern f32 g_ChaosLookBankX;
 			extern f32 g_ChaosLookBankY;
 
@@ -1346,11 +1346,6 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				movedata.freelookdy += g_ChaosLookBankY;
 				g_ChaosLookBankX = 0.0f;
 				g_ChaosLookBankY = 0.0f;
-
-				if (!g_Vars.currentplayer->insightaimmode && g_ChaosLookScale > 1.0f) {
-					movedata.freelookdx *= g_ChaosLookScale;
-					movedata.freelookdy *= g_ChaosLookScale;
-				}
 			}
 		}
 

@@ -217,14 +217,13 @@ void lvResetChaosPerStage(void)
 // per stage and by the effect's stop().
 s32 g_ChaosTimeStop = 0;
 
-// SUPERHOT look 1:1 compensation (consumed in bondmove.c): hip look is a
-// VELOCITY integrated with the tick scale, so at reduced time rate the
-// camera would turn proportionally slower, and frames that emit zero sim
-// ticks would drop their mouse delta outright. bondmove multiplies the
-// frame's look delta by LookScale (the inverse time rate) and adds the
-// deltas banked from zero-tick frames, so the net camera motion tracks the
-// mouse 1:1 — "look as if SUPERHOT were deactivated" (user call).
-f32 g_ChaosLookScale = 1.0f;
+// SUPERHOT look continuity (consumed in bondmove.c): frames that emit zero
+// sim ticks never run bondmove, so their mouse delta would be dropped —
+// bank it here and bondmove adds it on the next ticking frame. That is ALL
+// the compensation needed: bondmove's mlookscale (4/lvupdate240) already
+// makes hip look tick-rate-independent, so the net camera motion tracks
+// the mouse 1:1 at any time rate. (An additional inverse scale here was
+// the "frozen look 4-5x too sensitive" regression — never re-add it.)
 f32 g_ChaosLookBankX = 0.0f;
 f32 g_ChaosLookBankY = 0.0f;
 
@@ -2827,21 +2826,16 @@ void lvTick(void)
 				ticks = orig;
 			}
 
-			if (ticks > 0) {
-				// bondmove runs this frame: scale its look delta up by the
-				// inverse time rate so the camera tracks the mouse 1:1
-				g_ChaosLookScale = (f32)orig / (f32)ticks;
-			} else {
+			if (ticks == 0) {
 				// no sim tick this frame: bank the look delta so it isn't
-				// lost (released, scaled, on the next ticking frame)
-				g_ChaosLookScale = 1.0f;
+				// lost (bondmove adds it on the next ticking frame; its own
+				// mlookscale math lands it 1:1)
 				g_ChaosLookBankX += mdx;
 				g_ChaosLookBankY += mdy;
 			}
 
 			g_Vars.lvupdate240 = ticks;
 		} else {
-			g_ChaosLookScale = 1.0f;
 			g_ChaosLookBankX = 0.0f;
 			g_ChaosLookBankY = 0.0f;
 		}

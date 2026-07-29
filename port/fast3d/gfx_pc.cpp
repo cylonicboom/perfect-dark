@@ -3483,8 +3483,19 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             const bool front_ccw = gfx_mirror_mode ? !g_DlCacheFrontCcw : g_DlCacheFrontCcw;
             gfx_rapi->cache_set_cull(cm, front_ccw);
             // Distance fog (G_FOG) must be recomputed per-frame from gl_Position;
-            // constant fog is baked in aFog.a (use_vertex_fog = 1).
-            gfx_rapi->set_fog_params(seg.fog_compute ? 0 : 1, seg.fog_mul, seg.fog_off);
+            // constant fog is baked in aFog.a (use_vertex_fog = 1). Use the LIVE
+            // fog position (rsp.fog_mul/offset — the frame's envStartFog moveword
+            // has already been interpreted by the time the leaf replays), not the
+            // record-time values: a mid-stage fog change (chaos Perfect Hills)
+            // otherwise leaves every cached room on stale fog until it happens to
+            // re-record — the "fog only renders in rooms I traverse into" bug.
+            // Same live-at-replay convention as cull mode / front-face above.
+            // (The recorded seg.fog_mul/off stay as the segment-split key; fog
+            // COLOUR is per-vertex in the recorded VBO, which is why fog changes
+            // also flush the cache game-side — chraiLuaFogCacheFlush.)
+            gfx_rapi->set_fog_params(seg.fog_compute ? 0 : 1,
+                    seg.fog_compute ? (float)rsp.fog_mul : seg.fog_mul,
+                    seg.fog_compute ? (float)rsp.fog_offset : seg.fog_off);
             // Shader-side palette: route the live shade colour into this combiner's
             // shade input slots (after load_shader so it targets this program).
             if (use_palette) {

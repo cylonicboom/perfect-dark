@@ -3325,8 +3325,14 @@ local alpha_effects = {
                      pd.hud_message("CHAOS: ...you live. this time")
                    end
                  end },
-  -- SUPERHOT: time moves when you move (binary — standing still toggles the
-  -- slo-mo cheat on, moving releases it).
+  -- SUPERHOT: time moves when you move. Standing still now LITERALLY pauses
+  -- the NPCs (pd.chr_freeze — the FREEZE!/Musical-statues gate: no anim
+  -- advance, no firing; PD chr movement is anim-driven so frozen = zero
+  -- motion) instead of just slo-mo creeping (user call 2026-07-29). Slo-mo
+  -- stays on top so the non-chr world (projectiles in flight) crawls.
+  -- Guarded against a concurrent FREEZE! effect: superhot never touches
+  -- chr_freeze while that effect owns it, so moving can't release statues
+  -- that Musical statues still wants frozen.
   superhot   = { label="SUPERHOT", dur=1,
                  start=function() st.a_shot = { on = false } end,
                  tick=function(left)
@@ -3340,11 +3346,17 @@ local alpha_effects = {
                    if still ~= s.on then
                      s.on = still
                      pd.cheat(CHEAT.SLOMO, still)
+                     if pd.chr_freeze and not st.active.freeze then
+                       pd.chr_freeze(still)
+                     end
                    end
                  end,
                  stop=function()
                    st.a_shot = nil
                    pd.cheat(CHEAT.SLOMO, false)
+                   if pd.chr_freeze and not st.active.freeze then
+                     pd.chr_freeze(false)
+                   end
                  end },
   -- (mitosis removed 2026-07-19 — spawn-at-corpse never worked, retired
   -- rather than debugged.)

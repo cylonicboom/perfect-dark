@@ -2540,7 +2540,9 @@ local alpha_effects = {
   -- pass, so 85 continuous = keep walking, sprint not required.
   speed      = { label="SPEED", fixeddur=true, dur=30,
                  start=function()
-                   st.a_run = { minspeed = 85, grace = 90, below = 0 }
+                   -- grace halved 90->45 ticks (~0.75s): the penalty drains
+                   -- double fast (user call 2026-07-29)
+                   st.a_run = { minspeed = 85, grace = 45, below = 0 }
                    pd.hud_message("CHAOS: GET UP TO SPEED. DO NOT SLOW DOWN.")
                  end,
                  tick=function(left)
@@ -5010,18 +5012,20 @@ local function centered_text(y, text, color)
 end
 
 pd.on("draw", function()
-  -- SPEED: the speedometer. A centered gauge (0..2x the limit, so the white
-  -- "50 mph" tick sits at the middle) — blue while arming, green above the
-  -- limit, blinking red while under it; a thin amber bar underneath drains
-  -- as the grace runs out (recovering refills it instantly). First in the
-  -- handler + pcall-wrapped with an on-screen error report: v1 never showed
-  -- at runtime and nothing said why (2026-07-29 diagnosis instrumentation).
+  -- SPEED: the speedometer. A centered gauge scaled so the white "50 mph"
+  -- limit tick sits at THREE QUARTERS of the bar (user call 2026-07-29 —
+  -- was at the middle; less headroom reads more like a bus at full tilt) —
+  -- blue while arming, green above the limit, blinking red while under it;
+  -- a thin amber bar underneath drains as the grace runs out (recovering
+  -- refills it instantly). First in the handler + pcall-wrapped with an
+  -- on-screen error report: v1 never showed at runtime and nothing said
+  -- why (2026-07-29 diagnosis instrumentation).
   if st.active.speed and st.a_run and not st.a_run.fired then
     local r = st.a_run
     local ok, err = pcall(function()
       local W2, H = 120, 8
       local X, Y = math.floor((320 - W2) / 2), 26
-      local maxshow = r.minspeed * 2
+      local maxshow = r.minspeed * 4 / 3 -- limit lands at 3/4 of the bar
       local spd = math.min(r.spd or 0, maxshow)
       local fillw = math.floor(W2 * spd / maxshow)
       local col
@@ -5034,7 +5038,7 @@ pd.on("draw", function()
       end
       pd.draw_box(X, Y, W2, H, 0x000000a0)
       if fillw > 0 then pd.draw_box(X, Y, fillw, H, col) end
-      pd.draw_box(X + math.floor(W2 / 2) - 1, Y - 2, 2, H + 4, 0xffffffff)
+      pd.draw_box(X + math.floor(W2 * 3 / 4) - 1, Y - 2, 2, H + 4, 0xffffffff)
       if r.armed and (r.below or 0) > 0 then
         local gw = math.floor(W2 * math.max(0, 1 - r.below / r.grace))
         pd.draw_box(X, Y + H + 2, W2, 3, 0x000000a0)

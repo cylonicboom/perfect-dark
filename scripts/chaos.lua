@@ -625,7 +625,8 @@ chaos.effects = {
   widescreen     = { label="CinemaScope",         w=3, dur=20,
                      start=function() pd.aspect_scale(2) end,
                      stop=function() pd.aspect_scale(1) end },
-  tallscreen     = { label="Tall boy",            w=3, dur=20,
+  -- (label was "Tall boy"; renamed 2026-07-29, user call — key stays)
+  tallscreen     = { label="Wide Boy",            w=3, dur=20,
                      start=function() pd.aspect_scale(0.5) end,
                      stop=function() pd.aspect_scale(1) end },
   cavalry        = { label="Send in the cavalry", w=3, dur=0,

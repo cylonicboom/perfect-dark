@@ -1132,8 +1132,7 @@ chaos.effects = {
                       st.a_son = { c = c, seen = false }
                       pd.hud_message("CHAOS: protect your son")
                     end },
-  reinforce    = { label="Supply drop",       w=4, dur=0, start=function()
-                     local c = random_chr(); if c then pd.spawn_at_chr(c, GUNS[math.random(#GUNS)]) end end },
+  -- (Supply drop / reinforce lived here — removed 2026-07-29, user call.)
   -- request batch 4
   k7_party     = arm_all_effect("K7 Avengers for all", 4, W.K7),
   -- Every NPC gets a different random gun for the duration, then their own back.
@@ -5326,7 +5325,7 @@ if pd.menu_add then
     } },
     { title = "Helpful", set = {
       arsenal=1, ammo_rain=1, heal=1, shields_up=1, cavalry=1, buddy=1,
-      reinforce=1, lock_n_load=1, random_loadout=1, turbo=1, enemyshields=1,
+      lock_n_load=1, random_loadout=1, turbo=1, enemyshields=1,
       golden_gun=1, no_drops=1, freeze=1, nap_time=1, benny_hill=1, zombies=1,
       -- graduated alpha batch
       estus=1, new_glasses=1, psychosis=1, mine_trio=1,

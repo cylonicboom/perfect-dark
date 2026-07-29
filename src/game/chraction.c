@@ -9482,17 +9482,41 @@ s32 chraiLuaTeleportToChr(s32 chrnum)
 	// Validate the spot against walls AND physics objects (tables, crates...):
 	// chrAdjustPosForSpawn tests CDTYPE_ALL at the ideal point and, if it
 	// collides, nudges through a ring of 8 directions looking for a clear one.
-	// If nothing is safe it returns false — fall back to the target's own
-	// position/rooms so the player at least lands in the same room as the NPC
-	// rather than embedded in an object.
+	// If nothing is safe REJECT (return 0) so the Lua side retries another
+	// chr. The old fallback — landing exactly on the NPC's own position —
+	// was the "teleported into a chair/table" bug: sitting guards (labtechs
+	// at desks) legitimately intersect their furniture, so the player
+	// inherited the embed (user report 2026-07-29).
 	roomsCopy(chr->prop->rooms, rooms);
 #if VERSION >= VERSION_NTSC_1_0
 	if (!chrAdjustPosForSpawn(pl->radius, &target, rooms, angle, true, false, false)) {
 #else
 	if (!chrAdjustPosForSpawn(pl->radius, &target, rooms, angle, true, false)) {
 #endif
-		target = chr->prop->pos;
-		roomsCopy(chr->prop->rooms, rooms);
+		return 0;
+	}
+
+	// OOB guard: require a real floor under the final spot before committing.
+	// A ring nudge can pass the point-collision test on the far side of a
+	// thin wall or over void; there's no floor room there, and the later
+	// ground-find would feed garbage into the walk state (the "teleported
+	// out of bounds" family). Probe with copies — reject, don't mutate.
+	{
+		struct coord probe = target;
+		RoomNum proberooms[8];
+		f32 floory;
+		u16 floorcol;
+		s32 floorroom;
+
+		roomsCopy(rooms, proberooms);
+#if VERSION >= VERSION_NTSC_1_0
+		floorroom = cdFindFloorRoomYColourFlagsAtPos(&probe, proberooms, &floory, &floorcol, NULL);
+#else
+		floorroom = cdFindFloorRoomYColourFlagsAtPos(&probe, proberooms, &floory, &floorcol);
+#endif
+		if (floorroom <= 0) {
+			return 0;
+		}
 	}
 
 	if (pl->model != NULL) {

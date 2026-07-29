@@ -1062,8 +1062,17 @@ chaos.effects = {
                    end,
                    stop=function() st.a_hp = nil end },
   dry_spell    = { label="Dry spell",         w=5, dur=0, start=function() pd.strip_ammo() end },
+  -- teleport_to_chr now REJECTS unsafe destinations (no clear spot beside
+  -- the chr / no floor under the landing point — the chair-embed and OOB
+  -- fixes, 2026-07-29) instead of landing anyway, so both quantums retry a
+  -- handful of different chrs before giving up.
   quantum_leap = { label="Quantum leap",      w=5, dur=0, start=function()
-                     local c = random_chr(); if c then pd.teleport_to_chr(c) end end },
+                     for _ = 1, 8 do
+                       local c = random_chr()
+                       if c and pd.teleport_to_chr(c) then return end
+                     end
+                     error("nowhere stable to leap")
+                   end },
   lock_n_load  = { label="Lock and load",     w=3, dur=0, start=function()
                      for _, g in ipairs(GUNS) do pd.give_weapon(g) end
                      give_ammo_mags() end },
@@ -1867,8 +1876,12 @@ chaos.effects = {
                    start=function() end,
                    tick=function(left)
                      if left % 300 == 0 then
-                       local c = random_chr()
-                       if c then pd.teleport_to_chr(c) end
+                       -- unsafe destinations are rejected; try a few chrs,
+                       -- and if none are safe just skip this jump
+                       for _ = 1, 8 do
+                         local c = random_chr()
+                         if c and pd.teleport_to_chr(c) then break end
+                       end
                      end
                    end },
   motivator    = { label="Motivational speaker", w=3, dur=20,

@@ -221,8 +221,8 @@ end
 --   silent -> nothing on screen may hint chaos is involved (fake objectives,
 --             Fake Crash).
 --   nobar  -> draws its own HUD, or wants a toast but must never carry a chaos
---             tell of its own (Game over?, Ominous countdown, Silo Countdown —
---             all effects built on suspense).
+--             tell of its own (Game over?, Silo Countdown — effects built on
+--             suspense).
 --
 -- ANY new prank effect must set one of these two, or the bar and the sting will
 -- give it away. See docs/PORT_CHAOS.md.
@@ -2542,66 +2542,7 @@ local alpha_effects = {
                    end
                  end,
                  stop=function() st.a_run = nil end },
-  -- Ominous countdown: the klaxon wails for the duration... and this time
-  -- something actually happens at zero — one random calamity from the payoff
-  -- table (including, occasionally, nothing at all: the dread must stay
-  -- honest). (nobar: no HUD timer bar — you don't get to know when.)
-  countdown  = { label="Ominous countdown", fixeddur=true, dur=20, nobar=true,
-                 start=function()
-                   st.a_cd = { fired = false }
-                   pd.alarm(true)
-                 end,
-                 tick=function(left)
-                   local cd = st.a_cd
-                   if not cd or cd.fired then return end
-                   if left <= 8 then -- last few ticks = zero (dt can be >1)
-                     cd.fired = true
-                     -- weighted payoffs: the explosion barrage is a VERY small
-                     -- chance (1/20) — the rest of the deck carries the dread
-                     local payoffs = {
-                       { w = 1, fn = function() -- rolling barrage (RARE)
-                         pd.hud_message("CHAOS: INCOMING!")
-                         if pd.explosions_around then
-                           pd.explosions_around(true)
-                           st.a_boom_off = 2 * TICKS -- main tick shuts it off
-                         else
-                           pd.explosion()
-                         end
-                       end },
-                       { w = 3, fn = function() -- N-bomb on your position
-                         pd.hud_message("CHAOS: package delivered")
-                         pd.nbomb()
-                       end },
-                       { w = 4, fn = function() -- gale-force blast
-                         pd.hud_message("CHAOS: storm front")
-                         pd.gust(150)
-                       end },
-                       { w = 5, fn = function() -- every guard on the map hears it
-                         pd.hud_message("CHAOS: they all heard that")
-                         for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end
-                       end },
-                       { w = 3, fn = function() -- something big lands nearby
-                         pd.hud_message("CHAOS: something landed")
-                         for i = 1, 2 do
-                           local a = math.random() * 2 * math.pi
-                           pd.spawn_body(BODY.MINISKEDAR, -1,
-                                         math.sin(a) * 250, math.cos(a) * 250)
-                         end
-                       end },
-                       { w = 4, fn = function() -- ...anticlimax
-                         pd.hud_message("CHAOS: ...false alarm. this time.")
-                       end },
-                     }
-                     local total = 0
-                     for _, p in ipairs(payoffs) do total = total + p.w end
-                     local roll = math.random(total)
-                     for _, p in ipairs(payoffs) do
-                       roll = roll - p.w
-                       if roll <= 0 then p.fn(); break end
-                     end
-                   end
-                 end,
-                 stop=function() pd.alarm(false); st.a_cd = nil end },
+  -- (Ominous countdown lived here — removed 2026-07-29, user call.)
   -- "Silo Countdown": a self-destruct (chaos.silo_seconds, default 8:30). Kills
   -- the level music, plays Silo.mp3 (scripts/chaos/sounds/Silo.mp3, looped)
   -- underneath — the final-stretch music is baked into that track now, so there's
@@ -4021,7 +3962,7 @@ local function reset_all_modes()
   st.a_simon = nil -- Simon Says command drill
   if pd.model_swap then pd.model_swap(false) end -- revert Chaos model swap
   st.a_classic, st.a_angst, st.a_phone, st.a_count = nil
-  st.a_objf, st.a_thief, st.a_cd, st.a_roll = nil
+  st.a_objf, st.a_thief, st.a_roll = nil
   st.a_quiz, st.a_eula, st.a_quad = nil
   if pd.beyblade then pd.beyblade(false) end
   if pd.screen_roll then pd.screen_roll(0) end
@@ -5244,7 +5185,7 @@ if pd.menu_add then
       quantum_leap=1, quantum_instability=1, gormless=1, woof_gas=1,
       -- graduated alpha batch
       hot_potato=1, martyrdom=1, booby_doors=1, russian_roulette=1,
-      countdown=1, skedar_reaper=1, terminator=1, gun_jam2=1, enemy_ltk=1,
+      skedar_reaper=1, terminator=1, gun_jam2=1, enemy_ltk=1,
       speed=1, nitroglycerin=1, inflated_bullets=1, button_thief=1,
       helicopter=1, interceptor=1,
       no_shooting=1, pacifist=1, slow_bleed=1, death_chance=1, note_7=1,

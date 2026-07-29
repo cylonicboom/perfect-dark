@@ -1674,6 +1674,25 @@ void propCalculateShadeColour(struct prop *prop, u8 *nextcol, u16 floorcol)
 
 		scenarioHighlightRoom(prop->rooms[0], &roomr, &roomg, &roomb);
 
+#ifndef PLATFORM_N64
+		// Chaos room tint (pd.room_tint): props/chrs/the gun are shaded from
+		// their stan-tile floor colour x room shade — a path the dlights.c
+		// room reshade tint never touched, so Paint the Town Red painted the
+		// world while everything standing on it stayed vanilla. Same multiply
+		// as the room reshade, applied where the scenario highlight already
+		// composes (user call 2026-07-29).
+		{
+			extern f32 g_ChaosRoomTintFrac[3];
+			extern s32 g_ChaosRoomTintOn;
+
+			if (g_ChaosRoomTintOn) {
+				roomr = (s32)(roomr * g_ChaosRoomTintFrac[0]);
+				roomg = (s32)(roomg * g_ChaosRoomTintFrac[1]);
+				roomb = (s32)(roomb * g_ChaosRoomTintFrac[2]);
+			}
+		}
+#endif
+
 		nextcol[0] = (nextcol[0] * roomr) >> 8;
 		nextcol[1] = (nextcol[1] * roomg) >> 8;
 		nextcol[2] = (nextcol[2] * roomb) >> 8;

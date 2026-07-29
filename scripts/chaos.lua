@@ -2530,29 +2530,56 @@ local alpha_effects = {
                    st.a_ltk = h
                  end,
                  stop=function() st.a_ltk = nil end },
-  -- SPEED: a pedometer appears. Cover the distance before the timer or boom.
+  -- SPEED: the bus. Reworked 2026-07-29 (user call — was a total-distance
+  -- pedometer you could ignore for 20s and sprint at the end). The bomb ARMS
+  -- the first time you get up to speed; from then on you must NOT slow down.
+  -- A LITTLE leeway, movie-honest but survivable: ~1.5s continuously below
+  -- the limit (with a warning at the first dip) before the rolling explosion.
+  -- Getting back above the limit resets the grace. Survive the 30s to win.
+  -- minspeed is units/second; the old effect required a 100 u/s AVERAGE to
+  -- pass, so 85 continuous = keep walking, sprint not required.
   speed      = { label="SPEED", fixeddur=true, dur=30,
                  start=function()
-                   st.a_run = { need = 3000, done = 0 }
-                   pd.hud_message("CHAOS: RUN OR EXPLODE")
+                   st.a_run = { minspeed = 85, grace = 90, below = 0 }
+                   pd.hud_message("CHAOS: GET UP TO SPEED. DO NOT SLOW DOWN.")
                  end,
                  tick=function(left)
                    local r = st.a_run
-                   if not r then return end
+                   if not r or r.fired then return end
                    local x, y, z = pd.player_pos(0)
-                   if x and r.x then
-                     local dx, dz = x - r.x, z - r.z
-                     r.done = r.done + math.sqrt(dx * dx + dz * dz)
+                   if x and r.x and r.left then
+                     local dt = r.left - left -- game ticks since last sample
+                     if dt > 0 then
+                       local dx, dz = x - r.x, z - r.z
+                       local spd = math.sqrt(dx * dx + dz * dz) * TICKS / dt
+                       if not r.armed then
+                         if spd >= r.minspeed then
+                           r.armed = true
+                           pd.hud_message("CHAOS: ARMED. KEEP MOVING.")
+                         end
+                       elseif spd < r.minspeed then
+                         r.below = r.below + dt
+                         if r.below >= r.grace then
+                           r.fired = true
+                           pd.explosions_around(true); st.a_boom_off = 2 * TICKS
+                           pd.hud_message("CHAOS: YOU SLOWED DOWN.")
+                           return true -- bus went off; effect over
+                         elseif not r.warned then
+                           r.warned = true
+                           pd.hud_message("CHAOS: SPEED DROPPING!")
+                         end
+                       else
+                         r.below = 0
+                         r.warned = nil
+                       end
+                     end
                    end
                    r.x, r.z = x, z
+                   r.left = left
                    if left <= 10 and not r.fired then
                      r.fired = true
-                     if r.done < r.need then
-                       pd.explosions_around(true); st.a_boom_off = 12
-                       pd.hud_message("CHAOS: TOO SLOW")
-                     else
-                       pd.hud_message("CHAOS: fast enough. this time.")
-                     end
+                     pd.hud_message(r.armed and "CHAOS: fast enough. this time."
+                                             or "CHAOS: ...it never even armed.")
                    end
                  end,
                  stop=function() st.a_run = nil end },

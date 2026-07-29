@@ -278,12 +278,12 @@ f32 currentPlayerGetGunZoomFov(void)
 		f32 fov = weapon->aimsettings->zoomfov;
 #ifndef PLATFORM_N64
 		// Chaos zoom (pd.zoom_scale): a weapon with no zoom of its own gains a
-		// synthetic 1.75x aim zoom (vanilla-linear X = 60/fov, the hudmsg
+		// synthetic 0.5x aim zoom (vanilla-linear X = 60/fov, the hudmsg
 		// readout convention) while the effect runs, feeding the SAME pipeline
 		// as a real zoom gun — so the multiplier below turns it into the
 		// vanilla-looking negative zoom a MagSec gets (user call 2026-07-29).
 		if (g_ChaosZoomMult > 0.0f && g_ChaosZoomMult != 1.0f && fov <= 0.0f) {
-			fov = 60.0f / 1.75f;
+			fov = 60.0f / 0.5f;
 		}
 		return chaosApplyZoomMult(ADJUST_ZOOM_FOV(fov));
 #else

@@ -10150,11 +10150,32 @@ s32 chraiLuaWarpHome(void)
 	return 1;
 }
 
+#ifndef PLATFORM_N64
+// Environment/fog changes only take visual effect on geometry and props as
+// they RE-SHADE, which normally happens per room as rooms come on screen —
+// so a mid-stage pd.fog/pd.env left already-shaded rooms (and the props/chrs
+// standing in them) looking pre-change until you looked away and back: the
+// "stan tiles load in foggy one at a time" symptom. Dirty every room so the
+// reshade sweeps the whole stage immediately, on APPLY and on RESTORE alike;
+// props/chrs/the gun re-shade off the room dirty (the room_tint mechanism).
+static void chraiLuaDirtyAllRooms(void)
+{
+	s32 i;
+
+	for (i = 1; i < g_Vars.roomcount; i++) {
+		g_Rooms[i].flags |= ROOMFLAG_BRIGHTNESS_DIRTY_TEMP;
+	}
+}
+#endif
+
 // pd.env(stagenum): apply another stage's sky/fog/cloud environment (Brandon's
 // mod). pd.env() / stagenum -1 restores the current stage's own environment.
 s32 chraiLuaEnv(s32 stagenum)
 {
 	envChooseAndApply(stagenum >= 0 ? stagenum : chraiLuaGetStageNum(), false);
+#ifndef PLATFORM_N64
+	chraiLuaDirtyAllRooms();
+#endif
 	return 1;
 }
 
@@ -10169,6 +10190,7 @@ s32 chraiLuaFog(s32 fogmin, s32 fogmax, s32 r, s32 g, s32 b)
 {
 #ifndef PLATFORM_N64
 	envChaosFog(chraiLuaGetStageNum(), fogmin, fogmax, (u8)r, (u8)g, (u8)b);
+	chraiLuaDirtyAllRooms();
 	return 1;
 #else
 	return 0;

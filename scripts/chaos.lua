@@ -2781,10 +2781,7 @@ local alpha_effects = {
                    pd.give_weapon(W.PROXYMINE);  pd.give_ammo(AMMO.PROXYMINE, 1)
                    pd.give_weapon(W.REMOTEMINE); pd.give_ammo(AMMO.REMOTEMINE, 1)
                  end },
-  -- Quad(-ish) laser: dual lasers is as quad as two hands get.
-  quad_laser = { label="Quad(-ish) laser", dur=1,
-                 start=function() pd.dual_wield(W.LASER) end,
-                 stop=function() pd.take_weapon(W.LASER) end },
+  -- (Quad(-ish) laser lived here — removed 2026-07-29, user call.)
   -- Estus flask: rooted to the spot while ~60% health sips back in.
   estus      = { label="Estus flask", fixeddur=true, dur=8,
                  start=function()
@@ -5191,7 +5188,7 @@ if pd.menu_add then
       reinforce=1, lock_n_load=1, random_loadout=1, turbo=1, enemyshields=1,
       golden_gun=1, no_drops=1, freeze=1, nap_time=1, benny_hill=1, zombies=1,
       -- graduated alpha batch
-      estus=1, new_glasses=1, psychosis=1, mine_trio=1, quad_laser=1,
+      estus=1, new_glasses=1, psychosis=1, mine_trio=1,
       mediguns=1, tank=1, double_lx=1, two_handed=1, quad_handed=1,
       -- session graduates (2026-07-20)
       me_and_my_son=1,

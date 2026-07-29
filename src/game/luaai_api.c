@@ -1863,6 +1863,14 @@ static int l_pd_device_off(lua_State *L)
 	return 1;
 }
 
+/* pd.device_active(weaponnum) -> bool. Device currently switched on (worn). */
+static int l_pd_device_active(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_checkinteger(L, 1);
+	lua_pushboolean(L, chraiLuaDeviceActive(weaponnum) != 0);
+	return 1;
+}
+
 /* pd.lvupdate() -> int. Game ticks elapsed this frame (0 while paused). */
 static int l_pd_lvupdate(lua_State *L)
 {
@@ -3555,6 +3563,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_give_weapon);      lua_setfield(L, -2, "give_weapon");
 	lua_pushcfunction(L, l_pd_device_on);        lua_setfield(L, -2, "device_on");
 	lua_pushcfunction(L, l_pd_device_off);       lua_setfield(L, -2, "device_off");
+	lua_pushcfunction(L, l_pd_device_active);    lua_setfield(L, -2, "device_active");
 	lua_pushcfunction(L, l_pd_lvupdate);         lua_setfield(L, -2, "lvupdate");
 	lua_pushcfunction(L, l_pd_mission_complete); lua_setfield(L, -2, "mission_complete");
 	lua_pushcfunction(L, l_pd_invincible);       lua_setfield(L, -2, "invincible");

@@ -4,6 +4,9 @@
 #include "lib/str.h"
 #include "game/camdraw.h"
 #include "game/cheats.h"
+#ifndef PLATFORM_N64
+#include "game/dlights.h"
+#endif
 #include "game/inv.h"
 #include "game/playermgr.h"
 #include "game/training.h"
@@ -352,6 +355,16 @@ void cheatDeactivate(s32 cheat_id)
 			setCurrentPlayerNum(prevplayernum);
 		}
 		break;
+#ifndef PLATFORM_N64
+	case CHEAT_PERFECTDARKNESS:
+		// Deactivating mid-level (pd.cheat / chaos) leaves the rooms baked
+		// dark — the darkening is a one-shot state mutation, not a per-frame
+		// check. Undo it; a no-op when no stage lighting is loaded.
+		if (cheatIsActive(CHEAT_PERFECTDARKNESS)) {
+			lightsConfigureForPerfectDarknessOff();
+		}
+		break;
+#endif
 	}
 
 	if (cheat_id < 32) {

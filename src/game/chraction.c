@@ -8580,6 +8580,17 @@ s32 chraiLuaDeviceOff(s32 weaponnum)
 	return 1;
 }
 
+// pd.device_active(weaponnum): query whether a device is currently switched
+// ON (DEVICESTATE_ACTIVE — wearing the eyewear, not merely owning it). Backs
+// the Lights out afterglow: darkness persists until the player unequips.
+s32 chraiLuaDeviceActive(s32 weaponnum)
+{
+	if (apLuaPlayerChr() == NULL) {
+		return 0;
+	}
+	return currentPlayerGetDeviceState(weaponnum) == DEVICESTATE_ACTIVE;
+}
+
 // pd.take_weapon(weaponnum): remove a weapon from the player's inventory and
 // cycle off it if held (the aiChrDropWeapon player branch, minus the world
 // drop — chaos takes the gun, it doesn't gift it to the floor).

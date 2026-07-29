@@ -963,20 +963,35 @@ chaos.effects = {
   -- room-tint vertex shading it used before (user call 2026-07-28). Drops the
   -- NVG ITEM in the inventory (not auto-activated — the player learns to go
   -- equip it, user call 2026-07-29); only lends it if they don't already own
-  -- one, and takes back only what it lent.
+  -- one, and takes back only what it lent. If the player is WEARING the NVGs
+  -- when the timer ends, the darkness lingers until they manually unequip
+  -- (the afterglow watcher in the main tick), then lights + goggles revert
+  -- together (user call 2026-07-29).
   blackout     = { label="Lights out", w=4, dur=15,
                    start=function()
                      pd.cheat(CHEAT.PDARK, true)
-                     st.a_blk_lent = not pd.has_weapon(W.NIGHTVISION)
-                     if st.a_blk_lent then pd.give_weapon(W.NIGHTVISION) end
+                     if st.blk_wait then
+                       -- re-triggered during an afterglow: goggles are still
+                       -- out there, just carry over whether they were lent
+                       st.a_blk_lent = st.blk_wait.lent
+                       st.blk_wait = nil
+                     else
+                       st.a_blk_lent = not pd.has_weapon(W.NIGHTVISION)
+                       if st.a_blk_lent then pd.give_weapon(W.NIGHTVISION) end
+                     end
                    end,
                    stop=function()
-                     pd.cheat(CHEAT.PDARK, false)
-                     if st.a_blk_lent then
-                       -- deactivate first: eyewear isn't hand-held, so
-                       -- take_weapon alone wouldn't clear devicesactive
-                       pd.device_off(W.NIGHTVISION)
-                       pd.take_weapon(W.NIGHTVISION)
+                     if pd.device_active and pd.device_active(W.NIGHTVISION) then
+                       -- wearing them: hand off to the afterglow watcher
+                       st.blk_wait = { lent = st.a_blk_lent }
+                     else
+                       pd.cheat(CHEAT.PDARK, false)
+                       if st.a_blk_lent then
+                         -- deactivate first: eyewear isn't hand-held, so
+                         -- take_weapon alone wouldn't clear devicesactive
+                         pd.device_off(W.NIGHTVISION)
+                         pd.take_weapon(W.NIGHTVISION)
+                       end
                      end
                      st.a_blk_lent = nil
                    end },
@@ -3879,6 +3894,12 @@ local function reset_all_modes()
   -- Run each active effect's own stop() cleanup, then drop bookkeeping and
   -- re-arm the timer so the first effect isn't instant on the next stage.
   stop_all()
+  -- A blackout afterglow (NVGs still worn) survives stop_all by design —
+  -- but not a stage/menu transition. Kill the darkness for real here.
+  if st.blk_wait then
+    pd.cheat(CHEAT.PDARK, false)
+    st.blk_wait = nil
+  end
   st.active = {}
   st.duration = {}
   st.oneoff = {}
@@ -4458,6 +4479,17 @@ pd.on("tick", function()
       if pd.player_pitch then
         pd.player_pitch(math.min(90, pd.player_pitch() + 10))
       end
+    end
+  end
+
+  -- Lights out afterglow: the effect timer is over but the player is still
+  -- wearing the NVGs, so the world stays perfectly dark. The moment they
+  -- manually unequip, the lights come back and any lent goggles vanish.
+  if st.blk_wait and not st.active.blackout then
+    if not pd.device_active(W.NIGHTVISION) then
+      pd.cheat(CHEAT.PDARK, false)
+      if st.blk_wait.lent then pd.take_weapon(W.NIGHTVISION) end
+      st.blk_wait = nil
     end
   end
 

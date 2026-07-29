@@ -38,6 +38,9 @@ bool lightTickBroken(s32 roomnum, s32 lightnum);
 void lightingTick(void);
 void lightsConfigureForPerfectDarknessCutscene(void);
 void lightsConfigureForPerfectDarknessGameplay(void);
+#ifndef PLATFORM_N64
+void lightsConfigureForPerfectDarknessOff(void);
+#endif
 void lightsTickPerfectDarkness(void);
 void roomsTickLighting(void);
 void lightsTick(void);

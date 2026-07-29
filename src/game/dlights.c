@@ -1238,6 +1238,43 @@ void lightsConfigureForPerfectDarknessGameplay(void)
 }
 #endif
 
+#ifndef PLATFORM_N64
+// The inverse of lightsConfigureForPerfectDarknessGameplay, for turning the
+// Perfect Darkness cheat OFF mid-level (chaos/console — vanilla only ever set
+// the cheat before a mission, so nothing restores the baked-dark light
+// structs). Lights already shot out before the blackout come back healthy,
+// the same simplification the cutscene configure makes. Also re-arms the
+// tickmode edge detector so a later mid-level activation darkens again.
+void lightsConfigureForPerfectDarknessOff(void)
+{
+	s32 i;
+	s32 j;
+
+	if (g_BgLightsFileData == NULL) {
+		return;
+	}
+
+	for (i = 0; i < g_Vars.roomcount; i++) {
+		struct light *light = (struct light *)&g_BgLightsFileData[g_Rooms[i].lightindex * 0x22];
+		g_Rooms[i].lightop = LIGHTOP_SET;
+		g_Rooms[i].lightop_to_frac = 1.0f;
+
+		for (j = 0; j < g_Rooms[i].numlights; j++) {
+			light->sparkable = true;
+			light->healthy = true;
+			light->on = true;
+			light->sparking = false;
+			light->vulnerable = true;
+			light->brightness = g_Rooms[i].br_light_each;
+
+			light++;
+		}
+	}
+
+	g_LightsPrevTickMode = 0;
+}
+#endif
+
 #if VERSION >= VERSION_NTSC_1_0
 void lightsTickPerfectDarkness(void)
 {

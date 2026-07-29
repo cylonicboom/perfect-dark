@@ -522,10 +522,7 @@ chaos.effects = {
                    stop=function() pd.device_off(W.XRAY) end },
   nightvision  = { label="Night vision",      w=4, dur=20,
                    start=function() pd.device_on(W.NIGHTVISION) end,
-                   -- Lights out grants NVG too — don't strip it mid-blackout.
-                   stop=function()
-                     if not st.active.blackout then pd.device_off(W.NIGHTVISION) end
-                   end },
+                   stop=function() pd.device_off(W.NIGHTVISION) end },
   heal         = { label="Medic!",            w=5, dur=0, start=function() pd.player_heal(); pd.player_set_shield(1) end },
   blink        = { label="Blink",             w=5, fixeddur=true, dur=3,
                    -- flash white, hold 1s, then fade back to gameplay over 2s
@@ -963,17 +960,25 @@ chaos.effects = {
                    start=function() pd.room_tint(80, 255, 80) end,
                    stop=function() pd.room_tint() end },
   -- The real Perfect Darkness cheat (engine lighting blackout), not the
-  -- room-tint vertex shading it used before (user call 2026-07-28). Hands the
-  -- player night vision for the duration (the cheat's intended pairing); the
-  -- stop guard keeps it from ending a concurrently-running Night vision effect.
+  -- room-tint vertex shading it used before (user call 2026-07-28). Drops the
+  -- NVG ITEM in the inventory (not auto-activated — the player learns to go
+  -- equip it, user call 2026-07-29); only lends it if they don't already own
+  -- one, and takes back only what it lent.
   blackout     = { label="Lights out", w=4, dur=15,
                    start=function()
                      pd.cheat(CHEAT.PDARK, true)
-                     pd.device_on(W.NIGHTVISION)
+                     st.a_blk_lent = not pd.has_weapon(W.NIGHTVISION)
+                     if st.a_blk_lent then pd.give_weapon(W.NIGHTVISION) end
                    end,
                    stop=function()
                      pd.cheat(CHEAT.PDARK, false)
-                     if not st.active.nightvision then pd.device_off(W.NIGHTVISION) end
+                     if st.a_blk_lent then
+                       -- deactivate first: eyewear isn't hand-held, so
+                       -- take_weapon alone wouldn't clear devicesactive
+                       pd.device_off(W.NIGHTVISION)
+                       pd.take_weapon(W.NIGHTVISION)
+                     end
+                     st.a_blk_lent = nil
                    end },
   disco        = { label="Disco inferno",      w=5, dur=20,
                    start=function() pd.room_tint(255, 64, 64) end,

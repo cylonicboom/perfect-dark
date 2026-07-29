@@ -620,9 +620,12 @@ chaos.effects = {
                      stop=function() pd.aspect_scale(1) end },
   cavalry        = { label="Send in the cavalry", w=3, dur=0,
                      start=function() for i = 1, 4 do pd.spawn_ally() end end },
-  jukebox        = { label="Jukebox",             w=5, dur=60,
-                     start=function() pd.song(math.random(0, 255)) end,
-                     stop=function() pd.song() end },
+  -- One-shot (user call 2026-07-29): fire a random Combat Sim track and let
+  -- it ride instead of a 60s timer cutting it off mid-song. The stage music
+  -- is paused under the menu-track layer and comes back when the song ends;
+  -- reset_all_modes still clears it on stage/menu transitions.
+  jukebox        = { label="Jukebox",             w=5, dur=0,
+                     start=function() pd.song(math.random(0, 255)) end },
   skedar_ring    = { label="Skedar ambush",       w=3, dur=0,
                      start=function()
                        for i = 0, 3 do

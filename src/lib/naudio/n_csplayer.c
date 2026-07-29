@@ -16,6 +16,14 @@ ALMicroTime __n_vsDelta(N_ALVoiceState *vs, ALMicroTime t);
 u32 var8009c350[16];
 
 #ifndef PLATFORM_N64
+// pd.song mid-song start (see n_libaudio.h): armed by snd.c seqSeekToFrac,
+// consumed in the AL_SEQP_PLAY_EVT case below.
+n_ALSeqSeekChase n_seqSeekChase;
+
+static void __n_CSPChaseTo(N_ALCSPlayer *seqp, u32 ticks);
+#endif
+
+#ifndef PLATFORM_N64
 // Tonal Inversion cheat (CHEAT_TONALINVERSION): when set, sequenced music
 // notes are melodically inverted — each channel mirrored about its own
 // FIRST note (classic "inversion about the first note"), which keeps every
@@ -346,6 +354,24 @@ ALMicroTime __n_CSPVoiceHandler(void *node)
 						}
 					}
 				}
+
+				// pd.song mid-song start: the sequence was already parked at
+				// the seek marker (alCSeqSetLoc in seqPlay), but every
+				// program change / controller / tempo event before that point
+				// was skipped. Replay them through the real handlers now —
+				// the bank re-init (AL_SEQP_SEQ_EVT) has run by this point,
+				// and direct handler calls consume no event-queue nodes.
+				// The seq/markticks checks discard a stale arm whose track
+				// never reached PLAY (the sequence struct is reused per
+				// channel; a fresh load resets lastTicks to 0).
+				if (n_seqSeekChase.seqp == seqp) {
+					if (seqp->target != NULL
+							&& seqp->target == n_seqSeekChase.seq
+							&& seqp->target->lastTicks == n_seqSeekChase.markticks) {
+						__n_CSPChaseTo(seqp, n_seqSeekChase.ticks);
+					}
+					n_seqSeekChase.seqp = NULL;
+				}
 #endif
 				__n_CSPPostNextSeqEvent(seqp);
 				/* seqp must be AL_PLAYING before we call this routine. */
@@ -513,6 +539,60 @@ void __n_CSPHandleNextSeqEvent(N_ALCSPlayer *seqp)
 		break;
 	}
 }
+
+#ifndef PLATFORM_N64
+// pd.song mid-song start: replay the state-bearing events of the first
+// `ticks` ticks of seqp->target from a scratch cursor — program changes
+// (with their bank-select CC 0x20 pairs, chronological order preserved),
+// controllers, pitch bends and tempo — so a seeked-into song has the right
+// instruments, mix and speed. Notes and aftertouch are transient and
+// skipped. CC 0x1e (host message) and CC 0x1a (FX_CTRL_6 — starts an mp3!)
+// must not refire; CC 0xfe is the internal ramp step; the CC 0xff
+// channel-vol ramp is applied instantly as its 0xfc set-now form so nothing
+// is posted to the event queue. Marker-mode scanning (arg 0) steps past
+// loop ends, so this terminates even on loop-forever tracks.
+static void __n_CSPChaseTo(N_ALCSPlayer *seqp, u32 ticks)
+{
+	ALCSeq scan;
+	N_ALEvent evt;
+	s32 guard = 0;
+
+	n_alCSeqNew(&scan, (u8 *)seqp->target->base);
+
+	while (scan.lastTicks < ticks && guard++ < 0x80000) {
+		n_alCSeqNextEvent(&scan, &evt, 0);
+
+		if (evt.type == AL_SEQ_END_EVT) {
+			break;
+		}
+
+		if (evt.type == AL_TEMPO_EVT) {
+			s32 tempo = ((s32)evt.msg.tempo.byte1 << 16) | ((s32)evt.msg.tempo.byte2 << 8) | evt.msg.tempo.byte3;
+			__n_setUsptFromTempo(seqp, (f32)tempo);
+		} else if (evt.type == AL_SEQ_MIDI_EVT) {
+			u8 status = evt.msg.midi.status & 0xf0;
+
+			if (status == AL_MIDI_NoteOn || status == AL_MIDI_NoteOff
+					|| status == AL_MIDI_PolyKeyPressure || status == AL_MIDI_ChannelPressure) {
+				continue;
+			}
+
+			if (status == AL_MIDI_ControlChange) {
+				if (evt.msg.midi.byte1 == 0x1e
+						|| evt.msg.midi.byte1 == AL_MIDI_FX_CTRL_6
+						|| evt.msg.midi.byte1 == 0xfe) {
+					continue;
+				}
+				if (evt.msg.midi.byte1 == 0xff) {
+					evt.msg.midi.byte1 = 0xfc;
+				}
+			}
+
+			__n_CSPHandleMIDIMsg(seqp, &evt);
+		}
+	}
+}
+#endif
 
 void func00034f0c(N_ALCSPlayer *seqp, u8 channel)
 {

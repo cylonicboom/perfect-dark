@@ -277,12 +277,15 @@ f32 currentPlayerGetGunZoomFov(void)
 	if (weapon) {
 		f32 fov = weapon->aimsettings->zoomfov;
 #ifndef PLATFORM_N64
-		// Chaos zoom (pd.zoom_scale): a weapon with no zoom of its own gets a
-		// synthetic 1x (vanilla 60, ADJUST_ZOOM_FOV maps it to the base FOV)
-		// so the multiplier still applies while aiming — the Negative Zoom
-		// effect reads as "negative 1x" on zoomless guns instead of a no-op.
+		// Chaos zoom (pd.zoom_scale): a weapon with no zoom of its own instead
+		// gains a synthetic 1.75x aim zoom while the effect runs (vanilla-
+		// linear X = 60/fov, the hudmsg readout convention, so the HUD shows
+		// 1.75X) — scoped guns zoom the wrong way under Negative Zoom while
+		// plain guns suddenly zoom properly (user call 2026-07-29). The chaos
+		// mult deliberately does NOT apply to the synthetic zoom: x4 would
+		// clamp it into the same max-wide fisheye as a 1x, erasing it.
 		if (g_ChaosZoomMult > 0.0f && g_ChaosZoomMult != 1.0f && fov <= 0.0f) {
-			fov = 60.0f;
+			return ADJUST_ZOOM_FOV(60.0f / 1.75f);
 		}
 		return chaosApplyZoomMult(ADJUST_ZOOM_FOV(fov));
 #else

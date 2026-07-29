@@ -255,6 +255,32 @@ s32 g_ChaosAmmoCost = 1;
 // FULL amount from the reserve, but only chambers a random fraction of it, so
 // reloading no longer tops you off. Applied in bgun0f098df8; local player only.
 s32 g_ChaosTemuMag = 0;
+
+// Temu partial-clip memory for EVERY weapon (user call 2026-07-29): vanilla
+// only remembers the crossbow/shotgun/magnums' partial clips across switches
+// (gunroundsspent, 4 slots), so switching away and back handed any other gun
+// a fresh mag — a free, animation-less reload that gutted Temu Magazine.
+// Same mechanism, chaos-scoped side table: [hand][weaponnum][ammoindex],
+// same countdown encoding as gunroundsspent (missing rounds in the high
+// bits, decayed in bgunTickUnequippedReload so holstered guns trickle-reload
+// one round per ~4.3s like the magnum family). Only read/written while
+// g_ChaosTemuMag is set; cleared on toggle (bgunChaosTemuSpentClear).
+u16 g_ChaosTemuSpent[2][96][2];
+
+void bgunChaosTemuSpentClear(void)
+{
+	s32 h;
+	s32 w;
+	s32 a;
+
+	for (h = 0; h < 2; h++) {
+		for (w = 0; w < 96; w++) {
+			for (a = 0; a < 2; a++) {
+				g_ChaosTemuSpent[h][w][a] = 0;
+			}
+		}
+	}
+}
 // Chaos "Quad handed" (pd.double_shots): every fire event takes twice the
 // shots (with dual-wield that's four barrels' worth); ammo drains to match.
 s32 g_ChaosDoubleShots = 0;
@@ -612,6 +638,30 @@ void bgunTickUnequippedReload(void)
 			g_Vars.currentplayer->hands[i].gunroundsspent[j] = spent;
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// Chaos Temu Magazine: decay the all-weapons partial-clip memory the same
+	// way, so holstered guns trickle-reload like the magnum family does.
+	if (g_ChaosTemuMag) {
+		s32 w;
+
+		for (i = 0; i < 2; i++) {
+			for (w = 0; w < 96; w++) {
+				for (j = 0; j < 2; j++) {
+					u16 spent = g_ChaosTemuSpent[i][w][j];
+
+					if (spent > g_Vars.lvupdate60) {
+						spent -= g_Vars.lvupdate60;
+					} else {
+						spent = 0;
+					}
+
+					g_ChaosTemuSpent[i][w][j] = spent;
+				}
+			}
+		}
+	}
+#endif
 }
 
 bool bgunTestGunVisCommand(struct gunviscmd *cmd, struct hand *hand)
@@ -1311,6 +1361,23 @@ void bgun0f098df8(s32 weaponfunc, struct handweaponinfo *info, struct hand *hand
 				amount -= hand->gunroundsspent[reloadindex] >> 8;
 #endif
 			}
+#ifndef PLATFORM_N64
+			// Chaos Temu Magazine: apply the all-weapons partial-clip memory
+			// (stored in bgunFreeWeapon) so a re-equip restores the clip you
+			// holstered instead of granting a fresh mag.
+			else if (checkunequipped && g_ChaosTemuMag && !g_Vars.currentplayer->isremote
+					&& info->weaponnum > 0 && info->weaponnum < 96) {
+				s32 chaoshand = (hand == &g_Vars.currentplayer->hands[HAND_LEFT]) ? HAND_LEFT : HAND_RIGHT;
+#if VERSION >= VERSION_PAL_BETA
+				amount -= g_ChaosTemuSpent[chaoshand][info->weaponnum][ammoindex] / TICKS(256);
+#else
+				amount -= g_ChaosTemuSpent[chaoshand][info->weaponnum][ammoindex] >> 8;
+#endif
+				if (amount < 0) {
+					amount = 0;
+				}
+			}
+#endif
 
 			if (onebullet) {
 				amount = 1;
@@ -1339,7 +1406,11 @@ void bgun0f098df8(s32 weaponfunc, struct handweaponinfo *info, struct hand *hand
 				// current clip (so a bad mag can leave you with fewer rounds than you
 				// had). amount >= 2 keeps single-shell / incremental reloads normal;
 				// local player only (remote pawns must reload for real).
-				if (g_ChaosTemuMag && amount >= 2 && !g_Vars.currentplayer->isremote) {
+				// !checkunequipped: an EQUIP is not a reload — it restores the
+				// holstered clip via the memory above, it must never roll (the
+				// weapon-switch free-reroll exploit).
+				if (g_ChaosTemuMag && amount >= 2 && !checkunequipped
+						&& !g_Vars.currentplayer->isremote) {
 					s32 clipsize = hand->clipsizes[ammoindex];
 					s32 reserve = g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]];
 					s32 cost = clipsize;
@@ -6262,6 +6333,22 @@ void bgunFreeWeapon(s32 handnum)
 					player->hands[handnum].gunroundsspent[index] = (spaceinclip << 8) | 0xff;
 #endif
 				}
+#ifndef PLATFORM_N64
+				// Chaos Temu Magazine: remember the partial clip for weapons
+				// WITHOUT a vanilla gunroundsspent slot too (same encoding),
+				// so switching away and back can't mint a fresh mag.
+				else if (g_ChaosTemuMag && !player->isremote
+						&& player->gunctrl.weaponnum > 0 && player->gunctrl.weaponnum < 96
+						&& spaceinclip >= 0) {
+#if VERSION >= VERSION_JPN_FINAL
+					g_ChaosTemuSpent[handnum][player->gunctrl.weaponnum][i] = (spaceinclip << 8) + 0xff;
+#elif VERSION >= VERSION_PAL_BETA
+					g_ChaosTemuSpent[handnum][player->gunctrl.weaponnum][i] = spaceinclip * 213 + 212;
+#else
+					g_ChaosTemuSpent[handnum][player->gunctrl.weaponnum][i] = (spaceinclip << 8) | 0xff;
+#endif
+				}
+#endif
 
 				if (player->hands[handnum].loadedammo[i] > 0) {
 					player->ammoheldarr[player->gunctrl.ammotypes[i]] += player->hands[handnum].loadedammo[i];

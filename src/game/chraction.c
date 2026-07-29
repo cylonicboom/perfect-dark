@@ -11429,11 +11429,15 @@ s32 chraiLuaAmmoCost(s32 mult)
 }
 
 // pd.temu_mag(on): reloads pay full price but only partially refill the clip
-// (bondgun.c reload site reads g_ChaosTemuMag).
+// (bondgun.c reload site reads g_ChaosTemuMag). Toggling either way clears
+// the all-weapons partial-clip memory (the anti-switch-reload table) so a
+// past run's holstered clips can't leak into the next.
 extern s32 g_ChaosTemuMag;
+extern void bgunChaosTemuSpentClear(void);
 s32 chraiLuaTemuMag(s32 on)
 {
 	g_ChaosTemuMag = on ? 1 : 0;
+	bgunChaosTemuSpentClear();
 	return 1;
 }
 

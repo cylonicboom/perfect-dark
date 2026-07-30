@@ -89,6 +89,38 @@ profile index 7 = `BOTTYPE_SHIELD` — a silently-wrong ShieldSim. The three
 quick-add sites in `setup.c` and the admin-menu site in `netmenu.c` are already
 routed through it (identity for everything those can currently produce).
 
+## Where it appears in the menus (three separate surfaces)
+
+Adding a difficulty is not one menu change — it took three, and the third was
+missed on the first pass (user reported "there is no DemonSim, only goes up to
+Dark and the effect sims"):
+
+1. **Per-sim Difficulty dropdown** (`mpBotDifficultyMenuHandler`) — Demon is
+   appended as the last option via `mpBotDiffDemonOption()`.
+2. **Quick Team sim difficulty** (`mpQuickTeamSimulantDifficultyHandler`) — same.
+3. **Add / Change Simulant list** (`mpAddChangeSimulantMenuHandler`) — the
+   grouped "Normal Simulants / Special Simulants" picker. This one enumerates
+   `g_BotProfiles` **rows**, so the Demon row was already in the list, but the
+   handler reads `langGet(g_BotProfiles[i].name)` **directly** rather than
+   `mpBotProfileName()` — and that field is only a placeholder, so it rendered as
+   a **second "DarkSim"** at the end of the Special group. Fixed by routing the
+   option text through the helper, plus:
+   - a **third option group, "Demon Simulants"** (offset resolved via
+     `mpFindBotProfile`, group count now `ARRAYCOUNT(groups)`). Groups are
+     delimited by profile-index offsets and the Demon row is appended last, so an
+     offset-based group can only ever place it at the bottom — its own heading
+     also stops it reading as a personality type.
+   - `mpMenuTextSimulantDescription` indexes `L_MISC_106 + profile index`, a block
+     sized for the ROM's 18 profiles, so the appended row read one past the end.
+     Demon carries its own description literal.
+
+   ⚠ `MENUOP_SET` in that handler passes a genuine **profile index**, not a
+   difficulty — do **not** apply `mpBotProfileForDifficulty` there.
+
+**Lesson for the next difficulty:** grep for every reader of
+`g_BotProfiles[...].name` and every `L_MISC_*` block indexed by profile index,
+not just the difficulty dropdowns.
+
 ## Naming
 
 The difficulty label is **"Demon"**; sims are named **"DemonSim"**.
@@ -141,6 +173,9 @@ loaded into an older build will read difficulty 7 and hit the same OOB read.
 
 1. Configure Simulants → a sim → Difficulty: "Demon" appears as the 7th option
    and sticks after leaving/re-entering the menu.
+1b. **Add Simulant**: a "Demon Simulants" group at the bottom of the list
+   containing **DemonSim** (not a second "DarkSim"), with its own description
+   text when focused. Picking it creates a Demon-difficulty GENERAL sim.
 2. The sim is named **DemonSim** (or `DemonSim:1`, `:2`… with several).
 3. It spawns holding a weapon and visibly cycles between the map's weapons as
    the situation changes; it never runs out of ammo.

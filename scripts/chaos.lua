@@ -67,6 +67,9 @@ local st = {
   -- nil = external file not tried yet, false = missing (stop retrying so the
   -- audio layer doesn't log a "can't load" warning on every single effect).
   trigsound_extok = {},  -- per-file "did it load" cache for extfile stings
+  -- key -> external voice id, for sounds that belong to a TIMED effect and
+  -- must be cut off when it ends (see play_sound_owned).
+  owned_snd = {},
   -- Effects pinned ON by `set` — they never tick down and never wear off,
   -- until `unset`/`clear`, a stop_all (Chaos off, supersonic flush) or a
   -- stage change. name -> true.
@@ -185,13 +188,50 @@ end
 -- ------------------------------------------------------------- effects -----
 -- duration in seconds (0 = instant). start/stop run under pcall.
 -- Weapon/cheat ids from src/include/constants.h.
-local W = { FALCON2=0x02, MAGSEC=0x05, MAULER=0x06, PHOENIX=0x07, MAGNUM=0x08, LX=0x09,
+local W = { FALCON2=0x02, FALCON2_SCOPE=0x04, MAGSEC=0x05, MAULER=0x06, PHOENIX=0x07, MAGNUM=0x08, LX=0x09,
   CMP150=0x0a, CYCLONE=0x0b, LAPTOP=0x0e, DRAGON=0x0f, K7=0x10, AR34=0x11,
   SUPERDRAGON=0x12, SHOTGUN=0x13, REAPER=0x14, SNIPER=0x15, FARSIGHT=0x16,
   DEVASTATOR=0x17, ROCKET=0x18, SLAYER=0x19, KNIFE=0x1a, CROSSBOW=0x1b,
   TRANQ=0x1c, LASER=0x1d, GRENADE=0x1e, NBOMB=0x1f, TIMEDMINE=0x20,
   PROXYMINE=0x21, REMOTEMINE=0x22, UNARMED=0x01,
   NIGHTVISION=0x2d, XRAY=0x2f, IR=0x30, CLOAK=0x31 }
+-- Deep Sea's environmental sounds, reused as Paranormal Activity ambience.
+--
+-- ⚠ Both are MECHANICAL, not groans (auditioned 2026-07-30) — machinery and
+-- structure noise rather than anything voiced. Kept anyway, because unexplained
+-- industrial noise in a dark, empty building is the haunt; named for what they
+-- actually are so nobody goes looking for a moan that isn't there.
+--
+-- These are the ids setuppam.c (the Deep Sea setup) attaches to the level's
+-- environment: SFX_8148 rides `play_sound_from_entity(CHANNEL_7, CHR_SELF,
+-- 3000, 6000)` — a long-radius positional loop, i.e. room-scale ambience — and
+-- SFX_8147 is the sound hung on the mine object. The whole 0x81xx block is
+-- environmental loops (SFX_810F/8110 are the chopper hums, SFX_810D /
+-- SFX_SHIP_HUM Extraction's), which is why they are safe to play off-stage:
+-- generic chopper code already fires 0x81xx ids on any level.
+--
+-- sfx.h names this range numerically, so these were identified by their USE in
+-- the setup. Audition any candidate with `/lua pd.sound(0x8148)`.
+local SFX_SEA_MECH = { 0x8148, 0x8147 }
+
+-- Trapdoor: what share of the stage's rooms get rigged (and blacked out).
+local TRAP_PCT = 10
+
+-- Terminator Vision renders at the game's NATIVE framebuffer size. Checked,
+-- not assumed: port/src/video.c sets gfx_current_native_viewport to
+-- 320 x 220 (aspect 320/220), so this is 320x220 and not the 220x200 it is
+-- easy to misremember as.
+local TERM_RES = { 320, 220 }
+
+-- Paranormal Activity gloom: the stan-tile shade it fades DOWN to (0-255 per
+-- channel, multiplied over the normal lighting) and how long the fade takes.
+-- Blue-ish so it reads as moonlight rather than a brightness slider.
+local PARA_DIM = { 38, 40, 58 }
+local PARA_FADE = 90 -- ticks (~1.5s)
+
+-- Ice Floor wipeout threshold, world units per second (the SPEED effect's
+-- scale: it arms its bomb at 85 u/s, so this is well above a normal run).
+local ICE_SLIP_SPEED = 450
 local GUNS = { W.FALCON2, W.MAGSEC, W.MAULER, W.PHOENIX, W.MAGNUM, W.CMP150,
   W.CYCLONE, W.LAPTOP, W.DRAGON, W.K7, W.AR34, W.SUPERDRAGON, W.SHOTGUN,
   W.REAPER, W.SNIPER, W.FARSIGHT, W.DEVASTATOR, W.ROCKET, W.SLAYER,
@@ -202,22 +242,80 @@ local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHA
   ENEMYSHIELDS=12, JOSHIELD=13, SUPERSHIELD=14, TEAMHEADS=16, ELVIS=17,
   ENEMYROCKETS=18, MARQUIS=20, PDARK=21, GOLDENEYE=45, WIREFRAME=46, MIRROR=47,
   TONAL=48 }
--- Maian "argh" hit/death yelps (sfx.h SFX_ARGH_MAIAN_05DF..05E1; each enum value
--- equals its hex-suffix sound id). Used by Giggle Bomb.
-local SFX_MAIAN_ARGH = { 0x05df, 0x05e0, 0x05e1 }
+-- Spawn a body on a ring around the player, retrying until one spot has room.
+--
+-- pd.spawn_body validates CLEARANCE C-side since 2026-07-30 (chrAdjustPosForSpawn
+-- volume-tests world geometry and physics objects, then nudges through 8
+-- directions) and returns -1 when there is nowhere for a body to stand. That
+-- stopped guards spawning inside walls, but it also means a single blind attempt
+-- at one random angle can now come back empty — in a tight corridor, often. So
+-- every caller goes through here: several angles at the requested distance, then
+-- a nearer ring, because corridors frequently have no room at 900 units and
+-- plenty at 540. Returns the chrnum, or nil if the area really is full.
+local function spawn_body_near(bodynum, weaponnum, dist, sunglasses)
+  if not pd.spawn_body then return nil end
+  for try = 1, 8 do
+    local ang = math.random() * 2 * math.pi
+    local d = (try <= 5) and dist or (dist * 0.6)
+    local c = pd.spawn_body(bodynum, weaponnum,
+                            math.sin(ang) * d, math.cos(ang) * d, sunglasses)
+    if c and c >= 0 then return c end
+  end
+  return nil
+end
 
 -- Known-safe body model ids for chr_set_body / spawn_body (all already used by
 -- shipping effects). chr_set_body with head -1 auto-picks a valid head, so these
--- never hit an unloaded/invalid head model. Used by Identity Crisis + Hydra.
+-- never hit an unloaded/invalid head model. Used by Identity Crisis (Hydra
+-- clones the dead guard now, so it no longer draws from here).
 local BODIES_POOL = { 0x7b, 0x5c, 0x67, 0x5b, 0x56, 0x00, 0x90 }
 
 -- Play a one-shot external sound file from scripts/chaos/sounds/ (drop a
 -- <name>.wav or <name>.mp3 in). Non-looping, does NOT follow music. Used by the
 -- Mario/Sonic meme SFX (mariobig/mariosmall/sonicdrop).
-local function play_sound(name)
+-- Play scripts/chaos/sounds/<name>.wav (falling back to .mp3). Returns whatever
+-- pd.play_file returned: on a current exe that is the VOICE ID, which is the
+-- only way to stop ONE voice later (pd.stop_file() with no id frees the whole
+-- pool). Truthy either way, so callers that just want "did it play" are fine.
+-- loop is for sounds that accompany a state rather than an event — the caller
+-- MUST keep the id and stop it.
+local function play_sound(name, loop)
   if not pd.play_file then return false end
-  return (pd.play_file("scripts/chaos/sounds/" .. name .. ".wav", false, false)
-      or pd.play_file("scripts/chaos/sounds/" .. name .. ".mp3", false, false)) and true or false
+  return pd.play_file("scripts/chaos/sounds/" .. name .. ".wav", loop, false)
+      or pd.play_file("scripts/chaos/sounds/" .. name .. ".mp3", loop, false)
+      or false
+end
+
+-- Sounds OWNED BY A TIMED EFFECT.
+--
+-- ⚠ An external voice plays to the end of its FILE, with no relationship to the
+-- chaos timer at all. So a timed effect that just fires play_sound() and forgets
+-- it keeps making noise long after its "wore off" toast — a 60s mp3 on a 20s
+-- effect is 40s of overrun. That was the "Take a break and a few others go
+-- longer than the effect timer" report (2026-07-30): the EFFECT ended on time,
+-- its music didn't.
+--
+-- So: any effect whose sound is supposed to last exactly as long as the effect
+-- starts it with play_sound_owned(key, ...) and ends it in stop() with
+-- stop_sound_owned(key). One-shot stings (banana, mario, the trigger sting)
+-- deliberately do NOT use this — they are events, and cutting them off at an
+-- arbitrary moment would sound broken.
+--
+-- Stopped BY VOICE ID: a bare pd.stop_file() frees the whole 8-voice pool and
+-- would silence every other sound in play.
+local function stop_sound_owned(key)
+  local v = st.owned_snd[key]
+  if v and pd.stop_file then pd.stop_file(v) end
+  st.owned_snd[key] = nil
+end
+
+local function play_sound_owned(key, name, loop)
+  stop_sound_owned(key) -- re-triggering must not orphan the previous voice
+  local v = play_sound(name, loop)
+  -- Old exes return a plain boolean from play_file; without a real id there is
+  -- nothing to stop, so the overrun stays but nothing misbehaves.
+  st.owned_snd[key] = (type(v) == "number") and v or nil
+  return v
 end
 
 -- Is this effect one whose whole gag depends on the player NOT knowing chaos
@@ -247,7 +345,7 @@ end
 -- file, so there's no way for this to inherit that behaviour.
 --
 -- SFX ids are raw numbers because pd.sound takes a number and Lua has no view
--- of the sfx.h enum (the existing SFX_MAIAN_ARGH hardcodes are the precedent).
+-- of the sfx.h enum, so every id here is a literal.
 -- They were derived by walking the enum in src/include/sfx.h and validated
 -- against the self-naming constants (SFX_805E == 0x805e) — if you add more,
 -- validate the same way rather than eyeballing a line number.
@@ -320,7 +418,9 @@ local function play_trigger_sting()
     -- load" warning per attempt, which would otherwise spam the log on
     -- every single effect.
     if st.trigsound_extok[t.key] == false then return end
-    local ok = play_sound(t.extfile)
+    -- play_sound returns a voice id now; this cache only cares whether the file
+    -- loaded at all, so keep it a plain boolean.
+    local ok = play_sound(t.extfile) and true or false
     st.trigsound_extok[t.key] = ok
     if not ok then
       pd.log("[chaos] trigger sound '" .. t.label .. "' needs scripts/chaos/sounds/"
@@ -633,8 +733,21 @@ chaos.effects = {
   tallscreen     = { label="Wide Boy",            w=3, dur=20,
                      start=function() pd.aspect_scale(0.5) end,
                      stop=function() pd.aspect_scale(1) end },
-  cavalry        = { label="Send in the cavalry", w=3, dur=0,
-                     start=function() for i = 1, 4 do pd.spawn_ally() end end },
+  -- The Boys / Backup arrives: allies now wear YOUR Combat Sim
+  -- profile character (MP.Profile.Body/Head from pd.ini — the same pair that
+  -- swaps Joanna for your profile on the CI-training title screen) and each one
+  -- rolls its own gun from GUNS, instead of four identical Dark Combat troopers
+  -- with a Falcon 2 apiece (user call 2026-07-30). No profile loaded in pd.ini =
+  -- the old Dark Combat / VD look, so it degrades quietly.
+  -- (label was "Send in the cavalry"; renamed 2026-07-30, user call — the KEY
+  -- stays `cavalry`, because st.disabled persists to pd.ini by key and renaming
+  -- it would silently reset anyone's enable/disable choice for this effect.)
+  cavalry        = { label="The Boys",            w=3, dur=0,
+                     start=function()
+                       for _ = 1, 4 do
+                         pd.spawn_ally(GUNS[math.random(#GUNS)])
+                       end
+                     end },
   -- One-shot (user call 2026-07-29): fire a random Combat Sim track and let
   -- it ride instead of a 60s timer cutting it off mid-song. The stage music
   -- is paused under the menu-track layer and comes back when the song ends;
@@ -645,9 +758,11 @@ chaos.effects = {
                      start=function() pd.song(math.random(0, 255), math.random() * 0.75) end },
   skedar_ring    = { label="Skedar ambush",       w=3, dur=0,
                      start=function()
-                       for i = 0, 3 do
-                         local a = i * math.pi / 2
-                         pd.spawn_body(BODY.MINISKEDAR, -1, math.sin(a) * 150, math.cos(a) * 150)
+                       -- retries per skedar: the clearance check rejects a
+                       -- blocked compass point outright, and four fixed angles
+                       -- indoors will often include one facing a wall.
+                       for i = 1, 4 do
+                         spawn_body_near(BODY.MINISKEDAR, -1, 150)
                        end
                      end },
   -- FOV warps (self-restoring setter hook, like aspect_scale)
@@ -678,17 +793,36 @@ chaos.effects = {
   evil_twin      = { label="Evil twin",           w=2, dur=0,
                      start=function()
                        local held = pd.weapon_held()
-                       local a = math.random() * 2 * math.pi
                        -- spawn ~1000 units away and let her hunt the player down
-                       pd.spawn_body(-1, (held and held > 1) and held or W.FALCON2,
-                                     math.sin(a) * 1000, math.cos(a) * 1000)
+                       spawn_body_near(-1, (held and held > 1) and held or W.FALCON2, 1000)
                      end },
   -- doors
-  open_sesame    = { label="Open sesame",         w=4, dur=0,
-                     start=function() pd.doors_all(true) end },
-  lockdown       = { label="Lockdown",            w=3, fixeddur=true, dur=15,
-                     -- actually LOCK every door shut for the duration (fake key
-                     -- flag), not just the transient close of doors_all
+  -- Open sesame: every door HELD open for the duration (2026-07-30 user call —
+  -- pd.doors_all was a one-shot request, so doors swung shut again on their own
+  -- autoclose timer seconds later). pd.doors_hold sets the engine's own
+  -- OBJFLAG_DOOR_KEEPOPEN, and on stop restores ONLY the doors it changed, so
+  -- mission doors that were already propped open stay propped.
+  open_sesame    = { label="Open sesame",         w=4, dur=1,
+                     start=function()
+                       if not pd.doors_hold then error("needs new exe") end
+                       pd.doors_hold(true)
+                     end,
+                     stop=function() pd.doors_hold(false) end },
+  -- Actually LOCK every door shut for the duration (fake key flag), not just the
+  -- transient close of doors_all.
+  --
+  -- Tied to the global timer, full stop (`dur=1`). It was `fixeddur=true, dur=15`
+  -- — 15s regardless of the Effect Duration slider, so it ran LONGER than the
+  -- timer whenever the slider was under 15s. An interim 20s cap was tried and
+  -- REJECTED by the user (2026-07-30).
+  --
+  -- ⚠ Being stuck IS THE EFFECT — this is a deliberate design decision, not an
+  -- oversight. At a long duration every door in the level is sealed and you can
+  -- be stranded away from an objective, and the restart carry-over resumes it
+  -- with the remaining time so restarting is no escape either. **Do not
+  -- "fix" this by reintroducing fixeddur or a cap.** If it ever needs bounding,
+  -- that is a call for the person playing it, via the duration slider.
+  lockdown       = { label="Lockdown",            w=3, dur=1,
                      start=function() pd.doors_lock(true) end,
                      stop=function() pd.doors_lock(false) end },
   body_snatch    = { label="BODY SNATCHED",       w=1, dur=1,
@@ -740,9 +874,12 @@ chaos.effects = {
   gormless       = { label="Gormless",            w=4, dur=20,
                      start=function()
                        pd.gormless(true)
-                       play_sound("gormless")
+                       play_sound_owned("gormless", "gormless") -- ends with the effect
                      end,
-                     stop=function() pd.gormless(false) end },
+                     stop=function()
+                       pd.gormless(false)
+                       stop_sound_owned("gormless")
+                     end },
   one_punch      = { label="ONE PUNCH",           w=3, dur=25,
                      start=function()
                        pd.cheat(CHEAT.FISTS, true) -- Hurricane Fists punch speed
@@ -803,7 +940,20 @@ chaos.effects = {
                        end
                      end
                      if b.bpm <= 0 then b.bpm = 120 end
-                     local tpb = 3600 / b.bpm -- ticks per beat (60 ticks/s * 60)
+                     -- Track the LIVE tempo, so the beat slows and speeds with the
+                     -- music instead of free-running at whatever it latched (user
+                     -- call 2026-07-30 — DJ moves the real tempo now, and the
+                     -- metronome was staying put). Only the PERIOD is re-derived;
+                     -- freephase is never rewritten, so the beat stays continuous
+                     -- and just breathes rather than jumping. The one-shot sync
+                     -- above still does its original job of establishing PHASE.
+                     -- Falls back to the latched value whenever there is no music
+                     -- to read (music_bpm returns 0), which is why the latch is
+                     -- still worth keeping.
+                     local bpmnow = pd.music_bpm and pd.music_bpm() or 0
+                     if bpmnow <= 0 then bpmnow = b.bpm end
+                     b.bpmnow = bpmnow -- for the HUD readout
+                     local tpb = 3600 / bpmnow -- ticks per beat (60 ticks/s * 60)
                      b.freephase = (b.freephase + dt / tpb) % 1
                      -- Metronome: click once per beat, on the downbeat (the phase
                      -- wrapping ~1 -> ~0). Played at half the music volume C-side.
@@ -1114,7 +1264,9 @@ chaos.effects = {
                      for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
   boom         = { label="Incoming!",         w=5, dur=0, start=function()
                      local c = random_chr(); if c then pd.explosion(c) end end },
-  buddy        = { label="Backup arrives",    w=5, dur=0, start=function() pd.spawn_ally() end },
+  -- Your profile character + a random gun; see "The Boys".
+  buddy        = { label="Backup arrives",    w=5, dur=0,
+                   start=function() pd.spawn_ally(GUNS[math.random(#GUNS)]) end },
   -- "Me and my son": a friendly Jo clone fights beside you — but she's a squat,
   -- full-width runt (40% height) with half the HP, and when she falls she drags
   -- half of your REMAINING health down with her. The death penalty is watched in
@@ -1180,13 +1332,23 @@ chaos.effects = {
                    stop=function() st.a_wlock = nil end },
   -- Reload Denied: every reload path (button, empty-auto, switch) is refused in
   -- bgunSetState. Run dry and stay dry.
+  --
+  -- It also arms Temu Magazine's all-weapons partial-clip memory (user call
+  -- 2026-07-30). Refusing the reload ANIMATION was not enough on its own: vanilla
+  -- only remembers partial clips for the crossbow/shotgun/magnum/LX, so for every
+  -- other gun switching away and back minted a fresh mag — a free, animation-less
+  -- reload straight through the middle of the effect. The memory closes that.
+  -- Note the holstered-gun trickle-decay is deliberately NOT shared: that is a
+  -- slow reload, and this effect's premise is that reloads do not happen.
   no_reload    = { label="Reload Denied",     w=4, dur=15,
                    start=function()
                      if not pd.no_reload then error("needs new exe") end
                      pd.no_reload(true)
                    end,
                    stop=function() if pd.no_reload then pd.no_reload(false) end end },
-  -- Permacrouch: stance pinned to a crouch (bondmove.c crouchpos override).
+  -- Permacrouch: stance pinned to the LOWEST crouch (bondmove.c crouchpos
+  -- override, CROUCHPOS_SQUAT — it was pinning DUCK, the middle stance, because
+  -- those constants run SQUAT=0 / DUCK=1 / STAND=2; user call 2026-07-30).
   always_crouch= { label="Permacrouch",       w=3, dur=20,
                    start=function()
                      if not pd.forced_crouch then error("needs new exe") end
@@ -1202,64 +1364,33 @@ chaos.effects = {
                      pd.hud_message("CHAOS: no menus for you")
                    end,
                    stop=function() pd.button_block(0) end },
-  -- Fake Crash: freeze the player AND every chr for a few seconds so the scene
-  -- goes dead-still — looks like the game hung. silent+nobar hide every chaos
-  -- HUD tell, so nothing on screen gives the gag away. The chaos timer still
-  -- runs (only entities are frozen, not the sim), so it self-recovers.
-  fake_crash   = { label="Fake Crash", silent=true, nobar=true, fixeddur=true, dur=3,
+  -- Fake Crash: the game appears to HANG for 3s. silent+nobar hide every chaos
+  -- HUD tell, so nothing on screen gives the gag away.
+  --
+  -- Rewritten 2026-07-30 (user call): it used to freeze the player and every chr
+  -- while the sim kept running, so the scene went still but time carried on —
+  -- and the music carried on cheerfully over the top, which reads as a graphics
+  -- glitch rather than a crash. Now pd.fake_crash stops the SIM DEAD
+  -- (lvupdate240 = 0, so nothing advances at all) and holds the audio output on
+  -- whatever was mid-playback, stretching it into the held drone of a real hang.
+  --
+  -- ⚠ It is a ONE-SHOT with no stop(), and that is structural, not laziness:
+  -- freezing the sim also freezes chaos's own effect timers, which run on sim
+  -- ticks — so a stop() here could never fire and the freeze would be permanent.
+  -- The release is a real-time countdown in C (lv.c), which also drops the audio
+  -- hold so the two can't desync. dur=0 keeps this table honest about that.
+  fake_crash   = { label="Fake Crash", silent=true, nobar=true, dur=0,
                    start=function()
-                     pd.player_freeze(true)
-                     if pd.chr_freeze then pd.chr_freeze(true) end
-                   end,
-                   stop=function()
-                     pd.player_freeze(false)
-                     if pd.chr_freeze then pd.chr_freeze(false) end
+                     if not pd.fake_crash then error("needs new exe") end
+                     pd.fake_crash(3)
                    end },
-  -- Giggle Bomb: every defeated enemy yelps a Maian "argh" and detonates. The
-  -- boom + sound are QUEUED from the kill hook and fired from the main tick
-  -- (spawning a prop inside the death callback is the re-entrancy that broke
-  -- earlier effects — see the kill hook + boom_queue drain).
-  giggle_bomb  = { label="The Giggle Bomb",   w=4, dur=1,
-                   start=function() end },
-  -- Suicide Bomber: one random guard is a walking bomb; killing them triggers a
-  -- massive blast (take them from range, or Butterfingers/disarm to defuse).
-  -- The bomber is picked at start and its death is watched in the kill hook.
-  suicide_bomb = { label="Suicide Bomber",    w=3, dur=1,
-                   start=function()
-                     local list = pd.all_chrs() or {}
-                     if #list == 0 then error("no chrs") end
-                     st.a_suicide = { chr = list[math.random(#list)] }
-                     pd.hud_message("CHAOS: one of them is a walking bomb...")
-                   end,
-                   stop=function() st.a_suicide = nil end },
-  -- Mario Mode: get shot once and you shrink (Small Jo); get shot again and you
-  -- die. Hits are detected as drops in player health (shield-first damage may
-  -- mask a hit — same limitation as Enemy LTK).
-  mario_mode   = { label="Mario Mode",        w=3, dur=1,
-                   start=function()
-                     st.a_mario = { h = pd.player_health(), hits = 0 }
-                     play_sound("mariobig") -- you start big
-                   end,
-                   tick=function()
-                     local m = st.a_mario
-                     if not m then return end
-                     local h = pd.player_health()
-                     if h and m.h and h < m.h - 0.005 then
-                       m.hits = m.hits + 1
-                       if m.hits >= 2 then
-                         pd.player_damage(100)
-                       else
-                         pd.cheat(CHEAT.SMALLJO, true)
-                         play_sound("mariosmall") -- shrink
-                         pd.hud_message("CHAOS: it's-a small time!")
-                       end
-                     end
-                     m.h = h
-                   end,
-                   stop=function()
-                     st.a_mario = nil
-                     pd.cheat(CHEAT.SMALLJO, false)
-                   end },
+  -- (giggle_bomb "The Giggle Bomb" removed 2026-07-30, user call. Its boom was
+  -- QUEUED from the kill hook and fired from the main tick — that re-entrancy
+  -- rule still governs martyrdom, see its queue in the main tick.)
+  -- (suicide_bomb "Suicide Bomber" and mario_mode "Mario Mode" removed
+  -- 2026-07-30, user call. Suicide Bomber was the last boom_queue producer, so
+  -- that queue and its drain went with it — Chain Reaction and martyrdom keep
+  -- their own.)
   -- Sonic Mode: get shot and your whole arsenal scatters on the floor as
   -- collectable pickups (drop_weapon = the engine's real drop path, so you can
   -- run back over a gun to re-arm). Get shot again WITHOUT having re-collected a
@@ -1295,33 +1426,69 @@ chaos.effects = {
                      s.h = h
                    end,
                    stop=function() st.a_sonic = nil end },
-  -- Camper's Paradise: crossing into a new room bleeds 5% of current health
-  -- (roomenter hook); standing still in one spot for ~2s slowly regens. Rewards
-  -- turtling, punishes roaming.
-  campers      = { label="Camper's Paradise", w=3, dur=1,
-                   start=function() st.a_camp = { still = 0 } end,
+  -- Shield Charge (was "Camper's Paradise", reworked 2026-07-30): SHIELD only —
+  -- health is never touched. Your shield trickles up continuously, and crossing
+  -- into a new room costs a flat 20% of MAX shield, so roaming outruns the
+  -- charger while holding a room banks it.
+  --
+  -- The charge rate is scaled so a full 0 -> 100% refill takes EXACTLY the
+  -- effect's duration (user call: a longer timer means a slower charge). That
+  -- means the rate has to be computed at start() from st.trigdur — the length
+  -- THIS fire will actually use — not from a constant.
+  --
+  -- The trickle is a SILENT set: pd.player_set_shield pops the health bar by
+  -- default, and doing that every frame re-arms the bar's timer so it could
+  -- never close or finish its fill animation. The room-entry hit pops it
+  -- deliberately (that one IS worth showing).
+  --
+  -- shieldcharge.wav|mp3 loops while it is actually charging, and is stopped BY
+  -- VOICE ID — the no-id pd.stop_file() frees the whole external-voice pool and
+  -- would silence any other sound in play.
+  shield_charge = { label="Shield Charge",    w=3, dur=1,
+                   start=function()
+                     -- Read the fire length FIRST: a nested trigger would clear
+                     -- st.trigdur (see chaos.trigger).
+                     local secs = st.trigdur or st.effectdur
+                     st.a_shield = { rate = 1 / math.max(1, secs * TICKS) }
+                   end,
                    tick=function()
-                     local c = st.a_camp
-                     if not c then return end
-                     local x, y, z = pd.player_pos(0)
-                     if x and c.x then
-                       local dx, dz = x - c.x, z - c.z
-                       if (dx * dx + dz * dz) > (20 * 20) then
-                         c.still = 0
-                       else
-                         c.still = c.still + (pd.lvupdate and pd.lvupdate() or 1)
+                     local a = st.a_shield
+                     if not a then return end
+                     local s = pd.player_shield and pd.player_shield()
+                     if not s then return end
+                     if s < 1 then
+                       local dt = pd.lvupdate and pd.lvupdate() or 1
+                       pd.player_set_shield(math.min(1, s + a.rate * dt), true)
+                       if not a.voice then
+                         -- play_sound returns a voice id on the new exe, plain
+                         -- true on an older one — only an id can be stopped
+                         -- selectively, so guard the type.
+                         local v = play_sound("shieldcharge", true)
+                         a.voice = (type(v) == "number") and v or nil
                        end
-                     end
-                     c.x, c.z = x, z
-                     if c.still > 120 then
-                       local h = pd.player_health()
-                       if h and h < 1 then pd.player_set_health(math.min(1, h + 0.0015)) end
+                     elseif a.voice then
+                       pd.stop_file(a.voice)
+                       a.voice = nil
                      end
                    end,
-                   stop=function() st.a_camp = nil end },
+                   stop=function()
+                     if st.a_shield and st.a_shield.voice then
+                       pd.stop_file(st.a_shield.voice)
+                     end
+                     st.a_shield = nil
+                   end },
   -- Random Damage Floors: each room is randomly assigned "hot" the first time
   -- you enter it (roomenter hook); standing in a hot room chips your health
   -- every second. Pure floor-is-lava roulette.
+  --
+  -- A hot room is now LIT RED (pd.room_highlight, 2026-07-30 user call) using
+  -- the KotH hill-green mechanism, so the danger is visible instead of being
+  -- something you only learn by bleeding. The highlight is applied at the same
+  -- moment the roll happens — the roomenter hook — so a room's colour and its
+  -- hot/cold state can never disagree.
+  --
+  -- pd.room_highlight() with no args clears every highlight and restores the
+  -- rooms' original lightops, which is the whole of stop()'s job.
   damage_floors= { label="Damage Floors",     w=3, dur=1,
                    start=function() st.a_dmgfloor = { rooms = {} } end,
                    tick=function()
@@ -1333,194 +1500,523 @@ chaos.effects = {
                        pd.player_damage(0.06)
                      end
                    end,
-                   stop=function() st.a_dmgfloor = nil end },
+                   stop=function()
+                     if pd.room_highlight then pd.room_highlight() end
+                     st.a_dmgfloor = nil
+                   end },
   -- Paranormal Activity: doors slam open and shut, the lights (vtx colours)
   -- flicker. The room-throwing-props part needs a new prop-launch binding (see
   -- the heavy batch); this is the doors + lights haunt.
+  -- Paranormal Activity: the lights go out for real, doors move on their own, and
+  -- things get thrown at you. Reworked 2026-07-30 (user call) on three counts:
+  --
+  --  1. DARKNESS is a steady STAN-TILE FADE, gradually dimming to a dark shade
+  --     and holding there (user call: not the Perfect Darkness cheat, which was
+  --     tried first). pd.room_tint is the right tool because since 2026-07-29 it
+  --     multiplies BOTH halves of the lighting: the dlights.c room reshade AND
+  --     propCalculateShadeColour, which is stan-tile floorcol x room shade — so
+  --     props, chrs and the first-person gun dim with the world instead of
+  --     staying lit against a dark room. (PDARK could not have worked with the
+  --     lightning below anyway: it bakes every room to lightop SET 0, leaving no
+  --     brightness for a flash to modulate.)
+  --
+  --     The fade is stepped every 6 ticks rather than every tick: pd.room_tint
+  --     dirties EVERY room for reshade on each call, so a per-frame ramp would be
+  --     ~90 whole-level reshades in a row. 15 steps look just as smooth.
+  --
+  --  2. NO MORE STROBE. It used to re-roll a room tint every 8 ticks — a ~7Hz
+  --     flicker, which is unpleasant and a genuine photosensitivity problem.
+  --     Replaced with occasional LIGHTNING at a random 2-5s interval, driven
+  --     through the same stan-tile tint (user call) rather than a pd.fade screen
+  --     white-out: the lights themselves flare, so the room AND everyone standing
+  --     in it brighten together instead of a flat overlay being painted on top.
+  --
+  --  2b. AMBIENCE: Deep Sea's own environmental sounds (SFX_SEA_MECH), one at
+  --     random every 4-9s, non-positional so they read as the building itself.
+  --     They turned out to be mechanical rather than groans — kept, because
+  --     unexplained machinery in a dark empty building does the job.
+  --
+  --  3. DOORS AT THEIR OWN RATES. pd.doors_speeds gives every door a random
+  --     accel/maxspeed for the duration (restored afterwards), so they creak and
+  --     slam at different speeds; pd.doors_shuffle then flips a random THIRD of
+  --     them every ~1.5s, so each door keeps its own irregular rhythm instead of
+  --     the whole level moving in unison like pd.doors_all.
   paranormal   = { label="Paranormal Activity", w=3, dur=1,
-                   start=function() st.a_para = {} end,
+                   start=function()
+                     st.a_para = { flash = 0, next = 120, dim = 0, groan = 60 }
+                     if pd.doors_speeds then pd.doors_speeds(true) end
+                   end,
                    tick=function(left)
                      local p = st.a_para
                      if not p then return end
-                     if left % 90 == 0 then
-                       p.open = not p.open
-                       pd.doors_all(p.open)
-                     end
-                     if left % 8 == 0 then
-                       if math.random() < 0.4 then
-                         pd.room_tint(20, 20, 30)
-                       else
-                         pd.room_tint()
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+
+                     -- Fade the world down to PARA_DIM over PARA_FADE ticks, then
+                     -- hold. Stepped, not per-frame (see the note above).
+                     if p.dim < PARA_FADE then
+                       p.dim = math.min(PARA_FADE, p.dim + dt)
+                       -- Explicit accumulator, not `dim % 6 < dt`: that fires on
+                       -- MORE frames as dt grows, i.e. more whole-level reshades
+                       -- exactly when the framerate is already struggling.
+                       p.step = (p.step or 0) + dt
+                       if p.step >= 6 or p.dim >= PARA_FADE then
+                         local f = p.dim / PARA_FADE
+                         p.step = 0
+                         pd.room_tint(
+                             math.floor(255 + (PARA_DIM[1] - 255) * f),
+                             math.floor(255 + (PARA_DIM[2] - 255) * f),
+                             math.floor(255 + (PARA_DIM[3] - 255) * f))
                        end
                      end
+
+                     -- each door on its own schedule
+                     if left % 90 == 0 and pd.doors_shuffle then
+                       pd.doors_shuffle(33)
+                     end
+
+                     -- Lightning, done in the LIGHTING rather than as a screen
+                     -- overlay (user call): slam the stan-tile tint back up to
+                     -- full for a few ticks, then drop it to the gloom again. The
+                     -- room and everything standing in it flare together, which a
+                     -- pd.fade white-out can't do — that just paints over the
+                     -- frame, so the world stayed dark underneath.
+                     --
+                     -- Full brightness is the ceiling here: room_tint is a
+                     -- MULTIPLIER (chraiLuaRoomTint divides by 255 into a 0..1
+                     -- frac), so 255 = normal lighting and there is no
+                     -- over-bright. Going 15% -> 100% is a big enough jump to
+                     -- read as a flash regardless.
+                     if p.flash > 0 then
+                       p.flash = p.flash - dt
+                       if p.flash <= 0 then
+                         pd.room_tint(PARA_DIM[1], PARA_DIM[2], PARA_DIM[3])
+                       end
+                     else
+                       p.next = p.next - dt
+                       if p.next <= 0 and p.dim >= PARA_FADE then -- not mid-fade
+                         p.next = math.random(2 * TICKS, 5 * TICKS)
+                         p.flash = 4
+                         pd.room_tint(255, 255, 255)
+                       end
+                     end
+
+                     -- Deep Sea's machinery noise: a random one of the set at a
+                     -- random 4-9s interval, so it never falls into a rhythm you
+                     -- can predict. Non-positional (pd.sound) so it reads as the
+                     -- building itself rather than something at a location.
+                     p.groan = p.groan - dt
+                     if p.groan <= 0 then
+                       p.groan = math.random(4 * TICKS, 9 * TICKS)
+                       if pd.sound then
+                         pd.sound(SFX_SEA_MECH[math.random(#SFX_SEA_MECH)])
+                       end
+                     end
+
                      -- hurl nearby props at the player (LOS-checked in C)
                      if left % 120 == 0 and pd.haunt then pd.haunt(220) end
                    end,
                    stop=function()
                      st.a_para = nil
-                     pd.room_tint()
+                     pd.room_tint() -- back to full brightness
+                     if pd.doors_speeds then pd.doors_speeds(false) end
                      pd.doors_all(true) -- never leave the player slammed in
                    end },
-  -- Trapdoor: the floor opens under you and you plummet to your death (the
-  -- engine's own fall + death-plane path). Instant.
-  trapdoor     = { label="Trapdoor",          w=2, dur=0,
+  -- Trapdoor: TRAP_PCT% of the stage's rooms are rigged, and their floors are
+  -- blacked out so you can see which (2026-07-30 user call — it used to be a
+  -- one-shot hole under your feet, with no warning and no geography to it).
+  --
+  -- The rooms are chosen up front, which is the whole point: pd.room_count gives
+  -- the stage's room total so the set can be picked and MARKED before you walk
+  -- into any of it. (Damage Floors rolls lazily on first entry instead, which is
+  -- fine there because it has no visual tell to place in advance.)
+  --
+  -- Black comes from pd.room_highlight(room, 0, 0, 0) — the same per-room
+  -- highlight Damage Floors lights red, so it also restores the rooms' original
+  -- lightops when the effect ends.
+  --
+  -- ⚠ Room numbers run 1..count-1; index 0 is not a real room, which is why every
+  -- room loop in the C source starts at 1.
+  trapdoor     = { label="Trapdoor",          w=2, dur=1,
                    start=function()
                      if not pd.trapdoor then error("needs new exe") end
-                     pd.trapdoor()
-                     pd.hud_message("CHAOS: mind the gap!")
+                     if not pd.room_count then error("needs new exe") end
+
+                     local n = pd.room_count()
+                     if n <= 1 then error("no rooms") end
+
+                     -- Shuffle the room numbers and take the first cut, so the
+                     -- count is exact rather than a per-room coin flip that can
+                     -- land well off TRAP_PCT on a small map.
+                     local rooms = {}
+                     for r = 1, n - 1 do rooms[#rooms + 1] = r end
+                     for i = #rooms, 2, -1 do
+                       local j = math.random(i)
+                       rooms[i], rooms[j] = rooms[j], rooms[i]
+                     end
+
+                     local want = math.max(1, math.floor((n - 1) * TRAP_PCT / 100))
+                     local t = { rigged = {}, n = 0 }
+                     for i = 1, math.min(want, #rooms) do
+                       t.rigged[rooms[i]] = true
+                       t.n = t.n + 1
+                       pd.room_highlight(rooms[i], 0, 0, 0) -- floor blacked out
+                     end
+                     st.a_trap = t
+                     pd.hud_message(string.format(
+                         "CHAOS: %d rooms are rigged - mind the gap", t.n))
+                   end,
+                   stop=function()
+                     st.a_trap = nil
+                     if pd.room_highlight then pd.room_highlight() end
                    end },
-  -- Ice Floor: floors lose their grip — you accelerate slowly and keep sliding
-  -- (accel/decel scaled down in bondwalk). The catch: hit top speed and you
-  -- wipe out (the Banana Peel slip), so all that momentum turns on you.
+  -- Ice Floor: floors lose their grip — you accelerate slowly and keep sliding.
+  -- The catch: hit top speed and you wipe out (the Banana Peel slip), so all
+  -- that momentum turns on you.
+  --
+  -- The two numbers are the whole feel, and they are independent since
+  -- 2026-07-30. Both scale `accelspeed` in bondwalk, the per-tick rate at which
+  -- speedgo/speedstrafe chase the target speed:
+  --   ICE_ACCEL  how slowly you get going (target > current)
+  --   ICE_DECEL  how slowly you stop — and therefore HOW FAR YOU SLIDE, because
+  --              releasing the stick just sets the target to 0 and this is the
+  --              rate it decays at
+  -- Lower = icier. Making DECEL the smaller of the two is what reads as "ice"
+  -- rather than "wading through treacle": you still get moving at a reasonable
+  -- rate, then can't stop.
+  --
+  -- The wipeout fires above ICE_SLIP_SPEED, in WORLD UNITS PER SECOND, measured
+  -- exactly the way the SPEED effect does it: per-tick position delta scaled by
+  -- TICKS/dt, so it is real ground speed and is framerate- and pause-independent.
+  --
+  -- ⚠ It used to test `pd.player_movespeed() > 0.9`, which is NOT a speed:
+  -- speedforwards/speedstrafe are the normalised 0..1 INPUT scalars, so they hit
+  -- 1.0 as soon as the stick is held regardless of what the surface is doing. On
+  -- ice that read "full speed" while you were still crawling, and it also never
+  -- rose while COASTING (stick released = target 0 = the scalar decays even
+  -- though you are still hurtling). Measuring the actual displacement fixes both.
   ice_floor    = { label="Ice Floor",         w=3, dur=20,
                    start=function()
                      if not pd.ice_floor then error("needs new exe") end
-                     pd.ice_floor(0.22) -- ~1/5 grip: slow to start, slow to stop
-                     st.a_ice = { cool = 0 }
+                     pd.ice_floor(0.30, 0.10) -- moderate push, very long slide
+                     st.a_ice = { cool = 0, peak = 0 }
                    end,
                    tick=function()
                      local a = st.a_ice
                      if not a then return end
                      local dt = pd.lvupdate and pd.lvupdate() or 1
                      if a.cool > 0 then a.cool = a.cool - dt end
-                     local sp = pd.player_movespeed and pd.player_movespeed() or 0
-                     if sp > 0.9 and a.cool <= 0 then
-                       a.cool = 90 -- ~1.5s before the next wipeout
-                       if pd.player_slip and pd.player_pitch then
-                         pd.player_slip(25) -- squat + shove; pitch glides up
-                         st.pitch_anim = { from = pd.player_pitch(), to = 65, t = 0, len = 18 }
+                     local x, _, z = pd.player_pos(0)
+                     if x and a.x and dt > 0 then -- dt 0 on a frozen-sim frame
+                       local dx, dz = x - a.x, z - a.z
+                       local spd = math.sqrt(dx * dx + dz * dz) * TICKS / dt
+                       if spd > a.peak then a.peak = spd end
+                       if spd > ICE_SLIP_SPEED and a.cool <= 0 then
+                         a.cool = 90 -- ~1.5s before the next wipeout
+                         if pd.player_slip and pd.player_pitch then
+                           pd.player_slip(25) -- squat + shove; pitch glides up
+                           st.pitch_anim = { from = pd.player_pitch(), to = 65, t = 0, len = 18 }
+                         end
+                         play_sound("banana")
+                         pd.hud_message(string.format("CHAOS: wipeout! %d", spd))
                        end
-                       play_sound("banana")
-                       pd.hud_message("CHAOS: wipeout!")
                      end
+                     a.x, a.z = x, z
                    end,
                    stop=function()
+                     -- Tuning aid: if the threshold was never reached, say how
+                     -- close it got, so ICE_SLIP_SPEED can be set from a real
+                     -- number instead of guessed at.
+                     if st.a_ice and st.a_ice.peak < ICE_SLIP_SPEED then
+                       pd.log(string.format(
+                           "[chaos] ice_floor: never slipped - peak %d u/s vs threshold %d",
+                           st.a_ice.peak, ICE_SLIP_SPEED))
+                     end
                      st.a_ice = nil
                      if pd.ice_floor then pd.ice_floor(1) end
                    end },
-  -- Hydra: every guard you kill splits into two more (spawned near you). Capped
-  -- so it escalates into a swarm without melting the sim. (kill hook.)
+  -- Hydra: every guard you kill splits into TWO COPIES OF ITSELF, right where it
+  -- fell. Each head clones the dead guard's body, head, action block (its own AI
+  -- script, so a Skedar behaves like a Skedar and a lab tech like a lab tech),
+  -- team, squadron, voicebox and the weapon it was holding. It runs until the
+  -- stage's chr table is nearly full rather than to a fixed count (see the tick).
+  --
+  -- Reworked 2026-07-30 (user call): it used to spawn a RANDOM body from
+  -- BODIES_POOL on a ring around the PLAYER, which had nothing to do with what
+  -- you'd just killed or where.
+  --
+  -- ⚠ The clone happens in the TICK, not the kill hook. pd.clone_chr inserts a
+  -- prop, and the kill event fires from inside chrDamage which is itself inside
+  -- the prop tick — growing the prop list mid-iteration is the documented
+  -- corruption family. The kill hook therefore only records the corpse POSITION
+  -- (a corpse is yeeted away from where it died, so it has to be captured then,
+  -- not read later) plus the chrnum to clone from.
   hydra        = { label="Hydra",             w=3, dur=1,
-                   start=function() st.a_hydra = { spawned = 0 } end,
+                   start=function() st.a_hydra = {} end,
+                   tick=function()
+                     local h = st.a_hydra
+                     if not h or not h.queue or not pd.clone_chr then return end
+                     -- Swap the queue out first: a clone can't queue more work
+                     -- itself, but a kill landing during this loop would, and
+                     -- appending mid-ipairs is how these bugs start.
+                     local q = h.queue
+                     h.queue = nil
+                     for _, d in ipairs(q) do
+                       for _ = 1, 2 do -- two heads for every one you cut off
+                         -- Bound by the LEVEL, not by a running total. The old
+                         -- `spawned < 20` was a lifetime cap, so after 20 heads
+                         -- Hydra went quiet for the rest of the effect however
+                         -- many slots had since freed up (2026-07-30 user
+                         -- report). The real limit is the stage's chr table,
+                         -- fixed at load and shared with corpses — so ask it,
+                         -- and keep a few slots in reserve so the mission's own
+                         -- scripted spawns aren't starved out by the swarm.
+                         local free = pd.chr_slots and pd.chr_slots() or 0
+                         if free <= 4 then break end
+                         pd.clone_chr(d.chrnum, d.x, d.y, d.z)
+                       end
+                     end
+                   end,
                    stop=function() st.a_hydra = nil end },
   -- Identity Crisis: every few seconds every guard is reskinned to a random
   -- body (head auto-picked, so it can't hit an invalid model). Bodies flicker
   -- through Skedars, Bonds, Mr Blonde... nobody is who they were.
+  --
+  -- ⚠ pd.chr_set_body REFUSES a swap between different SKELETONS since
+  -- 2026-07-30 — BODIES_POOL mixes human bodies with the skedar-skeleton ones,
+  -- and carrying a live chr's animation across that boundary is what hard-locked
+  -- the game (garbage curframe into animLoadFrame; see the C side). So a pick can
+  -- legitimately come back 0. Retry a few bodies so a human guard still reskins
+  -- to some OTHER human rather than silently keeping its body for the cycle.
   identity     = { label="Identity Crisis",   w=3, dur=20,
                    start=function() if not pd.chr_set_body then error("needs new exe") end end,
                    tick=function(left)
                      if left % 90 == 0 then
                        for _, c in ipairs(pd.all_chrs() or {}) do
-                         pd.chr_set_body(c, BODIES_POOL[math.random(#BODIES_POOL)], -1)
+                         for _ = 1, 4 do
+                           if pd.chr_set_body(c, BODIES_POOL[math.random(#BODIES_POOL)], -1) then
+                             break
+                           end
+                         end
                        end
                      end
                    end },
   -- Breadcrumbs: the anti-camper. Linger in one room too long and you bleed;
   -- keep crossing into new rooms to stay healthy. (roomenter resets the timer.)
-  breadcrumbs  = { label="Breadcrumbs",       w=3, dur=1,
-                   start=function() st.a_bread = { still = 0 } end,
+  -- (breadcrumbs "Breadcrumbs" removed 2026-07-30, user call.)
+  -- Chain Reaction: a killed enemy EXPLODES where it fell. If that blast kills
+  -- another NPC, that one explodes too, and so on — the chain propagates through
+  -- the engine's own explosion damage, so it only ever spreads to enemies
+  -- actually caught in a blast.
+  --
+  -- Reworked 2026-07-30 (user call): it used to pick the NEAREST surviving chr
+  -- anywhere on the map and detonate them, with no range limit at all — which
+  -- read as the chain teleporting to a random guard across the level.
+  --
+  -- Propagation is free: explosion deaths emit the Lua "kill" event
+  -- (chraction.c's yeet path), so each blast's victims arrive back in the kill
+  -- hook and queue their own explosion. `done` is what bounds it — a chr
+  -- explodes at most once, so the chain can only ever be as long as the chr
+  -- list. Note armoured guards resist it: chrDamage only insta-kills an
+  -- explosion victim whose `chr->damage > 0`, so negative-damage armour (see
+  -- Armoured Guards) breaks the chain there.
+  chain_react  = { label="Chain Reaction",    w=3, dur=1,
+                   start=function() st.a_chain = { done = {}, n = 0, grace = 0 } end,
                    tick=function()
-                     local b = st.a_bread
-                     if not b then return end
-                     b.still = b.still + (pd.lvupdate and pd.lvupdate() or 1)
-                     if b.still > 180 then
-                       b.still = 120 -- keep the pressure: bleed again in ~1s
-                       pd.player_damage(0.08)
-                       pd.hud_message("CHAOS: keep moving!")
+                     local a = st.a_chain
+                     if not a then return end
+                     if a.wave then
+                       -- Swap the wave out BEFORE detonating any of it. Engine
+                       -- explosions damage as they expand, so the kills they
+                       -- cause land over the next frames and re-enter the kill
+                       -- hook — which appends to a.wave. Clearing it first sends
+                       -- those into a FRESH wave for the next drain, instead of
+                       -- growing the list this loop is walking.
+                       local wave = a.wave
+                       a.wave = nil
+                       for _, b in ipairs(wave) do
+                         pd.explosion_at(b.x, b.y, b.z)
+                       end
+                       a.grace = 1.5 * TICKS -- let this wave's damage land
+                     elseif a.n > 0 then
+                       a.grace = a.grace - (pd.lvupdate and pd.lvupdate() or 1)
+                       if a.grace <= 0 then
+                         -- Nothing new queued for a while: the chain is over.
+                         -- Report its LENGTH once here rather than toasting
+                         -- every link, and never for a lone unchained kill.
+                         if a.n > 1 then pd.hud_message("CHAOS: chain x" .. a.n) end
+                         a.n = 0
+                       end
                      end
                    end,
-                   stop=function() st.a_bread = nil end },
-  -- Chain Reaction: every kill arcs an explosion to the nearest surviving enemy
-  -- (queued to the tick, never spawned in the death callback). Combo counter.
-  chain_react  = { label="Chain Reaction",    w=3, dur=1,
-                   start=function() st.a_chain = { combo = 0 } end,
                    stop=function() st.a_chain = nil end },
-  -- Minefield Rooms: each room is randomly rigged the first time you enter it;
-  -- step into a live one and it detonates at your feet. (roomenter hook.)
-  minefield    = { label="Minefield Rooms",   w=3, dur=1,
-                   start=function() st.a_mine = { rooms = {} } end,
-                   stop=function() st.a_mine = nil end },
-  -- Killstreak: 5 kills without dropping the streak calls in an airstrike on
-  -- every enemy. (kill hook counts; queued booms.)
+  -- (minefield "Minefield Rooms" removed 2026-07-30, user call.)
+  -- Killstreak: every 5 kills earns you a FULL SHIELD (user call 2026-07-30 —
+  -- it used to call an airstrike on every enemy, which killed the thing that was
+  -- generating the streak). The counter keeps running, so a long enough run keeps
+  -- re-upping the shield. (kill hook counts.)
   killstreak   = { label="Killstreak",        w=3, dur=1,
                    start=function() st.a_streak = { n = 0 } end,
                    stop=function() st.a_streak = nil end },
-  -- Boss Fight: one guard balloons to a giant, gets heavy body armour, and a
-  -- health bar rides the top of the screen. Take it down. (draw hook shows HP.)
-  boss_fight   = { label="Boss Fight",        w=2, dur=1,
-                   start=function()
-                     local list = pd.all_chrs() or {}
-                     if #list == 0 then error("no chrs") end
-                     local c = list[math.random(#list)]
-                     pd.chr_scale(c, 2.2)
-                     if pd.chr_armor then pd.chr_armor(c, 60) end
-                     st.a_boss = { chr = c, hp0 = (pd.chr_health and pd.chr_health(c)) or 1 }
-                     pd.hud_message("CHAOS: BOSS INCOMING")
-                   end,
-                   stop=function()
-                     if st.a_boss and st.a_boss.chr then pd.chr_scale(st.a_boss.chr, 1 / 2.2) end
-                     st.a_boss = nil
-                   end },
-  -- Laugh Track: a canned laugh plays on every kill (layers over the music now
-  -- that external sounds stack). Drop scripts/chaos/sounds/laugh.wav|mp3 in.
-  laugh_track  = { label="Laugh Track",       w=3, dur=20,
-                   start=function() end },
-  -- Licence to Probe: every guard gets a random Bond tuxedo body and a Maian
-  -- alien head (chr_set_body). Instant + permanent for the mission (no original
-  -- to restore to); solo/missions only (Combat Sim returns 0).
-  licence_probe= { label="Licence to Probe", w=3, dur=0,
-                   start=function()
-                     if not pd.chr_set_body then error("needs new exe") end
-                     local TUX = { 0x00, 0x90 } -- BODY_DJBOND, BODY_CARREVENINGSUIT
-                     local n = 0
-                     for _, c in ipairs(pd.all_chrs() or {}) do
-                       if pd.chr_set_body(c, TUX[math.random(#TUX)], 0x29) then -- HEAD_MAIAN_S
-                         n = n + 1
-                       end
-                     end
-                     if n == 0 then error("no chrs / combat sim") end
-                   end },
-  -- Chaos Weapon Spread: every gun's spread (and matching crosshair bloom) is
-  -- multiplied by a value that reshuffles every ~1.5s — from laser-accurate to
-  -- shotgun-wild. Reaper gets even sillier.
+  -- (boss_fight "Boss Fight" and laugh_track "Laugh Track" removed 2026-07-30,
+  -- user call. Boss Fight's HUD health bar went with it.)
+  -- (licence_probe "Licence to Probe" removed 2026-07-30, user call. Identity
+  -- Crisis / Hydra still cover the chr_set_body body-swap ground.)
+  -- Chaos Weapon Spread: every gun's spread (and the matching crosshair bloom)
+  -- is multiplied by a value that reshuffles every ~1.5s — from laser-accurate
+  -- to firing-from-a-moving-vehicle. The roll is 0..20x (was 0..4x; ×5 on the
+  -- 2026-07-30 user call), so most rolls are well past useless and a genuinely
+  -- accurate one is a rare gift.
+  --
+  -- ⚠ 20 is EXACTLY chraiLuaSpread's clamp ceiling, so this range is now maxed
+  -- out: going wider means raising that clamp in chraction.c first, or the top
+  -- of the roll silently flattens.
+  --
+  -- No weapon is special-cased — it's a flat multiply on the authored
+  -- shootfunc->spread at both bondgun.c sites. The Reaper just reads as worse
+  -- because its base spread is already high.
   weapon_spread= { label="Chaos Weapon Spread", w=3, dur=20,
                    start=function()
                      if not pd.spread then error("needs new exe") end
-                     pd.spread(math.random() * 4)
+                     pd.spread(math.random() * 20)
                    end,
                    tick=function(left)
-                     if left % 90 == 0 then pd.spread(math.random() * 4) end
+                     if left % 90 == 0 then pd.spread(math.random() * 20) end
                    end,
                    stop=function() if pd.spread then pd.spread(1) end end },
-  -- Armor Guard: every guard gets body armor (chr->damage driven negative), so
-  -- they soak far more hits and stop flinching. Instant + lasts the mission
-  -- (like Shielded enemies); NPCs only, server-authoritative.
-  armor_guard  = { label="Armor Guard",       w=3, dur=0,
+  -- Armoured Guards: every guard gets body armour (chr->damage driven negative),
+  -- so they soak far more hits and stop flinching. NPCs only,
+  -- server-authoritative.
+  -- TIMED since 2026-07-30 (user call — was an instant, permanent trigger): the
+  -- armour is stripped again when the timer runs out.
+  --
+  -- The revert STRIPS the armour rather than handing the 30 back. pd.chr_armor
+  -- is a bare `chr->damage -= amount` with no clamp, so subtracting from a guard
+  -- who had already chewed through part of it can push damage >= maxdamage
+  -- without ever routing through the death path — a chr that is "dead" but never
+  -- died. pd.chr_armor_clear zeroes only the negative overflow, leaving them at
+  -- full health and no armour, and never injures anyone.
+  --
+  -- Only guards alive at trigger time are armoured (and reverted) — anything
+  -- spawning mid-effect is untouched, same as the old instant version.
+  armor_guard  = { label="Armoured Guards",   w=3, dur=1,
                    start=function()
                      if not pd.chr_armor then error("needs new exe") end
-                     local n = 0
+                     local list = {}
                      for _, c in ipairs(pd.all_chrs() or {}) do
-                       if pd.chr_armor(c, 30) then n = n + 1 end
+                       if pd.chr_armor(c, 30) then list[#list + 1] = c end
                      end
-                     if n == 0 then error("no chrs") end
+                     if #list == 0 then error("no chrs") end
+                     st.a_armor = list
+                   end,
+                   stop=function()
+                     if st.a_armor and pd.chr_armor_clear then
+                       for _, c in ipairs(st.a_armor) do pd.chr_armor_clear(c) end
+                     end
+                     st.a_armor = nil
                    end },
-  -- No Damage Except Headshots: only head hits hurt you (chrDamage zeroes the
-  -- rest). Kill-planes/forced kills still apply, so it isn't full invincibility.
+  -- Headshots Only: heads are the only lethal hit, for EVERYONE.
+  --  - you take no damage at all from non-head hits;
+  --  - NPCs can never be KILLED by body/limb fire — they park at 1 HP until a
+  --    head hit finishes them (2026-07-30 user report: guards were dying to body
+  --    shots, because the C gate only ever covered the player) — and they do not
+  --    STAGGER from it either: those hits take the engine's body-armour branch,
+  --    so guards keep advancing through your fire exactly as they do under
+  --    Armoured Guards (user call, same day). Hits still register visibly.
+  -- Explosions still kill NPCs, and kill-planes / forced kills still apply, so
+  -- this is not invulnerability for either side.
   headshots_only = { label="Headshots Only",  w=3, dur=20,
                    start=function()
                      if not pd.headshots_only then error("needs new exe") end
                      pd.headshots_only(true)
-                     pd.hud_message("CHAOS: only headshots hurt now")
+                     pd.hud_message("CHAOS: heads only - for everyone")
                    end,
                    stop=function() if pd.headshots_only then pd.headshots_only(false) end end },
   -- Terminator Vision: the whole screen goes red (full-screen tint, no IR
   -- border). Cosmetic overlay only.
+  -- Terminator Vision (rebuilt 2026-07-30, user spec). Five parts:
+  --  1. the LOOK is a post-process, not the IR device (user call 2026-07-30 —
+  --     the device darkened the stan tiles and framed everything in a goggle
+  --     cutout). Three parts of the retro filter, all pre-existing:
+  --       * colour mode 1003 = the shader's VIRTUAL BOY palette, 4 shades from
+  --         black to bright red — the dark-red wash asked for, and being a
+  --         palette map it leaves world LIGHTING (and so the stan tiles) alone;
+  --       * screen_fx bit 1 = SCANLINES, the same raster lines the goggles draw,
+  --         but across the whole view rather than inside a lens mask;
+  --       * pixel snap at the game's NATIVE resolution.
+  --     ⚠ Native is 320x220, not 220x200: port/src/video.c sets
+  --     gfx_current_native_viewport to 320x220 with aspect 320/220.
+  --     pd.terminator's cutout suppression is now moot (no device is enabled)
+  --     but harmless, and it is still what turns the target boxes on.
+  --  1b. NPCs are flat BRIGHT-RED silhouettes (chr.c), using the night-vision
+  --     style of highlight — a late colour override after objMergeColourFracs, so
+  --     shade fracs cannot wash it out — rather than the IR scanner's pre-merge
+  --     tint. The colour is a HOT red rather than pure red on purpose: the Virtual
+  --     Boy palette maps by LUMINANCE, and pure (255,0,0) is only ~30% luminance,
+  --     so it would land mid-palette and be no brighter than the walls.
+  --  2. the CMP150 secondary's red TARGET BOX around EVERY live NPC, with any gun
+  --     held. Two halves, both under pd.terminator:
+  --       * the FUNCFLAG_THREATDETECTOR gate in lv.c is forced, so the engine's
+  --         own threat detector runs whatever you are holding;
+  --       * a port-only pass in sightDraw boxes every chr, sidestepping the FOUR
+  --         box limit of struct player's fixed trackedprops[4] by filling one
+  --         scratch trackedprop per chr instead of touching that array. It still
+  --         uses the engine's own lvUpdateTrackedProp (projection + "is this
+  --         worth boxing") and sightDrawTargetBox (the draw), so the boxes are
+  --         the real article, not a lookalike.
+  --  3. 70% walk speed — it is a heavy machine, not a sprinter.
+  --  4. one gun for the duration, rolled from shotgun / CMP150 / scoped Falcon,
+  --     and locked so you can't switch off it.
+  --  5. max auto-aim on ANY gun (pd.autoaim forces optionsGetAutoAim true), so
+  --     the aim assist is not gated on the three above.
   terminator_vision = { label="Terminator Vision", w=3, dur=20,
-                   start=function() pd.screen_tint(255, 40, 40) end,
-                   stop=function() pd.screen_tint() end },
+                   start=function()
+                     if not pd.terminator then error("needs new exe") end
+                     local guns = { W.SHOTGUN, W.CMP150, W.FALCON2_SCOPE }
+                     local g = guns[math.random(#guns)]
+                     st.a_term = { gun = g }
+
+                     pd.pixelate(TERM_RES[1], TERM_RES[2], 1003) -- native + VB reds
+                     pd.screen_fx(1, true)                       -- scanlines
+                     pd.terminator(true)                         -- target boxes
+                     pd.player_speed(0.7)
+                     if pd.autoaim then pd.autoaim(true) end
+
+                     pd.give_weapon(g)
+                     force_switch(g)
+                     give_ammo_mags()
+                     if pd.knife_lock then pd.knife_lock(true) end
+                   end,
+                   tick=function()
+                     -- snap-back: number-key direct select bypasses knife_lock
+                     local t = st.a_term
+                     if not t then return end
+                     local h = pd.weapon_held and pd.weapon_held()
+                     if h and h ~= t.gun then force_switch(t.gun) end
+                   end,
+                   stop=function()
+                     local t = st.a_term
+                     st.a_term = nil
+                     pd.pixelate()
+                     pd.screen_fx(1, false)
+                     pd.terminator(false)
+                     pd.player_speed(1)
+                     if pd.autoaim then pd.autoaim(false) end
+                     if pd.knife_lock then pd.knife_lock(false) end
+                     if t and t.gun then pd.take_weapon(t.gun) end
+                   end },
   -- DJ: the music pitch rides your movement speed — stand still and it drags,
   -- sprint and it races. Speed is sampled from player-position deltas and
   -- smoothed so the pitch glides. (Divisor is tunable if it feels off.)
+  -- Now drives the music's real TEMPO as well as its pitch (user call
+  -- 2026-07-30). pd.audio_pitch alone is a granular pitch shift at CONSTANT
+  -- tempo — the music went chipmunk without ever speeding up, and the sequence
+  -- player's BPM never moved, so BPM mode's metronome stayed on the original
+  -- beat. pd.music_rate scales seqp->uspt instead, which IS the tempo, so
+  -- pd.music_bpm/music_beat report the new value and anything reading them
+  -- (BPM mode) follows for free.
+  --
+  -- Both are driven off the same smoothed speed so it reads as one turntable
+  -- rather than two unrelated filters.
   dj_mode      = { label="DJ",                w=3, dur=1,
                    start=function() st.a_dj = { sm = 0 } end,
                    tick=function()
@@ -1534,22 +2030,50 @@ chaos.effects = {
                      end
                      d.x, d.z = x, z
                      d.sm = d.sm * 0.8 + sp * 0.2
+                     local f = math.min(1, d.sm / 12)
                      if pd.audio_pitch then
-                       pd.audio_pitch(0.85 + math.min(1, d.sm / 12) * 0.75)
+                       pd.audio_pitch(0.85 + f * 0.75)
+                     end
+                     if pd.music_rate then
+                       -- Tempo range kept NARROWER than the pitch range: pitch is
+                       -- a filter you hear, tempo changes how fast you have to
+                       -- play, and the BPM minigame reads it. 0.8x standing to
+                       -- 1.35x flat out.
+                       pd.music_rate(0.8 + f * 0.55)
                      end
                    end,
                    stop=function()
                      st.a_dj = nil
                      if pd.audio_pitch then pd.audio_pitch() end
+                     if pd.music_rate then pd.music_rate(1) end
                    end },
   -- relax.mp3 (scripts/chaos/sounds/, user-supplied) sets the mood; quiet
   -- no-op until the file is dropped in.
-  take_a_break = { label="Take a break",      w=4, fixeddur=true, dur=function() return math.random(10, 30) end,
+  -- ⚠ Deliberately NOT fixeddur (2026-07-30 user call: "still a long time and
+  -- not timed to the timer"). It used to be `fixeddur=true` with
+  -- `dur=function() return math.random(10, 30) end`, which by design ignores
+  -- st.effectdur completely and rolls its own 10-30s — so it was both longer
+  -- than the global timer and a different length every fire. dur=1 is the plain
+  -- "timed effect" marker: the length is exactly st.effectdur, like everything
+  -- else. The trade-off is real and intended: this effect FREEZES THE PLAYER
+  -- with no protection (pd.player_freeze is a movement gate, not
+  -- invulnerability), and fixeddur is the mechanism that normally keeps
+  -- freeze-type effects off the global. At a 60s effectdur you are held still
+  -- and shootable for a full minute. Cap it by putting `fixeddur=true` back with
+  -- `dur=function() return math.min(st.effectdur, 20) end` — that follows the
+  -- timer up to 20s and no further.
+  take_a_break = { label="Take a break",      w=4, dur=1,
                    start=function()
                      pd.player_freeze(true)
-                     play_sound("relax")
+                     -- OWNED so the music ends WITH the effect: an external
+                     -- voice otherwise plays to the end of the file whatever the
+                     -- timer says (the other half of the same overrun report).
+                     play_sound_owned("relax", "relax")
                    end,
-                   stop=function() pd.player_freeze(false) end },
+                   stop=function()
+                     pd.player_freeze(false)
+                     stop_sound_owned("relax")
+                   end },
   vampire      = { label="Vampire",           w=4, dur=30,
                    -- drain ~2%/s; damaging enemies feeds you (see the
                    -- pd.on("damage") handler below)
@@ -1586,13 +2110,9 @@ chaos.effects = {
   muted        = { label="Muted",             w=4, dur=20,
                    start=function() pd.mute(true) end,
                    stop=function() pd.mute(false) end },
-  ring_ring    = { label="Ring ring!",        w=4, dur=0, start=function()
-                     -- ships without the sound; drop a WAV or MP3 at this path
-                     -- (e.g. the Discord call ringtone) to complete the bit
-                     if not play_ring(false) then
-                       error("scripts/chaos/sounds/ring*.wav|mp3 missing")
-                     end
-                     for _, c in ipairs(pd.all_chrs() or {}) do pd.chr_alert(c) end end },
+  -- (ring_ring "Ring ring!" removed 2026-07-30, user call: superseded by Phone
+  -- call for you and Note 7, which both ring AND give you something to do about
+  -- it. play_ring is still used by both of those.)
   negative_zoom = { label="Negative zoom",    w=4, dur=25,
                    start=function() pd.zoom_scale(4) end,
                    stop=function() pd.zoom_scale(1) end },
@@ -1807,9 +2327,12 @@ chaos.effects = {
   australia    = { label="Australia",         w=3, dur=20,
                    start=function()
                      pd.upside_down(true)
-                     play_sound("aussie")
+                     play_sound_owned("aussie", "aussie") -- ends with the effect
                    end,
-                   stop=function() pd.upside_down(false) end },
+                   stop=function()
+                     pd.upside_down(false)
+                     stop_sound_owned("aussie")
+                   end },
   giants       = { label="Attack of the giants", w=3, dur=25,
                    start=function()
                      st.scaled_g = {}
@@ -1860,9 +2383,8 @@ chaos.effects = {
   clone_army   = { label="Clone army",        w=2, dur=0, start=function()
                      local held = pd.weapon_held()
                      local wpn = (held and held > 1) and held or W.FALCON2
-                     for i = 0, 4 do
-                       local a = i * 2 * math.pi / 5
-                       pd.spawn_body(-1, wpn, math.sin(a) * 200, math.cos(a) * 200)
+                     for i = 1, 5 do
+                       spawn_body_near(-1, wpn, 200)
                      end end },
   musical_statues = { label="Musical statues", w=3, dur=21,
                    start=function()
@@ -2410,12 +2932,15 @@ local alpha_effects = {
                  start=function()
                    if not pd.beyblade then error("needs new exe") end
                    pd.beyblade(true)
-                   local _ = pd.play_file("scripts/chaos/sounds/beyblade.wav", false, true)
-                         or pd.play_file("scripts/chaos/sounds/beyblade.mp3", false, true)
+                   -- OWNED, and note the follow_music arg is dropped to match
+                   -- play_sound: the old stop() called a bare pd.stop_file(),
+                   -- which frees the WHOLE voice pool and silenced every other
+                   -- sound in play, not just this clip.
+                   play_sound_owned("beyblade", "beyblade")
                  end,
                  stop=function()
                    pd.beyblade(false)
-                   if pd.stop_file then pd.stop_file() end
+                   stop_sound_owned("beyblade")
                  end },
   -- Speen: the PLAYER spins — view yaw whipped around at one revolution per
   -- second (aim and heading go with it; look input still adds on top). Runs
@@ -2487,12 +3012,9 @@ local alpha_effects = {
   -- effect tick of his own — dur=0).
   terminator = { label="Terminator", dur=0,
                  start=function()
-                   local a = math.random() * 2 * math.pi
-                   local d = 1200 -- far spawn (matches Skedar+Reaper / Terminator)
-                   local c = pd.spawn_body(BODY.DJBOND, W.SHOTGUN,
-                                           math.sin(a) * d, math.cos(a) * d,
-                                           true) -- sunglasses
-                   if not c or c < 0 then error("no room for him here") end
+                   -- 1200 = far spawn (matches Skedar+Reaper); true = sunglasses
+                   local c = spawn_body_near(BODY.DJBOND, W.SHOTGUN, 1200, true)
+                   if not c then error("no room for him here") end
                    pd.chr_set_shield(c, 30)
                    pd.chr_alert(c)
                    if pd.chr_hum then
@@ -2845,11 +3367,8 @@ local alpha_effects = {
   -- (or you) is dead. The C spawn now force-loads the skedar model file so
   -- it works on non-Skedar stages too.
   skedar_reaper = { label="Skedar with a Reaper", dur=0, start=function()
-                   local a = math.random() * 2 * math.pi
-                   local d = 1200 -- far spawn (matches Terminator)
-                   local c = pd.spawn_body(BODY.SKEDAR, W.REAPER,
-                                           math.sin(a) * d, math.cos(a) * d)
-                   if not c or c < 0 then error("no room / skedar model unavailable") end
+                   local c = spawn_body_near(BODY.SKEDAR, W.REAPER, 1200) -- far spawn
+                   if not c then error("no room / skedar model unavailable") end
                    pd.chr_alert(c)
                  end },
   -- Classic chaos: EVERYONE's weapon is swapped for its GE-era classic
@@ -3802,10 +4321,8 @@ local alpha_effects = {
   weeping    = { label="Weeping Skedar", dur=0,
                  start=function()
                    if not pd.chr_freeze_one then error("needs new exe") end
-                   local a = math.random() * 2 * math.pi
-                   local c = pd.spawn_body(BODY.SKEDAR, -1,
-                                           math.sin(a) * 900, math.cos(a) * 900)
-                   if not c or c < 0 then error("no room / skedar unavailable") end
+                   local c = spawn_body_near(BODY.SKEDAR, -1, 900)
+                   if not c then error("no room / skedar unavailable") end
                    pd.chr_alert(c)
                    st.a_weep = { c = c }
                  end },
@@ -3852,7 +4369,9 @@ local alpha_effects = {
   -- clears the flag; a manual /chaos off cancels it too). It has no effect of its
   -- own — start() just flips st.worst_day, which makes the expiry loop pin every
   -- timed effect instead of counting it down.
-  worst_day = { label="Worst Day of Your Life So Far",
+  -- (label was "Worst Day of Your Life So Far"; shortened 2026-07-30, user call.
+  -- Key stays `worst_day` — st.disabled persists by key.)
+  worst_day = { label="Worst Day So Far",
                 start=function()
                   st.worst_day = true
                   st.supersonic = nil -- the two escalators are mutually exclusive
@@ -3864,7 +4383,9 @@ local alpha_effects = {
   -- Duration window measured from the trigger; at the end, ALL active effects end
   -- at once and Supersonic switches off. No effect of its own — start() flips
   -- st.supersonic and the tick handler does the rest (drumbeat + expiry loop).
-  supersonic = { label="Effects comin' at you at supersonic speed",
+  -- (label was "Effects comin' at you at supersonic speed"; shortened 2026-07-30,
+  -- user call. Key stays `supersonic` — st.disabled persists by key.)
+  supersonic = { label="Comin' At You Supersonic",
                  start=function()
                    st.supersonic = true
                    st.worst_day = nil                     -- mutually exclusive
@@ -4024,21 +4545,18 @@ for _, n in ipairs({ "space_program", "beat_game", "frag_out", "sentries_out",
   end
 end
 
--- Newly added THIS SESSION — HOLD in the Chaos Alpha test folder until each is
--- proven on a real build. alpha=true lists it in the "Chaos Alpha" menu (manual
--- trigger, 30s) and w=0 keeps it OUT of the random rotation / on-off list, so a
--- misbehaving one can't interrupt normal play. Graduate an effect by deleting
--- its name here (it then rejoins the rotation at its authored weight).
+-- HOLD list: names here stay in the Chaos Alpha test folder instead of joining
+-- normal play. alpha=true lists an effect in the "Chaos Alpha" menu (manual
+-- trigger) and w=0 keeps it OUT of the random rotation and the on/off list, so a
+-- misbehaving one can't interrupt a session. Add a name to hold it; remove the
+-- name to graduate it (it rejoins the rotation at its authored weight).
+--
+-- EMPTIED 2026-07-30 on user request — everything is now in the main pool, so
+-- the Chaos Alpha folder is empty and every effect can be drawn at random.
+-- ⚠ That includes the ones from this session that are compile-verified only.
+-- The mechanism below is left intact precisely so anything that misbehaves in
+-- play can be parked again by adding one name.
 for _, n in ipairs({
-    "rapid_fire", "weapon_lock", "no_reload", "always_crouch", "disable_menus", "fake_crash",
-    "giggle_bomb", "suicide_bomb", "mario_mode", "sonic_mode",
-    "campers", "damage_floors", "paranormal", "trapdoor",
-    "licence_probe", "weapon_spread", "terminator_vision", "dj_mode",
-    "armor_guard", "headshots_only", "ice_floor",
-    "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
-    "killstreak", "boss_fight", "laugh_track",
-    "worst_day", "supersonic", "touch_cal", "simon", "model_swap",
-    "perrep_daad", "fecttcef_rkkr",
 }) do
   local e = chaos.effects[n]
   if e then
@@ -4188,23 +4706,24 @@ local function reset_all_modes()
   st.timer = st.interval * TICKS
   st.votetimer = st.votetime * TICKS
   st.misfire_armed = false
+  -- Effect-owned sounds were already cut by their own stop() in stop_all
+  -- above; just drop the id table so no stale voice id is ever retried.
+  st.owned_snd = {}
   st.switch_want = nil
   st.martyr_queue = nil
-  st.boom_queue = nil       -- Giggle Bomb / Suicide Bomber pending explosions
-  st.a_suicide = nil        -- Suicide Bomber marked-guard watch
-  st.a_mario = nil          -- Mario Mode hit-count FSM (stop() clears SMALLJO)
   st.a_sonic = nil          -- Sonic Mode hit-count FSM (stop() restores weapons)
-  st.a_camp = nil           -- Camper's Paradise stillness tracker
+  st.a_shield = nil         -- Shield Charge rate + charge-loop voice id
+                            -- (stop_all above already stopped the voice)
   st.a_dmgfloor = nil       -- Random Damage Floors per-room hot/cold map
   st.a_para = nil           -- Paranormal Activity door/light phase (stop() restores)
   st.a_dj = nil             -- DJ speed-to-pitch tracker (stop() restores pitch)
   st.a_ice = nil            -- Ice Floor wipeout cooldown (stop() restores grip)
   st.a_hydra = nil          -- Hydra spawn counter
-  st.a_bread = nil          -- Breadcrumbs linger timer
-  st.a_chain = nil          -- Chain Reaction combo counter
-  st.a_mine = nil           -- Minefield Rooms per-room rig map
+  st.a_chain = nil          -- Chain Reaction exploded-chr set + pending wave
   st.a_streak = nil         -- Killstreak counter
-  st.a_boss = nil           -- Boss Fight target (stop() restores its scale)
+  st.a_armor = nil          -- Armoured Guards roster (stop_all above stripped it)
+  st.a_term = nil           -- Terminator Vision rolled gun
+  st.a_trap = nil           -- Trapdoor rigged-room set
   st.pitch_anim = nil
   st.recoil_kick = nil
   st.a_bleed, st.a_shot, st.a_note7 = nil
@@ -4273,6 +4792,12 @@ local function reset_all_modes()
   if pd.knife_lock then pd.knife_lock(false) end
   if pd.mag_dump then pd.mag_dump(false) end
   if pd.gas then pd.gas(false) end
+  -- Doors: both of these are idempotent and clear only the bits/doors they
+  -- own, so calling them unconditionally is free insurance. stop_all above
+  -- normally covers them via each effect's stop(); this catches the case
+  -- where an effect never made it into st.active.
+  if pd.doors_lock then pd.doors_lock(false) end
+  if pd.doors_hold then pd.doors_hold(false) end
   if pd.t_pose then pd.t_pose(false) end
   if pd.pinball then pd.pinball(false) end
   if st.weather_set and pd.weather then pd.weather(0); st.weather_set = false end
@@ -4315,6 +4840,7 @@ local function reset_all_modes()
   if pd.max_blood then pd.max_blood(false) end
   if pd.blood_colour then pd.blood_colour() end
   if pd.env then pd.env() end -- restores the stage's own sky/fog (also clears pd.fog)
+  if pd.music_rate then pd.music_rate(1) end -- chaos DJ music tempo
   if pd.chr_wireframe then pd.chr_wireframe(false) end
   if pd.double_shots then pd.double_shots(false) end
   if pd.unpossess then pd.unpossess() end
@@ -4713,28 +5239,11 @@ pd.on("tick", function()
     st.martyr_queue = nil
   end
 
-  -- Giggle Bomb / Suicide Bomber: fire the queued death-explosions here (never
-  -- inside the kill callback). Giggle also plays a Maian yelp; Suicide adds a
-  -- ring of extra blasts for a "massive" detonation.
-  if st.boom_queue then
-    for _, b in ipairs(st.boom_queue) do
-      if b.sound and pd.sound then
-        pd.sound(SFX_MAIAN_ARGH[math.random(#SFX_MAIAN_ARGH)])
-      end
-      if b.has then
-        pd.explosion_at(b.x, b.y, b.z)
-        if b.big then
-          pd.explosion_at(b.x + 90, b.y, b.z)
-          pd.explosion_at(b.x - 90, b.y, b.z)
-          pd.explosion_at(b.x, b.y, b.z + 90)
-          pd.explosion_at(b.x, b.y, b.z - 90)
-        end
-      elseif b.chrnum then
-        pd.explosion(b.chrnum)
-      end
-    end
-    st.boom_queue = nil
-  end
+  -- (the boom_queue drain lived here until 2026-07-30. Killstreak stopped using
+  -- it when it started rewarding a shield, and removing Suicide Bomber took the
+  -- last producer — martyrdom and Chain Reaction each own their own queue. The
+  -- rule it enforced still stands for both: never spawn a prop from inside the
+  -- kill callback, queue it for a tick.)
 
   -- Weeping Skedar: the view-cone statue logic — runs while the stalker
   -- lives, independent of any effect timer (the spawn is a one-off).
@@ -5107,107 +5616,93 @@ pd.on("kill", function(chrnum, killerplayernum)
     st.martyr_queue[#st.martyr_queue + 1] =
         { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil) }
   end
-  -- Giggle Bomb: every death yelps + explodes. Queue it (same re-entrancy rule
-  -- as martyrdom) — the boom_queue drain in the tick handler fires it.
-  if st.active.giggle_bomb then
-    local x, y, z = pd.chr_pos(chrnum)
-    st.boom_queue = st.boom_queue or {}
-    st.boom_queue[#st.boom_queue + 1] =
-        { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil), sound = true }
-  end
-  -- Suicide Bomber: the marked guard's death is a massive blast. Queue it and
-  -- clear the mark so it only fires once.
-  if st.active.suicide_bomb and st.a_suicide and chrnum == st.a_suicide.chr then
-    local x, y, z = pd.chr_pos(chrnum)
-    st.boom_queue = st.boom_queue or {}
-    st.boom_queue[#st.boom_queue + 1] =
-        { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil), big = true }
-    st.a_suicide.chr = nil
-    pd.hud_message("CHAOS: the bomber is down!")
-  end
-  -- Laugh Track: a canned laugh on every death (layers over music thanks to the
-  -- external-voice pool).
-  if st.active.laugh_track then play_sound("laugh") end
   if killerplayernum ~= 0 then return end
   -- (gun_game / gun_game2 kill-advance blocks removed 2026-07-19 with the
   -- effects.)
   -- Hydra: the corpse splits into two fresh guards near you (capped so it
   -- swarms without melting the sim).
-  if st.active.hydra and st.a_hydra and st.a_hydra.spawned < 20 and pd.spawn_body then
-    local k
-    for k = 1, 2 do
-      local a = math.random() * 2 * math.pi
-      pd.spawn_body(BODIES_POOL[math.random(#BODIES_POOL)], -1, math.sin(a) * 180, math.cos(a) * 180)
-      st.a_hydra.spawned = st.a_hydra.spawned + 1
+  -- Hydra: record the corpse so the effect's TICK can clone it (never spawn from
+  -- this callback — see the effect). The position must be captured NOW: an
+  -- explosion-killed chr is yeeted away from where it died and may be reaped.
+  if st.active.hydra and st.a_hydra and pd.clone_chr then
+    local x, y, z = pd.chr_pos(chrnum)
+    if x then
+      st.a_hydra.queue = st.a_hydra.queue or {}
+      st.a_hydra.queue[#st.a_hydra.queue + 1] = { chrnum = chrnum, x = x, y = y, z = z }
     end
   end
-  -- Chain Reaction: detonate the nearest surviving enemy (queued to the tick,
-  -- never inside this death callback). Combo counter.
+  -- Chain Reaction: the dead enemy explodes WHERE IT FELL. Queued for the
+  -- effect's tick, never detonated inside this death callback (the re-entrancy
+  -- rule). Whatever that blast kills re-enters here on its own and joins the
+  -- next wave, so the chain spreads only to NPCs actually caught in it.
+  --
+  -- The position is captured NOW: by the time the wave drains, an
+  -- explosion-killed chr has been yeeted away from where it died (and may have
+  -- been reaped), so asking for its position later would blow up in the wrong
+  -- place or not at all. Same reason martyrdom captures up front.
   if st.active.chain_react and st.a_chain then
-    local vx, vy, vz = pd.chr_pos(chrnum)
-    local best, bestd
-    for _, c in ipairs(pd.all_chrs() or {}) do
-      if c ~= chrnum then
-        local x, y, z = pd.chr_pos(c)
-        if x and vx then
-          local dx, dz = x - vx, z - vz
-          local d = dx * dx + dz * dz
-          if not bestd or d < bestd then best, bestd = c, d end
-        end
+    local a = st.a_chain
+    if not a.done[chrnum] then
+      local x, y, z = pd.chr_pos(chrnum)
+      if x then
+        a.done[chrnum] = true -- one explosion per chr: this is what bounds the chain
+        a.wave = a.wave or {}
+        a.wave[#a.wave + 1] = { x = x, y = y, z = z }
+        a.n = (a.n or 0) + 1
       end
-    end
-    if best then
-      st.boom_queue = st.boom_queue or {}
-      st.boom_queue[#st.boom_queue + 1] = { chrnum = best, has = false }
-      st.a_chain.combo = (st.a_chain.combo or 0) + 1
-      pd.hud_message("CHAOS: chain x" .. st.a_chain.combo)
     end
   end
   -- Killstreak: bank the kill; at 5, airstrike every enemy (queued booms).
+  -- Killstreak: bank the kill; every 5th tops the shield back to full. Not
+  -- queued — pd.player_set_shield only writes the player's own shield value, so
+  -- unlike a spawn or an explosion there is nothing here that touches the prop
+  -- list and it is safe directly in the death callback.
   if st.active.killstreak and st.a_streak then
     st.a_streak.n = (st.a_streak.n or 0) + 1
     if st.a_streak.n >= 5 then
       st.a_streak.n = 0
-      st.boom_queue = st.boom_queue or {}
-      for _, c in ipairs(pd.all_chrs() or {}) do
-        st.boom_queue[#st.boom_queue + 1] = { chrnum = c, has = false }
-      end
-      pd.hud_message("CHAOS: AIRSTRIKE!")
+      -- Not silent: a shield change is invisible otherwise, and the bar popping
+      -- IS the reward feedback.
+      pd.player_set_shield(1)
+      pd.hud_message("CHAOS: KILLSTREAK - SHIELD RESTORED")
     end
   end
 end)
 
 -- Room-enter hook: room-crossing-reactive effects.
 pd.on("roomenter", function(room, fromroom)
-  -- Camper's Paradise: leaving a room costs 5% of current health (floored so it
-  -- is never lethal on its own).
-  if st.active.campers then
-    local h = pd.player_health()
-    if h then pd.player_set_health(math.max(0.05, h * 0.95)) end
+  -- Shield Charge: crossing into a new room costs a flat 20% of MAX shield —
+  -- max-relative, not 20% of current, so repeated crossings actually bottom it
+  -- out instead of tapering away. Health is never touched, so this can't kill.
+  -- NOT silent: this is the one shield change worth popping the bar for.
+  if st.active.shield_charge then
+    local s = pd.player_shield and pd.player_shield()
+    if s and s > 0 then pd.player_set_shield(math.max(0, s - 0.2)) end
   end
   -- Random Damage Floors: assign this room hot/cold once, remember it as the
   -- current room for the effect's damage tick.
   if st.active.damage_floors and st.a_dmgfloor then
     local d = st.a_dmgfloor
-    if d.rooms[room] == nil then d.rooms[room] = (math.random() < 0.4) end
+    if d.rooms[room] == nil then
+      d.rooms[room] = (math.random() < 0.4)
+      -- Light a hot room red the instant it is rolled, so the colour and the
+      -- hot/cold state are decided in the same place and can't drift apart.
+      -- Cold rooms are left alone rather than highlighted in a "safe" colour:
+      -- every room glowing would make the red mean nothing.
+      if d.rooms[room] and pd.room_highlight then
+        pd.room_highlight(room, 255, 40, 40)
+      end
+    end
     d.cur = room
     if d.rooms[room] then pd.hud_message("CHAOS: the floor is lava!") end
   end
-  -- Breadcrumbs: crossing into a room resets the linger timer.
-  if st.active.breadcrumbs and st.a_bread then st.a_bread.still = 0 end
-  -- Minefield Rooms: rig each room once; a live one blows at your feet (queued).
-  if st.active.minefield and st.a_mine then
-    local m = st.a_mine
-    if m.rooms[room] == nil then m.rooms[room] = (math.random() < 0.35) end
-    if m.rooms[room] then
-      m.rooms[room] = false -- one-shot: defused after it blows
-      local x, y, z = pd.player_pos(0)
-      if x then
-        st.boom_queue = st.boom_queue or {}
-        st.boom_queue[#st.boom_queue + 1] = { x = x, y = y, z = z, has = true }
-        pd.hud_message("CHAOS: MINE!")
-      end
-    end
+  -- Trapdoor: step into a rigged room and the floor is not there. One-shot per
+  -- room — the hole is a timed hole (g_ChaosTrapdoorTicks), so re-arming it every
+  -- time you cross back would make a rigged room permanently impassable.
+  if st.active.trapdoor and st.a_trap and st.a_trap.rigged[room] then
+    st.a_trap.rigged[room] = nil
+    if pd.trapdoor then pd.trapdoor() end
+    pd.hud_message("CHAOS: TRAPDOOR!")
   end
 end)
 
@@ -5238,19 +5733,6 @@ local C_BARONE = 0x60e080ff
 
 pd.on("draw", function()
   local y = 4
-
-  -- Boss Fight health bar (top strip). chr_health returns nil once the boss is
-  -- gone -> the bar simply stops drawing.
-  if st.a_boss and st.a_boss.chr then
-    local hp = pd.chr_health and pd.chr_health(st.a_boss.chr)
-    if hp then
-      local frac = hp / (st.a_boss.hp0 or 1)
-      if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
-      pd.draw_text(90, 14, "BOSS", 0xff5050ff)
-      pd.draw_box(90, 23, 140, 6, 0x000000a0)
-      pd.draw_box(90, 23, math.max(1, math.floor(140 * frac)), 6, 0xff5050ff)
-    end
-  end
 
   -- active timed effects, stable order
   if next(st.active) ~= nil then
@@ -5534,7 +6016,9 @@ pd.on("draw", function()
     local hitw = base + math.floor(span * 0.80)
     pd.draw_box(math.floor((320 - hitw) / 2) - 2, 24, 2, 20, 0xffffff80)
     pd.draw_box(math.floor((320 + hitw) / 2), 24, 2, 20, 0xffffff80)
-    centered_text(46, string.format("BEAT  %d BPM%s", math.floor((b.bpm or 0) + 0.5),
+    -- bpmnow, not bpm: report the tempo actually being played, so the readout
+    -- moves with DJ instead of showing the tempo it first latched.
+    centered_text(46, string.format("BEAT  %d BPM%s", math.floor((b.bpmnow or b.bpm or 0) + 0.5),
                                     b.hasmusic and "" or " (metronome)"), 0xffffffff)
     if b.lastt and b.lastt > 0 and b.last ~= "" then
       centered_text(56, b.last, b.lastcol or 0xffffffff)
@@ -5600,7 +6084,7 @@ if pd.menu_add then
       australia=1, tonal=1, muted=1, soundboard=1, kazoo=1, jukebox=1,
       widescreen=1, tallscreen=1, fisheye=1, tunnel_vision=1, vertigo=1,
       drunk=1, blink=1, assert_authority=1, giants=1, ant_farm=1,
-      monsoon=1, blizzard=1, ring_ring=1, negative_zoom=1,
+      monsoon=1, blizzard=1, negative_zoom=1,
       -- graduated alpha batch
       vertigo2=1, blooper=1, dvd=1, hudvd=1, max_blood=1,
       blood_rainbow=1, brandons_mod=1, teen_angst=1, wireframe_enemies=1,
@@ -5774,18 +6258,25 @@ if pd.menu_add then
     end
   end
 
-  -- Manual-fire: one LIST that fires any effect for 30s (timers run even with the
-  -- master off). Lives in the "Chaos/Fire an Effect" sub-folder.
+  -- Manual-fire: one LIST that fires any effect at the CONFIGURED duration
+  -- (timers run even with the master off). Lives in "Chaos/Fire an Effect".
+  --
+  -- These used to pass a hardcoded 30s override, which made every effect fired
+  -- from a menu run 30s regardless of the Effect Duration slider — testing an
+  -- effect then told you nothing about how long it runs in play, and read as
+  -- "this effect isn't timed to the timer" (2026-07-30 user reports). Passing nil
+  -- lets chaos.trigger fall through to st.effectdur like the random drumbeat
+  -- does. fixeddur effects still keep their own authored length either way.
   for _, name in ipairs(names) do
     local n = name
-    pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "test", 30) end, GROUP .. "/Fire an Effect", edesc(n))
+    pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "test") end, GROUP .. "/Fire an Effect", edesc(n))
   end
 
   -- Chaos Alpha: fire the new / unproven effects held out of the rotation.
   -- Lives in the "Chaos/Chaos Alpha" sub-folder.
   for _, name in ipairs(anames) do
     local n = name
-    pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "alpha", 30) end, GROUP .. "/Chaos Alpha", edesc(n))
+    pd.menu_add(chaos.effects[n].label or n, function() chaos.trigger(n, "alpha") end, GROUP .. "/Chaos Alpha", edesc(n))
   end
 end
 

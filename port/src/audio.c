@@ -39,6 +39,20 @@ static u32 nextSize = 0;
 //   they run out. A pool (extVoices[]) so several overlap. Used for the Ring
 //   Ring ringtone and the Mario/Sonic meme SFX.
 static s32 audioMuted = 0;
+// Chaos "Fake Crash" audio hold (audioSetHold). A hung game keeps handing the
+// device the LAST buffer it managed to build, so whatever was playing smears
+// into a held, stuttering drone. While hold is on, the first outgoing buffer is
+// snapshotted and that same fragment is re-pushed every frame in place of the
+// live mix.
+//
+// The hold is genuinely necessary rather than cosmetic: schedAudioFrame drives
+// amgrFrame/audioEndFrame off diffframe60 (REAL frame time), so the N64 audio
+// manager keeps sequencing music and SFX perfectly normally even with the sim
+// frozen at lvupdate240 = 0 — a "frozen" game would go on playing cheerful
+// music. Equally, simply muting would read as the game having exited, not hung.
+static s32 audioHoldOn = 0;
+static u8 *audioHoldBuf = NULL;
+static u32 audioHoldLen = 0;
 // External one-shot voices (pd.play_file). Formerly a single buffer where a new
 // play stopped the old; now a small pool so several can overlap (e.g. a meme
 // SFX layered over the phone ringtone). A new play takes a free slot; if all are
@@ -50,8 +64,16 @@ struct extvoice {
 	u32 pos;          // bytes consumed
 	s32 loop;         // rewind instead of freeing at end
 	s32 followMusic;  // scale by music volume + pause with the game
+	u32 id;           // unique per play, never 0 while live
 };
 static struct extvoice extVoices[EXT_VOICES];
+// Voice ids exist so ONE voice can be stopped: audioStopExternal() frees the
+// whole pool, which means a caller with a LOOPING voice had no way to end it
+// without silencing every other external sound too (a looping ringtone would
+// take the Silo countdown track with it). audioPlayExternal returns the id and
+// audioStopExternalVoice(id) frees just that one. Slot reuse can't alias:
+// recycling a slot assigns a fresh id, so an old id matches nothing.
+static u32 extNextVoiceId = 1;
 // Audio.ExtVolume: every external voice's gain is extVolume% OF the current
 // music-slider level — the music slider is the CEILING (user call
 // 2026-07-28), this scales below it. 100 = exactly the music volume.
@@ -133,6 +155,29 @@ void audioSetMuted(s32 on)
 {
 #ifndef DEDICATED_SERVER
 	audioMuted = on;
+#endif
+}
+
+// Freeze the output on whatever is playing right now (chaos Fake Crash). The
+// snapshot itself is taken at the push point on the next frame, not here, so it
+// captures the buffer AFTER the effect chain — a crash that hits mid-bitcrush
+// should hold the crushed audio, not the clean mix. Turning it off frees the
+// snapshot, so the next hold starts from live audio again.
+void audioSetHold(s32 on)
+{
+#ifndef DEDICATED_SERVER
+	if (on) {
+		audioHoldOn = 1;
+	} else {
+		audioHoldOn = 0;
+		if (audioHoldBuf) {
+			SDL_free(audioHoldBuf);
+			audioHoldBuf = NULL;
+		}
+		audioHoldLen = 0;
+	}
+#else
+	(void)on;
 #endif
 }
 
@@ -507,12 +552,18 @@ s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic)
 		extVoices[slot].pos = 0;
 		extVoices[slot].loop = loop ? 1 : 0;
 		extVoices[slot].followMusic = followMusic ? 1 : 0;
+		extVoices[slot].id = extNextVoiceId++;
+		// Stay inside s32 (the return type) and never hand out 0, which every
+		// caller reads as failure.
+		if (extNextVoiceId >= 0x40000000u) {
+			extNextVoiceId = 1;
+		}
+		return (s32)extVoices[slot].id;
 	}
-	return 1;
 #endif
 }
 
-// Stop the external sound immediately (pd.stop_file / call answered).
+// Stop EVERY external voice (pd.stop_file with no id / stage teardown).
 void audioStopExternal(void)
 {
 #ifndef DEDICATED_SERVER
@@ -525,7 +576,37 @@ void audioStopExternal(void)
 		extVoices[i].len = extVoices[i].pos = 0;
 		extVoices[i].loop = 0;
 		extVoices[i].followMusic = 0;
+		extVoices[i].id = 0;
 	}
+#endif
+}
+
+// Stop ONE external voice by the id audioPlayExternal returned, leaving the rest
+// of the pool alone. A stale id — slot recycled, or a non-looping sound that
+// already ran out — matches nothing and is a no-op, so callers can hold an id
+// indefinitely without tracking whether it is still live.
+void audioStopExternalVoice(s32 id)
+{
+#ifndef DEDICATED_SERVER
+	s32 i;
+
+	if (id <= 0) {
+		return;
+	}
+
+	for (i = 0; i < EXT_VOICES; i++) {
+		if (extVoices[i].data && extVoices[i].id == (u32)id) {
+			SDL_free(extVoices[i].data);
+			extVoices[i].data = NULL;
+			extVoices[i].len = extVoices[i].pos = 0;
+			extVoices[i].loop = 0;
+			extVoices[i].followMusic = 0;
+			extVoices[i].id = 0;
+			return;
+		}
+	}
+#else
+	(void)id;
 #endif
 }
 
@@ -738,7 +819,24 @@ void audioEndFrame(void)
 				}
 			}
 
-			SDL_PutAudioStreamData(stream, out, nextSize);
+			if (audioHoldOn) {
+				// First frozen frame: keep a copy of what was about to play.
+				// Every frame after that re-pushes it verbatim, so the device
+				// hears the same fragment over and over — a held drone.
+				if (!audioHoldBuf && nextSize) {
+					audioHoldBuf = (u8 *)SDL_malloc(nextSize);
+					if (audioHoldBuf) {
+						SDL_memcpy(audioHoldBuf, out, nextSize);
+						audioHoldLen = nextSize;
+					}
+				}
+			}
+
+			if (audioHoldOn && audioHoldBuf) {
+				SDL_PutAudioStreamData(stream, audioHoldBuf, (int)audioHoldLen);
+			} else {
+				SDL_PutAudioStreamData(stream, out, nextSize);
+			}
 		}
 		nextBuf = NULL;
 		nextSize = 0;

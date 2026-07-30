@@ -1477,6 +1477,21 @@ void __n_setUsptFromTempo(N_ALCSPlayer *seqp, f32 tempo)
 	} else {
 		seqp->uspt = 488;
 	}
+
+#ifndef PLATFORM_N64
+	// Chaos "DJ" (music.c): this is the only code that knows the TRUE tempo, so
+	// hand the unscaled value over as the canonical base, then let music.c apply
+	// the rate. Deliberately does NOT scale seqp->uspt itself — doing that here
+	// as well as in sndChaosSetMusicRate is what made the two multiply and sent
+	// the tempo to 400+ BPM.
+	{
+		extern void sndChaosMusicSetBase(void *seqp, s32 uspt);
+		extern void sndChaosMusicApply(void *seqp);
+
+		sndChaosMusicSetBase(seqp, seqp->uspt);
+		sndChaosMusicApply(seqp);
+	}
+#endif
 }
 
 void __n_CSPPostNextSeqEvent(N_ALCSPlayer *seqp)

@@ -289,6 +289,28 @@ static s32 modelSwapRebuildLiveChrs(void)
 			continue; // leave corpses as they are
 		}
 
+		// Same guard as chraiLuaChrSetBody: chr0f020b14 re-grounds what it
+		// re-links, and cdFindGroundInfoAtCyl reports "no floor" as the
+		// -4294967296 sentinel rather than failing — which chr0f020b14 turns
+		// straight into prop->pos.y, dropping the chr four billion units under the
+		// map. Skip anyone standing where no floor can be found (airborne after an
+		// explosion, on a lift); they get swapped on their next respawn.
+		{
+			struct coord testpos;
+			f32 ground;
+
+			testpos.x = chr->prop->pos.x;
+			testpos.y = chr->prop->pos.y + 100.0f;
+			testpos.z = chr->prop->pos.z;
+
+			ground = cdFindGroundInfoAtCyl(&testpos, chr->radius, chr->prop->rooms,
+					NULL, NULL, NULL, NULL, NULL, NULL);
+
+			if (ground <= -100000.0f) {
+				continue;
+			}
+		}
+
 		old = chr->model;
 		faceangle = chrGetInverseTheta(chr);
 		pos.x = chr->prop->pos.x;

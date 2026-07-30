@@ -190,6 +190,13 @@ void lvResetChaosPerStage(void)
 	extern s32 g_ChaosRubberObjects;  // chaos Rubber Objects
 	extern s32 g_ChaosYassify;        // chaos Yassify
 	extern s32 g_ChaosGasOn;          // chaos Wolf Gas (gates the gasRender un-gate)
+	extern s32 g_ChaosFakeCrash240;   // chaos Fake Crash hard time freeze
+	extern s32 g_ChaosTerminator;     // chaos Terminator Vision
+	extern void audioSetHold(s32 on); // port audio layer (Fake Crash hold)
+	extern void chraiLuaRoomHighlightReset(void); // chaos Damage Floors room glow
+	extern void chraiLuaDoorsHoldReset(void);     // chaos Open sesame held doors
+	extern void chraiLuaDoorsSpeedsReset(void);   // chaos Paranormal door speeds
+	extern void sndChaosSetMusicRate(f32 rate);   // chaos DJ music tempo
 	s32 twin_i;
 
 	g_ChaosSnatchActive = 0;
@@ -207,11 +214,32 @@ void lvResetChaosPerStage(void)
 	g_ChaosRubberObjects = 0;
 	g_ChaosYassify = 0;
 	g_ChaosGasOn = 0;
+	g_ChaosFakeCrash240 = 0;
+	g_ChaosTerminator = 0;
+	audioSetHold(0); // a stage change mid-Fake-Crash must not strand the held audio
+	chraiLuaRoomHighlightReset();
+	chraiLuaDoorsHoldReset();
+	chraiLuaDoorsSpeedsReset();
+	sndChaosSetMusicRate(1.0f); // chaos DJ music tempo
 
 	for (twin_i = 0; twin_i < 8; twin_i++) {
 		g_ChaosTwinChrnums[twin_i] = -1;
 	}
 }
+
+// Chaos "Fake Crash" (pd.fake_crash, chraction.c): remaining REAL-TIME length of
+// a hard sim freeze, in 240ths. Counted down in lvTick off diffframe240 and it
+// releases itself — see the hook for why the release cannot live in Lua.
+s32 g_ChaosFakeCrash240 = 0;
+
+// Chaos "Terminator Vision" (pd.terminator): two render/aim overrides that have
+// no natural home in the effect's Lua half.
+//  - suppresses the IR goggle LENS + BINOCULAR frame (player.c) so the infrared
+//    filter fills the whole view instead of being masked into a goggle cutout;
+//  - forces the CMP150's threat detector on (the FUNCFLAG_THREATDETECTOR gate
+//    below), so the red target boxes track enemies whatever gun is held.
+// Cleared per stage with the rest.
+s32 g_ChaosTerminator = 0;
 
 // Chaos SUPERHOT (pd.time_stop, chraction.c): while set, lvTick freezes the
 // game tick (lvupdate240 = 0, the pause mechanism) whenever the local player
@@ -427,7 +455,7 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosRapidFire;       // chaos Trigger Happy
 	extern s32 g_ChaosForcedCrouch;    // chaos Permacrouch
 	extern s32 g_ChaosNoReload;        // chaos Reload Denied
-	extern s32 g_ChaosHeadshotsOnly;   // chaos No Damage Except Headshots
+	extern s32 g_ChaosHeadshotsOnly;   // chaos Headshots Only (player AND NPCs)
 	extern s32 g_ChaosTrapdoorTicks;   // chaos Trapdoor
 	extern f32 g_ChaosIceAccel;        // chaos Ice Floor
 	extern f32 g_ChaosSpreadMult;      // chaos Chaos Weapon Spread
@@ -1777,7 +1805,11 @@ Gfx *lvRender(Gfx *gdl)
 					g_Vars.currentplayer->lookingatprop.prop = NULL;
 				}
 
-				if (gsetHasFunctionFlags(&g_Vars.currentplayer->hands[0].gset, FUNCFLAG_THREATDETECTOR)) {
+				// Chaos Terminator Vision forces the threat detector on for ANY
+				// weapon; otherwise only a gun whose current function carries
+				// FUNCFLAG_THREATDETECTOR (the CMP150 secondary) tracks targets.
+				if (gsetHasFunctionFlags(&g_Vars.currentplayer->hands[0].gset, FUNCFLAG_THREATDETECTOR)
+						|| (g_ChaosTerminator && !g_Vars.currentplayer->isremote)) {
 					lvFindThreats();
 				} else if (weaponHasFlag(bgunGetWeaponNum(HAND_RIGHT), WEAPONFLAG_AIMTRACK)) {
 					s32 j;
@@ -2840,6 +2872,33 @@ void lvTick(void)
 		} else {
 			g_ChaosLookBankX = 0.0f;
 			g_ChaosLookBankY = 0.0f;
+		}
+#endif
+
+#ifndef PLATFORM_N64
+		// Chaos "Fake Crash" (pd.fake_crash): a HARD time freeze — the whole sim
+		// stops dead for a real-time span while the frame keeps redrawing the
+		// same instant, and the audio output holds on whatever was playing.
+		// Placed after the SUPERHOT block so it wins if both are somehow live.
+		//
+		// ⚠ The countdown consumes diffframe240 (REAL frame time), never
+		// lvupdate240 — a sim-time countdown could not advance while the sim is
+		// frozen and the freeze would be permanent. For exactly the same reason
+		// the release can NOT come from the Lua effect's own timer: chaos effect
+		// timers run on sim ticks, so they stop too. This counter is the only
+		// thing that ends it, which is why it also drops the audio hold here
+		// rather than leaving that to the effect's stop().
+		if (g_ChaosFakeCrash240 > 0 && !g_NetMode && !g_Vars.in_cutscene) {
+			extern void audioSetHold(s32 on);
+
+			g_ChaosFakeCrash240 -= g_Vars.diffframe240;
+
+			if (g_ChaosFakeCrash240 <= 0) {
+				g_ChaosFakeCrash240 = 0;
+				audioSetHold(0);
+			} else {
+				g_Vars.lvupdate240 = 0;
+			}
 		}
 #endif
 

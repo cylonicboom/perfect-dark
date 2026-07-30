@@ -5543,8 +5543,19 @@ Gfx *playerRenderHud(Gfx *gdl)
 				&& g_InCutscene == 0
 				&& (!g_Vars.currentplayer->eyespy || (g_Vars.currentplayer->eyespy && !g_Vars.currentplayer->eyespy->active))
 				&& ((g_Vars.currentplayer->devicesactive & ~g_Vars.currentplayer->devicesinhibit) & DEVICE_IRSCANNER)) {
-			gdl = bviewDrawIrLens(gdl);
-			gdl = bviewDrawIrBinoculars(gdl);
+#ifndef PLATFORM_N64
+			// Chaos "Terminator Vision" wants the infrared FILTER (red chrs, IR
+			// gun shading — all driven off USINGDEVICE(DEVICE_IRSCANNER)
+			// elsewhere) without the goggle hardware framing it. These two draws
+			// ARE the cutout: the lens mask and the binocular surround.
+			extern s32 g_ChaosTerminator;
+
+			if (!g_ChaosTerminator)
+#endif
+			{
+				gdl = bviewDrawIrLens(gdl);
+				gdl = bviewDrawIrBinoculars(gdl);
+			}
 		}
 
 		if (g_Vars.currentplayer->eyesshutfrac > 0) {

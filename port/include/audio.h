@@ -22,8 +22,10 @@ void audioEndFrame(void);
 // - audioSetPitch: granular pitch shift at constant tempo, rate 0.25..4,
 //   1 = off (pd.audio_pitch)
 void audioSetMuted(s32 on);
-s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic);
-void audioStopExternal(void);
+void audioSetHold(s32 on); /* chaos Fake Crash: re-push the last buffer forever (held drone) */
+s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic); /* returns a voice id, 0 = failed */
+void audioStopExternal(void);            /* stop ALL external voices */
+void audioStopExternalVoice(s32 id);     /* stop one voice by id; stale ids are a no-op */
 void audioSetExtVolume(s32 pct); /* external-voice volume, % of the music slider (0..100) */
 s32 audioGetExtVolume(void);
 void audioSetCrush(s32 step, s32 bits);

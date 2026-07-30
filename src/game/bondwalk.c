@@ -942,10 +942,20 @@ void bwalkUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 	}
 
 	// Chaos "Ice Floor": scale strafe accel/decel to match the forward slide.
+	// Strafe is a SIGNED axis, so "am I slowing down?" is a magnitude question,
+	// not which side of targetspeed we are on — full-left to full-right passes
+	// through zero and is a decel then an accel.
 	{
 		extern f32 g_ChaosIceAccel;
-		if (g_ChaosIceAccel != 1.0f && !g_Vars.currentplayer->isremote) {
-			accelspeed *= g_ChaosIceAccel;
+		extern f32 g_ChaosIceDecel;
+
+		if (!g_Vars.currentplayer->isremote) {
+			f32 cur = g_Vars.currentplayer->speedstrafe;
+			f32 m = (fabsf(targetspeed) < fabsf(cur)) ? g_ChaosIceDecel : g_ChaosIceAccel;
+
+			if (m != 1.0f) {
+				accelspeed *= m;
+			}
 		}
 	}
 #endif
@@ -973,13 +983,26 @@ void bwalkUpdateSpeedSideways(f32 targetspeed, f32 accelspeed, s32 mult)
 void bwalkUpdateSpeedForwards(f32 targetspeed, f32 accelspeed)
 {
 #ifndef PLATFORM_N64
-	// Chaos "Ice Floor": one accel/decel scale gives BOTH slow acceleration and
-	// low friction (accelspeed drives the decay toward targetspeed too, so a
-	// released stick coasts instead of stopping).
+	// Chaos "Ice Floor". accelspeed is the per-tick rate at which speedgo chases
+	// targetspeed in BOTH directions, so it is the one knob behind all three of
+	// "slow to get going", "slow to stop" and "keeps sliding" — the slide IS the
+	// decay toward a targetspeed of 0 after the stick is released.
+	//
+	// Split into two scales (2026-07-30) so they can be tuned apart: a single
+	// multiplier couples them, and "accelerates normally but slides forever" is
+	// a different feel from "sluggish in both directions". g_ChaosIceDecel
+	// defaults to the accel value, so one-argument callers are unchanged.
 	{
 		extern f32 g_ChaosIceAccel;
-		if (g_ChaosIceAccel != 1.0f && !g_Vars.currentplayer->isremote) {
-			accelspeed *= g_ChaosIceAccel;
+		extern f32 g_ChaosIceDecel;
+
+		if (!g_Vars.currentplayer->isremote) {
+			f32 cur = g_Vars.currentplayer->speedgo;
+			f32 m = (fabsf(targetspeed) < fabsf(cur)) ? g_ChaosIceDecel : g_ChaosIceAccel;
+
+			if (m != 1.0f) {
+				accelspeed *= m;
+			}
 		}
 	}
 #endif
@@ -1745,6 +1768,10 @@ s32 g_ChaosTrapdoorTicks = 0;
 // Chaos "Ice Floor" (pd.ice_floor): scales the walk accel/decel (bwalkUpdateSpeed*)
 // so the player accelerates slowly and keeps sliding. 1.0 = normal. Reset in lv.c.
 f32 g_ChaosIceAccel = 1.0f;
+// Separate decel/slide scale — see bwalkUpdateSpeedForwards. 1.0 = vanilla
+// friction; lower = longer slides. pd.ice_floor mirrors accel into it when
+// only one argument is given.
+f32 g_ChaosIceDecel = 1.0f;
 
 void bwalkApplyMoveData(struct movedata *data)
 {

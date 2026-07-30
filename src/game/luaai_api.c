@@ -1165,11 +1165,15 @@ static int l_pd_player_heal(lua_State *L)
 	return 1;
 }
 
-/* pd.player_set_shield(frac) -> bool. frac 0..1 (>=1 = full). */
+/* pd.player_set_shield(frac [, silent]) -> bool. frac 0..1 (>=1 = full). Pops
+ * the health bar unless silent — pass silent for a per-tick trickle (Shield
+ * Charge), which would otherwise re-arm the bar every frame and never let it
+ * close or finish its fill animation. */
 static int l_pd_player_set_shield(lua_State *L)
 {
 	f32 frac = (f32)luaL_optnumber(L, 1, 1.0);
-	lua_pushboolean(L, chraiLuaPlayerSetShield(frac) != 0);
+	s32 silent = lua_toboolean(L, 2);
+	lua_pushboolean(L, chraiLuaPlayerSetShield(frac, silent) != 0);
 	return 1;
 }
 
@@ -1222,10 +1226,12 @@ static int l_pd_invincible(lua_State *L)
 	return 1;
 }
 
-/* pd.spawn_ally() -> chrnum | nil. Spawn a friendly "Perfect Buddy". */
+/* pd.spawn_ally([weaponnum]) -> chrnum | nil. Spawn a friendly "Perfect Buddy",
+ * wearing the player's Combat Sim profile body/head when pd.ini has one
+ * (MP.Profile.Body/Head). weaponnum omitted or <= 0 = Falcon 2. */
 static int l_pd_spawn_ally(lua_State *L)
 {
-	s32 chrnum = chraiLuaSpawnAlly();
+	s32 chrnum = chraiLuaSpawnAlly((s32)luaL_optinteger(L, 1, -1));
 	if (chrnum < 0) {
 		lua_pushnil(L);
 	} else {
@@ -2147,6 +2153,14 @@ static int l_pd_ammo_cost(lua_State *L)
 	return 1;
 }
 
+/* pd.terminator(on) -> bool. Terminator Vision: infrared filter with NO goggle
+ * cutout, and the CMP150 threat-detector boxes on whatever gun is held. */
+static int l_pd_terminator(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTerminator(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
 /* pd.autoaim(on) -> bool. Force aim assist on regardless of the option. */
 static int l_pd_autoaim(lua_State *L)
 {
@@ -2378,14 +2392,26 @@ static int l_pd_play_file(lua_State *L)
 	const char *path = luaL_checkstring(L, 1);
 	s32 loop = lua_toboolean(L, 2);         /* pd.play_file(path, loop) */
 	s32 followMusic = lua_toboolean(L, 3);  /* pd.play_file(path, loop, follow_music) */
-	lua_pushboolean(L, chraiLuaPlayFile(path, loop, followMusic) != 0);
+	s32 voice = chraiLuaPlayFile(path, loop, followMusic);
+
+	/* Returns the VOICE ID on success, for pd.stop_file(id). Failure must stay
+	 * FALSE and never 0: 0 is truthy in Lua, and every caller chains fallbacks
+	 * as `play_file(a.wav) or play_file(a.mp3)`. */
+	if (voice > 0) {
+		lua_pushinteger(L, voice);
+	} else {
+		lua_pushboolean(L, 0);
+	}
 	return 1;
 }
 
-/* pd.stop_file(). Stop the external sound started by pd.play_file. */
+/* pd.stop_file([id]). Stop external sound started by pd.play_file. With the id
+ * play_file returned, stops ONLY that voice — use this for a looping sound, or
+ * the no-id form will silence every other external sound too. No arg = stop all
+ * (the original behaviour). */
 static int l_pd_stop_file(lua_State *L)
 {
-	chraiLuaStopFile();
+	chraiLuaStopFile((s32)luaL_optinteger(L, 1, 0));
 	return 0;
 }
 
@@ -2774,6 +2800,15 @@ static int l_pd_no_reload(lua_State *L)
 	return 1;
 }
 
+/* pd.music_rate(mult) -> bool. Scale the sequenced music's TEMPO: 1 = normal,
+ * 2 = double speed. Real tempo, so pd.music_bpm reports it and BPM mode follows —
+ * unlike pd.audio_pitch, which shifts pitch at constant tempo. */
+static int l_pd_music_rate(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaMusicRate((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
 /* pd.spread(mult) -> bool. Chaos Weapon Spread: scale weapon shot spread. */
 static int l_pd_spread(lua_State *L)
 {
@@ -2787,6 +2822,54 @@ static int l_pd_chr_armor(lua_State *L)
 	s32 chrnum = (s32)luaL_checkinteger(L, 1);
 	f32 amount = (f32)luaL_optnumber(L, 2, 30.0);
 	lua_pushboolean(L, chraiLuaChrArmor(chrnum, amount) != 0);
+	return 1;
+}
+
+/* pd.chr_armor_clear(chrnum) -> bool. Strip chaos body armor again (timed armor
+ * effects ending). Zeroes the negative-damage overflow rather than subtracting
+ * the granted amount back, so it can never injure or kill the chr. */
+static int l_pd_chr_armor_clear(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaChrArmorClear((s32)luaL_checkinteger(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.fake_crash(secs) -> bool. Freeze the sim AND hold the audio for secs of
+ * real time, so the game looks and sounds hung. Self-releasing (see
+ * chraiLuaFakeCrash) — there is deliberately no off switch. */
+static int l_pd_fake_crash(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaFakeCrash((f32)luaL_optnumber(L, 1, 3.0)) != 0);
+	return 1;
+}
+
+/* pd.chr_slots() -> free, total. Chr slots for this stage. The table is fixed at
+ * stage load (players + the setup's own chrs + MAX_BOTS spare), so runtime
+ * spawners share ~32 slots. NB a corpse still holds its slot until reaped. */
+static int l_pd_chr_slots(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaChrSlotsFree());
+	lua_pushinteger(L, chraiLuaChrSlotsTotal());
+	return 2;
+}
+
+/* pd.clone_chr(chrnum, x, y, z) -> chrnum | nil. Spawn a copy of a chr at a
+ * position: body, head, ACTION BLOCK, team, squadron, voicebox and held weapon.
+ * ⚠ Call from a tick, never from the "kill" event — it inserts a prop, and the
+ * death callback runs inside the prop tick. Snapshot the position at kill time
+ * and clone on the next tick (Hydra). nil = template gone or no room. */
+static int l_pd_clone_chr(lua_State *L)
+{
+	s32 c = chraiLuaCloneChr((s32)luaL_checkinteger(L, 1),
+			(f32)luaL_checknumber(L, 2),
+			(f32)luaL_checknumber(L, 3),
+			(f32)luaL_checknumber(L, 4));
+
+	if (c < 0) {
+		lua_pushnil(L);
+	} else {
+		lua_pushinteger(L, c);
+	}
 	return 1;
 }
 
@@ -2819,10 +2902,14 @@ static int l_pd_trapdoor(lua_State *L)
 	return 1;
 }
 
-/* pd.ice_floor(mult) -> bool. Ice Floor: scale walk accel/decel (slippery). */
+/* pd.ice_floor(accel [, decel]) -> bool. Ice Floor grip scales, 1.0 = vanilla.
+ * accel governs getting going, decel governs stopping AND the slide (the same
+ * rate drives the decay toward a target speed of 0). Lower = icier. decel
+ * omitted = same as accel, i.e. the original one-knob behaviour. */
 static int l_pd_ice_floor(lua_State *L)
 {
-	lua_pushboolean(L, chraiLuaIceFloor((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	lua_pushboolean(L, chraiLuaIceFloor((f32)luaL_optnumber(L, 1, 1.0),
+			(f32)luaL_optnumber(L, 2, -1.0)) != 0);
 	return 1;
 }
 
@@ -3252,6 +3339,32 @@ static int l_pd_room_tint(lua_State *L)
 	return 1;
 }
 
+/* pd.room_count() -> n. Rooms on this stage; real room numbers are 1..n-1
+ * (index 0 is not a room). 0 when no stage is loaded. */
+static int l_pd_room_count(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaRoomCount());
+	return 1;
+}
+
+/* pd.room_highlight(room, r, g, b) -> bool. Mark ONE room in a colour, the
+ * KotH hill-green mechanism (sets the room's lightop to LIGHTOP_HIGHLIGHT and
+ * overrides the colour the reshade would use). pd.room_highlight() with no args
+ * clears every chaos highlight and restores the rooms' original lightops. */
+static int l_pd_room_highlight(lua_State *L)
+{
+	if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
+		lua_pushboolean(L, chraiLuaRoomHighlight(0, 0, 0, 0, 0) != 0);
+		return 1;
+	}
+	lua_pushboolean(L, chraiLuaRoomHighlight(
+			(s32)luaL_checkinteger(L, 1),
+			(s32)luaL_optinteger(L, 2, 255),
+			(s32)luaL_optinteger(L, 3, 64),
+			(s32)luaL_optinteger(L, 4, 64), 1) != 0);
+	return 1;
+}
+
 /* pd.explosions_around(on) -> bool. The Air Force One crash sequence:
  * staggered explosions surround the player until turned off. */
 static int l_pd_explosions_around(lua_State *L)
@@ -3434,6 +3547,33 @@ static int l_pd_chr_calm(lua_State *L)
 static int l_pd_doors_all(lua_State *L)
 {
 	lua_pushinteger(L, chraiLuaDoorsAll(lua_toboolean(L, 1)));
+	return 1;
+}
+
+/* pd.doors_speeds(on) -> count. Give every door its own random open/close speed
+ * (per-door accel + maxspeed). Restores the authored values when turned off. */
+static int l_pd_doors_speeds(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaDoorsSpeeds(lua_toboolean(L, 1)));
+	return 1;
+}
+
+/* pd.doors_shuffle([pct]) -> count. Each door independently has a pct% chance of
+ * being told to open or close (50/50) right now — call on a timer for irregular
+ * per-door rhythm instead of the whole level moving in unison. */
+static int l_pd_doors_shuffle(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaDoorsShuffle((s32)luaL_optinteger(L, 1, 30)));
+	return 1;
+}
+
+/* pd.doors_hold(on) -> count. Hold every door OPEN for as long as it is set
+ * (OBJFLAG_DOOR_KEEPOPEN), instead of pd.doors_all's one-shot request. Turning it
+ * off restores ONLY the doors this call changed, so mission doors that were
+ * already propped open stay that way. */
+static int l_pd_doors_hold(lua_State *L)
+{
+	lua_pushinteger(L, chraiLuaDoorsHold(lua_toboolean(L, 1)));
 	return 1;
 }
 
@@ -3689,6 +3829,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_button_block);  lua_setfield(L, -2, "button_block");
 	lua_pushcfunction(L, l_pd_ammo_cost);     lua_setfield(L, -2, "ammo_cost");
 	lua_pushcfunction(L, l_pd_autoaim);       lua_setfield(L, -2, "autoaim");
+	lua_pushcfunction(L, l_pd_terminator);    lua_setfield(L, -2, "terminator");
 	lua_pushcfunction(L, l_pd_deadzone);      lua_setfield(L, -2, "deadzone");
 	lua_pushcfunction(L, l_pd_nitro);         lua_setfield(L, -2, "nitro");
 	lua_pushcfunction(L, l_pd_objective_force); lua_setfield(L, -2, "objective_force");
@@ -3746,6 +3887,10 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_no_reload);     lua_setfield(L, -2, "no_reload");
 	lua_pushcfunction(L, l_pd_spread);        lua_setfield(L, -2, "spread");
 	lua_pushcfunction(L, l_pd_chr_armor);     lua_setfield(L, -2, "chr_armor");
+	lua_pushcfunction(L, l_pd_chr_armor_clear); lua_setfield(L, -2, "chr_armor_clear");
+	lua_pushcfunction(L, l_pd_fake_crash);    lua_setfield(L, -2, "fake_crash");
+	lua_pushcfunction(L, l_pd_clone_chr);     lua_setfield(L, -2, "clone_chr");
+	lua_pushcfunction(L, l_pd_chr_slots);     lua_setfield(L, -2, "chr_slots");
 	lua_pushcfunction(L, l_pd_headshots_only); lua_setfield(L, -2, "headshots_only");
 	lua_pushcfunction(L, l_pd_drop_weapon);   lua_setfield(L, -2, "drop_weapon");
 	lua_pushcfunction(L, l_pd_haunt);         lua_setfield(L, -2, "haunt");
@@ -3769,6 +3914,8 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_pinball);       lua_setfield(L, -2, "pinball");
 	lua_pushcfunction(L, l_pd_grayscale);     lua_setfield(L, -2, "grayscale");
 	lua_pushcfunction(L, l_pd_room_tint);     lua_setfield(L, -2, "room_tint");
+	lua_pushcfunction(L, l_pd_room_highlight); lua_setfield(L, -2, "room_highlight");
+	lua_pushcfunction(L, l_pd_room_count);    lua_setfield(L, -2, "room_count");
 	lua_pushcfunction(L, l_pd_explosions_around); lua_setfield(L, -2, "explosions_around");
 	lua_pushcfunction(L, l_pd_ammo_swap);     lua_setfield(L, -2, "ammo_swap");
 	lua_pushcfunction(L, l_pd_backfire);      lua_setfield(L, -2, "backfire");
@@ -3792,6 +3939,9 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_calm);      lua_setfield(L, -2, "chr_calm");
 	lua_pushcfunction(L, l_pd_doors_all);     lua_setfield(L, -2, "doors_all");
 	lua_pushcfunction(L, l_pd_doors_lock);    lua_setfield(L, -2, "doors_lock");
+	lua_pushcfunction(L, l_pd_doors_hold);    lua_setfield(L, -2, "doors_hold");
+	lua_pushcfunction(L, l_pd_doors_speeds);  lua_setfield(L, -2, "doors_speeds");
+	lua_pushcfunction(L, l_pd_doors_shuffle); lua_setfield(L, -2, "doors_shuffle");
 	lua_pushcfunction(L, l_pd_civil_war);     lua_setfield(L, -2, "civil_war");
 	lua_pushcfunction(L, l_pd_chr_summon);    lua_setfield(L, -2, "chr_summon");
 	lua_pushcfunction(L, l_pd_fov_scale);     lua_setfield(L, -2, "fov_scale");
@@ -3812,6 +3962,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_spawn_sentry);  lua_setfield(L, -2, "spawn_sentry");
 	lua_pushcfunction(L, l_pd_temu_mag);      lua_setfield(L, -2, "temu_mag");
 	lua_pushcfunction(L, l_pd_music_bpm);     lua_setfield(L, -2, "music_bpm");
+	lua_pushcfunction(L, l_pd_music_rate);    lua_setfield(L, -2, "music_rate");
 	lua_pushcfunction(L, l_pd_music_beat);    lua_setfield(L, -2, "music_beat");
 	lua_pushcfunction(L, l_pd_aim_chr);       lua_setfield(L, -2, "aim_chr");
 	lua_pushcfunction(L, l_pd_aim_screen);    lua_setfield(L, -2, "aim_screen");

@@ -267,6 +267,18 @@ s32 g_ChaosTemuMag = 0;
 // g_ChaosTemuMag is set; cleared on toggle (bgunChaosTemuSpentClear).
 u16 g_ChaosTemuSpent[2][96][2];
 
+// The table is shared by TWO effects (user call 2026-07-30). Reload Denied has
+// exactly the same hole Temu did: refusing the reload transition means nothing if
+// switching away and back hands the gun a fresh clip, because vanilla's
+// gunroundsspent memory only covers the crossbow/shotgun/magnum/LX. So the memory
+// is armed for either effect.
+s32 bgunChaosClipMemoryActive(void)
+{
+	extern s32 g_ChaosNoReload;
+
+	return g_ChaosTemuMag || g_ChaosNoReload;
+}
+
 void bgunChaosTemuSpentClear(void)
 {
 	s32 h;
@@ -642,6 +654,13 @@ void bgunTickUnequippedReload(void)
 #ifndef PLATFORM_N64
 	// Chaos Temu Magazine: decay the all-weapons partial-clip memory the same
 	// way, so holstered guns trickle-reload like the magnum family does.
+	//
+	// ⚠ Deliberately gated on TEMU ALONE, not bgunChaosClipMemoryActive(). The
+	// trickle IS a reload, just a slow one — under Reload Denied it would be a
+	// loophole (park a gun for a minute, collect rounds), and that effect's whole
+	// premise is that reloading does not happen. Temu keeps it because there the
+	// point is that a reload chambers too little, not that it never happens. With
+	// both effects live Temu's semantics win, which is the harmless direction.
 	if (g_ChaosTemuMag) {
 		s32 w;
 
@@ -1362,10 +1381,11 @@ void bgun0f098df8(s32 weaponfunc, struct handweaponinfo *info, struct hand *hand
 #endif
 			}
 #ifndef PLATFORM_N64
-			// Chaos Temu Magazine: apply the all-weapons partial-clip memory
-			// (stored in bgunFreeWeapon) so a re-equip restores the clip you
-			// holstered instead of granting a fresh mag.
-			else if (checkunequipped && g_ChaosTemuMag && !g_Vars.currentplayer->isremote
+			// Chaos Temu Magazine / Reload Denied: apply the all-weapons
+			// partial-clip memory (stored in bgunFreeWeapon) so a re-equip
+			// restores the clip you holstered instead of granting a fresh mag.
+			else if (checkunequipped && bgunChaosClipMemoryActive()
+					&& !g_Vars.currentplayer->isremote
 					&& info->weaponnum > 0 && info->weaponnum < 96) {
 				s32 chaoshand = (hand == &g_Vars.currentplayer->hands[HAND_LEFT]) ? HAND_LEFT : HAND_RIGHT;
 #if VERSION >= VERSION_PAL_BETA
@@ -6334,10 +6354,10 @@ void bgunFreeWeapon(s32 handnum)
 #endif
 				}
 #ifndef PLATFORM_N64
-				// Chaos Temu Magazine: remember the partial clip for weapons
-				// WITHOUT a vanilla gunroundsspent slot too (same encoding),
-				// so switching away and back can't mint a fresh mag.
-				else if (g_ChaosTemuMag && !player->isremote
+				// Chaos Temu Magazine / Reload Denied: remember the partial clip
+				// for weapons WITHOUT a vanilla gunroundsspent slot too (same
+				// encoding), so switching away and back can't mint a fresh mag.
+				else if (bgunChaosClipMemoryActive() && !player->isremote
 						&& player->gunctrl.weaponnum > 0 && player->gunctrl.weaponnum < 96
 						&& spaceinclip >= 0) {
 #if VERSION >= VERSION_JPN_FINAL

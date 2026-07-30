@@ -41,6 +41,32 @@
 f32 g_ChaosRoomTintFrac[3] = {1.0f, 1.0f, 1.0f};
 s32 g_ChaosRoomTintOn = 0;
 
+// Chaos per-room highlight (pd.room_highlight, docs/PORT_CHAOS.md): mark
+// INDIVIDUAL rooms in a colour — the KotH hill-green mechanism, but without a
+// scenario. The engine's highlight path needs two things chaos has to supply
+// itself: the room's lightop must be LIGHTOP_HIGHLIGHT (the only way the reshade
+// enters that branch at all), and the colour comes from scenarioHighlightRoom,
+// whose vtable entry is NULL outside Combat Sim. chraiLuaRoomHighlight sets the
+// lightop; this table overrides the colour at both reshade sites below.
+//
+// A bitmask plus ONE shared colour, not a per-room colour table: every use so
+// far marks a SET of rooms in a single colour, and this way the whole thing is
+// 64 bytes of BSS with no stage-lifetime allocation to manage. Rooms past
+// CHAOS_ROOMHL_MAX are simply never highlighted rather than corrupting memory.
+#define CHAOS_ROOMHL_MAX 512
+u8 g_ChaosRoomHlMask[CHAOS_ROOMHL_MAX / 8];
+s32 g_ChaosRoomHlCol[3] = {255, 64, 64};
+s32 g_ChaosRoomHlOn = 0;
+
+s32 chaosRoomIsHighlighted(s32 roomnum)
+{
+	if (!g_ChaosRoomHlOn || roomnum < 1 || roomnum >= CHAOS_ROOMHL_MAX) {
+		return 0;
+	}
+
+	return (g_ChaosRoomHlMask[roomnum >> 3] >> (roomnum & 7)) & 1;
+}
+
 // /shinyalpha (see the flag-0x01 branch in the room reshade below): floor
 // for the brightness-driven alpha fade on env/shiny room vertices, as a
 // 0-255 fraction of the authored alpha. Only applies to opa-layer entries
@@ -1543,6 +1569,16 @@ void roomsTickLighting(void)
 
 						scenarioHighlightRoom(i, &r, &g, &b);
 
+#ifndef PLATFORM_N64
+						// Chaos per-room highlight wins over the scenario's
+						// colour (outside Combat Sim there isn't one anyway).
+						if (chaosRoomIsHighlighted(i)) {
+							r = g_ChaosRoomHlCol[0];
+							g = g_ChaosRoomHlCol[1];
+							b = g_ChaosRoomHlCol[2];
+						}
+#endif
+
 						g_Rooms[i].highlightfrac_r = r * (1.0f / 255.0f);
 						g_Rooms[i].highlightfrac_g = g * (1.0f / 255.0f);
 						g_Rooms[i].highlightfrac_b = b * (1.0f / 255.0f);
@@ -1797,6 +1833,15 @@ void roomHighlight(s32 roomnum)
 
 				if (g_Rooms[roomnum].lightop == LIGHTOP_HIGHLIGHT) {
 					scenarioHighlightRoom(roomnum, &red, &green, &blue);
+
+#ifndef PLATFORM_N64
+					// Chaos per-room highlight (see g_ChaosRoomHlMask).
+					if (chaosRoomIsHighlighted(roomnum)) {
+						red = g_ChaosRoomHlCol[0];
+						green = g_ChaosRoomHlCol[1];
+						blue = g_ChaosRoomHlCol[2];
+					}
+#endif
 				}
 
 #ifndef PLATFORM_N64

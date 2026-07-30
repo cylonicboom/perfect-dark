@@ -14,6 +14,8 @@
 #include "game/lang.h"
 #include "game/options.h"
 #include "game/propobj.h"
+#include "game/chr.h" // chrsGetNumSlots (chaos all-chr target boxes)
+#include "game/lv.h"  // lvUpdateTrackedProp (ditto)
 #include "bss.h"
 #include "lib/vi.h"
 #include "lib/main.h"
@@ -1640,6 +1642,63 @@ bool sightHasTargetWhileAiming(s32 sight)
 /**
  * sighton is true if the player is using the aimer (ie. holding R).
  */
+#ifndef PLATFORM_N64
+// Chaos "Terminator Vision": draw the CMP150 secondary's target box around EVERY
+// live chr, not just the four the threat detector can track.
+//
+// The engine's own path is capped by `struct player.trackedprops[4]` — a fixed
+// array at a fixed offset, so raising the count would shift every field below it
+// in an N64-layout struct. This sidesteps that entirely by never touching the
+// array: a single scratch trackedprop is filled per chr and drawn immediately.
+//
+// Both halves are the engine's own work, so the boxes are identical to the real
+// thing rather than a lookalike:
+//   - lvUpdateTrackedProp(&scratch, -1) projects the prop to screen bounds
+//     (x1/y1/x2/y2) and returns false for anything not worth boxing — offscreen,
+//     the local player, a corpse past its fade. Index -1 is the "not one of the
+//     tracked slots" mode that lookingatprop uses, so it does no targetset[]
+//     bookkeeping we would have to fake.
+//   - sightDrawTargetBox draws it. `time` is the box's fly-in animation age; a
+//     value at or past its TICKS(80) end (see sightCalculateBoxBound) means
+//     "settled", which is what we want when the box appears fresh every frame.
+//     Passing 0 would re-run the fly-in from the screen corner every frame.
+static Gfx *sightDrawChaosAllChrBoxes(Gfx *gdl)
+{
+	extern s32 g_ChaosTerminator;
+	struct trackedprop scratch;
+	s32 numslots;
+	s32 i;
+
+	if (!g_ChaosTerminator || g_Vars.currentplayer->isremote) {
+		return gdl;
+	}
+
+	numslots = chrsGetNumSlots();
+
+	for (i = 0; i < numslots; i++) {
+		struct chrdata *chr = &g_ChrSlots[i];
+
+		if (chr->chrnum < 0 || chr->prop == NULL || chr->model == NULL) {
+			continue;
+		}
+		if (chr->prop->type != PROPTYPE_CHR) {
+			continue; // players get boxed by the vanilla paths if at all
+		}
+		if (chrIsDead(chr)) {
+			continue;
+		}
+
+		scratch.prop = chr->prop;
+
+		if (lvUpdateTrackedProp(&scratch, -1)) {
+			gdl = sightDrawTargetBox(gdl, &scratch, 0, TICKS(80));
+		}
+	}
+
+	return gdl;
+}
+#endif
+
 Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 {
 	if (sight);
@@ -1764,6 +1823,13 @@ Gfx *sightDraw(Gfx *gdl, bool sighton, s32 sight)
 			gdl = sightDrawTarget(gdl, crossx, crossy);
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// After the crosshair-style switch so the boxes appear whatever sight the
+	// player uses (and even with SIGHT_NONE), but BEFORE g_ScaleX is reset —
+	// sightDrawTargetBox divides x1 by it.
+	gdl = sightDrawChaosAllChrBoxes(gdl);
+#endif
 
 	g_ScaleX = 1;
 

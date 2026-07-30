@@ -3976,6 +3976,34 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			colour[3] = var8009caf0;
 		}
 
+#ifndef PLATFORM_N64
+		// Chaos "Terminator Vision": flat bright-red silhouettes for every chr.
+		//
+		// Deliberately the NIGHT-VISION style of highlight, not the IR scanner's:
+		// NVG overrides the colour HERE, after objMergeColourFracs, so nothing can
+		// wash it out and every chr reads as one flat shape. The IR path (further
+		// up) sets its colour BEFORE the merge, so shade fracs still modulate it —
+		// that gives a shaded red body rather than a highlight.
+		//
+		// ⚠ The colour is a HOT red, not pure red, because of what it composes
+		// with: Terminator Vision also runs the retro filter's Virtual Boy palette,
+		// which maps the finished frame to four red shades BY LUMINANCE. Pure
+		// (255,0,0) is only ~30% luminance and would land mid-palette, i.e. no
+		// brighter than the walls. Lifting green/blue raises luminance so the
+		// silhouette maps to the TOP shade and actually pops. With the filter off
+		// it simply reads as a hot red.
+		{
+			extern s32 g_ChaosTerminator;
+
+			if (g_ChaosTerminator && !g_Vars.currentplayer->isremote) {
+				colour[0] = 0xff;
+				colour[1] = 0x8c;
+				colour[2] = 0x8c;
+				colour[3] = 0xff;
+			}
+		}
+#endif
+
 		// Configure colours for xray if in use
 		if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
 			colour[g_Vars.currentplayer->epcol_0] = xrayalphafrac * 255;

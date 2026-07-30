@@ -37,6 +37,113 @@ s32 g_SndBeatAnchorTime = 0;
 void *g_SndBeatAnchorSeqp = NULL;
 s32 g_SndBeatKickKey = 127;
 
+#ifndef PLATFORM_N64
+// Chaos "DJ" (pd.music_rate): scale the sequenced music's TEMPO, not its pitch.
+// Tempo lives in seqp->uspt (microseconds per sequence tick) — smaller = faster.
+//
+// ⚠ THE RATE IS APPLIED IN EXACTLY ONE PLACE, and that is the whole design.
+// The first attempt (2026-07-30) scaled in BOTH __n_setUsptFromTempo and here,
+// so the two multiplied: a MIDI tempo event landed already-divided, this function
+// then captured THAT as its "base" and divided again, and every further event
+// compounded it. Result was 400+ BPM out of a 0.85-1.6x range (user report).
+//
+// So there is one canonical unscaled base per player:
+//   __n_setUsptFromTempo computes the true uspt and hands it to
+//   sndChaosMusicSetBase() — it is the only code that knows the real tempo —
+//   then calls sndChaosMusicApply() to scale it.
+//   sndChaosSetMusicRate() re-applies from that same base, so a live rate change
+//   takes effect immediately (a sequence may emit no further tempo events at all,
+//   which is why applying only at the chokepoint would mean DJ never engaging).
+// Neither path ever reads the CURRENT uspt, so nothing can compound, and there is
+// no s32 rounding drift from ratio-chaining either.
+f32 g_ChaosMusicRate = 1.0f;
+
+#define CHAOS_MUSIC_SLOTS 4
+static void *g_ChaosMusicSeqp[CHAOS_MUSIC_SLOTS];
+static s32 g_ChaosMusicBase[CHAOS_MUSIC_SLOTS];
+
+static s32 chaosMusicSlot(void *seqp)
+{
+	s32 i;
+	s32 free = -1;
+
+	for (i = 0; i < CHAOS_MUSIC_SLOTS; i++) {
+		if (g_ChaosMusicSeqp[i] == seqp) {
+			return i;
+		}
+		if (free < 0 && g_ChaosMusicSeqp[i] == NULL) {
+			free = i;
+		}
+	}
+
+	if (free < 0) {
+		free = 0; // all taken: recycle, the oldest player is long gone
+	}
+
+	g_ChaosMusicSeqp[free] = seqp;
+	g_ChaosMusicBase[free] = 0;
+	return free;
+}
+
+// Record the UNSCALED uspt for this player. Called from __n_setUsptFromTempo with
+// the value it just computed, before any rate is applied.
+void sndChaosMusicSetBase(void *seqp, s32 uspt)
+{
+	if (seqp != NULL && uspt > 0) {
+		g_ChaosMusicBase[chaosMusicSlot(seqp)] = uspt;
+	}
+}
+
+// Write base/rate into this player's uspt. No-op without a known base.
+void sndChaosMusicApply(void *seqp)
+{
+	s32 slot;
+	s32 uspt;
+
+	if (seqp == NULL || g_ChaosMusicRate <= 0.0f) {
+		return;
+	}
+
+	slot = chaosMusicSlot(seqp);
+
+	if (g_ChaosMusicBase[slot] <= 0) {
+		return;
+	}
+
+	uspt = (s32)((f32)g_ChaosMusicBase[slot] / g_ChaosMusicRate);
+
+	if (uspt < 1) {
+		uspt = 1;
+	}
+
+	((N_ALCSPlayer *)seqp)->uspt = uspt;
+}
+
+void sndChaosSetMusicRate(f32 rate)
+{
+	s32 i;
+
+	// A 2x spread either side is plenty for a turntable and keeps the sequence
+	// player in sane territory.
+	if (rate < 0.5f) rate = 0.5f;
+	if (rate > 2.0f) rate = 2.0f;
+
+	g_ChaosMusicRate = rate;
+
+	for (i = 0; i < 3; i++) {
+		if (g_SeqInstances[i].seqp != NULL) {
+			// First sighting with no recorded base: today's uspt IS the unscaled
+			// tempo, because the rate has only just moved off 1.0.
+			if (g_ChaosMusicBase[chaosMusicSlot(g_SeqInstances[i].seqp)] <= 0) {
+				sndChaosMusicSetBase(g_SeqInstances[i].seqp, g_SeqInstances[i].seqp->uspt);
+			}
+
+			sndChaosMusicApply(g_SeqInstances[i].seqp);
+		}
+	}
+}
+#endif
+
 s32 sndGetMusicBeat(f32 *bpm, f32 *phase)
 {
 	s32 i;

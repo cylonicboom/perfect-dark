@@ -108,8 +108,8 @@ s32 g_ChaosPlayerFreeze = 0;
 // it never latches or stops at clip-empty — it only acts while you are actively
 // firing, so it reads as "press = rapid fire". Cleared in lvInit.
 s32 g_ChaosRapidFire = 0;
-// Chaos "Permacrouch" (pd.forced_crouch): the stance is pinned to a crouch each
-// tick. Cleared in lvInit.
+// Chaos "Permacrouch" (pd.forced_crouch): the stance is pinned to the lowest
+// crouch (CROUCHPOS_SQUAT) each tick. Cleared in lvInit.
 s32 g_ChaosForcedCrouch = 0;
 // Chaos "Reload Denied" (pd.no_reload): every reload transition is refused in
 // bgunSetState (bondgun.c externs this). Cleared in lvInit.
@@ -2627,14 +2627,20 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		movedata.alt1tapcount = 0;
 	}
 
-	// Chaos "Permacrouch" (pd.forced_crouch): pin the stance to a crouch. The
-	// crouchpos state machine already ran this frame (above), so we override its
-	// result directly rather than feeding movedata; downstream height/camera all
-	// derive from crouchpos, so this holds the player crouched. Cleared when the
+	// Chaos "Permacrouch" (pd.forced_crouch): pin the stance to the LOWEST crouch.
+	// The crouchpos state machine already ran this frame (above), so we override
+	// its result directly rather than feeding movedata; downstream height/camera
+	// all derive from crouchpos, so this holds the player down. Cleared when the
 	// effect ends, after which normal standing resumes.
+	//
+	// ⚠ CROUCHPOS_SQUAT, not DUCK. These constants run the OPPOSITE way to
+	// intuition — SQUAT=0, DUCK=1, STAND=2 (constants.h; the same trap
+	// chraiLuaPlayerCrouch remaps for its sensor) — so DUCK was the MIDDLE
+	// stance, i.e. the first crouch step rather than the full one (user call
+	// 2026-07-30).
 	if (g_ChaosForcedCrouch && !g_Vars.currentplayer->isremote
 			&& !g_Vars.currentplayer->isdead) {
-		g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
+		g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
 	}
 #endif
 

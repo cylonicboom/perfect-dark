@@ -267,14 +267,14 @@ s32 chraiLuaSetChrPos(s32 chrnum, f32 x, f32 y, f32 z); /* move a chr prop (no p
 /* Archipelago bonus/buff bridges (chraction.c). Apply to the local player on
  * receipt of an AP "bonus" item; server/solo only, no-op without a live player. */
 s32 chraiLuaPlayerHeal(f32 amount);           /* amount<=0 => full HP; else add fraction (capped) */
-s32 chraiLuaPlayerSetShield(f32 frac);        /* shield 0..1 (>=1 = full) */
+s32 chraiLuaPlayerSetShield(f32 frac, s32 silent); /* shield 0..1 (>=1 = full); silent skips the health-bar pop */
 s32 chraiLuaRefillAmmo(void);                 /* top all ammo to capacity */
 s32 chraiLuaGiveMags(s32 mags);               /* stock every ammo type with N magazines, not max */
 s32 chraiLuaGiveAmmo(s32 ammotype, s32 qty);  /* grant ammo (+ matching weapon) */
 s32 chraiLuaGiveWeaponToPlayer(s32 weaponnum);/* add a weapon to inventory */
 s32 chraiLuaDeviceOn(s32 weaponnum);          /* activate a device (e.g. cloak) */
 s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
-s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
+s32 chraiLuaSpawnAlly(s32 weaponnum);         /* friendly "Perfect Buddy" wearing the MP profile body/head; weaponnum < 0 = Falcon 2; chrnum or -1 */
 s32 chraiLuaSpawnAllyClone(f32 healthfrac, f32 yscale);   /* friendly Jo clone (player body/head), scaled HP + vertical squash; chrnum or -1 */
 s32 chraiLuaChrYscale(s32 chrnum, f32 mult);  /* non-uniform vertical squash (width kept) */
 s32 chraiLuaChrHum(s32 chrnum, s32 on);       /* Chicago interceptor engine loops on a chr's prop; re-issue each tick */
@@ -341,8 +341,8 @@ s32 chraiLuaDamageScale(f32 frac);            /* scale all chr/player damage; 1 
 s32 chraiLuaZoomScale(f32 mult);              /* scale weapon aim-zoom FOV; >1 zooms OUT */
 s32 chraiLuaGunSound(s32 weaponnum);          /* all guns fire with this weapon's shoot sound; 0 = off */
 s32 chraiLuaMute(s32 on);                     /* master audio mute */
-s32 chraiLuaPlayFile(const char *path, s32 loop, s32 followMusic); /* play an external WAV/MP3 through the device stream (followMusic: scale by the music volume) */
-void chraiLuaStopFile(void);                  /* stop the pd.play_file sound */
+s32 chraiLuaPlayFile(const char *path, s32 loop, s32 followMusic); /* play an external WAV/MP3 through the device stream (followMusic: scale by the music volume); returns a voice id, 0 = failed */
+void chraiLuaStopFile(s32 id);                /* stop a pd.play_file voice by id; id <= 0 = stop them all */
 s32 chraiLuaWeaponRename(s32 weaponnum, const char *name); /* relabel a weapon (nil restores) */
 s32 chraiLuaChrSpeed(f32 mult);               /* scale all non-player chr anim/movement speed; 1 = off */
 s32 chraiLuaPlayerSpeed(f32 mult);            /* scale the local player's walk/strafe speed; 1 = normal */
@@ -367,13 +367,15 @@ s32 chraiLuaForcedFire(s32 on);               /* trigger held down for you */
 s32 chraiLuaRapidFire(s32 on);                /* semi-autos fire as fast as automatics while held */
 s32 chraiLuaForcedCrouch(s32 on);             /* stance pinned to a crouch */
 s32 chraiLuaNoReload(s32 on);                 /* all reload transitions refused */
+s32 chraiLuaMusicRate(f32 mult);               /* scale sequenced-music TEMPO (real BPM change, not pitch) */
 s32 chraiLuaSpread(f32 mult);                 /* scale weapon shot spread */
 s32 chraiLuaChrArmor(s32 chrnum, f32 amount); /* give an NPC body armor (negative-damage) */
+s32 chraiLuaChrArmorClear(s32 chrnum);        /* strip that armor again (zeroes the overflow; never injures) */
 s32 chraiLuaHeadshotsOnly(s32 on);            /* zero non-head damage to the local player */
 s32 chraiLuaDropWeapon(s32 weaponnum);        /* drop a player weapon as a collectable pickup */
 s32 chraiLuaHaunt(f32 force);                 /* hurl LOS-visible props at the player */
 s32 chraiLuaTrapdoor(void);                   /* drop the local player through the floor */
-s32 chraiLuaIceFloor(f32 mult);               /* scale walk accel/decel (slippery floors) */
+s32 chraiLuaIceFloor(f32 accel, f32 decel);     /* Ice Floor grip scales; decel < 0 = same as accel */
 f32 chraiLuaPlayerMoveSpeed(void);            /* local player normalised move speed 0..~1 */
 s32 chraiLuaHudOff(s32 on);                   /* hide every HUD element */
 s32 chraiLuaGunFov(f32 deg);                  /* viewmodel FOV override (0 restores) */
@@ -394,11 +396,15 @@ s32 chraiLuaCloakLock(s32 on);                /* unbreakable no-ammo player cloa
 s32 chraiLuaTimeStop(s32 on);                 /* SUPERHOT: freeze the game tick while no input */
 s32 chraiLuaWeather(s32 type, s32 intensity); /* 0 off / 1 rain / 2 snow, any stage */
 s32 chraiLuaGas(s32 on);                      /* nerve gas on any stage (wash + cough + damage) */
+s32 chraiLuaFakeCrash(f32 secs);               /* hard self-releasing sim freeze + held audio (Fake Crash) */
 s32 chraiLuaTPose(s32 on);                    /* all skeletal models render in bind pose */
 s32 chraiLuaChrKo(s32 chrnum);                /* tranq-style knockout: collapse, drop gun, parked un-reaped */
 s32 chraiLuaChrWake(s32 chrnum);              /* recover a KO'd chr: blend back to standing, AI resumes */
 s32 chraiLuaPinball(s32 on);                  /* fired projectiles become proximity pinballs */
 s32 chraiLuaRoomTint(s32 r, s32 g, s32 b, s32 on); /* stage-wide room lighting tint (KotH hill math) */
+s32 chraiLuaRoomCount(void);                    /* stage room count; real rooms are 1..count-1 */
+s32 chraiLuaRoomHighlight(s32 roomnum, s32 r, s32 g, s32 b, s32 on); /* mark ONE room in a colour (KotH-hill mechanism); on=0 clears all */
+void chraiLuaRoomHighlightReset(void);         /* forget every chaos room highlight (stage change) */
 s32 chraiLuaPlayerExplosions(s32 on);         /* AFO crash explosions around the player */
 s32 chraiLuaAmmoSwap(s32 weaponnum);          /* held guns fire this weapon's primary; -1 off */
 s32 chraiLuaBackfire(s32 on);                 /* shots leave 180 degrees behind the player */
@@ -407,12 +413,20 @@ s32 chraiLuaGust(f32 force);                  /* shove chrs/objects/player in on
 s32 chraiLuaDualWield(s32 weaponnum, s32 funcnum); /* dual-equip a weapon; funcnum 0/1 forces fire func */
 s32 chraiLuaAspectScale(f32 mult);            /* projection aspect multiplier (1.0 = normal) */
 s32 chraiLuaPlaySong(s32 slot, f32 frac);     /* play an unlocked MP track over the stage music; -1 stops; frac>0 = start that far in */
+s32 chraiLuaChrSlotsFree(void);                /* free chr slots this stage (corpses still hold theirs) */
+s32 chraiLuaChrSlotsTotal(void);               /* total chr slots, fixed at stage load */
+s32 chraiLuaCloneChr(s32 chrnum, f32 x, f32 y, f32 z); /* copy a chr (body/head/ailist/team/weapon) at a position; call from a TICK, never the kill event */
 s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses); /* hostile chr at player + offset */
 s32 chraiLuaBodySnatch(s32 chrnum);           /* lite Counter-Op takeover of a chr (solo) */
 s32 chraiLuaBodyUnsnatch(void);               /* end body_snatch: un-disguise + teleport home */
 s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum); /* point a chr's combat AI at another chr */
 s32 chraiLuaChrCalm(s32 chrnum);              /* zero alertness, clear target (neuralyzer) */
 s32 chraiLuaDoorsAll(s32 open);               /* open (1) / close (0) every door; returns count */
+s32 chraiLuaDoorsSpeeds(s32 on);               /* randomise per-door open/close speed; restores the authored values */
+void chraiLuaDoorsSpeedsReset(void);           /* forget the saved door speeds (stage change) */
+s32 chraiLuaDoorsShuffle(s32 pct);             /* each door independently opens/closes with pct%% chance */
+s32 chraiLuaDoorsHold(s32 on);                 /* hold every door OPEN (OBJFLAG_DOOR_KEEPOPEN); restores only doors it changed */
+void chraiLuaDoorsHoldReset(void);             /* forget the held-door list (stage change) */
 s32 chraiLuaDoorsLock(s32 on);                /* Lockdown: lock (1) / unlock (0) every door shut */
 s32 chraiLuaCivilWar(s32 on);                 /* NPCs fight each other (hostile teams + nearest target); on=false restores */
 s32 chraiLuaChrSummon(s32 chrnum, f32 dx, f32 dz); /* teleport a chr next to the player */
@@ -435,6 +449,7 @@ s32 chraiLuaExtVolume(s32 pct);               /* external-sound volume, % of mus
 s32 chraiLuaForceSecondary(s32 on);           /* pin both hands to the secondary weapon function */
 s32 chraiLuaButtonMask(u32 mask);             /* strip pad buttons from gameplay input; 0 = off */
 s32 chraiLuaAmmoCost(s32 mult);               /* each shot spends mult clip rounds; 1 = normal */
+s32 chraiLuaTerminator(s32 on);                /* IR filter without the goggle cutout + threat boxes on any gun */
 s32 chraiLuaAutoAim(s32 on);                  /* force aim assist on regardless of the option */
 s32 chraiLuaDeadzone(f32 frac);               /* analog deadzone floor 0..1 of full deflection; 0 = off */
 s32 chraiLuaNitro(s32 on);                    /* destroyed objects explode like the Crash Site ship */

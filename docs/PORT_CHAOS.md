@@ -185,11 +185,11 @@ attempt, which would otherwise spam the log on every single effect. Switching
 sound resets the cache so a newly-added file is picked up.
 
 **SFX ids are raw hex numbers** because `pd.sound` takes a number and Lua has no
-view of the `sfx.h` enum (the pre-existing `SFX_MAIAN_ARGH` hardcodes are the
-precedent). They were derived by walking the enum in `src/include/sfx.h` and
-validated two ways: every self-naming constant matches its own hex
-(`SFX_805E == 0x805e`), and `0x05df`–`0x05e1` came out as exactly the Maian
-sounds already hardcoded in chaos.lua. **Validate the same way if you add more**
+view of the `sfx.h` enum. They were derived by walking the enum in
+`src/include/sfx.h` and validated two ways: every self-naming constant matches
+its own hex (`SFX_805E == 0x805e`), and `0x05df`–`0x05e1` came out as exactly
+the Maian yelps that Giggle Bomb used to hardcode (that `SFX_MAIAN_ARGH` table
+went with the effect on 2026-07-30). **Validate the same way if you add more**
 — don't eyeball a line number, most of the enum is implicit.
 
 The `CHAOS: <name>` announce is a separate **bottom-left** weapon-pickup-style
@@ -316,17 +316,21 @@ Current groups:
   comma-separated `chaos_disabled` persist key; `pick_random` (and thus the vote
   slate) skips disabled effects; disabling a live effect ends it.
 - **Chaos Test** — a sibling submenu (opener next to Chaos at the Director top):
-  every effect alphabetically; selecting one fires it for a fixed **30s** to try
-  in isolation (`chaos.trigger(name, "test", 30)` — the `dur_override` arg forces
-  the length regardless of `st.effectdur`). These timers **count down even while
+  every effect alphabetically; selecting one fires it in isolation at the
+  **configured Effect Duration** (`chaos.trigger(name, "test")`, no
+  `dur_override`). It used to pass a hardcoded `30` there, which meant a
+  menu-fired effect ran 30s no matter where the duration slider was — so testing
+  an effect told you nothing about its length in play, and read as "this effect
+  isn't timed to the timer" (2026-07-30). `fixeddur` effects still keep their own
+  authored length either way. These timers **count down even while
   the master switch is off**: the tick handler runs the timed-effect expiry loop
   unconditionally and only gates the random drumbeat / vote on `st.enabled`.
 - **Chaos Alpha** — the new-suggestion **testbed** (the `alpha_effects` block in
   chaos.lua, 2026-07-12 Discord batch: Gun Game v2, Hurricane v2, Blooper,
   Martyrdom, Terminator, Skedar King, CAPTCHA, SPEED, Russian roulette, fake
   game-over, Estus flask, phone-call Dokkaebi, classic weapons, …). Same shape
-  as Chaos Test (select → fires for a fixed 30s; `fixeddur` effects keep their
-  own length) but alpha effects are **never in the random rotation or vote
+  as Chaos Test (select → fires at the configured Effect Duration; `fixeddur`
+  effects keep their own length) but alpha effects are **never in the random rotation or vote
   slate** (`pick_random` skips `e.alpha`) and have no on/off toggles. Batch 2
   (same day) added 13 more backed by new C bindings — Secondaries only, XBLA
   mode, Weapon jam v2, Inflated bullets, Objective scramble, Nitroglycerin,
@@ -770,7 +774,7 @@ Helpful son is pure Lua (needs only existing `pd.player_add_yaw` / `pd.player_pi
 | `pd.spawn_ally_clone([healthfrac])` | `chraiLuaSpawnAllyClone` (chraction.c) | the `chraiLuaSpawnAlly` recipe, but the buddy wears the **player's own body AND head** (a Jo clone) instead of Dark Combat / VD, and her health pool (`chrSetMaxDamage` + `chrAddHealth`, both ×healthfrac) is scaled — default 0.5 = a fragile half-HP clone. Still TEAM_ALLY / SQUADRON_01 / `GAILIST_INIT_DEFAULT_BUDDY`, Falcon 2, `CHRCFLAG_NEVERSLEEP`. Server/solo-side; returns the chrnum or nil |
 | `pd.chr_yscale(chrnum, mult)` | `chr->yscale` (port-only chrdata field) → `modelUpdateChrNodeMtx` (model.c) | **non-uniform** vertical squash/stretch, unlike the uniform `pd.chr_scale`. The chr root matrix `sp158` is the model→world basis, so its **row 1** (`m[1][*]`) is the world image of the model's local Y axis (the spine); scaling only that row (`mtx00015e4c`) compresses height while leaving width/depth untouched, and — being at the root — it propagates down the whole skeleton. `mult 0.4` = 40% tall, full width. Bounded `(0, 4]` on both the setter and the render read (a stray value can't invert or balloon a chr). Purely visual (hitbox/AI unchanged). `chr->yscale` is reset to 1.0 in **`chrInit`** so a recycled chrslot never inherits a stale squash; the whole path is `#ifndef PLATFORM_N64` (the N64 build is byte-identical) |
 | `pd.stage_music(on)` | `chraiLuaStageMusic` (chraction.c) → `musicStop` / `musicSetStageAndStartMusic` (music.c) | stop (`on=false`) or restart (`on=true`) the **current stage's** music. Unlike `pd.song` — which layers a menu track over the *paused* stage music — this genuinely silences the level track, then re-derives primary + ambient from `g_Vars.stagenum` on restore. Backs Silo Countdown (kills the mission music, plays `Silo.mp3` via `pd.play_file` underneath). **`on=false` also sets the port-only `g_MusicSuppressed` latch** (music.c), which early-returns every music-restart path (`musicStartPrimary`/`Ambient`/`Nrg`/`TrackAsMenu`) — without this, closing the pause menu after triggering the effect calls `musicEndMenu → musicStartPrimary` and the game music creeps back. `on=true` clears the latch before restarting; `lvReset` force-clears it each stage load so it can never stick silent. The latch does **not** touch `g_MusicVolume`, so a `follow_music` `play_file` track is unaffected |
-| `pd.play_file(path, [loop], [follow_music])` | `chraiLuaPlayFile` → `audioPlayExternal` (audio.c) | play an external WAV/MP3 (`SDL_LoadWAV`/minimp3, detected by content) mixed into the device stream. `loop` rewinds instead of freeing. `follow_music` scales the track by the in-game **music-volume** slider (`optionsGetMusicVolume`, 0..0x5000, applied as an 8.8 fixed-point gain in the ext-mix loop) so it ducks/mutes with the player's music setting — default **off** (full volume, e.g. the Ring Ring ringtone). A `follow_music` track also **pauses with the game**: while `lvIsPaused()` the ext-mix block is skipped so the track goes silent AND its `extSoundPos` doesn't advance, resuming cleanly when you leave the menu (non-`follow_music` tracks keep playing). Silo Countdown passes `true` so `Silo.mp3` honours the music slider, is suppressed alongside the sequenced music, and pauses in the menu |
+| `pd.play_file(path, [loop], [follow_music])` → voice id \| false | `chraiLuaPlayFile` → `audioPlayExternal` (audio.c) | **returns a voice id for `pd.stop_file(id)` — see the Shield Charge section.** Plays an external WAV/MP3 (`SDL_LoadWAV`/minimp3, detected by content) mixed into the device stream. `loop` rewinds instead of freeing. `follow_music` scales the track by the in-game **music-volume** slider (`optionsGetMusicVolume`, 0..0x5000, applied as an 8.8 fixed-point gain in the ext-mix loop) so it ducks/mutes with the player's music setting — default **off** (full volume, e.g. the Ring Ring ringtone). A `follow_music` track also **pauses with the game**: while `lvIsPaused()` the ext-mix block is skipped so the track goes silent AND its `extSoundPos` doesn't advance, resuming cleanly when you leave the menu (non-`follow_music` tracks keep playing). Silo Countdown passes `true` so `Silo.mp3` honours the music slider, is suppressed alongside the sequenced music, and pauses in the menu |
 | `pd.pirate(side)` | `chraiLuaPirate` (chraction.c) → `gfx_retro_fx` bits 0x800/0x1000 → the shared retro post-filter (`gfx_retro_common.h`) | "Pirate" eyepatch: black out the **left** (`side=1`) or **right** (`side=2`) half of the *finished frame* top-to-bottom; `0`/absent = off. Being a post-process over the composited frame, it covers the **HUD** in that half too. The shader keys on the RAW screen UV (`vUV.x`) before any warp, so the masked half is fixed in screen space; `x` is unaffected by the GL/SDL_GPU y-flip, so both backends agree. Only one side is set at a time |
 | `pd.half_mirror(side)` | `chraiLuaHalfMirror` (chraction.c) → `gfx_retro_fx` bits 0x2000/0x4000 → the shared retro post-filter (`gfx_retro_common.h`) | "PERREP DAAD" / "FECTTCEF RKKR": mirror the **left** (`side=1`) or **right** (`side=2`) half of the *finished frame* onto the other half about the vertical centre line, kaleidoscope style; `0`/absent = off. Same screen-space keying and backend symmetry as `pd.pirate` (raw `uv.x`, applied before the warp/rotate stages). Only one side is set at a time — both bits together would swap the halves, which the helper never does |
 
@@ -977,6 +981,493 @@ process (the `g_ChaosSnatchActive` lesson).
 N64 build is byte-identical: every addition is `#ifndef PLATFORM_N64`, and the
 brace block the chaos `else` introduces around Escape's original logic changes
 indentation only (`git diff -w` shows the real change).
+
+### Shield Charge + external-voice ids (2026-07-30, was "Camper's Paradise")
+
+`campers` / "Camper's Paradise" (health bleed on room entry, regen while
+standing still) is reworked into **`shield_charge` / "Shield Charge"**, which
+touches **shield only — never health**, so it cannot kill:
+
+- The shield trickles up every tick at a rate of `1 / (secs * TICKS)` per tick,
+  so a full 0 → 100% refill takes **exactly the effect's duration** (user call:
+  a longer timer means a slower charge). `secs` comes from **`st.trigdur`** —
+  the length *this* fire will use — read at the top of `start()` before anything
+  else, because a nested trigger clears it (see the WAYTOODANK section).
+- Crossing into a new room costs a flat **20% of MAX** shield (not 20% of
+  current: max-relative, so repeated crossings actually bottom it out instead of
+  tapering away). Roaming outruns the charger; holding a room banks it.
+
+**`pd.player_set_shield(frac [, silent])`** gained the `silent` flag. The setter
+calls `playerDisplayHealth()` because a shield change is otherwise invisible —
+but in `HEALTHSHOWMODE_UPDATING`/`CURRENT` that re-arms `healthshowtime` from
+`updatestartframe`, so calling it *every frame* means the bar can never close
+**or** finish its fill animation. The per-tick trickle passes `silent`; the
+room-entry hit doesn't, because that one is worth showing.
+
+**`pd.play_file` now returns a VOICE ID, and `pd.stop_file([id])` can stop one
+voice.** This is a shared-API change worth knowing about:
+
+- `audioStopExternal()` frees the **whole** `extVoices[8]` pool. So before this,
+  a caller with a *looping* voice had no way to end it without silencing every
+  other external sound — Shield Charge's loop would have killed the Silo
+  countdown track, and the Ring Ring ringtone still had that latent bug.
+- `audioPlayExternal` now assigns each play a unique `id` (monotonic, wraps
+  below `0x40000000`, never 0) and returns it; `audioStopExternalVoice(id)`
+  frees just that one. Slot reuse can't alias — recycling a slot assigns a fresh
+  id, so a stale id matches nothing and stopping it is a harmless no-op.
+- ⚠ **`pd.play_file` returns `false`, never `0`, on failure.** `0` is truthy in
+  Lua and every caller chains fallbacks as
+  `play_file(x.wav) or play_file(x.mp3)`; returning 0 would break all of them.
+- `pd.stop_file()` with no argument still stops everything (phone answered,
+  stage teardown), so no existing caller changed behaviour.
+- `play_sound(name [, loop])` in chaos.lua passes the return through, so the
+  caller can hold the id. A looping caller **must** keep it and stop it — the
+  `trigsound_extok` cache coerces to a boolean since it only cares whether the
+  file loaded.
+
+Needs **`scripts/chaos/sounds/shieldcharge.wav|mp3`** (user-supplied, like the
+other chaos sounds). Absent, the effect works silently. Note the loop runs for
+nearly the whole effect by construction: charging only ends when the shield is
+full, which by design takes the full duration.
+
+### Armoured Guards: timed + reverting (2026-07-30)
+
+`armor_guard` (label "Armor Guard" → **"Armoured Guards"**) was an *instant*
+`dur=0` effect whose body armour lasted the rest of the mission. It is now
+`dur=1` (the shared `st.effectdur` timer) and strips the armour on expiry.
+
+Chaos armour is just **negative `chr->damage`** — `pd.chr_armor` calls
+`chrAddHealth`, which is a bare `chr->damage -= amount` with no clamp, and
+`chrGetArmor` reports `-chr->damage` when it's below zero (a negative damage
+value is the engine's own no-flinch body-armour state).
+
+⚠ **The revert does not hand the 30 back**, and that distinction is the whole
+reason there's a new binding. Subtracting from a guard who had already chewed
+through part of the armour can land `chr->damage >= chr->maxdamage` **without
+ever routing through `chrBeginDeath`** — a chr that is "dead" but never died.
+**`pd.chr_armor_clear(chrnum)`** (`chraiLuaChrArmorClear`) instead zeroes only
+the negative overflow, leaving the guard at full health with no armour, which is
+safe from any starting state. Armour already spent (`damage >= 0`) is left
+untouched: reverting must never retroactively injure anyone.
+
+The effect keeps the roster it armoured in `st.a_armor` and clears exactly those
+chrs, so it can't strip armour something else granted (Boss Fight's
+`chr_armor(c, 60)`). Only guards alive at trigger time are covered — anything
+spawning mid-effect is untouched, as with the old instant version.
+
+### Chain Reaction: a real chain (2026-07-30)
+
+It used to pick the **nearest surviving chr anywhere on the map**, with no range
+limit, and detonate them — which read as the chain teleporting to a random guard
+across the level. Now a killed enemy explodes **where it fell**, and the chain
+propagates through the engine's own explosion damage, so it only ever reaches
+NPCs actually caught in a blast.
+
+**No new binding was needed** — the propagation is free, because explosion
+deaths already emit the Lua `kill` event. Two sites do it (chraction.c): the
+yeet path at the `explosion` branch of `chrDamage` (humans killed by a blast are
+yeeted straight to dead and never reach `chrBeginDeath`), and `chrBeginDeath`
+itself for robots / Dr Caroll. So each blast's victims arrive back in chaos.lua's
+kill hook and queue their own explosion.
+
+Three things make it behave:
+
+- **`a.done[chrnum]`** — a chr explodes at most once. This is what *bounds* the
+  chain: worst case it is as long as the chr list, and it can't ping-pong.
+- **The position is captured in the kill hook**, not at detonation time. An
+  explosion-killed chr is yeeted away from where it died (and may be reaped), so
+  reading its position when the wave drains would blow up in the wrong place or
+  not at all. Same reason martyrdom captures up front.
+- **The wave is swapped out before any of it is detonated.** The kills a blast
+  causes re-enter the kill hook and append to `a.wave`; clearing it first sends
+  those into a *fresh* wave for the next drain, instead of growing the list the
+  loop is walking. This is also what paces the cascade — one wave per drain.
+
+Detonation happens in the effect's own `tick`, never in the kill callback (the
+re-entrancy rule). That is safe specifically because chaos.lua's kill handler
+only ever *reads* `st.active` and appends to plain tables — it never calls
+`stop_effect` or `chaos.trigger`, so re-entering it from inside the
+`pairs(st.active)` tick loop can't corrupt that iteration.
+
+The combo counter now reports the chain's **length once, when it ends** (a
+1.5s grace with nothing new queued), instead of toasting every link — and never
+for a lone unchained kill.
+
+⚠ **Armoured guards break the chain.** `chrDamage` only insta-kills an explosion
+victim whose `chr->damage > 0`, so a chr carrying negative-damage armour (see the
+Armoured Guards section) survives the blast and the chain stops there.
+
+#### ⚠ `pd.explosion_at` used to detonate at the PLAYER (fixed 2026-07-30)
+
+User report while testing the above: *"sometimes the explosion spawns on the
+player and not the killed NPC."* Not a Chain Reaction bug — a bug in
+`chraiLuaExplodeAtPos` that **every distant caller had** (Chain Reaction,
+Martyrdom's fuse blast, the SPEED payoff).
+
+It seeded the room list with **the player's own rooms** and then refined it with
+`cdFindFloorRoomYColourFlagsAtPos`. But that search only resolves a floor for
+positions in — or portal-adjacent to — the seed rooms. Detonate somewhere the
+player's rooms don't reach and it returned `<= 0`, leaving `rooms` as the
+player's set untouched: `explosionCreateSimple` then got the right *position*
+with the player's *rooms*, and the blast went off in the player's room. Reads
+in-game as the explosion spawning on you.
+
+Fix: derive the rooms from the position with **`bgFindRoomsByPos`**, the
+seed-free primitive (the Slayer rocket's out-of-bounds test in player.c uses it
+the same way), falling back to `aboverooms` — a corpse position can float just
+above a floor — and only then to the player's rooms, so an out-of-bounds
+position still produces *an* explosion rather than none.
+
+⚠ **The cap is 7, not the 20 every other caller passes.** `bgFindRoomsByPos`
+writes up to `max` entries **plus** a `-1` terminator, and `roomsCopy` copies to
+that terminator with no bound of its own — so a 20-room result copied into the
+conventional `RoomNum rooms[8]` would overflow the stack by up to 13 entries. Any
+new caller pairing those two functions has to size for `max + 1`.
+
+The same player-seeded pattern appears in several other `chraiLua*` spawn helpers
+(`roomsCopy(g_Vars.currentplayer->prop->rooms, seedrooms)`). Those are all
+*at-or-near-the-player* spawns where the seed is correct by construction — but
+check the seed before reusing one of them for a position that can be far away.
+
+### Fake Crash: a real hang (2026-07-30)
+
+The old version froze the player and every chr while the sim kept running: the
+scene went still, but time carried on and **the music carried on cheerfully over
+the top**, which reads as a graphics glitch, not a crash. Now
+**`pd.fake_crash(secs)`** stops the sim dead *and* holds the audio.
+
+**Time.** `g_ChaosFakeCrash240` (lv.c) forces `g_Vars.lvupdate240 = 0` — the
+`lvIsPaused` mechanism, so nothing advances at all: chrs, projectiles, the
+camera, the frame just redraws the same instant. The hook sits *after* the
+SUPERHOT block so it wins if both are somehow live, and every later
+`lvupdate240` write in `lvTick` is guarded by `if (lvupdate240 > X)`, so a 0
+survives all of them (including the slow-motion overrides).
+
+**Audio.** `audioSetHold(1)` (port/src/audio.c) snapshots the first outgoing
+buffer at the push point and re-pushes that same fragment every frame in place of
+the live mix, smearing whatever was playing into the held drone of a hung game.
+The snapshot is taken at the push point rather than in the setter so it captures
+the buffer *after* the effect chain — a crash landing mid-bitcrush holds the
+crushed audio.
+
+⚠ **The hold is necessary, not decoration.** `schedAudioFrame` (pdsched.c) drives
+`amgrFrame`/`audioEndFrame` off `diffframe60` — **real** frame time — so the N64
+audio manager keeps sequencing music and SFX perfectly normally even with the sim
+frozen. And muting instead would read as the game having *exited*, not hung.
+
+#### ⚠ Why there is no `stop()`
+
+Freezing the sim also freezes **chaos's own effect timers**, which advance on sim
+ticks. A `stop()` on this effect could therefore never run, and the freeze would
+be permanent. So:
+
+- The effect is `dur=0`, a one-shot with no `stop()` — the table is honest about
+  owning no state.
+- The release is a **real-time** countdown in `lvTick`: `g_ChaosFakeCrash240 -=
+  g_Vars.diffframe240`. It must consume `diffframe240`, never `lvupdate240` — a
+  sim-time countdown cannot advance while the sim is frozen, which is the same
+  trap one level down.
+- That countdown also drops the audio hold, so the freeze and the drone can't
+  desync.
+- `secs` is clamped to 0.1–10s in `chraiLuaFakeCrash`, because a caller passing
+  nonsense has no way to take it back.
+- `lvResetChaosPerStage` clears the counter **and** calls `audioSetHold(0)`, so a
+  stage change mid-crash can't strand the held audio.
+
+Minor known quirk: pausing *during* a fake crash stalls the countdown, because
+the `lvIsPaused` branch is a different arm of the same `if` and the hook never
+runs. Unpausing resumes it — no soft-lock, just a longer crash.
+
+Tuning: the held fragment is one mixer buffer (~23ms at the 512-frame default),
+so it repeats as a buzzy ring. Holding a longer window would smooth it into more
+of a drone.
+
+### Headshots Only: now covers NPCs (2026-07-30)
+
+`pd.headshots_only` / `g_ChaosHeadshotsOnly` had only ever protected the
+**player** — its gate in `chrDamage` sits *inside* the
+`if (vprop->type == PROPTYPE_PLAYER)` branch, and that branch returns early, so
+NPC damage never reached it. Guards kept dying to body and limb shots despite the
+label (user report). There are now **three** gates:
+
+| Victim | Behaviour |
+|---|---|
+| Player | non-head `damage` is **zeroed** outright — he simply isn't hurt |
+| NPC (damage) | damage lands, but accumulated `chr->damage` is **clamped** to `maxdamage - 0.1` so body/limb fire can never be the fatal hit |
+| NPC (reaction) | non-head hits take the **body-armour branch** — light `chrFlinchBody`, no argh/`ACT_PREARGH` stagger |
+
+**Why the NPC side clamps instead of zeroing.** The requirement is that only a
+head hit can *kill*, not that body shots do nothing. Zeroing `damage` would skip
+the entire NPC damage block and with it the flinch, the argh, the blood and the
+AI reaction — bullets would land with no feedback at all. Parking the chr at
+`maxdamage - 0.1` leaves it at the brink but alive, so the next head hit finishes
+it. **`maxdamage - 0.1f` is the engine's own idiom** for surviving at the brink —
+the tranquiliser's knockout clamp does exactly this a few lines further down the
+same function. The clamp sits after `chr->damage += damage` and before every
+downstream death check, so it covers both the `aibot` branch's
+`if (chr->damage >= maxdamage) chrDie(...)` and the campaign-guard route through
+`chrReactToDamage` / `ACT_PREARGH`.
+
+**The no-stagger half** reuses the existing armour path rather than inventing
+anything: the branch already taken by `chr->damage < 0` (negative-damage body
+armour, i.e. what Armoured Guards grants) does the light twitch and skips the
+argh. Non-head hits under this effect now take that same branch, so body fire
+reads identically under both effects — it registers, but never rocks them.
+
+Exemptions, all deliberate: **explosions** still kill NPCs (they resolve in a
+branch that force-sets damage to `maxdamage`, they are not "body shots", and
+making grenades non-lethal would be a bigger change than asked for);
+`MPOPTION_ONEHITKILLS` still wins because it re-sets damage *after* the clamp;
+and kill-planes / forced kills bypass `chrDamage` entirely, so neither side is
+actually invulnerable.
+
+### Spawn clearance: no more chrs inside walls (2026-07-30)
+
+`chraiLuaSpawnBody` (`pd.spawn_body`) only ever **floor-snapped** the requested
+point — `cdFindFloorRoomYColourFlagsAtPos` answers "how high is the ground here",
+and says nothing about whether a body *fits*. So any caller picking a blind
+offset could drop a chr straight into geometry: Hydra's random 180-unit ring was
+the reported case, but the 900–1200 unit far spawns (Terminator, Weeping Skedar,
+Skedar+Reaper, the evil twin) had it too.
+
+The fix is the engine's own answer, and the same call the quantum-teleport safety
+fix uses: **`chrAdjustPosForSpawn`** volume-tests `CDTYPE_ALL` — world geometry
+*and* physics objects like tables and crates — at the requested point and, if it
+collides, nudges through a ring of 8 directions looking for a clear one. Nudges
+are biased **away from the player** (`atan2f(dx, dz)`, the offset direction) so a
+blocked spawn slides outward rather than into your face.
+
+Two follow-on details:
+
+- **The nudge moves x/z, so the floor is re-derived afterwards** — and that
+  doubles as the out-of-bounds guard: a nudge can clear the point test on the far
+  side of a thin wall or out over void, where there is no floor room at all.
+  Probed on copies; reject rather than commit garbage.
+- **`pd.spawn_body` now returns -1 when there is nowhere to stand.** That is
+  deliberate — a caller can retry — but it means *a single blind attempt can now
+  come back empty*, in tight corridors often.
+
+So every Lua caller goes through a new **`spawn_body_near(bodynum, weaponnum,
+dist, sunglasses)`** helper: several angles at the requested distance, then a
+nearer ring at `dist * 0.6`, because corridors frequently have no room at 900
+units and plenty at 540. Returns the chrnum or nil. Converted: Hydra, Skedar
+ambush, the evil twin, Clone army, Terminator, Skedar+Reaper, Weeping Skedar.
+`skedar_king` keeps its own 4×2 loop — already correct, and tuned to
+King-sized clearance (350/220).
+
+⚠ **Any new `pd.spawn_body` caller must handle -1**, or it will silently lose
+spawns on blocked ground. Use `spawn_body_near` unless you need a specific
+direction.
+
+The clearance test lives in `chaosSpawnFindClearPos` (a static in chraction.c)
+so `pd.spawn_body` and `pd.clone_chr` share it.
+
+#### Hydra clones the dead guard — `pd.clone_chr` (2026-07-30)
+
+Hydra used to spawn a **random** body from `BODIES_POOL` on a ring around the
+**player** — nothing to do with what you killed or where. It now splits the dead
+guard into two copies of itself, at the corpse.
+
+**`pd.clone_chr(chrnum, x, y, z)`** (`chraiLuaCloneChr`) copies body, head, the
+**action block** (`chr->ailist`, re-resolved by id so the offspring runs the dead
+guard's own AI script — a Skedar behaves like a Skedar, a lab tech like a lab
+tech), plus team, squadron, voicebox and the weapon it was holding. It seeds the
+room search from the *source chr's* rooms rather than the player's, since the
+corpse is what's near that position.
+
+Three traps this had to design around:
+
+- ⚠ **Never clone from the `kill` event.** `pd.clone_chr` inserts a prop, and the
+  kill event fires from inside `chrDamage`, itself inside the prop tick — growing
+  the prop list mid-iteration is the documented corruption family
+  (`PORT_NET_CRASH_LEDGER.md`). The kill hook only *records*; the effect's own
+  `tick` clones. (The old Hydra spawned directly from the kill hook, so this was
+  a latent bug independent of the rework.)
+- ⚠ **The corpse position must be captured at kill time.** An explosion-killed chr
+  is yeeted away from where it died and may be reaped, so reading its position on
+  the next tick would put the offspring somewhere else entirely.
+- ⚠ **Death can already have replaced the template's script.** `chrDie` swaps a
+  **sim's** list to `GAILIST_AIBOT_DEAD`, and a reaped chr has `ailist == NULL`.
+  Cloning either hands the offspring a corpse script — it spawns and lies down.
+  Both fall back to `GAILIST_ALERTED`. A campaign guard's own list is untouched
+  by death, which is the case that matters and the whole point of cloning it.
+
+The clones spawn awake (`alertness = 100` + `CHRCFLAG_TRIGGERSHOTLIST`) and
+facing the player; a head that spawns idle just stands in the corpse pile, which
+reads as broken rather than as a hydra.
+
+##### The chr-slot ceiling (`pd.chr_slots`)
+
+**A stage's chr table is sized once, at load, and cannot grow.**
+`chrmgrConfigure` allocates
+
+```c
+g_NumChrSlots = PLAYERCOUNT() + numchrs + MAX_BOTS;   // MEMPOOL_STAGE
+```
+
+where `numchrs` is `setupCountCommandType(OBJTYPE_CHR)` — the guards the setup
+file itself declares — plus co-op buddies. So **every runtime spawner shares the
+`MAX_BOTS` slack: 32 slots on the port** (the offline-simulant allowance, which
+missions never use) and 10 on N64. When it is full `chrSpawnAtCoord` returns NULL
+and every spawn/clone helper reports failure.
+
+⚠ **A corpse still owns its slot until it is reaped**, so a killing spree lowers
+the free count even when nothing new is alive — which is why a Hydra swarm eats
+the table roughly twice as fast as it looks like it should.
+
+`pd.chr_slots()` returns `free, total` (`chrsGetNumFree` / `chrsGetNumSlots`).
+Hydra polls it and stops at **4 free**, keeping a small reserve so the mission's
+own scripted spawns aren't starved out by the swarm. That replaced a lifetime
+`spawned < 20` counter, which was the actual cause of "the guards stop cloning
+after a while" (2026-07-30): once 20 heads had ever been made it went quiet for
+the rest of the effect, however many slots had since freed up. **Bound runtime
+spawners by the table, not by a running total.**
+
+### Allies wear your profile character (2026-07-30)
+
+**The Boys** (`cavalry`, was "Send in the cavalry") and **Backup arrives**
+spawned four (or one) identical
+Dark Combat troopers with a Falcon 2 apiece. Both now use the player's **Combat
+Sim profile** body/head and roll a random gun each.
+
+`pd.spawn_ally([weaponnum])` / `chraiLuaSpawnAlly` reads **`MP.Profile.Body` /
+`MP.Profile.Head` from pd.ini** (`g_MpProfileBody` / `g_MpProfileHead`, -1 when
+unset) and maps them with `mpGetBodyId` / `mpGetHeadId` — the same pair
+`player.c` uses to swap Joanna for your profile character on the CI-training
+title screen. No profile loaded ⇒ the old Dark Combat / VD look, so it degrades
+quietly.
+
+Two guards worth keeping:
+
+- **`bodyLoad` before the spawn.** `chrSpawnAtCoord` loads on demand and bails
+  **silently** otherwise, so a profile body that isn't already resident on this
+  stage would mean "the cavalry never arrives". If the id is out of range it
+  reverts to Dark Combat rather than failing.
+- **Weapon fallback.** `weaponnum <= 0`, or any weapon whose
+  `playermgrGetModelOfWeapon` is -1 (no chr-held model), falls back to the
+  Falcon 2 instead of spawning the buddy empty-handed. The effects pass a pick
+  from chaos.lua's `GUNS` pool, so the randomness stays tunable without a
+  rebuild. `pd.spawn_ally()` with no argument is unchanged (`scripts/ap/test.lua`
+  still calls it that way).
+
+⚠ `GUNS` includes rockets and the Devastator, so an ally can now splash the
+player. That is left in deliberately — curate a subset at the call site if it
+proves more annoying than funny.
+
+### ⚠⚠ Identity Crisis: HARD LOCK — `chr_set_body` left the new model un-animated
+
+Caught live in gdb (2026-07-30), thread 1:
+
+```
+animLoadFrame (animnum=0, framenum=0)                       anim.c:305
+animGetPosAngleAsInt (... skel=g_SkelChr, animnum=0 ...)    anim.c:676
+modelSetAnimFrame2WithChrStuff (curframe=-2.45797714e+21)   model.c:2373   <-- garbage
+modelTickAnimQuarterSpeed                                   model.c:2710
+chr0f0220ec                                                 chr.c:2137
+chrTick / propsTickPlayer / lvRender / mainTick
+```
+
+`curframe = -2.4e21` is **un-initialised memory being ticked as an animation
+frame**. Root cause: `chr0f020b14` is the **spawn-time** linker — it leaves the
+fresh model's anim struct and its root `CHRINFO` rwdata (root position, facing,
+root-motion accumulator) un-initialised. A *spawning* chr doesn't care, because
+its ailist issues an animation on the first tick. A **live** chr is mid-animation,
+so the next `chrTick` reads whatever was in that allocation.
+
+`body.c`'s `modelSwapRebuildLiveChrs` **already documents and solves this** — it
+follows `chr0f020b14` with `modelCopyAnimData(old, neu)` plus a copy of the root
+chrinfo rwdata. `chraiLuaChrSetBody` never did either. It is also a better
+explanation of the "guards fall through the floor" reports than the ground
+sentinel guarded below: a garbage root-motion accumulator moves the chr by itself.
+
+⚠ **The copy is only valid within one skeleton.** `body.c` can copy
+unconditionally because it re-allocates the *same* bodynum. Here the entire point
+is a *different* body, and `BODIES_POOL` mixes human bodies with skedar-skeleton
+ones (`BODY_SKEDAR`, `BODY_MINISKEDAR`) — an animnum+frame meaning "walking" on
+`g_SkelChr` indexes nothing sane on `g_SkelSkedar`. So:
+
+- **same skeleton** → copy anim + chrinfo across, swap proceeds;
+- **different skeleton** → **refuse**. The half-done swap is rolled back
+  (re-link the original model, free the new one, re-give the weapons) and `0` is
+  returned. Better a guard that declines to become a Skedar than one ticking
+  garbage.
+
+Identity Crisis therefore retries up to 4 bodies per chr, so a human guard still
+reskins to some *other* human instead of silently keeping its body for the cycle.
+
+**Rule for any future `chr0f020b14` caller on a LIVE chr: it is a spawn-time
+linker. You must supply anim + root chrinfo yourself, and you may only inherit
+them from a model with the same skeleton.**
+
+### Identity Crisis dropped guards through the floor (2026-07-30)
+
+A body swap re-grounds the chr, and the "no ground" case is not a failure — it is
+a **sentinel that gets used as a coordinate**.
+
+`chr0f020b14` (chr.c, the spawn-time re-linker that both body-swap paths call)
+probes from `pos.y + 100` with `cdFindGroundInfoAtCyl` and then hard-assigns:
+
+```c
+chr->ground = chr->manground = ground = cdFindGroundInfoAtCyl(&testpos, chr->radius, rooms, ...);
+prop->pos.y = ground + 100;
+```
+
+When no floor is found, `cdFindGroundFromList` returns its initial
+`curground = -4294967296` — so the chr is placed four billion units down and is
+simply gone. Identity Crisis reskins **every** guard on a 90-tick timer, so it
+only takes one who happens to be airborne (yeeted by an explosion), on a lift, or
+standing somewhere their collision cylinder finds no floor. Hence "sometimes".
+
+Both callers now pre-validate with the **same call, offset and radius**, so the
+check predicts `chr0f020b14`'s result exactly, and skip that chr:
+
+| Caller | On no-ground |
+|---|---|
+| `chraiLuaChrSetBody` (`pd.chr_set_body`, Identity Crisis / Hydra's old reskin) | `return 0` |
+| `modelSwapRebuildLiveChrs` (body.c, the `/modelswap` in-place rebuild) | `continue` |
+
+`> -100000` is the codebase's established "did we find ground" idiom
+(cf. `chrAdjustPosForSpawn`) — well above the sentinel, far below any real
+geometry. Skipping one reskin cycle is invisible; losing a guard under the map is
+not.
+
+⚠ **Any new caller of `chr0f020b14` needs this guard**, and more generally: the
+collision helpers signal "nothing found" with huge negative sentinels, not with a
+status. Never feed one into a position.
+
+### Open sesame holds doors open (2026-07-30)
+
+`pd.doors_all(true)` is a one-shot `doorsRequestMode(DOORMODE_OPENING)` sweep, so
+doors swung shut again on their own autoclose timer seconds later. Open sesame is
+now a timed effect on **`pd.doors_hold(on)`** and the doors stay open for its
+whole duration.
+
+It uses the engine's own flag: **`OBJFLAG_DOOR_KEEPOPEN`** (0x40000000), which
+`doorTick`'s autoclose block skips (propobj.c:7971). Missions set it themselves on
+doors they want propped — the Air Base hangar doors, the Villa/Depot lasers, and
+plenty more across `src/setups/`.
+
+⚠ **Which is why the restore cannot just clear the bit from every door.** It is a
+single shared flag with no owner, so clearing it wholesale would permanently
+un-prop the mission's own held-open doors and quietly break level design.
+`chraiLuaDoorsHold` therefore records the doors it actually changed — the ones
+that did **not** already have the flag — and clears only those. Same discipline as
+Lockdown's `CHAOS_DOOR_LOCKBIT`, which ORs into `keyflags` and clears only its own
+bit.
+
+The teardown re-walks `activeprops` and matches by **address** instead of
+dereferencing the saved pointers: a door can be destroyed mid-effect, and a freed
+`doorobj` must never be written through. `chraiLuaDoorsHoldReset` (called from
+`lvResetChaosPerStage`) just zeroes the count without touching the list, because
+after a stage change those pointers belong to freed `MEMPOOL_STAGE` props.
+
+Held doors are also asked to close on stop, rather than waiting for someone to
+walk past and re-arm the autoclose timer.
+
+### Ring ring! removed (2026-07-30)
+
+Superseded by **Phone call for you** and **Note 7**, which both ring *and* give
+you something to do about it. `play_ring` stays — both of those use it.
 
 ### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
 

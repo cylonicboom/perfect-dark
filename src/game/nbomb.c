@@ -8,6 +8,7 @@
 #include "game/chr.h"
 #include "game/chraction.h"
 #include "game/prop.h"
+#include "game/propobj.h" // gasChaosIsActive / gasChaosOverlayFrac (chaos "Wolf Gas")
 #include "game/objectives.h"
 #include "game/atan2f.h"
 #include "game/tex.h"
@@ -938,44 +939,69 @@ Gfx *gasRender(Gfx *gdl)
 		ROOM_LUE_0090,
 	};
 
-	if (g_Vars.stagenum == STAGE_ESCAPE) {
+	if (g_Vars.stagenum == STAGE_ESCAPE
+#ifndef PLATFORM_N64
+			// Chaos "Wolf Gas": this whole overlay was locked to Escape, which is
+			// why the chaos gas could cough, hiss, damage and re-tint the fog
+			// without ever putting gas ON SCREEN. Un-gate it here (and at the two
+			// playerRenderHud call sites) so the chaos path reaches the draw.
+			|| gasChaosIsActive()
+#endif
+			) {
 		f32 intensityfrac = 1.0f;
 
 		campos.x = g_Vars.currentplayer->cam_pos.x;
 		campos.y = g_Vars.currentplayer->cam_pos.y;
 		campos.z = g_Vars.currentplayer->cam_pos.z;
 
-		for (i = 0; i < ARRAYCOUNT(gasrooms); i++) {
-			if (bgRoomContainsCoord(&campos, gasrooms[i])) {
-				show = true;
-			}
-		}
-
-		if (!show) {
-			// Outside of the gas rooms list - check distance to abitrary point
-			f32 distance = sqrtf(
-					(campos.f[0] - -1473.0f) * (campos.f[0] - -1473.0f) +
-					(campos.f[1] - -308.0f) * (campos.f[1] - -308.0f) +
-					(campos.f[2] - -13660.0f) * (campos.f[2] - -13660.0f));
-
-			if (distance < 1328.0f) {
-				show = true;
-				alphafrac = 1.0f - distance / 1328.0f;
-				intensityfrac = gasGetDoorFrac(0x32);
-			}
-		} else {
-			if (bgRoomContainsCoord(&campos, 0x91)) {
-				// In the small room between the first two doors
-				f32 frac1 = gasGetDoorFrac(0x30);
-				f32 frac2 = gasGetDoorFrac(0x31);
-
-				if (frac2 > frac1) {
-					intensityfrac = frac2;
-				} else {
-					intensityfrac = frac1;
+#ifndef PLATFORM_N64
+		// Everything Escape uses to decide WHERE the gas is visible is specific
+		// to that one map — its 12 gas-room ids, a hardcoded world point, and
+		// doors 0x30-0x32. Run on another stage those ids would resolve to
+		// unrelated (or out-of-range) rooms and doors, so the chaos path skips
+		// the lot: the whole level is gassed, and the thickness comes from the
+		// release ramp instead. Keyed on the chaos flag rather than on "not
+		// Escape" so firing the effect ON Escape also gasses the whole map
+		// instead of only its authored rooms (the stage's own gas resumes when
+		// the effect restores the env).
+		if (gasChaosIsActive()) {
+			show = true;
+			intensityfrac = gasChaosOverlayFrac();
+		} else
+#endif
+		{
+			for (i = 0; i < ARRAYCOUNT(gasrooms); i++) {
+				if (bgRoomContainsCoord(&campos, gasrooms[i])) {
+					show = true;
 				}
+			}
 
-				intensityfrac += 0.2f;
+			if (!show) {
+				// Outside of the gas rooms list - check distance to abitrary point
+				f32 distance = sqrtf(
+						(campos.f[0] - -1473.0f) * (campos.f[0] - -1473.0f) +
+						(campos.f[1] - -308.0f) * (campos.f[1] - -308.0f) +
+						(campos.f[2] - -13660.0f) * (campos.f[2] - -13660.0f));
+
+				if (distance < 1328.0f) {
+					show = true;
+					alphafrac = 1.0f - distance / 1328.0f;
+					intensityfrac = gasGetDoorFrac(0x32);
+				}
+			} else {
+				if (bgRoomContainsCoord(&campos, 0x91)) {
+					// In the small room between the first two doors
+					f32 frac1 = gasGetDoorFrac(0x30);
+					f32 frac2 = gasGetDoorFrac(0x31);
+
+					if (frac2 > frac1) {
+						intensityfrac = frac2;
+					} else {
+						intensityfrac = frac1;
+					}
+
+					intensityfrac += 0.2f;
+				}
 			}
 		}
 

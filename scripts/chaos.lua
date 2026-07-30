@@ -472,7 +472,6 @@ chaos.effects = {
   slomo        = setmetatable({ label="Slow motion",   w=6 }, {__index=cheat_effect(CHEAT.SLOMO, 12)}),
   dkmode       = setmetatable({ label="DK mode",       w=5 }, {__index=cheat_effect(CHEAT.DK, 45)}),
   smalljo      = setmetatable({ label="Tiny Jo",       w=4 }, {__index=cheat_effect(CHEAT.SMALLJO, 30)}),
-  smallchars   = setmetatable({ label="Tiny everyone", w=4 }, {__index=cheat_effect(CHEAT.SMALLCHARS, 30)}),
   -- Queensberry rules: everyone melee only. Disarm every enemy (remembering
   -- their weapons), force the player to fists + lock weapon switching, and keep
   -- CHEAT_MARQUIS on so freshly-spawned guards are unarmed too. All restored on
@@ -976,9 +975,6 @@ chaos.effects = {
                    stop=function() pd.shiny(0) end },
   paint_red    = { label="Paint the town red", w=6, dur=30,
                    start=function() pd.room_tint(255, 48, 48) end,
-                   stop=function() pd.room_tint() end },
-  toxic        = { label="Toxic spill",        w=4, dur=25,
-                   start=function() pd.room_tint(80, 255, 80) end,
                    stop=function() pd.room_tint() end },
   -- The real Perfect Darkness cheat (engine lighting blackout), not the
   -- room-tint vertex shading it used before (user call 2026-07-28). Drops the
@@ -1647,8 +1643,13 @@ chaos.effects = {
   sepia        = { label="1964 mode",         w=4, dur=30,
                    start=function() pd.screen_tint(230, 190, 130); pd.audio_radio(true) end,
                    stop=function() pd.screen_tint(); pd.audio_radio(false) end },
-  terminal     = { label="Terminal green",    w=4, dur=30,
-                   start=function() pd.screen_tint(110, 255, 130) end,
+  -- AQZ green: monochrome green-phosphor tint built on the AQZ base colour
+  -- #006600. pd.screen_tint MULTIPLIES scene luminance by the tint colour, so
+  -- the base is passed at full brightness — its channel ratios are what set
+  -- the hue, and a pixel at luminance 0x66 then lands on exactly #006600 with
+  -- highlights blooming above it, instead of the whole screen going near-black.
+  aqz          = { label="AQZ green",         w=4, dur=30,
+                   start=function() pd.screen_tint(0, 255, 0) end,
                    stop=function() pd.screen_tint() end },
   -- Rainbow World: every texture on screen has its hue rotated in lockstep,
   -- cycling continuously (renderer colour mode 1004 — a luminance-preserving
@@ -1925,18 +1926,21 @@ chaos.effects = {
                    -- motion still applies, so T-posers glide around dominantly
                    start=function() pd.t_pose(true) end,
                    stop=function() pd.t_pose(false) end },
-  woof_gas     = { label="WOOF GAS",          w=4, dur=30,
-                   -- the Investigation nerve gas, anywhere: green env wash on
-                   -- fog stages, coughing + hiss + damage every ~4s. The green
-                   -- screen tint guarantees the look on stages with no fog env.
-                   start=function()
-                     pd.gas(true)
-                     pd.screen_tint(120, 220, 110)
-                   end,
-                   stop=function()
-                     pd.gas(false)
-                     pd.screen_tint()
-                   end },
+  -- Wolf Gas (was "WOOF GAS"): the Investigation nerve gas, anywhere — the real
+  -- A51-Escape gas OVERLAY scrolling across the screen, the hiss, Jo coughing,
+  -- a green env wash on fog stages, and chip damage every ~4s that can NEVER
+  -- kill you (it stops at 15% health — user call 2026-07-30).
+  --
+  -- The overlay is the fix (2026-07-30): gasRender was hard-gated to
+  -- STAGE_ESCAPE at all three of its gates, so on any other stage the gas ran
+  -- fully simulated but completely invisible. The flat green pd.screen_tint
+  -- that used to stand in for it is GONE now that the genuine article draws —
+  -- which also stops this effect fighting anything else that wants the tint.
+  -- All of it lives in C behind pd.gas (see docs/PORT_CHAOS.md), so there is
+  -- nothing to tune from here.
+  wolf_gas     = { label="Wolf Gas",           w=4, dur=30,
+                   start=function() pd.gas(true) end,
+                   stop=function() pd.gas(false) end },
   -- NB: snow intensity maxes at 1 (weatherSetIntensity has no snow case 2/3 —
   -- passing 2 left the particle target at 0, i.e. no snow at all). 1 is the
   -- same 500-particle ceiling the heaviest rain uses.
@@ -2277,6 +2281,25 @@ local function simon_tick(left)
   end
 end
 
+-- WAYTOODANK's visual pool, grouped into CHANNELS — see the effect (further
+-- down this table) for the full rationale. One channel = one renderer slot that
+-- its members all overwrite each other in, so the effect picks at most one
+-- entry per channel. Adding a new visual effect here is safe as long as it goes
+-- in the channel of whatever pd.* global it drives (a NEW global = a new
+-- channel); putting it in the wrong one just makes two picks cancel out.
+local DANK_CHANNELS = {
+  { "negative", "thermal", "rainbow_world", "prismatic",
+    "bit8", "bit16", "gameboy" },                     -- pd.pixelate (one colour mode)
+  { "untextured", "watercolour" },                    -- pd.flattex
+  { "noir", "sepia", "aqz", "midas", "shiny" },       -- the grayscale/tint/shiny path
+  { "fisheye", "tunnel_vision", "vertigo" },          -- pd.fov_scale (WORLD fov)
+  { "widescreen", "tallscreen" },                     -- pd.aspect_scale
+  { "paint_red", "disco" },                           -- pd.room_tint
+  { "giants", "ant_farm" },                           -- pd.chr_scale
+  { "crt", "vhs", "underwater", "peephole" },         -- post-filter bits + pd.lens
+  { "wireframe_enemies" },                            -- pd.chr_wireframe
+}
+
 local alpha_effects = {
   -- Hurricane v2: much smaller gust force, repeated through the effect, plus
   -- storm weather for the duration. (Faster weather animation needs C.)
@@ -2458,7 +2481,10 @@ local alpha_effects = {
                  end },
   -- Terminator: the DJ Bond tuxedo body in SUNGLASSES with a shotgun and an
   -- absurd shield, spawned far away (1200u). No timer — it comes for you and
-  -- keeps coming.
+  -- keeps coming. He also carries the Chicago interceptor's engine loops
+  -- (pd.chr_hum) so you HEAR him closing in from out of sight; the loops need
+  -- re-issuing every tick, which the main tick's hum watcher does (he has no
+  -- effect tick of his own — dur=0).
   terminator = { label="Terminator", dur=0,
                  start=function()
                    local a = math.random() * 2 * math.pi
@@ -2469,6 +2495,10 @@ local alpha_effects = {
                    if not c or c < 0 then error("no room for him here") end
                    pd.chr_set_shield(c, 30)
                    pd.chr_alert(c)
+                   if pd.chr_hum then
+                     st.hum_chrs = st.hum_chrs or {}
+                     st.hum_chrs[#st.hum_chrs + 1] = c
+                   end
                  end },
   -- Two-handed: EVERY weapon is forced dual-wield. Whatever you switch to
   -- gets re-dual-wielded on the next tick, so there's no single-handed
@@ -3708,11 +3738,61 @@ local alpha_effects = {
                    pd.hud_off(true)
                  end,
                  stop=function() pd.hud_off(false) end },
-  -- WAYTOODANK: gun FOV 140. The weapon becomes an experience.
+  -- WAYTOODANK: gun FOV 140 — the weapon becomes an experience — plus THREE
+  -- random visual effects piled on top of it (user call 2026-07-30).
+  --
+  -- The three are drawn one-per-CHANNEL, never three from one flat visual pool.
+  -- A channel is a set of effects that fight over the same single renderer slot:
+  -- pd.pixelate has ONE colour mode, pd.flattex ONE texture mode,
+  -- pd.fov_scale / pd.aspect_scale / pd.shiny / pd.room_tint / pd.chr_scale one
+  -- value each, and noir/sepia/aqz/midas all funnel into the same grayscale-tint
+  -- path (gfx_pc.cpp picks ONE of shiny-gold / screen_tint / force_grayscale by
+  -- priority). Two picks from one channel means the second silently overwrites
+  -- the first, and then whichever ends first runs a stop() that clears the
+  -- OTHER one too. One pick per channel composes cleanly by construction.
+  --
+  -- The gun FOV is a genuinely separate slider from the world FOV
+  -- (docs/PORT_GUN_FOV.md), so the fov_scale channel stacks with the 140 rather
+  -- than fighting it.
   waytoodank = { label="WAYTOODANK", dur=1,
                  start=function()
                    if not pd.gun_fov then error("needs new exe") end
+                   -- Read the fire length BEFORE triggering anything: the nested
+                   -- triggers below clear st.trigdur on their way out.
+                   local secs = st.trigdur
                    pd.gun_fov(140)
+                   -- Shuffle the channel list and take the first three, so the
+                   -- three come from three DIFFERENT channels without rejection
+                   -- sampling. Respect the player's own per-effect enable
+                   -- toggles; a channel whose entries are all switched off is
+                   -- skipped rather than forced on.
+                   local chans = {}
+                   for i = 1, #DANK_CHANNELS do chans[i] = DANK_CHANNELS[i] end
+                   for i = #chans, 2, -1 do
+                     local j = math.random(i)
+                     chans[i], chans[j] = chans[j], chans[i]
+                   end
+                   local fired = 0
+                   for i = 1, #chans do
+                     if fired >= 3 then break end
+                     local pool = {}
+                     for _, n in ipairs(chans[i]) do
+                       -- skip anything already running (the Combo Time filter):
+                       -- re-firing it would only reset its own timer and burn
+                       -- one of the three picks on something already on screen
+                       if chaos.effects[n] and effect_enabled(n)
+                           and not st.active[n] then
+                         pool[#pool + 1] = n
+                       end
+                     end
+                     if #pool > 0 then
+                       -- quiet: no extra sting or toast, so four effects landing
+                       -- at once still reads as one. Their timer bars DO show.
+                       if chaos.trigger(pool[math.random(#pool)], nil, secs, true) then
+                         fired = fired + 1
+                       end
+                     end
+                   end
                  end,
                  stop=function() pd.gun_fov(0) end },
   -- Weeping Skedar: a ONE-OFF spawn, no timer — it hunts until dead, but
@@ -4094,6 +4174,9 @@ local function reset_all_modes()
   -- A blackout afterglow is now only lent-goggle bookkeeping (the darkness
   -- already ended with the timer); inventory resets across stages anyway.
   st.blk_wait = nil
+  -- Engine hums die with the stage (the chrs they were attached to are gone);
+  -- just drop the watch list so it can't chase freed chrnums.
+  st.hum_chrs = nil
   st.active = {}
   st.duration = {}
   st.oneoff = {}
@@ -4237,17 +4320,28 @@ local function reset_all_modes()
   if pd.unpossess then pd.unpossess() end
 end
 
--- chaos.trigger(name, who, dur_override): fire an effect. dur_override (seconds)
--- forces a specific length for timed effects (the Test menu passes 30) instead
--- of the global st.effectdur; instant effects ignore it.
-function chaos.trigger(name, who, dur_override)
+-- chaos.trigger(name, who, dur_override, quiet): fire an effect. dur_override
+-- (seconds) forces a specific length for timed effects (the Test menu passes
+-- 30) instead of the global st.effectdur; instant effects ignore it. quiet
+-- suppresses the trigger sting and the "CHAOS: <name>" toast but NOT the timer
+-- bar — for sub-effects fired by another effect, so the combo reads as one
+-- event while the player can still see what landed (WAYTOODANK's visuals).
+function chaos.trigger(name, who, dur_override, quiet)
   local e = chaos.effects[name]
   if not e then
     pd.log("[chaos] unknown effect: " .. tostring(name))
     return false
   end
   if st.active[name] then stop_effect(name) end -- restart timed effects cleanly
+  -- Publish the length THIS fire will use (the same dur_override/st.effectdur
+  -- resolution done below) so an effect's start() can pass it to a sub-effect
+  -- it triggers and stay in sync: without it, a 30s Test-menu fire of WAYTOODANK
+  -- would leave its three visuals running on the 60s global. A nested trigger
+  -- clears this on the way out, so a start() that wants it must read it FIRST,
+  -- before firing anything. fixeddur effects still keep their own length.
+  st.trigdur = dur_override or st.effectdur
   local ok, err = pcall(e.start)
+  st.trigdur = nil
   if not ok then
     pd.log("[chaos] effect '" .. name .. "' failed: " .. tostring(err))
     return false
@@ -4281,12 +4375,12 @@ function chaos.trigger(name, who, dur_override)
   -- Universal trigger sting — every effect, timed or instant, except the
   -- deniable ones. Fires regardless of the toast setting: it says SOMETHING
   -- happened without saying what, so it's a cue rather than a spoiler.
-  if not is_deniable(e) then
+  if not is_deniable(e) and not quiet then
     play_trigger_sting()
   end
   -- silent effects show no "CHAOS: <name>" toast (e.g. Fake Crash, whose whole
   -- gag is that nothing on screen hints it's a chaos effect at all).
-  if not e.silent then
+  if not e.silent and not quiet then
     announce(e.label .. (who and ("  [" .. who .. "]") or ""), true)
   end
   -- Anti-repeat deck: age every effect's cooldown by one fire, then put the one
@@ -4714,6 +4808,27 @@ pd.on("tick", function()
       pd.take_weapon(W.NIGHTVISION)
       st.blk_wait = nil
     end
+  end
+
+  -- Engine-hum keep-alive (the Terminator's interceptor loops). pd.chr_hum is
+  -- a psCreateIfNotDupe, so it has to be re-issued every tick: it's idempotent
+  -- while the sound is already running, and it's what RESTARTS the loops after
+  -- distance attenuation killed them. Runs outside any effect lifetime because
+  -- the Terminator is permanent (dur=0). Dropped once the chr is gone or dead
+  -- (chr_health returns nil for a freed slot) — machines stop humming when
+  -- they stop.
+  if st.hum_chrs then
+    for i = #st.hum_chrs, 1, -1 do
+      local c = st.hum_chrs[i]
+      local hp = pd.chr_health(c)
+      if not hp or hp <= 0 then
+        pd.chr_hum(c, false)
+        table.remove(st.hum_chrs, i)
+      else
+        pd.chr_hum(c)
+      end
+    end
+    if #st.hum_chrs == 0 then st.hum_chrs = nil end
   end
 
   -- Self-destruct grace: hold invincibility ~1s past the last explosion so a
@@ -5479,7 +5594,7 @@ if pd.menu_add then
   local CATS = {
     { title = "Visual & Audio", set = {
       mirror=1, untextured=1, watercolour=1, noir=1, shiny=1, midas=1,
-      paint_red=1, toxic=1, blackout=1, disco=1, sepia=1, terminal=1,
+      paint_red=1, blackout=1, disco=1, sepia=1, aqz=1,
       bit8=1, bit16=1, gameboy=1, crt=1, vhs=1, peephole=1, underwater=1,
       negative=1, thermal=1, cathedral=1, reversed=1, helium=1, demon=1,
       australia=1, tonal=1, muted=1, soundboard=1, kazoo=1, jukebox=1,
@@ -5500,7 +5615,7 @@ if pd.menu_add then
       jelly=1, acid_trip=1, pirate=1,
     } },
     { title = "Cheats", set = {
-      fists=1, slomo=1, dkmode=1, smalljo=1, smallchars=1, goldeneye=1,
+      fists=1, slomo=1, dkmode=1, smalljo=1, goldeneye=1,
       cloak=1, xray=1, nightvision=1, marquis=1, godmode=1, one_punch=1,
       superhot=1,
     } },
@@ -5520,7 +5635,7 @@ if pd.menu_add then
       take_a_break=1, one_hp=1, dry_spell=1, amnesia=1, disarm=1,
       evil_twin=1, clone_army=1, skedar_ring=1, skedar_king=1, enemyrockets=1, karma=1,
       glass_cannon=1, backfire=1, nbomb_me=1, earthquake=1,
-      quantum_leap=1, quantum_instability=1, gormless=1, woof_gas=1,
+      quantum_leap=1, quantum_instability=1, gormless=1, wolf_gas=1,
       -- graduated alpha batch
       hot_potato=1, martyrdom=1, booby_doors=1, russian_roulette=1,
       skedar_reaper=1, terminator=1, gun_jam2=1, enemy_ltk=1,

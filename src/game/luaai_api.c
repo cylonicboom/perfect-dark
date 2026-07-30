@@ -2618,6 +2618,19 @@ static int l_pd_chr_yscale(lua_State *L)
 	return 1;
 }
 
+/* pd.chr_hum(chrnum [, on]) -> bool. Attach the Chicago interceptor's engine
+ * loops (hover hum + thrust) to a chr as positional repeating sounds. Must be
+ * re-issued every tick — the create is idempotent, but it refuses to start
+ * past ~3000u, so this is what resumes the loops as the player closes in.
+ * on defaults to true; pass false to stop both layers. */
+static int l_pd_chr_hum(lua_State *L)
+{
+	s32 chrnum = (s32)luaL_checkinteger(L, 1);
+	s32 on = lua_isnoneornil(L, 2) ? 1 : lua_toboolean(L, 2);
+	lua_pushboolean(L, chraiLuaChrHum(chrnum, on) != 0);
+	return 1;
+}
+
 /* pd.shake(ticks) -> bool. Explosion-style screen shake for N ticks. */
 static int l_pd_shake(lua_State *L)
 {
@@ -3712,6 +3725,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_chr_damage);    lua_setfield(L, -2, "chr_damage");
 	lua_pushcfunction(L, l_pd_chr_scale);     lua_setfield(L, -2, "chr_scale");
 	lua_pushcfunction(L, l_pd_chr_yscale);    lua_setfield(L, -2, "chr_yscale");
+	lua_pushcfunction(L, l_pd_chr_hum);       lua_setfield(L, -2, "chr_hum");
 	lua_pushcfunction(L, l_pd_shake);         lua_setfield(L, -2, "shake");
 	lua_pushcfunction(L, l_pd_screen_tint);   lua_setfield(L, -2, "screen_tint");
 	lua_pushcfunction(L, l_pd_upside_down);   lua_setfield(L, -2, "upside_down");

@@ -11761,6 +11761,40 @@ s32 chraiLuaChrScale(s32 chrnum, f32 mult)
 	return 1;
 }
 
+// pd.chr_hum(chrnum [, on]): give a chr the two engine loops the Chicago
+// interceptor flies on — SFX_810F (the constant hover hum) plus SFX_8110 (the
+// thrust layer the real chopper only adds while under power). This is
+// chopperTickMove's recipe verbatim: psCreateIfNotDupe issues them as
+// POSITIONAL, PSFLAG_REPEATING sounds bound to the chr's prop, so they track
+// it through the level and fall off with distance on their own.
+//
+// The chopper's PSTYPE dedupe keys are reused deliberately — they are only
+// ever dedupe/stop selectors (nothing else in the game reads them), and a chr
+// is never simultaneously a chopper, so there is nothing to collide with.
+//
+// Two consequences the caller has to live with, both inherited from the
+// chopper: the create is idempotent (calling it repeatedly is free), and
+// psCreateIfNotDupe REFUSES to start anything whose distance-attenuated
+// volume computes to zero (past ~3000u). So this must be re-issued every tick
+// for the loops to resume once the player closes back in — exactly how
+// chopperTickMove drives it. on=0 stops both layers.
+s32 chraiLuaChrHum(s32 chrnum, s32 on)
+{
+	struct chrdata *chr = chrFindByLiteralId(chrnum);
+
+	if (apLuaPlayerChr() == NULL || chr == NULL || chr->prop == NULL) {
+		return 0;
+	}
+	if (!on) {
+		psStopSound(chr->prop, PSTYPE_CHOPPERHUM1, 0xffff);
+		psStopSound(chr->prop, PSTYPE_CHOPPERHUM2, 0xffff);
+		return 1;
+	}
+	psCreateIfNotDupe(chr->prop, SFX_810F, PSTYPE_CHOPPERHUM1);
+	psCreateIfNotDupe(chr->prop, SFX_8110, PSTYPE_CHOPPERHUM2);
+	return 1;
+}
+
 // pd.shake(ticks): kick the explosion screen-shake for N ticks (~60/s).
 extern s32 g_ExplosionShakeTotalTimer;
 extern s32 g_ExplosionShakeIntensityTimer;

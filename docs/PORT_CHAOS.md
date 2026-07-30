@@ -372,7 +372,7 @@ function, called every frame while active (disco's hue cycle).
   weapon), `knife_fight`, `ammo_rain`, `lock_n_load` (every gun + full ammo),
   `amnesia` (take every gun), `dry_spell` (zero all ammo, weapons kept).
 - **Cheat bank** (timed): `mirror`, `wireframe`, `tonal` (tonal inversion),
-  `fists`, `slomo`, `dkmode`, `smalljo`, `smallchars`, `elvis`, `marquis`,
+  `fists`, `slomo`, `dkmode`, `smalljo`, `elvis`, `marquis`,
   `enemyshields`.
 - **Arm all NPCs** (timed give + restore, the `arm_all_effect(label, w, pick)`
   factory): on start it snapshots each NPC's current weapon (`pd.chr_weapon`)
@@ -562,7 +562,7 @@ function, called every frame while active (disco's hue cycle).
   `untextured` ("1996 mode" — every texture white, pure vertex shading),
   `watercolour` (every texture flooded with its own average colour),
   `noir` (forced grayscale), `paint_red` ("Paint the town red" — the KotH
-  hill highlight applied to every room), `toxic` (green tint), `blackout`
+  hill highlight applied to every room), `blackout`
   (near-dark blue tint), `disco` (hue-cycling room lighting via the
   per-effect `tick` driver).
 - **Retro era pair** (`pd.pixelate` + `pd.audio_crush`): `bit8` ("8-bit
@@ -813,6 +813,170 @@ and a "Silo Countdown (1-min test)" entry in the Chaos Alpha menu.
 > bytes to `?`** as a safety net — important because the `say <text>` chat
 > passthrough pipes arbitrary chat text straight into `hud_message` — but effect
 > strings should still use plain ASCII (`-`, not `—`) so nothing shows as `?`.
+
+### Terminator engine hum (2026-07-30)
+
+| Binding | Backing | Notes |
+|---|---|---|
+| `pd.chr_hum(chrnum [, on])` | `chraiLuaChrHum` (chraction.c) → `psCreateIfNotDupe` / `psStopSound` (propsnd.c) | attach the **Chicago interceptor's** two engine loops to a chr's prop: `SFX_810F` (constant hover hum) + `SFX_8110` (the thrust layer the real chopper only adds while `power > 0.45 && !firing`). Lifted verbatim from `chopperTickMove`, so the sounds are **positional** and `PSFLAG_REPEATING` — they track the chr and attenuate with distance on their own, no per-frame volume work in Lua. The chopper's `PSTYPE_CHOPPERHUM1`/`2` dedupe keys are reused deliberately: nothing in the game *reads* those values (they are only dedupe/stop selectors) and a chr is never simultaneously a chopper. `on=false` stops both layers |
+
+Two properties inherited from the chopper that the **caller** has to handle, and
+the reason this looks like a per-tick busy-loop but isn't:
+
+- `psCreateIfNotDupe` is **idempotent** — if a channel with that prop+PSTYPE is
+  already live it returns immediately.
+- It **refuses to start anything it can't hear**: `psCalculateVol(…, 400, 2500,
+  3000, …) != 0` gates the create, so past ~3000u nothing is issued at all.
+
+So a *single* call at spawn time would go silent forever the moment the chr
+walked out of earshot. It must be re-issued every tick, exactly as
+`chopperTickMove` does — that call is what **resumes** the loops as the player
+closes back in.
+
+`terminator` (Chaos Alpha) is a `dur=0` one-off with no effect tick of its own,
+so the keep-alive lives in chaos.lua's **main tick** (`st.hum_chrs`, a list, so
+re-triggering the effect hums each Terminator independently). The watcher drops
+an entry — with an explicit `pd.chr_hum(c, false)` — once `pd.chr_health(c)`
+returns nil (freed chrslot) or `<= 0`, so the machine stops humming when it
+stops. `reset_all_modes` clears the whole list: the chrs die with the stage, and
+a stale chrnum must never be chased into a recycled slot.
+
+Why the hum is a good fit for the Terminator specifically: the interceptor loop
+is a *mechanical* sound with a long attenuation tail, so it announces him from
+outside the room he's in — the effect turns from "a guy spawned somewhere" into
+"something is coming and you can hear it".
+
+### WAYTOODANK: 3 stacked visuals + the trigger `quiet` flag (2026-07-30)
+
+WAYTOODANK is no longer just gun FOV 140 — it also fires **three random visual
+effects** on top of it. Pure Lua; the two mechanisms are worth knowing because
+anything else that wants to compose effects needs both.
+
+**1. Channels, not a flat pool.** Most visual effects drive a *single* renderer
+slot, so two of them are mutually exclusive in a way that is invisible until you
+stack them: `pd.pixelate` holds one colour mode, `pd.flattex` one texture mode,
+`pd.fov_scale` / `pd.aspect_scale` / `pd.shiny` / `pd.room_tint` / `pd.chr_scale`
+one value each, and `noir` / `sepia` / `aqz` / `midas` all land on the *same*
+grayscale-tint path (gfx_pc.cpp resolves shiny-gold > `screen_tint` >
+`force_grayscale` by priority, so only one is ever in effect). Stack two from one
+slot and the second silently overwrites the first — then whichever expires first
+runs a `stop()` that clears **both**, so the survivor vanishes early too.
+
+`DANK_CHANNELS` (chaos.lua, declared just above `alpha_effects`) groups the pool
+by which `pd.*` global each entry drives. The effect shuffles the channel list
+(Fisher-Yates) and takes one entry from each of the first three non-empty
+channels, so no-conflict is structural rather than something the picker has to
+test for. **Adding a visual to that table means putting it in its own global's
+channel — a brand-new global is a brand-new channel.** Filing it under the wrong
+one costs nothing at parse time and quietly cancels two picks out at runtime.
+
+Picks skip effects the player has switched off (`effect_enabled`) and effects
+already running (`st.active`, the Combo Time filter — re-firing one would just
+reset its timer and waste a pick on something already on screen). Fewer than
+three land if not enough channels have an eligible entry.
+
+**2. `chaos.trigger(name, who, dur_override, quiet)`** — two additions:
+
+- `quiet` suppresses the trigger sting and the `CHAOS: <name>` toast but **not**
+  the timer bar. Four effects landing on one frame otherwise means four stings
+  on top of each other; with `quiet` the combo reads as one event while the bars
+  still show the player exactly what they got.
+- `st.trigdur` is published (`dur_override or st.effectdur`) **before** `e.start()`
+  runs and cleared after, so an effect's `start()` can pass its own resolved
+  length down to a sub-effect. Without it, firing WAYTOODANK from the Chaos
+  Alpha menu (a 30s override) would leave its three visuals on the 60s global
+  and running long after the gun FOV snapped back. A nested trigger clears
+  `st.trigdur` on its way out, so **a `start()` that wants it must read it into a
+  local first, before firing anything.** `fixeddur` effects still win with their
+  own authored length.
+
+Calling `chaos.trigger` from a `start()` is safe and already established
+(`combo_time`). Calling it from a `tick()` is **not** — the main tick iterates
+`pairs(st.active)`, and adding or removing keys mid-iteration corrupts it (the
+same reason `stop_effect` is banned from ticks).
+
+### Wolf Gas — the invisible-gas fix (2026-07-30, was "WOOF GAS")
+
+`pd.gas` / `gasChaosSet` (propobj.c) has always run the Investigation nerve gas
+on any stage: the coughing, the damage every ~4s, and a synthesized green
+variant of the current stage's fog env. What it never did was put gas **on
+screen** — so the effect substituted a flat `pd.screen_tint(120, 220, 110)` as a
+stand-in for the look.
+
+**Root cause: `gasRender` (nbomb.c) is gated to `STAGE_ESCAPE` in three places** —
+its own body, plus *both* `gasRender` call sites in `playerRenderHud`
+(player.c, third-person and first-person). The gas simulation ran in full; the
+overlay was simply never reached. All three gates now also accept
+`gasChaosIsActive()`.
+
+Inside `gasRender`, the chaos path **bypasses Escape's visibility logic entirely**
+rather than reusing it. Everything that logic keys on is specific to that one
+map: 12 hardcoded `ROOM_LUE_*` gas-room ids, a hardcoded world point
+`(-1473, -308, -13660)` with a 1328u radius, and `gasGetDoorFrac(0x30..0x32)`.
+Run elsewhere those ids would resolve to unrelated — or out-of-range — rooms and
+doors. So the chaos branch declares the whole level gassed (`show = true`) and
+takes its thickness from `gasChaosOverlayFrac()`: a 0→1 ramp over the first ~3s
+(180 frames) of the release, derived from the same `g_GasReleaseTimer240` the env
+wash and the damage thresholds read, so it can't drift out of step with them. The
+branch is keyed on the chaos flag rather than on "not Escape", so firing it *on*
+Escape gasses that whole map too instead of only its authored rooms.
+
+The screen tint is **gone** from the Lua effect — the genuine overlay draws now,
+which also stops Wolf Gas fighting anything else that wants the tint slot (it was
+in the same channel as `noir`/`sepia`/`aqz`; see the WAYTOODANK section).
+
+**Three audio bugs, all specific to a whole-level gassing**, fixed in a guarded
+block at the top of `gasTick` rather than by editing the vanilla audio block:
+
+1. The hiss pans against `g_GasPos` — the single point the gas was released
+   from — with a 3000u falloff, so walking away silenced a gas that is supposedly
+   everywhere. `g_GasPos` is now pinned to the player each tick, so the hiss
+   travels with them.
+2. The loop is armed only while `g_GasSoundTimer240 < g_GasReleaseTimerMax240`
+   (3600 frames from release), so a long effect would go quiet part-way through.
+   The timer is held down so it never expires.
+3. **The sound is started exactly once**, when `g_GasAudioHandle` is NULL, and
+   nothing re-arms it when the sample ends. The handle is now cleared once it
+   reads `AL_STOPPED`, letting the vanilla block start the next one — this is
+   what turns a single burst into a continuous hiss.
+
+Related: `gasStopAudio()` stops the sound but leaves `g_GasAudioHandle`
+**non-NULL**, and only setup.c's stage reset ever clears it. Vanilla never
+noticed (Escape releases its gas once and never stops it), but for a re-triggerable
+effect it meant the *second* firing in a stage ran in total silence.
+`gasChaosSet` now NULLs the handle on both the on and off paths.
+
+**Coughing, not yelping.** The vanilla gas plays a bare `sndStart(SFX_0037)` at
+the 600 threshold, and then the damage at 1800 makes `chrDamage`'s player branch
+call `chrChoke(chr, choketype)`, which yelps an `SFX_ARGH_*`. The chaos path
+instead calls **`chrChoke(chr, CHOKETYPE_COUGH)`** directly: that choketype
+overrides chrChoke's own argh pick with the sex-appropriate cough set — Jo's
+`SFX_COUGH_05AB..05AE` — so the gas sounds like gas.
+
+The same call is what **silences the pain noise**, and this is the non-obvious
+part: chrChoke starts a player sound only while `players[n]->chokehandle` is
+NULL. The cough and the damage land on the *same* tick, cough first, so by the
+time chrDamage reaches its own chrChoke the handle is occupied and the argh is
+dropped. No edit to the damage path was needed — the engine's existing
+one-choke-at-a-time rule does it.
+
+**Never lethal** (user call): the damage at 1800 is skipped once
+`playerGetHealthFrac()` (bondhealth, 0..1) is at or below **0.15**. One gas tick
+costs `damage * 0.125 / healthscale` — ~1.6% at healthscale 1 and more on the
+harder difficulties — so that floor can't be jumped over in a single hit at any
+scale. Shield is deliberately not counted in the check: `chrDamageByMisc` passes
+`damageshield = false`, so this damage lands on health whether or not a shield is
+up. The gas still coughs and still fogs the screen at the floor; it just stops
+taking health.
+
+`g_ChaosGasOn` is deliberately **non-static** and cleared in
+`lvResetChaosPerStage` (lv.c) — it gates a render path, so an effect still
+running at a stage change would otherwise latch the un-gate for the rest of the
+process (the `g_ChaosSnatchActive` lesson).
+
+N64 build is byte-identical: every addition is `#ifndef PLATFORM_N64`, and the
+brace block the chaos `else` introduces around Escape's original logic changes
+indentation only (`git diff -w` shows the real change).
 
 ### Knockouts & Nap time (2026-07-18; effect REMOVED same day)
 

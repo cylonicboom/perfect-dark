@@ -189,6 +189,7 @@ void lvResetChaosPerStage(void)
 	extern f32 g_ChaosPlayerSpeed;    // chaos Gotta go fast
 	extern s32 g_ChaosRubberObjects;  // chaos Rubber Objects
 	extern s32 g_ChaosYassify;        // chaos Yassify
+	extern s32 g_ChaosGasOn;          // chaos Wolf Gas (gates the gasRender un-gate)
 	s32 twin_i;
 
 	g_ChaosSnatchActive = 0;
@@ -205,6 +206,7 @@ void lvResetChaosPerStage(void)
 	g_ChaosPlayerSpeed = 1.0f;
 	g_ChaosRubberObjects = 0;
 	g_ChaosYassify = 0;
+	g_ChaosGasOn = 0;
 
 	for (twin_i = 0; twin_i < 8; twin_i++) {
 		g_ChaosTwinChrnums[twin_i] = -1;

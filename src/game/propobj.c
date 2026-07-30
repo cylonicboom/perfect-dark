@@ -22031,20 +22031,56 @@ void gasStopAudio(void)
 }
 
 #ifndef PLATFORM_N64
-// Chaos "Woof Gas" (pd.gas, docs/PORT_CHAOS.md): run the Investigation nerve
+// Chaos "Wolf Gas" (pd.gas, docs/PORT_CHAOS.md): run the Investigation nerve
 // gas anywhere. Vanilla gas ramps for 30s before damage starts, so the chaos
 // start pre-loads the timer past both the cough (600) and damage (1800)
 // thresholds. The green screen wash is an env TRANSITION — vanilla's target is
 // "the next g_FogEnvironments row", which is only meaningful on the stages
 // authored for gas — so we synthesize a green variant of the CURRENT stage's
 // fog env instead. Stages with no fog env at all (g_EnvOrigFogEnvironment
-// NULL) skip the env wash entirely (gasTick's guard below); the Lua effect
-// layers a green screen tint so the look still lands.
+// NULL) skip the env wash entirely (gasTick's guard below).
 static struct fogenvironment g_ChaosGasEnvTo;
 static s32 g_ChaosGasEnvValid = false;
+// Non-static so lvResetChaosPerStage (lv.c) can clear it: this one gates a
+// RENDER path, so an effect still running at a stage change would otherwise
+// leave the un-gate latched for the rest of the process.
+s32 g_ChaosGasOn = false;
 extern struct fogenvironment *g_EnvOrigFogEnvironment;
 extern struct fogenvironment *g_EnvTransitionFrom;
 extern struct fogenvironment *g_EnvTransitionTo;
+
+// Is the chaos gas running? Read by gasRender (nbomb.c) and playerRenderHud's
+// two gasRender call sites, both of which are otherwise hard-gated to
+// STAGE_ESCAPE — that gate is why the screen overlay never appeared anywhere
+// else, however thoroughly the gas SIMULATION was running.
+s32 gasChaosIsActive(void)
+{
+	return g_ChaosGasOn;
+}
+
+// Overlay thickness for gasRender: 0 when off, else a 0->1 ramp over the first
+// ~3s (180 frames) of the release so the screen fogs IN rather than popping to
+// full opacity on frame one. Derived from the same g_GasReleaseTimer240 the env
+// wash and the damage thresholds read, so it can't drift out of step with them.
+f32 gasChaosOverlayFrac(void)
+{
+	f32 frac;
+
+	if (!g_ChaosGasOn) {
+		return 0.0f;
+	}
+
+	frac = (g_GasReleaseTimer240 - 1800.0f) / 180.0f;
+
+	if (frac < 0.0f) {
+		frac = 0.0f;
+	}
+	if (frac > 1.0f) {
+		frac = 1.0f;
+	}
+
+	return frac;
+}
 
 void gasChaosSet(s32 on)
 {
@@ -22055,10 +22091,18 @@ void gasChaosSet(s32 on)
 		gasReleaseFromPos(&g_Vars.currentplayer->prop->pos);
 		g_GasEnableDamage = true;
 		g_GasReleaseTimerMax240 = 3600;
+		g_ChaosGasOn = true;
 
 		if (g_GasReleaseTimer240 < 1800) {
 			g_GasReleaseTimer240 = 1800; // cough + damage from the first tick
 		}
+
+		// gasStopAudio() stops the hiss but leaves g_GasAudioHandle non-NULL,
+		// and gasTick only starts one when the handle IS NULL — so without this
+		// a re-trigger in the same stage would run the gas in total silence.
+		// (Only setup.c's stage reset clears it in vanilla; on Escape the gas
+		// is released once and never stopped, so this never bit the game.)
+		g_GasAudioHandle = NULL;
 
 		if (g_EnvOrigFogEnvironment) {
 			g_ChaosGasEnvTo = *g_EnvOrigFogEnvironment;
@@ -22075,7 +22119,9 @@ void gasChaosSet(s32 on)
 		g_GasReleasing = false;
 		g_GasReleaseTimer240 = 0;
 		g_GasSoundTimer240 = 0;
+		g_ChaosGasOn = false;
 		gasStopAudio();
+		g_GasAudioHandle = NULL; // see the note above
 
 		if (g_ChaosGasEnvValid && g_EnvOrigFogEnvironment) {
 			envApplyFogEnvironment(g_EnvOrigFogEnvironment); // restore the stage env
@@ -22103,6 +22149,33 @@ void gasTick(void)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Chaos gas: keep the HISS going for as long as the effect runs, and keep it
+	// audible. Three things the vanilla audio block gets wrong for a whole-level
+	// gassing, all fixed here rather than by editing the block itself:
+	//
+	//   1. it pans against g_GasPos, the one point the gas was released from, so
+	//      walking >3000u away silences a gas that is supposedly everywhere —
+	//      pin the release point to the player so the hiss travels with them;
+	//   2. the loop is armed only while g_GasSoundTimer240 < max, i.e. 3600
+	//      frames from the release, so a long effect would go quiet part-way —
+	//      hold the timer down so it never expires;
+	//   3. the sound is started once, when the handle is NULL, and nothing
+	//      re-arms it when the sample ends — so clear the handle once it reads
+	//      AL_STOPPED and let the block below start the next one. This is what
+	//      turns a single burst into a continuous hiss.
+	if (g_ChaosGasOn && g_Vars.currentplayer && g_Vars.currentplayer->prop) {
+		g_GasPos.x = g_Vars.currentplayer->prop->pos.x;
+		g_GasPos.y = g_Vars.currentplayer->prop->pos.y;
+		g_GasPos.z = g_Vars.currentplayer->prop->pos.z;
+		g_GasSoundTimer240 = 0;
+
+		if (g_GasAudioHandle && sndGetState(g_GasAudioHandle) == AL_STOPPED) {
+			g_GasAudioHandle = NULL;
+		}
+	}
+#endif
+
 	if (g_GasReleaseTimer240 > 0 && !g_PlayerInvincible) {
 #ifndef PLATFORM_N64
 		// Chaos gas can run on stages that never set the env transition
@@ -22117,10 +22190,39 @@ void gasTick(void)
 				g_GasLastCough60 = g_Vars.lvframe60;
 
 				if (g_GasReleaseTimer240 >= 600) {
+#ifndef PLATFORM_N64
+					// Chaos gas COUGHS instead of yelping (user call 2026-07-30).
+					// chrChoke with CHOKETYPE_COUGH overrides its own argh pick
+					// with the sex-appropriate cough set — Jo's SFX_COUGH_05AB..
+					// 05AE — and routes it through the player's chokehandle.
+					// That handle is ALSO what silences the pain noise: the
+					// chrChoke inside chrDamage's player branch only starts a
+					// sound while chokehandle is NULL, so coughing first (this
+					// runs on the same tick as, and before, the damage below)
+					// leaves no room for the argh.
+					if (g_ChaosGasOn
+							&& g_Vars.currentplayer->prop
+							&& g_Vars.currentplayer->prop->chr) {
+						chrChoke(g_Vars.currentplayer->prop->chr, CHOKETYPE_COUGH);
+					} else
+#endif
 					sndStart(var80095200, SFX_0037, 0, -1, -1, -1, -1, -1);
 				}
 
-				if (g_GasReleaseTimer240 >= 1800) {
+				if (g_GasReleaseTimer240 >= 1800
+#ifndef PLATFORM_N64
+						// Chaos gas is NEVER lethal (user call 2026-07-30): it
+						// wears you down and then stops short of finishing you.
+						// bondhealth is 0..1 and one gas tick costs
+						// damage * 0.125 / healthscale — ~1.6% at healthscale 1
+						// and more on the harder difficulties — so a floor of
+						// 15% can't be jumped over in a single hit at any scale.
+						// Shield is deliberately NOT counted: chrDamageByMisc
+						// passes damageshield=false, so this damage lands on
+						// health whether or not a shield is up.
+						&& !(g_ChaosGasOn && playerGetHealthFrac() <= 0.15f)
+#endif
+						) {
 					struct coord dir = {0, 0, 0};
 
 					chrDamageByMisc(g_Vars.currentplayer->prop->chr, 0.125f, &dir, NULL, NULL);

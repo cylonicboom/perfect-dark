@@ -347,7 +347,9 @@ void gasStopAudio(void);
 bool gasIsActive(void);
 void gasTick(void);
 #ifndef PLATFORM_N64
-void gasChaosSet(s32 on); /* chaos "Woof Gas": nerve gas on any stage, pre-ramped past the damage threshold */
+void gasChaosSet(s32 on); /* chaos "Wolf Gas": nerve gas on any stage, pre-ramped past the damage threshold */
+s32 gasChaosIsActive(void); /* chaos gas running? un-gates gasRender off STAGE_ESCAPE */
+f32 gasChaosOverlayFrac(void); /* chaos gas screen-overlay thickness, 0..1 (0 = off) */
 #endif
 Gfx *countdownTimerRender(Gfx *gdl);
 void projectilesDebug(void);

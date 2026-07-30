@@ -5451,7 +5451,11 @@ Gfx *playerRenderHud(Gfx *gdl)
 			gdl = playerDrawStoredFade(gdl);
 		}
 
-		if (g_Vars.stagenum == STAGE_ESCAPE) {
+		if (g_Vars.stagenum == STAGE_ESCAPE
+#ifndef PLATFORM_N64
+				|| gasChaosIsActive() // chaos "Wolf Gas" — see gasRender (nbomb.c)
+#endif
+				) {
 			gdl = gasRender(gdl);
 		}
 
@@ -5500,7 +5504,11 @@ Gfx *playerRenderHud(Gfx *gdl)
 			gdl = nbombRenderOverlay(gdl);
 		}
 
-		if (g_Vars.stagenum == STAGE_ESCAPE) {
+		if (g_Vars.stagenum == STAGE_ESCAPE
+#ifndef PLATFORM_N64
+				|| gasChaosIsActive() // chaos "Wolf Gas" — see gasRender (nbomb.c)
+#endif
+				) {
 			gdl = gasRender(gdl);
 		}
 

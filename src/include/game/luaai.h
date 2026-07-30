@@ -277,6 +277,7 @@ s32 chraiLuaSetInvincible(s32 on);            /* toggle invincibility */
 s32 chraiLuaSpawnAlly(void);                  /* spawn a friendly "Perfect Buddy"; chrnum or -1 */
 s32 chraiLuaSpawnAllyClone(f32 healthfrac, f32 yscale);   /* friendly Jo clone (player body/head), scaled HP + vertical squash; chrnum or -1 */
 s32 chraiLuaChrYscale(s32 chrnum, f32 mult);  /* non-uniform vertical squash (width kept) */
+s32 chraiLuaChrHum(s32 chrnum, s32 on);       /* Chicago interceptor engine loops on a chr's prop; re-issue each tick */
 s32 chraiLuaStageMusic(s32 on);               /* stop / restart the current stage's music */
 s32 chraiLuaPirate(s32 side);                 /* black out one screen half (post-process; 1=L, 2=R, 0=off) */
 s32 chraiLuaHalfMirror(s32 side);             /* mirror one screen half onto the other (post-process; 1=L source, 2=R source, 0=off) */

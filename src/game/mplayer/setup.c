@@ -4065,9 +4065,26 @@ MenuItemHandlerResult mpAddChangeSimulantMenuHandler(s32 operation, struct menui
 	s32 i;
 	s32 count = 0;
 
+#ifndef PLATFORM_N64
+	// Resolved, not hardcoded: the Demon row's index is wherever it sits in
+	// g_BotProfiles (currently last). Never assume index == difficulty for it.
+	const s32 demonprofile = mpFindBotProfile(BOTTYPE_GENERAL, BOTDIFF_DEMON);
+#endif
+
 	struct optiongroup groups[] = {
 		{ 0, L_MPMENU_103 }, // "Normal Simulants"
 		{ 6, L_MPMENU_104 }, // "Special Simulants"
+#ifndef PLATFORM_N64
+		// Third group for the port-only Demon row. It has to be its own group
+		// rather than joining "Normal Simulants": groups are delimited by
+		// PROFILE INDEX offsets, and the Demon row is appended at the END of
+		// g_BotProfiles (it can't be inserted after DarkSim without shifting the
+		// special-type rows that challenge.c indexes by type — see
+		// docs/PORT_DEMON_SIMS.md), so an offset-based group can only ever place
+		// it last. Listing it under its own heading also stops it reading as a
+		// personality type. The name is overridden in GETOPTGROUPTEXT below.
+		{ demonprofile, L_MPMENU_104 },
+#endif
 	};
 
 	s32 botnum;
@@ -4087,7 +4104,15 @@ MenuItemHandlerResult mpAddChangeSimulantMenuHandler(s32 operation, struct menui
 		for (i = 0; i < ARRAYCOUNT(g_BotProfiles); i++) {
 			if (challengeIsFeatureUnlocked(g_BotProfiles[i].requirefeature)) {
 				if (count == data->list.value) {
+#ifndef PLATFORM_N64
+					// NOT langGet on the row's name field: the port-only Demon row
+					// has no language-table string and its name field is only a
+					// placeholder, so reading it directly printed a second
+					// "DarkSim" in this list.
+					return (uintptr_t)mpBotProfileName(i);
+#else
 					return (uintptr_t)langGet(g_BotProfiles[i].name);
+#endif
 				}
 
 				count++;
@@ -4145,9 +4170,14 @@ MenuItemHandlerResult mpAddChangeSimulantMenuHandler(s32 operation, struct menui
 		data->list.value = g_Menus[g_MpPlayerNum].mpsetup.slotcount;
 		break;
 	case MENUOP_GETOPTGROUPCOUNT:
-		data->list.value = 2;
+		data->list.value = ARRAYCOUNT(groups);
 		break;
 	case MENUOP_GETOPTGROUPTEXT:
+#ifndef PLATFORM_N64
+		if (data->list.value == ARRAYCOUNT(groups) - 1) {
+			return (uintptr_t)"Demon Simulants";
+		}
+#endif
 		return (uintptr_t)langGet(groups[data->list.value].name);
 	case MENUOP_GETGROUPSTARTINDEX:
 		for (i = 0; i < groups[data->list.value].offset; i++) {
@@ -4165,6 +4195,17 @@ MenuItemHandlerResult mpAddChangeSimulantMenuHandler(s32 operation, struct menui
 
 char *mpMenuTextSimulantDescription(struct menuitem *item)
 {
+#ifndef PLATFORM_N64
+	// The description block is L_MISC_106 + profile index, sized for the ROM's
+	// 18 profiles. The appended Demon row would read one past the end, so it
+	// carries its own text.
+	if (g_Menus[g_MpPlayerNum].mpsetup.unke24
+			== mpFindBotProfile(BOTTYPE_GENERAL, BOTDIFF_DEMON)) {
+		return "Flawless aim, never reloads, spawns with every weapon "
+				"in the arena. Good luck.";
+	}
+#endif
+
 	return langGet(L_MISC_106 + g_Menus[g_MpPlayerNum].mpsetup.unke24);
 }
 

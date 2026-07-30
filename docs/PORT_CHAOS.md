@@ -278,7 +278,8 @@ on — all a restart buys you is the loading time.
   (`/chaos set X`) pins carry too.
 - Logic is unit-tested standalone against the bundled interpreter
   (serialise/parse round-trip, the shrinking-remainder property, stage
-  mismatch, consume-once, a `start()` that errors). **Runtime PENDING.**
+  mismatch, consume-once, a `start()` that errors).
+  **Runtime-CONFIRMED 2026-07-30.**
 
 ## Frequency & duration (configurable)
 
@@ -504,7 +505,7 @@ function, called every frame while active (disco's hue cycle).
   the left) about the vertical centre line, kaleidoscope style, HUD included
   (`pd.half_mirror(1|2)`, retro-fx bits 0x2000/0x4000; cleared with
   `pd.half_mirror(0)`). A post-process like One Too Many — both backends share
-  the shader body, no new uniforms.
+  the shader body, no new uniforms. Runtime-CONFIRMED 2026-07-30.
 - **`jelly`** ("Jelly", Chaos Alpha testbed) — true on-the-fly **vertex
   deformation**: the whole scene wobbles like jelly (`pd.vertex_wobble`, an
   eye-space per-vertex displacement in the renderer — not a post-process). The

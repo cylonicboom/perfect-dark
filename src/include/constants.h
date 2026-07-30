@@ -430,6 +430,24 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define BOTDIFF_PERFECT  4
 #define BOTDIFF_DARK     5
 #define BOTDIFF_DISABLED 6
+#ifndef PLATFORM_N64
+// Port-only 7th difficulty, "Demon" / DemonSim (docs/PORT_DEMON_SIMS.md): a
+// DarkSim with the last of its aim error removed, 8000 tranq resistance, 16.8x
+// speed, no melee cooldown, near-deterministic weapon choice, always squads up,
+// unlimited ammo and every map weapon at spawn.
+//
+// It MUST be 7, appended AFTER _DISABLED, for two reasons:
+//   1. difficulty is persisted in a THREE-BIT save field (mplayer.c
+//      mpsetupSaveToBuffer, `savebufferOr(buffer, ..., 3)`), so 7 is the only
+//      value left -- there is no room for an 8th difficulty without widening
+//      that field and bumping the wad version.
+//   2. inserting at 6 would re-point every existing save/wire value 6 from
+//      "no bot in this slot" to "Demon", filling saved setups with sims.
+// Consequence: profile index != difficulty for this one (the g_BotProfiles row
+// is appended at the END of that table, because challenge.c indexes it by bot
+// TYPE -- see mpFindBotProfile).
+#define BOTDIFF_DEMON 7
+#endif
 
 #define BOTDISTCFG_CLOSE          0
 #define BOTDISTCFG_PISTOL         1

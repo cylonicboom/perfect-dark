@@ -927,6 +927,12 @@ void botinvTick(struct chrdata *chr)
 				aibot->equipextrascores[i] = rngRandom() % 200 - 100; // -100 to +100
 			} else if (aibot->config->difficulty == BOTDIFF_EASY) {
 				aibot->equipextrascores[i] = rngRandom() % 100 - 50; // -50 to +50
+#ifndef PLATFORM_N64
+			} else if (aibot->config->difficulty == BOTDIFF_DEMON) {
+				// Effectively no irrationality: a DemonSim's weapon choice is its
+				// scoring pass and almost nothing else (docs/PORT_DEMON_SIMS.md).
+				aibot->equipextrascores[i] = rngRandom() % 3 - 1; // -1 to +1
+#endif
 			} else {
 				aibot->equipextrascores[i] = rngRandom() % 30 - 15; // -15 to +15
 			}

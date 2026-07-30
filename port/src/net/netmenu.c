@@ -42,6 +42,7 @@ extern struct menudialogdef g_NetJoinPlayerSetupMenuDialog;
 extern MenuItemHandlerResult menuhandlerMpCheckboxOption(s32 operation, struct menuitem *item, union handlerdata *data);
 extern char *mpMenuTextArenaName(struct menuitem *item);
 extern void mpCreateBotFromProfile(s32 botnum, u8 difficulty);
+extern u8 mpBotProfileForDifficulty(s32 difficulty);
 
 static s32 g_NetMenuMaxPlayers = NET_MAX_CLIENTS;
 static s32 g_NetMenuPort = NET_DEFAULT_PORT;
@@ -269,7 +270,12 @@ static void netAdminMenuSetSims(s32 count, u8 diff)
 		g_BotConfigsArray[i].base.name[0] = '\0';
 	}
 	for (s32 i = 0; i < count; ++i) {
-		mpCreateBotFromProfile(i, diff);
+		// `diff` is a BOTDIFF_*, and mpCreateBotFromProfile takes a PROFILE index
+		// -- identity for the six ROM difficulties but NOT for the port-only
+		// Demon (7), whose row is appended past the Special block. Identity map
+		// for everything this dropdown can currently produce; correct if Demon is
+		// ever added to it.
+		mpCreateBotFromProfile(i, mpBotProfileForDifficulty(diff));
 	}
 	g_BotCount = count;
 }

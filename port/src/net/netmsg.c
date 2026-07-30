@@ -127,6 +127,21 @@ static inline u32 netbufReadRooms(struct netbuf *buf, s16 *rooms, const s32 num)
 	return buf->error;
 }
 
+// SANITIZE a bot difficulty arriving from the wire. g_BotConfigsArray[].difficulty
+// is used to INDEX g_BotDifficulties[] (bot.c) on every aim/reaction/dizzy read,
+// so an out-of-range byte here is an out-of-bounds read, not a cosmetic glitch.
+// Valid values are BOTDIFF_MEAT..BOTDIFF_DEMON (0..7) — _DISABLED (6) is included
+// deliberately, it means "no bot in this slot" and has its own (zeroed) row.
+// Anything else is a version mismatch or a hostile packet; fall back to NORMAL.
+static inline u8 netmsgSanitizeBotDifficulty(u8 difficulty)
+{
+	if (difficulty > BOTDIFF_DEMON) {
+		return BOTDIFF_NORMAL;
+	}
+
+	return difficulty;
+}
+
 static inline u32 netbufWriteGset(struct netbuf *buf, const struct gset *gset)
 {
 	netbufWriteData(buf, gset, sizeof(*gset));
@@ -783,7 +798,7 @@ u32 netmsgClcAdminSetupRead(struct netbuf *src, struct netclient *srccl)
 		bot->base.mpbodynum = tmpbots[i].body;
 		bot->base.team = tmpbots[i].team;
 		bot->type = tmpbots[i].type;
-		bot->difficulty = tmpbots[i].diff;
+		bot->difficulty = netmsgSanitizeBotDifficulty(tmpbots[i].diff);
 		strncpy(bot->base.name, tmpbots[i].name, sizeof(bot->base.name) - 1);
 		bot->base.name[sizeof(bot->base.name) - 1] = '\0';
 	}
@@ -1595,7 +1610,7 @@ u32 netmsgSvcStageStartRead(struct netbuf *src, struct netclient *srccl)
 		bot->base.mpbodynum = netbufReadU8(src);
 		bot->base.team = netbufReadU8(src);
 		bot->type = netbufReadU8(src);
-		bot->difficulty = netbufReadU8(src);
+		bot->difficulty = netmsgSanitizeBotDifficulty(netbufReadU8(src));
 		char *name = netbufReadStr(src);
 		if (name) {
 			strncpy(bot->base.name, name, sizeof(bot->base.name) - 1);

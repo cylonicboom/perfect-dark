@@ -2530,6 +2530,19 @@ struct botprofile g_BotProfiles[] = {
 	{ BOTTYPE_SPEED,   BOTDIFF_NORMAL,  L_MISC_103, MPBODY_MRBLONDE,      0                         },
 	{ BOTTYPE_TURTLE,  BOTDIFF_NORMAL,  L_MISC_104, MPBODY_CARRINGTON,    0                         },
 	{ BOTTYPE_VENGE,   BOTDIFF_NORMAL,  L_MISC_105, MPBODY_ALASKAN_GUARD, 0                         },
+#ifndef PLATFORM_N64
+	// Port-only "Demon" difficulty (docs/PORT_DEMON_SIMS.md). APPENDED, never
+	// inserted after the DARK row where it would read more naturally:
+	// challenge.c indexes g_BotProfiles by bot TYPE (g_BotProfiles[simtype]), so
+	// shifting the special-type rows would silently re-point every challenge's
+	// sim-type feature gate. Consequence: this is the one row whose index is not
+	// its difficulty -- always resolve it with mpFindBotProfile.
+	//
+	// `name` is a placeholder: the L_MISC_088+ "<X>Sim" strings live in the ROM
+	// language table and cannot be extended, so the displayed name comes from
+	// mpBotProfileName() below. Nothing should call langGet on this field.
+	{ BOTTYPE_GENERAL, BOTDIFF_DEMON,   L_MISC_093, MPBODY_MOORE,         0                         },
+#endif
 };
 
 struct mpbody g_MpBodies[] = {
@@ -3952,7 +3965,10 @@ void mpApplySimAppearances(void)
 void mpFillAllSimulants(void)
 {
 	const s32 numgeneral = BOTDIFF_DISABLED; // count of GENERAL difficulty profiles (rows 0..5)
-	const s32 numspecial = ARRAYCOUNT(g_BotProfiles) - numgeneral;
+	// The Special block is the rows BETWEEN the 6 GENERAL rows and the appended
+	// port-only Demon row (which is GENERAL, not a personality) -- so it must be
+	// excluded here or "random special" would occasionally roll a DemonSim.
+	const s32 numspecial = ARRAYCOUNT(g_BotProfiles) - numgeneral - 1;
 	s32 maxslots = mpGetMaxBotSlots();
 	s32 lo = g_MpFillDiffFrom;
 	s32 hi = g_MpFillDiffTo;
@@ -4127,6 +4143,34 @@ bool mpIsSimSlotEnabled(s32 slot)
 	return true;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Display name for a bot profile.
+ *
+ * The ROM's L_MISC_088+ block of "<X>Sim" strings is fixed and full, so the
+ * port-only Demon profile has no language-table entry of its own and its name is
+ * a plain literal. Every profile-name read goes through here so the two never
+ * diverge.
+ *
+ * Keep any new name <= 8 characters. mpGenerateBotNames sprintf()s
+ * "<name>:<count>\n" into a char[16]: the longest ROM name ("VendettaSim", 11)
+ * with a two-digit count already fills that buffer exactly, so a longer name
+ * would smash the stack. "DemonSim" is 8.
+ */
+const char *mpBotProfileName(s32 profilenum)
+{
+	if (profilenum < 0 || profilenum >= ARRAYCOUNT(g_BotProfiles)) {
+		return "Sim";
+	}
+
+	if (g_BotProfiles[profilenum].difficulty == BOTDIFF_DEMON) {
+		return "DemonSim";
+	}
+
+	return langGet(g_BotProfiles[profilenum].name);
+}
+#endif
+
 s32 mpFindBotProfile(s32 type, s32 difficulty)
 {
 	s32 i;
@@ -4151,6 +4195,37 @@ s32 mpFindBotProfile(s32 type, s32 difficulty)
 
 	return i;
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Translate a BOTDIFF_* value into a g_BotProfiles index.
+ *
+ * The two are the same number for the six ROM difficulties (rows 0..5 are
+ * MEAT..DARK in order), which is why several callers hand a difficulty straight
+ * to mpCreateBotFromProfile. That identity does NOT hold for the port-only Demon
+ * difficulty: its value is 7 but its row is appended past the Special block, and
+ * profile index 7 is BOTTYPE_SHIELD -- so passing it raw would quietly spawn a
+ * ShieldSim instead. Route every difficulty->profile conversion through here.
+ */
+u8 mpBotProfileForDifficulty(s32 difficulty)
+{
+	if (difficulty == BOTDIFF_DEMON) {
+		const s32 profilenum = mpFindBotProfile(BOTTYPE_GENERAL, BOTDIFF_DEMON);
+
+		if (profilenum >= 0) {
+			return (u8)profilenum;
+		}
+
+		return BOTDIFF_DARK; // next-hardest, rather than a random personality
+	}
+
+	if (difficulty < BOTDIFF_MEAT || difficulty > BOTDIFF_DARK) {
+		return BOTDIFF_NORMAL;
+	}
+
+	return (u8)difficulty;
+}
+#endif
 
 #ifndef PLATFORM_N64
 // Dictionary of first names for auto-generated sim names — Rareware characters
@@ -4266,13 +4341,21 @@ void mpGenerateBotNames(void)
 			profilenum = mpFindBotProfile(g_BotConfigsArray[i - MAX_PLAYERS].type, g_BotConfigsArray[i - MAX_PLAYERS].difficulty);
 
 			if (profilenum >= 0 && profilenum < ARRAYCOUNT(g_BotProfiles)) {
+#ifndef PLATFORM_N64
+				// Routed through the helper so the port-only Demon profile, which
+				// has no language-table string, still gets a name.
+				const char *profilename = mpBotProfileName(profilenum);
+#else
+				const char *profilename = langGet(g_BotProfiles[profilenum].name);
+#endif
+
 				if (counts[profilenum] >= 0) {
 					// Multiple bots using this profile - append the number
 					counts[profilenum]++;
-					sprintf(name, "%s:%d\n", langGet(g_BotProfiles[profilenum].name), counts[profilenum]);
+					sprintf(name, "%s:%d\n", profilename, counts[profilenum]);
 				} else {
 					// One bots using this profile - just use the profile name
-					sprintf(name, "%s\n", langGet(g_BotProfiles[profilenum].name));
+					sprintf(name, "%s\n", profilename);
 				}
 
 #ifndef PLATFORM_N64

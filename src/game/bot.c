@@ -63,7 +63,19 @@ struct botdifficulty g_BotDifficulties[] = {
 	/* hard */ { TICKS(15), 0.026175770908594, 0.069802053272724, TICKS(90),  2,  0.24430719017982, 0.034901026636362, TICKS(2500) },
 	/* perf */ { TICKS(0),  0,                 0.034901026636362, TICKS(45),  1,  0.17450512945652, 0,                 TICKS(4000) },
 	/* dark */ { TICKS(0),  0,                 0,                 TICKS(0),   0,  0.13960410654545, 0,                 TICKS(4000) },
+	// Index 6 == BOTDIFF_DISABLED. Never ticked (a disabled slot has no chr), but
+	// the row must exist because chr->aibot->config->difficulty indexes this array
+	// directly and a stale/disabled config can reach those reads.
 	{ 0 },
+#ifndef PLATFORM_N64
+	// Index 7 == BOTDIFF_DEMON (port-only; docs/PORT_DEMON_SIMS.md).
+	// A DarkSim with the LAST of its aim error gone: dark still keeps unk14, an
+	// 8-degree error floor that applies only while the target is cloaked, so
+	// cloak was the one thing that made a DarkSim miss. At 0 a DemonSim has
+	// literally zero aim error under every condition. dizzyamount 8000 = 2x
+	// dark, i.e. the tranquilizer barely degrades it.
+	/* demon */ { TICKS(0), 0, 0, TICKS(0), 0, 0, 0, TICKS(8000) },
+#endif
 };
 
 bool botIsDizzy(struct chrdata *chr)
@@ -228,6 +240,29 @@ void botReset(struct chrdata *chr, u8 respawning)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		// DemonSims (docs/PORT_DEMON_SIMS.md): dark's spawn shield, plus the
+		// unlimited ammo dark was apparently meant to have. The flag itself is
+		// fully implemented upstream (botact.c: every ammo query returns the
+		// ammotype capacity and every deduction is skipped) -- dark just clears
+		// it instead of setting it, so this is the first thing that ever turns
+		// it on. Dark's inverted behaviour above is deliberately left alone.
+		//
+		// DERIVED, not merely set: an admin can change a sim's difficulty in
+		// place mid-match (CLC_ADMIN_SETUP edits g_BotConfigsArray directly), so
+		// clear first -- otherwise a slot recycled from a DemonSim would keep
+		// unlimited ammo as, say, a MeatSim.
+		aibot->flags &= ~BOTFLAG_UNLIMITEDAMMO;
+
+		if (aibot->config->difficulty == BOTDIFF_DEMON) {
+			aibot->flags |= BOTFLAG_UNLIMITEDAMMO;
+
+			if (mpHasShield()) {
+				chr->cshield = 8;
+			}
+		}
+#endif
+
 		aibot->respawning = true;
 		aibot->fadeintimer60 = TICKS(120);
 	}
@@ -310,6 +345,51 @@ void botSpawn(struct chrdata *chr, u8 respawning)
 				botactGiveAmmoByType(aibot, ammotype, startammo);
 			}
 			botinvSwitchToWeapon(chr, mpweapon->weaponnum, FUNC_PRIMARY);
+		}
+
+		// DemonSims spawn holding EVERY weapon the match makes available: each
+		// populated Combat Sim weapon slot, not just slot 0's spawn weapon, and
+		// regardless of MPOPTION_SPAWNWITHWEAPON (a full loadout is the point --
+		// the AI's own per-situation scoring then picks from it, so a DemonSim
+		// answers a sniper duel with the sniper and a corridor with the shotgun
+		// instead of hunting for a pickup).
+		//
+		// No ammo is handed out: botReset has already set BOTFLAG_UNLIMITEDAMMO
+		// above, which makes botact.c report the full ammotype capacity for every
+		// query (and makes botactGiveAmmoByType an early-return no-op), so the
+		// weapon-scoring pass never discounts a gun for being dry.
+		//
+		// Bot inventories hold 10 items (botmgr.c botinvInit) against 6 weapon
+		// slots, so the item list cannot overflow. Duplicate slots collapse --
+		// botinvGiveSingleWeapon ignores a weapon already held -- so a map listing
+		// the same gun twice yields one copy, not a dual wield.
+		if (g_Vars.normmplayerisrunning && aibot->config->difficulty == BOTDIFF_DEMON) {
+			s32 firstweapon = -1;
+			s32 slot;
+
+			for (slot = 0; slot < NUM_MPWEAPONSLOTS; slot++) {
+				const u8 mpweaponnum = g_MpSetup.weapons[slot];
+				struct mpweapon *mpweapon;
+
+				if (mpweaponnum == MPWEAPON_NONE
+						|| mpweaponnum == MPWEAPON_DISABLED
+						|| mpweaponnum == MPWEAPON_SHIELD) {
+					continue;
+				}
+
+				mpweapon = &g_MpWeapons[mpweaponnum];
+				botinvGiveSingleWeapon(chr, mpweapon->weaponnum);
+
+				if (firstweapon < 0) {
+					firstweapon = mpweapon->weaponnum;
+				}
+			}
+
+			// Equip something this frame; botinvTick re-scores and switches to
+			// whatever actually suits the situation within a tick or two.
+			if (firstweapon >= 0) {
+				botinvSwitchToWeapon(chr, firstweapon, FUNC_PRIMARY);
+			}
 		}
 #endif
 	}
@@ -1163,6 +1243,11 @@ f32 botCalculateMaxSpeed(struct chrdata *chr)
 		case BOTDIFF_DARK:
 			speed *= 11.2f;
 			break;
+#ifndef PLATFORM_N64
+		case BOTDIFF_DEMON:
+			speed *= 16.8f;
+			break;
+#endif
 		}
 	}
 
@@ -3513,6 +3598,13 @@ void botTickUnpaused(struct chrdata *chr)
 												aibot->punchtimer60[0] = TICKS(120);
 											} else if (chr->aibot->config->difficulty == BOTDIFF_EASY) {
 												aibot->punchtimer60[0] = TICKS(60);
+#ifndef PLATFORM_N64
+											} else if (chr->aibot->config->difficulty == BOTDIFF_DEMON) {
+												// No melee cooldown at all. The timer counts
+												// DOWN and swings when it goes negative, so 0
+												// means "swing again on the next tick".
+												aibot->punchtimer60[0] = 0;
+#endif
 											} else {
 												aibot->punchtimer60[0] = TICKS(30);
 											}
@@ -3531,6 +3623,10 @@ void botTickUnpaused(struct chrdata *chr)
 												aibot->punchtimer60[0] = TICKS(120);
 											} else if (chr->aibot->config->difficulty == BOTDIFF_EASY) {
 												aibot->punchtimer60[0] = TICKS(90);
+#ifndef PLATFORM_N64
+											} else if (chr->aibot->config->difficulty == BOTDIFF_DEMON) {
+												aibot->punchtimer60[0] = 0; // see the sibling site above
+#endif
 											} else {
 												aibot->punchtimer60[0] = TICKS(60);
 											}

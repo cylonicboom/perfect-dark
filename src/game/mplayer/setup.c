@@ -4223,6 +4223,32 @@ MenuDialogHandlerResult menudialog0017ccfc(s32 operation, struct menudialogdef *
 	return menudialogMpSimulant(operation, dialogdef, data);
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Number of difficulty dropdown options that precede the port-only "Demon"
+ * entry, i.e. the unlocked subset of the six ROM difficulties.
+ *
+ * Demon is always the LAST option and is never challenge-gated, so its option
+ * index is exactly this count. Note the ROM handlers below equate an option
+ * index with a BOTDIFF value, which only holds while every difficulty is
+ * unlocked -- that pre-existing quirk is left as-is; Demon is mapped explicitly
+ * instead of relying on it (its value is 7 but it is never the 8th option).
+ */
+static s32 mpBotDiffDemonOption(void)
+{
+	s32 count = 0;
+	s32 i;
+
+	for (i = 0; i < BOTDIFF_DISABLED; i++) {
+		if (challengeIsFeatureUnlocked(g_BotProfiles[i].requirefeature)) {
+			count++;
+		}
+	}
+
+	return count;
+}
+#endif
+
 MenuItemHandlerResult mpBotDifficultyMenuHandler(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	s32 count = 0;
@@ -4230,10 +4256,23 @@ MenuItemHandlerResult mpBotDifficultyMenuHandler(s32 operation, struct menuitem 
 
 	switch (operation) {
 	case MENUOP_SET:
+#ifndef PLATFORM_N64
+		if (data->dropdown.value == mpBotDiffDemonOption()) {
+			mpSetBotDifficulty(g_Menus[g_MpPlayerNum].mpsetup.slotindex, BOTDIFF_DEMON);
+			mpGenerateBotNames();
+			break;
+		}
+#endif
 		mpSetBotDifficulty(g_Menus[g_MpPlayerNum].mpsetup.slotindex, data->dropdown.value);
 		mpGenerateBotNames();
 		break;
 	case MENUOP_GETSELECTEDINDEX:
+#ifndef PLATFORM_N64
+		if (g_BotConfigsArray[g_Menus[g_MpPlayerNum].mpsetup.slotindex].difficulty == BOTDIFF_DEMON) {
+			data->dropdown.value = mpBotDiffDemonOption();
+			break;
+		}
+#endif
 		if (g_BotConfigsArray[g_Menus[g_MpPlayerNum].mpsetup.slotindex].difficulty >= 0
 				&& g_BotConfigsArray[g_Menus[g_MpPlayerNum].mpsetup.slotindex].difficulty < BOTDIFF_DISABLED) {
 			data->dropdown.value = g_BotConfigsArray[g_Menus[g_MpPlayerNum].mpsetup.slotindex].difficulty;
@@ -4248,9 +4287,18 @@ MenuItemHandlerResult mpBotDifficultyMenuHandler(s32 operation, struct menuitem 
 			}
 		}
 
+#ifndef PLATFORM_N64
+		count++; // + "Demon"
+#endif
+
 		data->dropdown.value = count;
 		break;
 	case MENUOP_GETOPTIONTEXT:
+#ifndef PLATFORM_N64
+		if (data->dropdown.value == mpBotDiffDemonOption()) {
+			return (uintptr_t)"Demon";
+		}
+#endif
 		for (i = 0; i < BOTDIFF_DISABLED; i++) {
 			if (challengeIsFeatureUnlocked(g_BotProfiles[i].requirefeature)) {
 				if (count == data->dropdown.value) {
@@ -6881,7 +6929,7 @@ void mpConfigureQuickTeamSimulants(void)
 				botnum = mpGetSlotForNewBot();
 
 				if (botnum >= 0) {
-					mpCreateBotFromProfile(botnum, g_Vars.mpsimdifficulty);
+					mpCreateBotFromProfile(botnum, mpBotProfileForDifficulty(g_Vars.mpsimdifficulty));
 				}
 			}
 
@@ -6892,7 +6940,7 @@ void mpConfigureQuickTeamSimulants(void)
 				botnum = mpGetSlotForNewBot();
 
 				if (botnum >= 0) {
-					mpCreateBotFromProfile(botnum, g_Vars.mpsimdifficulty);
+					mpCreateBotFromProfile(botnum, mpBotProfileForDifficulty(g_Vars.mpsimdifficulty));
 				}
 			}
 
@@ -6911,7 +6959,7 @@ void mpConfigureQuickTeamSimulants(void)
 					botnum = mpGetSlotForNewBot();
 
 					if (botnum >= 0) {
-						mpCreateBotFromProfile(botnum, g_Vars.mpsimdifficulty);
+						mpCreateBotFromProfile(botnum, mpBotProfileForDifficulty(g_Vars.mpsimdifficulty));
 						g_BotConfigsArray[botnum].base.team = mpchr->team;
 					}
 				}
@@ -7065,9 +7113,18 @@ MenuItemHandlerResult mpQuickTeamSimulantDifficultyHandler(s32 operation, struct
 			}
 		}
 
+#ifndef PLATFORM_N64
+		count++; // + "Demon"
+#endif
+
 		data->dropdown.value = count;
 		break;
 	case MENUOP_GETOPTIONTEXT:
+#ifndef PLATFORM_N64
+		if (data->dropdown.value == mpBotDiffDemonOption()) {
+			return (uintptr_t)"Demon";
+		}
+#endif
 		for (i = 0; i < NUM_BOTDIFFS; i++) {
 			if (challengeIsFeatureUnlocked(g_BotProfiles[i].requirefeature)) {
 				if (count == data->dropdown.value) {
@@ -7079,9 +7136,21 @@ MenuItemHandlerResult mpQuickTeamSimulantDifficultyHandler(s32 operation, struct
 		}
 		break;
 	case MENUOP_SET:
+#ifndef PLATFORM_N64
+		if (data->dropdown.value == mpBotDiffDemonOption()) {
+			g_Vars.mpsimdifficulty = BOTDIFF_DEMON;
+			break;
+		}
+#endif
 		g_Vars.mpsimdifficulty = data->dropdown.value;
 		break;
 	case MENUOP_GETSELECTEDINDEX:
+#ifndef PLATFORM_N64
+		if (g_Vars.mpsimdifficulty == BOTDIFF_DEMON) {
+			data->dropdown.value = mpBotDiffDemonOption();
+			break;
+		}
+#endif
 		data->dropdown.value = g_Vars.mpsimdifficulty;
 		break;
 	case MENUOP_CHECKHIDDEN:

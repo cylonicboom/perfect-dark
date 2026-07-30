@@ -92,6 +92,10 @@ u8 mpFindUnusedTeamNum(void);
 void mpCreateBotFromProfile(s32 botnum, u8 difficulty);
 void mpSetBotDifficulty(s32 botnum, s32 difficulty);
 #ifndef PLATFORM_N64
+const char *mpBotProfileName(s32 profilenum);   /* display name (Demon has no lang string) */
+u8 mpBotProfileForDifficulty(s32 difficulty);   /* BOTDIFF_* -> g_BotProfiles index */
+#endif
+#ifndef PLATFORM_N64
 s32 mpGetMaxBotSlots(void);
 #endif
 s32 mpGetSlotForNewBot(void);

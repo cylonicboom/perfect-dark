@@ -150,6 +150,13 @@ void botmgrAllocateBot(s32 chrnum, s32 aibotnum)
 					case BOTDIFF_DARK:
 						aibot->followchance = 0;
 						break;
+#ifndef PLATFORM_N64
+					case BOTDIFF_DEMON:
+						// The opposite of dark's lone-wolf 0: DemonSims always
+						// squad up in team games (docs/PORT_DEMON_SIMS.md).
+						aibot->followchance = 100;
+						break;
+#endif
 					}
 
 					aibot->aibotnum = aibotnum;

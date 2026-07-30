@@ -1758,6 +1758,22 @@ chaos.effects = {
                      pd.pirate(math.random(1, 2)) -- 1 = left half, 2 = right half
                    end,
                    stop=function() if pd.pirate then pd.pirate(0) end end },
+  -- "PERREP DAAD" / "FECTTCEF RKKR": the effect name is the title card with
+  -- the effect applied. Mirror one half of the finished frame onto the other
+  -- about the vertical centre line (post-process like One Too Many, so the
+  -- HUD reflects too). Held in Chaos Alpha: needs a fresh exe (pd.half_mirror).
+  perrep_daad  = { label="PERREP DAAD",       w=3, dur=20,
+                   start=function()
+                     if not pd.half_mirror then error("needs new exe") end
+                     pd.half_mirror(1) -- LEFT half mirrored onto the right
+                   end,
+                   stop=function() if pd.half_mirror then pd.half_mirror(0) end end },
+  fecttcef_rkkr = { label="FECTTCEF RKKR",    w=3, dur=20,
+                   start=function()
+                     if not pd.half_mirror then error("needs new exe") end
+                     pd.half_mirror(2) -- RIGHT half mirrored onto the left
+                   end,
+                   stop=function() if pd.half_mirror then pd.half_mirror(0) end end },
   underwater   = { label="Submerged",         w=3, dur=25,
                    start=function() pd.screen_fx(32, true); pd.audio_reverb(0.35) end,
                    stop=function() pd.screen_fx(32, false); pd.audio_reverb() end },
@@ -3937,6 +3953,7 @@ for _, n in ipairs({
     "hydra", "identity", "breadcrumbs", "chain_react", "minefield",
     "killstreak", "boss_fight", "laugh_track",
     "worst_day", "supersonic", "touch_cal", "simon", "model_swap",
+    "perrep_daad", "fecttcef_rkkr",
 }) do
   local e = chaos.effects[n]
   if e then

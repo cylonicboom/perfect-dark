@@ -41,6 +41,14 @@
  *                  masked half is fixed in screen space, and — a post-process
  *                  over the finished frame — cover the HUD too. x is unaffected
  *                  by the GL/SDL_GPU y-flip, so left is left in both backends.
+ *                  8192 = mirror the LEFT half onto the right (Chaos "PERREP
+ *                  DAAD"), 16384 = mirror the RIGHT half onto the left
+ *                  ("FECTTCEF RKKR"): the finished frame (HUD included) is
+ *                  reflected about the vertical centre line, kaleidoscope
+ *                  style. Keys on the raw screen UV like the pirate bits, so
+ *                  the seam is fixed in screen space and left is left in both
+ *                  backends. Both set = the halves swap (each side mirrors
+ *                  back past the axis) — the Lua helper only ever sets one.
  *   float uWarp    fisheye lens strength (0 = off; CRT adds its own +0.12)
  *   float uAspect  framebuffer w/h (for circular radial warp)
  *   float uTime    seconds, for the animated effects (VHS jitter, wobble)
@@ -57,6 +65,8 @@
     "    vec2 uv = vUV;\n" \
     "    if ((uFx & 2048) != 0 && vUV.x < 0.5) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
     "    if ((uFx & 4096) != 0 && vUV.x >= 0.5) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
+    "    if ((uFx & 8192) != 0 && uv.x > 0.5) { uv.x = 1.0 - uv.x; }\n" \
+    "    if ((uFx & 16384) != 0 && uv.x < 0.5) { uv.x = 1.0 - uv.x; }\n" \
     "    if ((uFx & 64) != 0) { uv = vec2(1.0) - uv; }\n" \
     "    if ((uFx & 1024) != 0) {\n" \
     "        if (uv.y < 0.25 || uv.y > 0.75) {\n" \

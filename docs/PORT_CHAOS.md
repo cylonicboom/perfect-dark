@@ -455,6 +455,13 @@ function, called every frame while active (disco's hue cycle).
   the left or right half of the screen (random per fire) as a post-process, so
   the HUD in that half goes dark too (`pd.pirate(1|2)`; cleared with
   `pd.pirate(0)`). Timed like the other visual effects.
+- **`perrep_daad` / `fecttcef_rkkr`** ("PERREP DAAD" / "FECTTCEF RKKR", Chaos
+  Alpha testbed) — the effect name is the title card with the effect applied:
+  mirror the left half of the finished frame onto the right (or the right onto
+  the left) about the vertical centre line, kaleidoscope style, HUD included
+  (`pd.half_mirror(1|2)`, retro-fx bits 0x2000/0x4000; cleared with
+  `pd.half_mirror(0)`). A post-process like One Too Many — both backends share
+  the shader body, no new uniforms.
 - **`jelly`** ("Jelly", Chaos Alpha testbed) — true on-the-fly **vertex
   deformation**: the whole scene wobbles like jelly (`pd.vertex_wobble`, an
   eye-space per-vertex displacement in the renderer — not a post-process). The
@@ -721,6 +728,7 @@ Helpful son is pure Lua (needs only existing `pd.player_add_yaw` / `pd.player_pi
 | `pd.stage_music(on)` | `chraiLuaStageMusic` (chraction.c) → `musicStop` / `musicSetStageAndStartMusic` (music.c) | stop (`on=false`) or restart (`on=true`) the **current stage's** music. Unlike `pd.song` — which layers a menu track over the *paused* stage music — this genuinely silences the level track, then re-derives primary + ambient from `g_Vars.stagenum` on restore. Backs Silo Countdown (kills the mission music, plays `Silo.mp3` via `pd.play_file` underneath). **`on=false` also sets the port-only `g_MusicSuppressed` latch** (music.c), which early-returns every music-restart path (`musicStartPrimary`/`Ambient`/`Nrg`/`TrackAsMenu`) — without this, closing the pause menu after triggering the effect calls `musicEndMenu → musicStartPrimary` and the game music creeps back. `on=true` clears the latch before restarting; `lvReset` force-clears it each stage load so it can never stick silent. The latch does **not** touch `g_MusicVolume`, so a `follow_music` `play_file` track is unaffected |
 | `pd.play_file(path, [loop], [follow_music])` | `chraiLuaPlayFile` → `audioPlayExternal` (audio.c) | play an external WAV/MP3 (`SDL_LoadWAV`/minimp3, detected by content) mixed into the device stream. `loop` rewinds instead of freeing. `follow_music` scales the track by the in-game **music-volume** slider (`optionsGetMusicVolume`, 0..0x5000, applied as an 8.8 fixed-point gain in the ext-mix loop) so it ducks/mutes with the player's music setting — default **off** (full volume, e.g. the Ring Ring ringtone). A `follow_music` track also **pauses with the game**: while `lvIsPaused()` the ext-mix block is skipped so the track goes silent AND its `extSoundPos` doesn't advance, resuming cleanly when you leave the menu (non-`follow_music` tracks keep playing). Silo Countdown passes `true` so `Silo.mp3` honours the music slider, is suppressed alongside the sequenced music, and pauses in the menu |
 | `pd.pirate(side)` | `chraiLuaPirate` (chraction.c) → `gfx_retro_fx` bits 0x800/0x1000 → the shared retro post-filter (`gfx_retro_common.h`) | "Pirate" eyepatch: black out the **left** (`side=1`) or **right** (`side=2`) half of the *finished frame* top-to-bottom; `0`/absent = off. Being a post-process over the composited frame, it covers the **HUD** in that half too. The shader keys on the RAW screen UV (`vUV.x`) before any warp, so the masked half is fixed in screen space; `x` is unaffected by the GL/SDL_GPU y-flip, so both backends agree. Only one side is set at a time |
+| `pd.half_mirror(side)` | `chraiLuaHalfMirror` (chraction.c) → `gfx_retro_fx` bits 0x2000/0x4000 → the shared retro post-filter (`gfx_retro_common.h`) | "PERREP DAAD" / "FECTTCEF RKKR": mirror the **left** (`side=1`) or **right** (`side=2`) half of the *finished frame* onto the other half about the vertical centre line, kaleidoscope style; `0`/absent = off. Same screen-space keying and backend symmetry as `pd.pirate` (raw `uv.x`, applied before the warp/rotate stages). Only one side is set at a time — both bits together would swap the halves, which the helper never does |
 
 `chraiLuaChrYscale`'s field is the first port-only chrdata member that the render
 lib (`src/lib/model.c`) reads — `model->chr` is already the established chr

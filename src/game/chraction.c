@@ -11949,6 +11949,23 @@ s32 chraiLuaPirate(s32 side)
 	return 1;
 }
 
+// pd.half_mirror(side): mirror one half of the finished frame onto the other
+// about the vertical centre line (post-process retro-fx bits 0x2000 = left
+// half onto the right, 0x4000 = right half onto the left), HUD included —
+// kaleidoscope style. side 1 = left source, 2 = right source, anything else =
+// off. Only one side is ever set at a time (both bits together would swap the
+// halves instead).
+s32 chraiLuaHalfMirror(s32 side)
+{
+	gfx_retro_fx &= ~(0x2000 | 0x4000); // clear both mirror bits first
+	if (side == 1) {
+		gfx_retro_fx |= 0x2000; // LEFT half mirrored onto the right
+	} else if (side == 2) {
+		gfx_retro_fx |= 0x4000; // RIGHT half mirrored onto the left
+	}
+	return 1;
+}
+
 // pd.lens(k): fisheye lens warp on the rendered frame — centre magnified,
 // corners pinned. 0 = off; negative = pincushion (clamped shy of the pole).
 extern f32 gfx_retro_warp;

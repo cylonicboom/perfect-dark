@@ -2939,6 +2939,16 @@ static int l_pd_pirate(lua_State *L)
 	return 1;
 }
 
+/* pd.half_mirror(side) -> bool. Mirror one half of the finished frame onto the
+ * other about the vertical centre line (HUD included, as a post-process).
+ * side 1 = left half onto the right, 2 = right half onto the left, 0/absent =
+ * off. */
+static int l_pd_half_mirror(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHalfMirror((s32)luaL_optinteger(L, 1, 0)) != 0);
+	return 1;
+}
+
 /* pd.space_program(on) -> bool. Every player bullet is a one-hit kill that
  * launches the victim with massive knockback (one_punch for guns). */
 static int l_pd_space_program(lua_State *L)
@@ -3766,6 +3776,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_hudvd);         lua_setfield(L, -2, "hudvd");
 	lua_pushcfunction(L, l_pd_crt);           lua_setfield(L, -2, "crt");
 	lua_pushcfunction(L, l_pd_pirate);        lua_setfield(L, -2, "pirate");
+	lua_pushcfunction(L, l_pd_half_mirror);   lua_setfield(L, -2, "half_mirror");
 	lua_pushcfunction(L, l_pd_space_program); lua_setfield(L, -2, "space_program");
 	lua_pushcfunction(L, l_pd_frag_out);      lua_setfield(L, -2, "frag_out");
 	lua_pushcfunction(L, l_pd_spawn_sentry);  lua_setfield(L, -2, "spawn_sentry");

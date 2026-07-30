@@ -279,6 +279,7 @@ s32 chraiLuaSpawnAllyClone(f32 healthfrac, f32 yscale);   /* friendly Jo clone (
 s32 chraiLuaChrYscale(s32 chrnum, f32 mult);  /* non-uniform vertical squash (width kept) */
 s32 chraiLuaStageMusic(s32 on);               /* stop / restart the current stage's music */
 s32 chraiLuaPirate(s32 side);                 /* black out one screen half (post-process; 1=L, 2=R, 0=off) */
+s32 chraiLuaHalfMirror(s32 side);             /* mirror one screen half onto the other (post-process; 1=L source, 2=R source, 0=off) */
 s32 chraiLuaSpaceProgram(s32 on);             /* player bullets one-hit-kill + massive knockback */
 s32 chraiLuaFragOut(s32 on);                  /* enemies throw grenades instead of firing */
 s32 chraiLuaSpawnSentry(f32 dx, f32 dz);      /* deploy a hostile laptop sentry at an offset */

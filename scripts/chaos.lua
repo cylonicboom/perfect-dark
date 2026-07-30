@@ -71,6 +71,11 @@ local st = {
   -- until `unset`/`clear`, a stop_all (Chaos off, supersonic flush) or a
   -- stage change. name -> true.
   sticky   = {},
+  -- Restart carry-over (see carry_save): armed = "check for an interrupted
+  -- effect snapshot on the next gameplay tick". Starts armed because a fresh
+  -- lua_State is exactly what an abort-to-hub-and-replay looks like from here.
+  resume_armed = true,
+  play_stage = nil,      -- stage number of the mission currently being played
   timer    = 0,          -- ticks until the next random effect
   votetimer = 0,         -- ticks left in the current vote window
   candidates = {},       -- the 3 effects chat can vote on this window
@@ -3975,6 +3980,99 @@ local function stop_all()
   for name in pairs(st.active) do stop_effect(name) end
 end
 
+-- ----------------------------------------------- restart carry-over --------
+-- ANTI-EXPLOIT: restarting a mission used to wipe every in-progress effect —
+-- the cheapest possible escape from a bad roll. A restart passes through a
+-- pawn-less loading window, which the tick handler's hub gate reads as "left
+-- gameplay" and answers with a full reset_all_modes().
+--
+-- So before that teardown we SNAPSHOT the timed effects with their REMAINING
+-- time, and re-apply them once real gameplay resumes on the SAME stage. The
+-- clock is never restarted: an effect with 8s left comes back with 8s left, so
+-- restarting buys you the loading time and nothing more. Restart repeatedly and
+-- the remainder keeps shrinking from where it was, exactly as if you'd played on.
+--
+-- Storage is the session-only persist key `~chaos_carry` rather than a field on
+-- st, because the other route to the same exploit — abort to the Carrington hub,
+-- re-select the mission — CHANGES the stage number, and that destroys the whole
+-- lua_State (luaai.c luaaiExecute -> luaaiReset), st included. A '~' key lives
+-- in C for the process only: it outlives the teardown but never reaches disk, so
+-- an effect can't come back after quitting the game.
+local CARRY_KEY = "~chaos_carry"
+local CARRY_MIN = TICKS // 2 -- drop a remainder under 0.5s (it would expire at once)
+
+local function carry_clear()
+  if pd.persist_set then pd.persist_set(CARRY_KEY, nil) end
+end
+
+-- Serialise the live timed effects as "stage;name:left:total:sticky;...".
+-- Called BEFORE stop_all() — it reads st.active, which stop_effect empties.
+-- `stage` is the stage we were PLAYING (tracked in st.play_stage), not
+-- pd.stage() now: by the time the gate fires we may already be in the hub.
+local function carry_save(stage)
+  if not (pd.persist_set and stage) then return end
+  local parts = {}
+  for name, left in pairs(st.active) do
+    -- sticky effects (`/chaos set X`) carry their pinned state, so a restart
+    -- doesn't quietly release a held effect either
+    if left >= CARRY_MIN or st.sticky[name] then
+      parts[#parts + 1] = string.format("%s:%d:%d:%d", name,
+        math.floor(left), math.floor(st.duration[name] or left),
+        st.sticky[name] and 1 or 0)
+    end
+  end
+  if #parts == 0 then carry_clear(); return end
+  pd.persist_set(CARRY_KEY, stage .. ";" .. table.concat(parts, ";"))
+  pd.log(string.format("[chaos] carry: saved %d effect(s) on stage %d",
+                       #parts, stage))
+end
+
+-- Re-apply a snapshot if it belongs to the stage we're now playing. Consumed
+-- once (cleared immediately), so the next teardown re-snapshots from whatever
+-- is live then and a failed restore can't retry forever.
+local function carry_restore(stage)
+  if not (pd.persist_get and pd.persist_set) then return end
+  local blob = pd.persist_get(CARRY_KEY)
+  if not blob or blob == "" then return end
+  carry_clear()
+  local semi = blob:find(";", 1, true)
+  if not semi then return end
+  -- A snapshot from a DIFFERENT mission is dropped: quitting to the hub and
+  -- starting something else is not the exploit we're closing.
+  if tonumber(blob:sub(1, semi - 1)) ~= stage then
+    pd.log("[chaos] carry: dropped (different stage)")
+    return
+  end
+  local n = 0
+  for entry in blob:sub(semi + 1):gmatch("[^;]+") do
+    local name, left, total, sticky = entry:match("^([%w_]+):(%d+):(%d+):(%d)$")
+    local e = name and chaos.effects[name]
+    if e then
+      left, total = tonumber(left), tonumber(total)
+      -- Re-run start() to reinstate the effect's C-side state (lvReset cleared
+      -- the chaos globals on load), then pin the ORIGINAL remaining time over
+      -- whatever chaos.trigger would have set. That's the whole point: the
+      -- effect resumes, it does not restart.
+      local ok, err = pcall(e.start)
+      if ok then
+        st.active[name] = left
+        st.duration[name] = total
+        if sticky == "1" then st.sticky[name] = true end
+        n = n + 1
+      else
+        pd.log("[chaos] carry: '" .. name .. "' failed to resume: " .. tostring(err))
+      end
+    end
+  end
+  if n > 0 then
+    -- Announced as a SYSTEM message (effect=false) so it shows even with the
+    -- per-effect toasts off: without it a resumed effect reads as a bug rather
+    -- than as "your restart didn't work". It names no effect, so it spoils
+    -- nothing for the deniable ones.
+    announce("Nice try", false)
+  end
+end
+
 -- Full teardown: stop every active effect and reset every C-side global an
 -- effect can leave set (visual filters, input locks, speed/damage/zoom scales,
 -- audio modes) — these live in C and SURVIVE both a stage reload and the Lua
@@ -3999,6 +4097,10 @@ local function reset_all_modes()
   st.active = {}
   st.duration = {}
   st.oneoff = {}
+  -- Arm the restart carry-over check for the next gameplay tick. The snapshot
+  -- itself was taken by the caller (carry_save) BEFORE stop_all ran; this only
+  -- says "look for one when play resumes".
+  st.resume_armed = true
   st.cvotes = {0, 0, 0}
   st.timer = st.interval * TICKS
   st.votetimer = st.votetime * TICKS
@@ -4426,6 +4528,11 @@ pd.on("tick", function()
   if (not have_player) or in_hub then
     if not st.in_menu then
       st.in_menu = true
+      -- Snapshot the in-progress effects (with their remaining time) BEFORE the
+      -- teardown wipes them, so a mission restart resumes instead of escaping.
+      -- Keyed on the stage we were playing, so it only restores on a REPLAY of
+      -- that mission. See carry_save.
+      carry_save(st.play_stage)
       reset_all_modes()
     end
     return
@@ -4442,6 +4549,9 @@ pd.on("tick", function()
   if pd.mission_complete and pd.mission_complete() then
     if not st.mission_done then
       st.mission_done = true
+      -- Finishing the mission is not an escape — drop any carry outright, so a
+      -- replay of a mission you BEAT starts clean.
+      carry_clear()
       reset_all_modes()
     end
     return
@@ -4453,6 +4563,22 @@ pd.on("tick", function()
   -- first tick that reaches this line is the first real gameplay tick.
   if not st.home_marked and pd.mark_home then
     st.home_marked = pd.mark_home() or nil
+  end
+
+  -- Remember which mission is live — carry_save keys the snapshot on it, and by
+  -- the time the hub gate fires pd.stage() may already read as the hub.
+  st.play_stage = pd.stage and pd.stage() or nil
+
+  -- First gameplay tick after any non-gameplay window: resume whatever a restart
+  -- interrupted. Deliberately NOT keyed on the stage number CHANGING — a restart
+  -- of the same mission keeps the same stage (which is also why the lua_State
+  -- survives it, luaai.c:427). The latch is armed by reset_all_modes at every
+  -- teardown, and starts armed on a fresh state so the abort-to-hub-and-replay
+  -- route (which destroys the state) is covered too. carry_restore no-ops when
+  -- there's no snapshot and drops one belonging to another mission.
+  if st.resume_armed then
+    st.resume_armed = false
+    carry_restore(st.play_stage)
   end
 
   -- Advance on GAME time, not frames: lvupdate() is the ticks the sim
@@ -4974,7 +5100,12 @@ end)
 -- stage. (The engine currently doesn't dispatch a "stage" event, so the real
 -- trigger is the return-to-menu detection in the tick handler above; this stays
 -- wired for the day a stage event is added.)
-pd.on("stage", reset_all_modes)
+-- Snapshots first, like the tick handler's gate: if a "stage" event is ever
+-- added it must not become a teardown that silently defeats the restart carry.
+pd.on("stage", function()
+  carry_save(st.play_stage)
+  reset_all_modes()
+end)
 
 -- ---- HUD: active-effect timer bars + the chat-vote slate (top left) --------
 -- Item-pickup-style bars: label, then a dark backing box with a filled

@@ -236,6 +236,49 @@ chaos_interval=20
 - **No escaping**: entries whose key contains `=` or whose key/value contains a
   newline are dropped on write. Values may contain `=` (the reader splits on the
   first one). Store 32 keys max (`LUA_PERSIST_MAX`); scripts currently use 6.
+- **Session-only keys** (2026-07-30): a key starting with `~` is kept in the
+  C table but **never written to or read from the file**, and setting one skips
+  the file rewrite entirely. For state that must outlive the per-stage
+  `lua_State` teardown but *not* the process — see the restart carry-over below.
+
+## Restarting a mission does not clear effects (2026-07-30)
+
+Restarting was the cheapest possible escape from a bad roll, so in-progress
+effects now **resume with their remaining time** instead of being wiped. The
+clock is never restarted: an effect with 8s left comes back with 8s left, and
+restarting repeatedly keeps shrinking the remainder exactly as if you'd played
+on — all a restart buys you is the loading time.
+
+- **Why they vanished**: a restart passes through a pawn-less loading window,
+  which the tick handler's hub gate (`pd.player_pos(0) == nil`) reads as "left
+  gameplay" and answers with a full `reset_all_modes()`. Nothing to do with the
+  `lua_State` teardown — that only fires when the stage NUMBER changes
+  (`luaai.c` `luaaiExecute`), which a same-mission restart doesn't do.
+- **`carry_save(stage)`** runs at that gate *before* `reset_all_modes`, and
+  serialises the live timed effects as `stage;name:left:total:sticky;…` into the
+  session-only key **`~chaos_carry`**. Keyed on `st.play_stage` (the stage we
+  were *playing*, tracked each gameplay tick) — by the time the gate fires
+  `pd.stage()` may already read as the hub.
+- **`carry_restore(stage)`** runs on the first gameplay tick after any
+  non-gameplay window, gated on the `st.resume_armed` latch (set by
+  `reset_all_modes`, and **initially true** so a fresh state is checked too). It
+  re-runs each effect's `start()` — necessary, because `lvReset` cleared the
+  chaos C globals — then pins the saved `left`/`total` over what the effect
+  would otherwise get. Consumed once; announced as the system message
+  "Nice try" so a resumed effect doesn't read as a bug.
+- **Why the persist store and not a field on `st`**: the other route to the same
+  exploit — abort to the Carrington hub, re-select the mission — *does* change
+  the stage number, which destroys the whole `lua_State` and `st` with it. A
+  `~` key lives in C for the process, so it survives that; and because it never
+  reaches disk, an effect can't be resurrected after quitting the game.
+- **What is dropped**: a snapshot belonging to a different mission (play
+  something else and it's discarded), remainders under 0.5s, and everything on
+  **mission COMPLETE** (`carry_clear()` — beating the level is not an escape).
+  Instant effects were never in `st.active`, so they never carry. Sticky
+  (`/chaos set X`) pins carry too.
+- Logic is unit-tested standalone against the bundled interpreter
+  (serialise/parse round-trip, the shrinking-remainder property, stage
+  mismatch, consume-once, a `start()` that errors). **Runtime PENDING.**
 
 ## Frequency & duration (configurable)
 

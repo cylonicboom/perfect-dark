@@ -539,6 +539,13 @@ static int l_pd_hud_message(lua_State *L)
  * toggles stick: chaos.lua already writes every menu-adjustable setting through
  * here (chaos_enabled / chaos_interval / chaos_effectdur / chaos_votetime /
  * chaos_disabled), it just had nowhere durable to put them.
+ *
+ * SESSION-ONLY KEYS: a key beginning with '~' is never written to (or read
+ * from) the file -- it lives only for this process. Use it for state that must
+ * outlive the per-stage lua_State teardown but MUST NOT outlive the game, e.g.
+ * chaos.lua's mid-mission effect carry-over (~chaos_carry): restoring a
+ * half-finished effect after a mission restart is right, resurrecting one days
+ * later after relaunching the game is not.
  * ------------------------------------------------------------------------- */
 #define LUA_PERSIST_MAX 32
 #define LUA_PERSIST_FILE "$S/lua_persist.txt"
@@ -587,6 +594,12 @@ static void luaApiPersistSave(void)
 		const char *val = g_LuaPersist[i].val;
 
 		if (!key || !val) {
+			continue;
+		}
+
+		/* '~' prefix = session-only: keep it out of the file entirely (see the
+		 * header comment). It stays live in the table for this process. */
+		if (key[0] == '~') {
 			continue;
 		}
 
@@ -674,7 +687,9 @@ static void luaApiPersistEnsureLoaded(void)
 			line[--len] = '\0';
 		}
 
-		if (line[0] == '\0' || line[0] == '#') {
+		/* '~' = session-only: we never write those, so one here means a
+		 * hand-edited file. Ignore it rather than honour it. */
+		if (line[0] == '\0' || line[0] == '#' || line[0] == '~') {
 			continue;
 		}
 
@@ -691,7 +706,8 @@ static void luaApiPersistEnsureLoaded(void)
 #endif
 }
 
-/* pd.persist_set(key, value): a nil/absent value clears the key. */
+/* pd.persist_set(key, value): a nil/absent value clears the key. A key starting
+ * with '~' is session-only -- kept in memory, never written to the file. */
 static int l_pd_persist_set(lua_State *L)
 {
 	const char *key = luaL_checkstring(L, 1);
@@ -699,7 +715,7 @@ static int l_pd_persist_set(lua_State *L)
 
 	luaApiPersistEnsureLoaded();
 
-	if (luaApiPersistStore(key, val)) {
+	if (luaApiPersistStore(key, val) && key[0] != '~') {
 		luaApiPersistSave();
 	}
 

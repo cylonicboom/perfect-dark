@@ -7,6 +7,69 @@
 
 Acmd *_decodeChunk(Acmd *ptr, N_PVoice *f, s32 tsam, s32 nbytes, s16 outp, s16 inp, u32 flags);
 
+#ifndef PLATFORM_N64
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
+/**
+ * n_alRaw16Pull — the raw-PCM sample path Rare stripped out of naudio,
+ * restored for the ADPCM-predecode feature (snd.c retypes wavetables to
+ * AL_RAW16_WAVE; without this every voice fed raw PCM through the ADPCM
+ * frame parser = loud corruption). Mirrors n_alAdpcmPull's contract: emit
+ * alist commands leaving outCount s16 samples readable at *outp, advance
+ * dc_sample/dc_memin, count down finite loops (-1 = forever, same
+ * small-loop imprecision as the ADPCM path) and zero-fill past the end.
+ * Raw data needs no book, no decoder-state block and no frame alignment,
+ * so *outp stays where the caller pointed it and loop wraps are plain
+ * sequential loads. dc_lastsam stays 0 by construction.
+ */
+static Acmd *n_alRaw16Pull(N_PVoice *f, s16 *outp, s32 outCount, Acmd *p)
+{
+	Acmd *ptr = p;
+	s32 pos = *outp;
+	s32 remaining = outCount;
+
+	while (remaining > 0) {
+		s32 avail;
+		s32 n;
+		s32 looping = f->dc_loop.count != 0 && f->dc_sample < (s32)f->dc_loop.end;
+
+		if (looping) {
+			avail = f->dc_loop.end - f->dc_sample;
+		} else {
+			avail = (s32)(f->dc_table->len >> 1) - f->dc_sample;
+		}
+
+		if (avail <= 0) {
+			// ran off the end (one-shot finished): the consumer still reads
+			// outCount samples, so the tail must be silence, not garbage
+			aClearBuffer(ptr++, pos, remaining << 1);
+			return ptr;
+		}
+
+		n = MIN(remaining, avail);
+		// same round-up-to-8 the ADPCM loads use; the predecode buffers are
+		// over-allocated (snd.c) so the tail overread stays in bounds
+		n_aLoadBuffer(ptr++, (n << 1) + 8 - ((n << 1) & 0x7), pos, K0_TO_PHYS(f->dc_memin));
+		pos += n << 1;
+		remaining -= n;
+		f->dc_sample += n;
+		f->dc_memin += n << 1;
+
+		if (remaining > 0 && looping && f->dc_sample >= (s32)f->dc_loop.end) {
+			if (f->dc_loop.count != -1 && f->dc_loop.count != 0) {
+				f->dc_loop.count--;
+			}
+			f->dc_sample = f->dc_loop.start;
+			f->dc_memin = (intptr_t)f->dc_table->base + ((s32)f->dc_loop.start << 1);
+		}
+	}
+
+	return ptr;
+}
+#endif
+
 Acmd *n_alAdpcmPull(N_PVoice *filter, s16 *outp, s32 outCount, Acmd *p)
 {
 	Acmd *ptr = p;
@@ -29,6 +92,14 @@ Acmd *n_alAdpcmPull(N_PVoice *filter, s16 *outp, s32 outCount, Acmd *p)
 	if (outCount == 0) {
 		return ptr;
 	}
+
+#ifndef PLATFORM_N64
+	// Predecoded (raw PCM16) tables take the restored raw path; the ADPCM
+	// book/frame machinery below would parse their PCM as ADPCM frames.
+	if (f->dc_table != NULL && f->dc_table->type == AL_RAW16_WAVE) {
+		return n_alRaw16Pull(f, outp, outCount, p);
+	}
+#endif
 
 	inp = N_AL_DECODER_IN;
 

@@ -1322,6 +1322,221 @@ ALADPCMloop *sndLoadAdpcmLoop(uintptr_t offset, u16 cacheindex)
 	return s1;
 }
 
+#ifndef PLATFORM_N64
+// --- ADPCM predecode ---------------------------------------------------------
+// Decode VADPCM wavetables to raw PCM16 ONCE at load and retype them
+// AL_RAW16_WAVE, so the synth's per-voice per-frame ADPCM decode (the
+// dominant cost of a synthesis pass, now on the audio thread) becomes a
+// plain resample of resident PCM. Memory-for-CPU: PCM is ~3.5x the ADPCM
+// size (9 bytes -> 16 samples); Audio.Predecode=0 turns it off wholesale,
+// and any table the decoder can't handle (order != 2, odd shapes) simply
+// stays ADPCM — the two types coexist per-table in the synth by design.
+//
+// Correctness notes: the frame math is a straight transplant of mixer.c
+// aADPCMdecImpl's scalar branch, so the PCM matches what the synth's own
+// decode produces. Loops need no special handling: ALADPCMloop's
+// {start,end,count} prefix IS the ALRawLoop layout (the trailing predictor
+// state exists only so a mid-stream ADPCM decoder can restart at the loop
+// point — and the tools generate it FROM a linear decode, so linear
+// predecode yields the same samples the looped re-decode would).
+// Decoded buffers are cached by source address (the sfx wavetable cache
+// recycles its entries, so the same sample would otherwise re-decode on
+// every load) and kept for the process lifetime.
+// DEFAULT OFF, opt-in via Audio.Predecode=1. History: the first ship
+// corrupted ALL audio (2026-07-31) because PD's stripped naudio had NO
+// raw-PCM sample path — Rare deleted alRaw16Pull, and n_alAdpcmPull parsed
+// the retyped tables' PCM as ADPCM frames (the RAW16 cases in n_load.c's
+// state switch were vestigial). n_alRaw16Pull is now RESTORED in n_load.c
+// (the dc_table->type branch at the top of n_alAdpcmPull). Runtime-confirmed
+// clean 2026-07-31 (music bank + lazy sfx + loop seams + one-shot tails), so
+// the default is ON; Audio.Predecode=0 restores per-frame ADPCM decode and
+// saves the ~10-15MB PCM working set (the OG-Xbox memory lever).
+s32 g_SndPredecodeEnabled = 1;
+s32 g_SndPredecodeCount = 0;   // tables converted (stats, /sndpool)
+s32 g_SndPredecodeBytes = 0;   // PCM bytes allocated (stats)
+
+#define PREDECODE_MAP_SIZE 4096 // open-addressed, keyed by ADPCM base address
+
+static struct {
+	uintptr_t key;
+	u8 *pcm;
+	s32 pcmlen;
+} g_SndPredecodeMap[PREDECODE_MAP_SIZE];
+static s32 g_SndPredecodeMapUsed = 0;
+
+static s16 sndPredecodeClamp16(s32 v)
+{
+	if (v > 32767) {
+		return 32767;
+	}
+	if (v < -32768) {
+		return -32768;
+	}
+	return (s16)v;
+}
+
+// Decode a whole VADPCM stream. Returns a malloc'd PCM16 buffer (host heap,
+// not the sound heap — the working set can reach several MB) or NULL for any
+// shape the scalar math doesn't cover (caller keeps the ADPCM path).
+static u8 *sndPredecodeRun(const u8 *src, s32 len, const ALADPCMBook *book, s32 *outlen)
+{
+	s32 nframes = len / 9;
+	s16 *pcm;
+	s16 prev1 = 0;
+	s16 prev2 = 0;
+	s32 f;
+	s32 i;
+	s32 j;
+	s32 k;
+
+	if (book == NULL || book->order != 2 || book->npredictors < 1 || book->npredictors > 8 || nframes <= 0) {
+		return NULL;
+	}
+
+	// +16 slack: n_alRaw16Pull's loads round sizes up to 8 bytes (mirroring
+	// the ADPCM loads), so the final load may read a few bytes past the data.
+	pcm = malloc(nframes * 16 * sizeof(s16) + 16);
+
+	if (pcm == NULL) {
+		return NULL;
+	}
+
+	for (f = 0; f < nframes; f++) {
+		const u8 *in = src + f * 9;
+		s32 shift = in[0] >> 4;
+		s32 pred = in[0] & 0xf;
+		const s16 *tbl;
+		s16 *out = &pcm[f * 16];
+
+		if (pred >= book->npredictors) {
+			pred = book->npredictors - 1;
+		}
+
+		tbl = (const s16 *)book->book + pred * 2 * 8;
+		in++;
+
+		for (i = 0; i < 2; i++) {
+			s16 ins[8];
+
+			for (j = 0; j < 4; j++) {
+				ins[j * 2] = (s16)(((((s32)in[j] >> 4) << 28) >> 28) << shift);
+				ins[j * 2 + 1] = (s16)(((((s32)in[j] & 0xf) << 28) >> 28) << shift);
+			}
+
+			in += 4;
+
+			for (j = 0; j < 8; j++) {
+				s32 acc = tbl[0 * 8 + j] * prev2 + tbl[1 * 8 + j] * prev1 + ((s32)ins[j] << 11);
+
+				for (k = 0; k < j; k++) {
+					acc += tbl[1 * 8 + ((j - k) - 1)] * ins[k];
+				}
+
+				out[i * 8 + j] = sndPredecodeClamp16(acc >> 11);
+			}
+
+			prev2 = out[i * 8 + 6];
+			prev1 = out[i * 8 + 7];
+		}
+	}
+
+	*outlen = nframes * 16 * sizeof(s16);
+	return (u8 *)pcm;
+}
+
+// Convert one wavetable in place (no-op unless it's a decodable ADPCM one).
+// The retype itself is done under the audio mutex: the struct may be visible
+// to the synth (bank tables live in the ctl image; sfx cache slots recycle),
+// and a half-retyped table read mid-synthesis would mix types.
+static void sndPredecodeWavetable(ALWaveTable *tbl)
+{
+	extern void osIntLock(void);
+	extern void osIntUnlock(void);
+	uintptr_t key;
+	u32 idx;
+	u8 *pcm = NULL;
+	s32 pcmlen = 0;
+
+	if (!g_SndPredecodeEnabled || tbl == NULL || tbl->type != AL_ADPCM_WAVE
+			|| tbl->base == NULL || tbl->len <= 0) {
+		return;
+	}
+
+	key = (uintptr_t)tbl->base;
+	idx = (u32)((key >> 4) * 2654435761u) & (PREDECODE_MAP_SIZE - 1);
+
+	for (;;) {
+		if (g_SndPredecodeMap[idx].key == key) {
+			pcm = g_SndPredecodeMap[idx].pcm;
+			pcmlen = g_SndPredecodeMap[idx].pcmlen;
+			break;
+		}
+		if (g_SndPredecodeMap[idx].key == 0) {
+			break;
+		}
+		idx = (idx + 1) & (PREDECODE_MAP_SIZE - 1);
+	}
+
+	if (pcm == NULL) {
+		if (g_SndPredecodeMapUsed >= PREDECODE_MAP_SIZE - (PREDECODE_MAP_SIZE >> 2)) {
+			return; // map 3/4 full: stop inserting, those tables stay ADPCM
+		}
+
+		pcm = sndPredecodeRun(tbl->base, tbl->len, tbl->waveInfo.adpcmWave.book, &pcmlen);
+
+		if (pcm == NULL) {
+			return;
+		}
+
+		g_SndPredecodeMap[idx].key = key;
+		g_SndPredecodeMap[idx].pcm = pcm;
+		g_SndPredecodeMap[idx].pcmlen = pcmlen;
+		g_SndPredecodeMapUsed++;
+		g_SndPredecodeCount++;
+		g_SndPredecodeBytes += pcmlen;
+	}
+
+	osIntLock();
+	tbl->waveInfo.rawWave.loop = (ALRawLoop *)tbl->waveInfo.adpcmWave.loop;
+	tbl->base = pcm;
+	tbl->len = pcmlen;
+	tbl->type = AL_RAW16_WAVE;
+	osIntUnlock();
+}
+
+// Walk one instrument's sounds (music-bank path, called at sndInit before
+// the audio thread exists — the lock in the helper is then uncontended).
+static void sndPredecodeInstrument(ALInstrument *inst)
+{
+	s32 i;
+
+	if (inst == NULL) {
+		return;
+	}
+
+	for (i = 0; i < inst->soundCount; i++) {
+		if (inst->soundArray[i] != NULL) {
+			sndPredecodeWavetable(inst->soundArray[i]->wavetable);
+		}
+	}
+}
+
+static void sndPredecodeBank(ALBank *bank)
+{
+	s32 i;
+
+	if (bank == NULL) {
+		return;
+	}
+
+	sndPredecodeInstrument(bank->percussion);
+
+	for (i = 0; i < bank->instCount; i++) {
+		sndPredecodeInstrument(bank->instArray[i]);
+	}
+}
+#endif
+
 ALWaveTable *sndLoadWavetable(uintptr_t offset, u16 cacheindex)
 {
 #if VERSION >= VERSION_NTSC_1_0
@@ -1383,6 +1598,12 @@ ALWaveTable *sndLoadWavetable(uintptr_t offset, u16 cacheindex)
 	if (tmp->type == AL_ADPCM_WAVE) {
 		tmp->waveInfo.adpcmWave.book = sndLoadAdpcmBook((uintptr_t)tmp->waveInfo.adpcmWave.book, cacheindex);
 		tmp->waveInfo.adpcmWave.loop = sndLoadAdpcmLoop((uintptr_t)tmp->waveInfo.adpcmWave.loop, cacheindex);
+
+#ifndef PLATFORM_N64
+		// ADPCM predecode: retype this cache entry to raw PCM16 (decoded
+		// once per unique sample; repeats hit the address-keyed map).
+		sndPredecodeWavetable(tmp);
+#endif
 	}
 
 	return tmp;
@@ -1674,6 +1895,14 @@ void sndInit(void)
 
 		// Load seq.tbl
 		alBnkfNew(bankfile, REF_SEG _seqtblSegmentRomStart);
+
+#ifndef PLATFORM_N64
+		// ADPCM predecode for the MUSIC bank: convert every instrument
+		// wavetable in the freshly-rebased ctl image (writable, snd-heap
+		// copy) so sequenced music synthesis reads raw PCM too. Runs before
+		// amgrStartThread, so no synthesis is concurrent.
+		sndPredecodeBank(bankfile->bankArray[0]);
+#endif
 
 		// Load the sequences table. To do this, load the header of the
 		// sequences segment and read the number of sequences, then allocate

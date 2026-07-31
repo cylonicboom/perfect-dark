@@ -1013,6 +1013,15 @@ PD_CONSTRUCTOR static void audioConfigInit(void)
 	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.QueueTarget", &g_SndQueueTargetSamples, 368, 8192);
 	configRegisterInt("Audio.Thread", &g_SndThreadEnabled, 0, 1);
+	{
+		// ADPCM predecode (snd.c): wavetables decoded to PCM16 at load,
+		// consumed by the RESTORED n_alRaw16Pull (n_load.c — Rare had
+		// stripped the raw path; enabling this without it corrupted all
+		// audio, 2026-07-31 — then runtime-confirmed clean with the restored
+		// pull same day). Default ON; =0 saves ~10-15MB (the OG-Xbox lever).
+		extern s32 g_SndPredecodeEnabled;
+		configRegisterInt("Audio.Predecode", &g_SndPredecodeEnabled, 0, 1);
+	}
 #ifndef DEDICATED_SERVER
 	configRegisterInt("Audio.ExtVolume", &extVolume, 0, 100);
 #endif

@@ -7017,6 +7017,12 @@ s32 netConsoleCommand(const char *line)
 				sysLogPrintf(LOG_CHAT, "SNDPOOL: playing=%d peak=%d (psCreate gate 48, mixer cap 64)",
 						g_SndNumPlaying, g_SndMostEverPlaying);
 				{
+					extern s32 g_SndPredecodeEnabled, g_SndPredecodeCount, g_SndPredecodeBytes;
+					sysLogPrintf(LOG_CHAT, "SNDPOOL: predecode=%s tables=%d pcm=%dKB",
+							g_SndPredecodeEnabled ? "ON" : "OFF",
+							g_SndPredecodeCount, g_SndPredecodeBytes / 1024);
+				}
+				{
 					extern s32 g_SndUnderruns;
 					extern s32 g_SndVoiceSteals;
 					extern s32 audioGetSamplesBuffered(void);

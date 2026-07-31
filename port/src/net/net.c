@@ -6991,10 +6991,22 @@ s32 netConsoleCommand(const char *line)
 		// in voices/states instead - report the numbers.
 		{
 			extern s32 g_SndEvtqDepth, g_SndEvtqPeak, g_SndEvtqDrops;
+			extern s32 g_SndQueueTargetSamples;
 
 			if (strcmp(arg, "reset") == 0) {
 				g_SndEvtqPeak = 0;
 				g_SndEvtqDrops = 0;
+			} else if (strncmp(arg, "depth ", 6) == 0) {
+				// /sndpool depth N — steady SDL-stream depth (samples) the
+				// amgrFrame governor holds. The hitch budget: ~22 samples/ms.
+				// Higher = pops survive longer frame hitches, lower = less
+				// SFX latency. Default 2208 (~100ms); config Audio.QueueTarget.
+				s32 n = atoi(arg + 6);
+				if (n >= 368 && n <= 8192) {
+					g_SndQueueTargetSamples = n;
+				}
+				sysLogPrintf(LOG_CHAT, "SNDPOOL: queue target = %d samples (~%dms)",
+						g_SndQueueTargetSamples, g_SndQueueTargetSamples / 22);
 			}
 
 			{
@@ -7004,6 +7016,19 @@ s32 netConsoleCommand(const char *line)
 						g_SndEvtqDepth, g_SndEvtqPeak, g_SndEvtqDrops);
 				sysLogPrintf(LOG_CHAT, "SNDPOOL: playing=%d peak=%d (psCreate gate 48, mixer cap 64)",
 						g_SndNumPlaying, g_SndMostEverPlaying);
+				{
+					extern s32 g_SndUnderruns;
+					extern s32 g_SndVoiceSteals;
+					extern s32 audioGetSamplesBuffered(void);
+					sysLogPrintf(LOG_CHAT, "SNDPOOL: underruns=%d steals=%d buffered=%d target=%d (underrun = stream drained, steal = note cut)",
+							g_SndUnderruns, g_SndVoiceSteals,
+							audioGetSamplesBuffered(), g_SndQueueTargetSamples);
+
+					if (strcmp(arg, "reset") == 0) {
+						g_SndUnderruns = 0;
+						g_SndVoiceSteals = 0;
+					}
+				}
 			}
 		}
 	} else if (strcmp(cmd, "envmix") == 0) {

@@ -1702,9 +1702,12 @@ void sndInit(void)
 		// shared per-frame param pool; when it runs dry, volume/pitch updates
 		// are silently dropped. maxVVoices is unused by this naudio (voices
 		// are embedded in sound states) but kept >= maxPVoices for sanity.
-		synconfig.maxVVoices = 128;
-		synconfig.maxPVoices = 96;
-		synconfig.maxUpdates = 256;
+		// 96 -> 128 (2026-07-31): under 32-sim mass fire the 96-voice pool
+		// exhausts and _allocatePVoice steals a live voice — cutting a
+		// sustained music note is the "subtle short pop" (/sndpool steals>0).
+		synconfig.maxVVoices = 160;
+		synconfig.maxPVoices = 128;
+		synconfig.maxUpdates = 320;
 #else
 		synconfig.maxVVoices = 44;
 		synconfig.maxPVoices = 30;

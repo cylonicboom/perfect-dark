@@ -100,9 +100,9 @@ void amgrCreate(ALSynConfig *config)
 	// Audio command list length (Acmds per frame buffer). Scales with active
 	// physical voices — each sampled voice emits load/resample/envmix commands
 	// every subframe and there is NO overflow check on the buffer. 2000 was
-	// budgeted for the N64's 30 pvoices; the port runs 96 (snd.c), so scale
+	// budgeted for the N64's 30 pvoices; the port runs 128 (snd.c), so scale
 	// past proportional. Comes out of the (also grown) sound heap.
-	var800918ec = 8000;
+	var800918ec = 11000;
 #else
 	var800918ec = 2000;
 
@@ -349,16 +349,29 @@ void amgrFrame(void)
 		osAiSetNextBuffer(previnfo->data, previnfo->frameSamples * 4);
 	}
 
-	if (somevalue > 1100 && var8005cf94 == 0) {
-		// already a lot queued, render 1 naudio frame (184 samples) this frame
-		info->frameSamples = 184;
-		var8005cf94 = 2;
-	} else {
-		// have space in audio queue, render 2 naudio frames this frame (and 1 extra on PAL)
-		info->frameSamples = 368 + PAL * 184;
+	// Queue-depth governor: above the target, render 1 naudio frame (184
+	// samples, less than the ~367/frame the device drains -> depth falls);
+	// at/below it, render 2 (+1 on PAL -> depth grows). Steady depth
+	// oscillates around the target, and that depth IS the hitch budget: a
+	// game frame longer than the buffered audio drains the SDL stream to
+	// silence mid-frame — the "subtle short pop" (music included; /sndpool
+	// underruns counts them). The old hardcoded 1100 (~50ms at 22020Hz) was
+	// underrun by ordinary long frames (stage load, shader compile, texture
+	// churn). Default now 2600 (~118ms, user-tuned); live-tunable via /sndpool depth N
+	// (g_SndQueueTargetSamples, audio.c — lower = less SFX latency, higher =
+	// more hitch resilience; must stay below Audio.QueueLimit, 8192).
+	{
+		extern s32 g_SndQueueTargetSamples;
 
-		if (var8005cf94 != 0) {
-			var8005cf94--;
+		if (somevalue > g_SndQueueTargetSamples && var8005cf94 == 0) {
+			info->frameSamples = 184;
+			var8005cf94 = 2;
+		} else {
+			info->frameSamples = 368 + PAL * 184;
+
+			if (var8005cf94 != 0) {
+				var8005cf94--;
+			}
 		}
 	}
 

@@ -80,6 +80,14 @@ s32 _allocatePVoice(N_PVoice **pvoice, s16 priority)
 		alUnlink(dl);
 		alLink(dl, &n_syn->pAllocList);
 	} else { /* steal one */
+#ifndef PLATFORM_N64
+		// /sndpool diagnostics: a steal cuts the victim voice INSTANTLY -
+		// if the victim is a sustained music note, that's an audible pop.
+		{
+			extern s32 g_SndVoiceSteals;
+			g_SndVoiceSteals++;
+		}
+#endif
 		for (dl = n_syn->pAllocList.next; dl != 0; dl = dl->next) {
 			pv = (N_PVoice *)dl;
 

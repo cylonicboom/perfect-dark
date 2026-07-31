@@ -287,6 +287,22 @@ void schedAudioFrame(OSSched *sc)
 			amgrFrame();
 			audioEndFrame();
 		}
+
+		// Depth floor: the clamp above caps post-hitch refill, and nothing
+		// else stops the queue from walking down to empty — when it does,
+		// the device feeds silence and the gap is an audible pop (user
+		// /sndpool: underruns>0, steals=0, 2026-07-31). Top the queue back
+		// up to ~2 frames of samples whenever it dips below, bounded so a
+		// stuck consumer can't spin us. Producing slightly ahead is exactly
+		// what vanilla's unbounded catch-up did, minus the hitch bomb.
+		if (audioStreamActive()) {
+			s32 extra;
+
+			for (extra = 0; extra < 4 && audioGetSamplesBuffered() < 736; extra++) {
+				amgrFrame();
+				audioEndFrame();
+			}
+		}
 	}
 }
 

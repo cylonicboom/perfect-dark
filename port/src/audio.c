@@ -664,6 +664,15 @@ s32 audioGetBytesBuffered(void)
 #endif
 }
 
+s32 audioStreamActive(void)
+{
+#ifdef DEDICATED_SERVER
+	return 0;
+#else
+	return stream != NULL;
+#endif
+}
+
 s32 audioGetSamplesBuffered(void)
 {
 	return audioGetBytesBuffered() / 4;
@@ -685,10 +694,32 @@ void audioSetNextBuffer(const s16 *buf, u32 len)
 #endif
 }
 
+// /sndpool diagnostics: g_SndUnderruns counts pushes that found the SDL
+// stream completely drained - the device fed silence in the gap, which is
+// audible as a subtle short pop/crackle (music included). g_SndVoiceSteals
+// (bumped in n_synallocvoice.c) counts physical-voice steals - a stolen
+// sustained note also pops.
+s32 g_SndUnderruns = 0;
+s32 g_SndVoiceSteals = 0;
+
+// Steady queue depth the amgrFrame governor holds the SDL stream at, in
+// samples (22020Hz stereo, 1 sample = 1 frame here). This depth is the
+// hitch budget: a game frame longer than the buffered audio underruns the
+// device (an audible pop), so it trades SFX latency for hitch resilience.
+// 2600 ~= 118ms — user-tuned 2026-07-31 (the old hardcoded value was
+// 1100/~50ms, underrun by ordinary long frames; 2208/~100ms still let the
+// odd pop through). Config Audio.QueueTarget; live-tune with
+// /sndpool depth N. Keep well below queueLimit (8192).
+s32 g_SndQueueTargetSamples = 2600;
+
 void audioEndFrame(void)
 {
 #ifndef DEDICATED_SERVER
 	if (nextBuf && nextSize) {
+		if (stream && audioGetSamplesBuffered() == 0) {
+			g_SndUnderruns++;
+		}
+
 		if (stream && audioGetSamplesBuffered() < queueLimit) {
 			const void *out = nextBuf;
 
@@ -853,6 +884,7 @@ PD_CONSTRUCTOR static void audioConfigInit(void)
 {
 	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 1 * 1024 * 1024);
+	configRegisterInt("Audio.QueueTarget", &g_SndQueueTargetSamples, 368, 8192);
 #ifndef DEDICATED_SERVER
 	configRegisterInt("Audio.ExtVolume", &extVolume, 0, 100);
 #endif

@@ -136,6 +136,29 @@ s32 botactTryRemoveAmmoFromReserve(struct aibot *aibot, s32 weaponnum, s32 funcn
 	s32 amountremoved;
 	s32 *ammoheld = &aibot->ammoheld[botactGetAmmoTypeByFunction(weaponnum, funcnum)];
 
+#ifndef PLATFORM_N64
+	// BOTFLAG_UNLIMITEDAMMO has to be honoured BEFORE the reserve-empty guard
+	// below, or it does the exact opposite of its name.
+	//
+	// The flag makes every ammo QUERY report the ammotype capacity
+	// (botactGetAmmoQuantityBy*) and makes every ammo GRANT a no-op
+	// (botactGiveAmmoBy*, which early-return precisely because the flag is set).
+	// So a flagged bot's `ammoheld` reserve stays all-zero by design -- and the
+	// original guard order then fails `*ammoheld <= 0` and returns 0 before ever
+	// reaching the flag check. botactReload therefore loads nothing, loadedammo
+	// stays 0, and the bot never fires a shot: it reports infinite ammo but can
+	// never chamber a round.
+	//
+	// This was unreachable dead code upstream because nothing ever SET the flag
+	// (Dark's botReset clears it -- the decomp's @bug note there). The port-only
+	// Demon difficulty is the first thing to set it, which is what surfaced this.
+	// Kept as a pure insertion so the original guard and the N64 build are
+	// untouched; the redundant flag test below is left in place for fidelity.
+	if (aibot && (aibot->flags & BOTFLAG_UNLIMITEDAMMO) && tryqty > 0) {
+		return tryqty;
+	}
+#endif
+
 	if (!aibot || *ammoheld <= 0 || tryqty <= 0) {
 		return 0;
 	}

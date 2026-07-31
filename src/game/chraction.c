@@ -4807,6 +4807,28 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// DemonSim deals +20% damage (docs/PORT_DEMON_SIMS.md). Placed after the
+	// solo/co-op/anti difficulty scaling and before the hitpart multipliers, so
+	// it composes: 20% more of whatever that hit would already have done, rather
+	// than a flat bonus that swamps a limb hit.
+	//
+	// Keyed on the ATTACKER (aprop) — the mirror of the no-headshot-bonus gate
+	// further down, which keys on the victim. PROPTYPE_CHR only, so an explosion
+	// with no attributed attacker is unaffected.
+	if (aprop && aprop->type == PROPTYPE_CHR && botIsDemon(aprop->chr)) {
+		damage *= DEMON_DAMAGE_MULT;
+	}
+
+	// Any hit on a DemonSim interrupts its regeneration for a few seconds. `chr`
+	// is the VICTIM here (the mirror of the attacker gate above). Stamped for
+	// every damage event that gets this far, shield-absorbed hits included, so
+	// chipping away at the armour is never cancelled out by the regen.
+	if (botIsDemon(chr)) {
+		chr->aibot->demonregendelay60 = DEMON_REGEN_DELAY_TICKS;
+	}
+#endif
+
 	// Apply rumble
 	if (vprop->type == PROPTYPE_PLAYER) {
 		s32 prevplayernum = g_Vars.currentplayernum;
@@ -5083,9 +5105,17 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		// and flinch head if shot in the head
 		if (hitpart == HITPART_HEAD) {
 #ifndef PLATFORM_N64
-			// Chaos "Birthday party": remember the head hit for the Lua event
-			// emitted at the luaEmitDamage site (where the attacker resolves).
-			chaosheadshot = true;
+		chaosheadshot = true;
+		// DemonSim takes NO headshot damage bonus (docs/PORT_DEMON_SIMS.md): a
+		// head hit does exactly what a limb hit does. It still flinches and still
+		// gurgles, so the hit reads normally — only the multipliers are skipped
+		// (the flat x4 every non-Skedar chr gets, the x2 for Skedar, the solo/co-op
+		// headshotdamagescale, and the combat-knife doubling). Aim for the body.
+		if (botIsDemon(chr)) {
+			if (isshoot && !usedshield) {
+				chrFlinchHead(chr, angle);
+			}
+		} else
 #endif
 			if (race == RACE_SKEDAR) {
 				damage += damage;

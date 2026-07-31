@@ -37,6 +37,7 @@
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/netmsg.h"
+#include "system.h" // sysLogPrintf for the DemonSim dry-clip diagnostic
 #endif
 
 #define PICKUPCRITERIA_DEFAULT  0
@@ -82,6 +83,58 @@ bool botIsDizzy(struct chrdata *chr)
 {
 	return chr->blurdrugamount >= g_BotDifficulties[chr->aibot->config->difficulty].dizzyamount;
 }
+
+#ifndef PLATFORM_N64
+// True if this chr is a DemonSim (docs/PORT_DEMON_SIMS.md). Safe to call on any
+// chr, including players and script NPCs, so damage-path callers don't need
+// their own null dance.
+bool botIsDemon(struct chrdata *chr)
+{
+	return chr && chr->aibot && chr->aibot->config
+			&& chr->aibot->config->difficulty == BOTDIFF_DEMON;
+}
+
+// Base HP pool for a simulant: chrInit's default, which nothing in the bot
+// allocation path overrides (body.c's maxdamage = 2 is the spawned-NPC path, not
+// aibots). Written ABSOLUTELY in botReset rather than scaling the live value,
+// because botReset runs on every respawn and a multiply would compound.
+#define BOT_BASE_MAXDAMAGE 4.0f
+#define DEMON_MAXDAMAGE_MULT 1.5f
+
+// Slow regeneration rates, as a fraction of the full pool per second, so each
+// is just 1 / (seconds to refill from empty). Tuned by the user 2026-07-30:
+// HP refills in 20s, shield in 40s -- the shield is deliberately the slower of
+// the two, so stripping a DemonSim's armour stays worth doing even if you can't
+// finish it off. Both reward disengaging rather than making it unkillable under
+// sustained fire (at these rates any sustained DPS out-paces the regen).
+#define DEMON_HP_REGEN_PER_SEC 0.05f      // 1/20
+#define DEMON_SHIELD_REGEN_PER_SEC 0.025f // 1/40
+
+// HALF the engine's full shield (8 = the complete 8-bar armour, what Dark and
+// the Turtle/Shield personalities spawn with), user-tuned 2026-07-30. This is
+// both the spawn value in botReset AND the regen ceiling -- they must stay the
+// same number, or regen would quietly refill past the spawn value and undo the
+// halving within one refill period.
+//
+// This is the lever that actually governs how tanky a DemonSim feels: the shield
+// is resolved in chrDamage BEFORE the hitpart multipliers, and that branch zeroes
+// `damage` whether it absorbs or breaks -- so armour drains at RAW weapon damage
+// with no headshot/torso multiplier helping. 8 units against a 4-HP pool was
+// twice the health bar and drained the slow way.
+#define DEMON_SHIELD_MAX 4.0f
+
+// Rate of fire. botactGetShootInterval60 returns the per-shot delay in ticks
+// from the weapon's own data, for SHOOT_SINGLE (semi-auto), SHOOT_AUTOMATIC and
+// SHOOT_PROJECTILE alike -- so scaling it speeds up every firing mode including
+// semi-auto trigger pulls. 0.5 = twice the cadence. Floored at 1 tick.
+//
+// NOTE: this is the only lethality dial left on the FIRING side. A DemonSim's
+// aim error (aibot->extraangle) and trigger delay (shootdelay) are already
+// exactly ZERO -- see g_BotDifficulties[] -- and bots never go through the
+// player's bgun spread path, so there is no accuracy left to improve.
+#define DEMON_SHOOT_INTERVAL_MULT 0.5f
+#define DEMON_BURST_GAP_TICKS 2 // vanilla mid-burst gap is 5
+#endif
 
 void botReset(struct chrdata *chr, u8 respawning)
 {
@@ -257,10 +310,24 @@ void botReset(struct chrdata *chr, u8 respawning)
 		if (aibot->config->difficulty == BOTDIFF_DEMON) {
 			aibot->flags |= BOTFLAG_UNLIMITEDAMMO;
 
+			// Half armour, unlike Dark's full 8 (see DEMON_SHIELD_MAX). The HP
+			// bonus above is deliberately untouched -- health is multiplied, armour
+			// is halved.
 			if (mpHasShield()) {
-				chr->cshield = 8;
+				chr->cshield = DEMON_SHIELD_MAX;
 			}
 		}
+
+		// +50% HP for a DemonSim. Written absolutely (not as a multiply of the
+		// live value) because botReset runs on EVERY respawn and scaling would
+		// compound to an unkillable sim after a few deaths. Non-demons are pinned
+		// back to the base for the same reason the ammo flag is cleared above: an
+		// admin can change a sim's difficulty in place mid-match, and a slot
+		// recycled from a DemonSim must not keep the bonus pool. Pinning is a
+		// no-op for every other bot — chrInit's 4 is already their only source.
+		chrSetMaxDamage(chr, aibot->config->difficulty == BOTDIFF_DEMON
+				? BOT_BASE_MAXDAMAGE * DEMON_MAXDAMAGE_MULT
+				: BOT_BASE_MAXDAMAGE);
 #endif
 
 		aibot->respawning = true;
@@ -2552,6 +2619,112 @@ void botTickUnpaused(struct chrdata *chr)
 		struct aibot *aibot = chr->aibot;
 		s32 i;
 
+#ifndef PLATFORM_N64
+		// DemonSim slow HP + shield regeneration (docs/PORT_DEMON_SIMS.md).
+		// Paced on lvupdate60f, so it freezes with a paused game and scales with
+		// slow-mo like everything else instead of running on wall-clock.
+		//
+		// Server-authoritative by construction: botTick* only runs on the host
+		// (prop.c gates it off for clients), and both chr->damage and cshield ride
+		// the SVC_PROP_MOVE chr-state block, so clients see the regen as normal
+		// state sync with no new wire field.
+		if (botIsDemon(chr)) {
+			const f32 secs = g_Vars.lvupdate60f * (1.0f / 60.0f);
+
+			// Regeneration is INTERRUPTED by taking damage: chrDamage stamps
+			// demonregendelay60 on every hit, so regen only resumes a few seconds
+			// after the demon stops being shot. Without this the regen competed
+			// with incoming fire tick-for-tick and a shielded DemonSim read as
+			// unkillable to anything but a max-damage weapon or an explosion.
+			if (aibot->demonregendelay60 > 0) {
+				aibot->demonregendelay60 -= g_Vars.lvupdate60;
+
+				if (aibot->demonregendelay60 < 0) {
+					aibot->demonregendelay60 = 0;
+				}
+			}
+
+			// Regen only while NOT recently hit. Deliberately scoped to the two
+			// pools -- the clip top-up below must keep running under fire, or the
+			// bot strands itself dry mid-fight.
+			if (aibot->demonregendelay60 <= 0) {
+				// Only heal actual damage. chr->damage can legitimately be NEGATIVE
+				// on an armoured chr (it's a signed accumulator, not a wound count),
+				// and driving it further negative would hand out free bonus health.
+				if (chr->damage > 0) {
+					chr->damage -= chr->maxdamage * DEMON_HP_REGEN_PER_SEC * secs;
+
+					if (chr->damage < 0) {
+						chr->damage = 0;
+					}
+				}
+
+				// Gated on mpHasShield for the same reason the spawn shield above
+				// is: a regenerating shield in a scenario with shields turned off
+				// would silently absorb hits the player can't account for.
+				if (mpHasShield() && chr->cshield < DEMON_SHIELD_MAX) {
+					f32 shield = chr->cshield
+							+ DEMON_SHIELD_MAX * DEMON_SHIELD_REGEN_PER_SEC * secs;
+
+					if (shield > DEMON_SHIELD_MAX) {
+						shield = DEMON_SHIELD_MAX;
+					}
+
+					chrSetShield(chr, shield);
+				}
+			}
+
+			// ...and it NEVER RELOADS. Unlimited ammo alone only refills the
+			// reserve; the bot still burns its clip and stops to reload. Topping
+			// both clips up every tick means the firing gate below
+			// (`weapons_held[i] && loadedammo[i] > 0`) is always satisfied AND the
+			// reload scheduler further down never sees a reason to run, so there
+			// is no reload animation, sound or pause in its fire.
+			//
+			// Guard mirrors botactReload's own: throwables (grenades, laptop,
+			// Dragon) and melee have no clip -- capacity 0 -- and are skipped, so
+			// their throw-interval pacing is untouched.
+			for (i = 0; i < 2; i++) {
+				const bool throwable =
+						botactIsWeaponThrowable(aibot->weaponnum, aibot->gunfunc);
+				const s32 capacity =
+						botactGetClipCapacityByFunction(aibot->weaponnum, aibot->gunfunc);
+
+				if (chr->weapons_held[i] && !throwable) {
+					if (capacity > 0 && aibot->loadedammo[i] < capacity) {
+						aibot->loadedammo[i] = capacity;
+					}
+				}
+
+				// Cancel a reload already in flight, so a demon that started one
+				// before this tick doesn't still eat the delay. NOTE: this is only
+				// safe BECAUSE the top-up above keeps the clip full -- if the
+				// top-up ever fails, zeroing this strands the bot permanently dry
+				// (the countdown branch in "Consider reloading" below is the ONLY
+				// caller of botactReload). Hence the diagnostic.
+				if (capacity > 0 || !throwable) {
+					aibot->timeuntilreload60[i] = 0;
+				}
+
+				// DIAGNOSTIC (temporary): a DemonSim with a gun in this hand and
+				// an empty clip is the "fires for half a second then stops" state.
+				// Silent when the top-up is working; when it isn't, this prints the
+				// reason. Throttled to once a second per hand.
+				if (chr->weapons_held[i] && aibot->loadedammo[i] <= 0
+						&& (g_Vars.lvframe60 % 60) == 0) {
+					sysLogPrintf(LOG_NOTE,
+							"demon: hand=%d DRY loaded=%d cap=%d wep=%d func=%d throwable=%d "
+							"flags=%04x reload=%d reserve=%d",
+							i, aibot->loadedammo[i], capacity, aibot->weaponnum,
+							aibot->gunfunc, throwable ? 1 : 0, aibot->flags,
+							aibot->timeuntilreload60[i],
+							botactGetAmmoQuantityByWeapon(aibot, aibot->weaponnum,
+									aibot->gunfunc, false));
+				}
+			}
+		}
+#endif
+
 		// Consider updating random values
 		aibot->random2ttl60 -= g_Vars.lvupdate60;
 
@@ -3772,6 +3945,22 @@ void botTickUnpaused(struct chrdata *chr)
 							}
 #endif
 
+#ifndef PLATFORM_N64
+							// DemonSim fires faster (docs/PORT_DEMON_SIMS.md).
+							// Applied AFTER the PAL rescale so both regions get the
+							// same proportional speed-up. Covers semi-auto, full
+							// auto and projectile alike -- they all source this
+							// interval from botactGetShootInterval60.
+							if (botIsDemon(chr)) {
+								aibot->nextbullettimer60[i] =
+										(s32)(aibot->nextbullettimer60[i] * DEMON_SHOOT_INTERVAL_MULT);
+
+								if (aibot->nextbullettimer60[i] < 1) {
+									aibot->nextbullettimer60[i] = 1;
+								}
+							}
+#endif
+
 							func = weaponGetFunctionById(aibot->weaponnum, aibot->gunfunc);
 
 							if (func
@@ -3784,6 +3973,15 @@ void botTickUnpaused(struct chrdata *chr)
 
 								if (chr->aibot->burstsdone[i]) {
 									chr->aibot->nextbullettimer60[i] = 5;
+
+#ifndef PLATFORM_N64
+									// Tighter mid-burst gap for a DemonSim, so a
+									// burst weapon's 3-round group lands closer to
+									// one continuous stream.
+									if (botIsDemon(chr)) {
+										chr->aibot->nextbullettimer60[i] = DEMON_BURST_GAP_TICKS;
+									}
+#endif
 								}
 							}
 						}

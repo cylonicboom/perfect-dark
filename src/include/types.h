@@ -855,6 +855,19 @@ struct aibot {
 	/*0x2d4*/ f32 randomfrac;
 	/*0x2d8*/ u32 unk2d8; // unused
 	/*0x2dc*/ u32 unk2dc; // unused
+#ifndef PLATFORM_N64
+	/**
+	 * Port-only: ticks remaining before a DemonSim may resume regenerating HP /
+	 * shield (docs/PORT_DEMON_SIMS.md). Stamped in chrDamage every time the demon
+	 * is the VICTIM, counted down in botTickUnpaused. Appended after the original
+	 * fields so every N64 offset above is untouched.
+	 *
+	 * Without this, regen competes with incoming fire tick-for-tick and a shielded
+	 * DemonSim reads as unkillable to anything but a max-damage weapon. With it,
+	 * sustained fire always wins and regen only pays off between engagements.
+	 */
+	s32 demonregendelay60;
+#endif
 };
 
 struct geo {

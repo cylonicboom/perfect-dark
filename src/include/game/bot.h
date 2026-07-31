@@ -7,6 +7,11 @@
 bool botroomFindPos(RoomNum room, struct coord *pos, f32 *angleptr, s32 *padnumptr, s32 *covernumptr);
 
 bool botIsDizzy(struct chrdata *chr);
+#ifndef PLATFORM_N64
+bool botIsDemon(struct chrdata *chr);   /* is this chr a DemonSim? safe on any chr */
+#define DEMON_DAMAGE_MULT 1.2f          /* +20% damage DEALT by a DemonSim */
+#define DEMON_REGEN_DELAY_TICKS 300     /* 5s of no regen after being hit */
+#endif
 void botReset(struct chrdata *chr, u8 respawning);
 void botSpawn(struct chrdata *chr, u8 full);
 void botSpawnAll(void);

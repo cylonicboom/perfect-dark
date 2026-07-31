@@ -510,7 +510,17 @@ extern struct mphead g_MpHeads[VERSION == VERSION_JPN_FINAL ? 74 : 75];
 #else // PD Plus Mod
 extern struct mphead g_MpHeads[VERSION == VERSION_JPN_FINAL ? 75 : 76];
 #endif
+#ifdef PLATFORM_N64
 extern struct botprofile g_BotProfiles[18];
+#else // PD Plus Mod
+// 19 = the ROM's 18 + the port-only Demon row appended in mplayer.c
+// (docs/PORT_DEMON_SIMS.md). THIS SIZE IS LOAD-BEARING: every TU except
+// mplayer.c (which holds the definition) sees only this declaration, and
+// ARRAYCOUNT is sizeof-based -- so a stale 18 here makes setup.c's
+// Add/Change Simulant list iterate 0..17 and silently drop the last row,
+// while mplayer.c's own loops see all 19. Keep in step with the definition.
+extern struct botprofile g_BotProfiles[19];
+#endif
 #ifdef PLATFORM_N64
 extern struct mpbody g_MpBodies[61];
 #else // PD Plus Mod

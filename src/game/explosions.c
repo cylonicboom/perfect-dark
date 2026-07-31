@@ -1123,8 +1123,22 @@ u32 explosionTick(struct prop *prop)
 		// Create new parts
 		numpartstocreate = (s32)((f32)type->propagationrate * exp->age / maxage) + 1;
 
+#ifndef PLATFORM_N64
+		// [B10d] Forward-moving free-slot hint, scoped to THIS call only.
+		// Nothing inside the create loop zeroes a part's frame (expiry happens
+		// in the age loop below and in explosionRender), so the first free
+		// index is monotonically non-decreasing across the i iterations:
+		// starting the scan just past the last filled slot provably selects
+		// the same slot the full linear scan would. Resets every call.
+		s32 firstfree = 0;
+#endif
+
 		for (i = 0; i < numpartstocreate; i++) {
+#ifndef PLATFORM_N64
+			for (j = firstfree; j < 40; j++) {
+#else
 			for (j = 0; j < 40; j++) {
+#endif
 				if (exp->parts[j].frame == 0) {
 					if (exp->numbb == 0 || exp->type == EXPLOSIONTYPE_HUGE25) {
 						spfc.f[0] = sp11c.f[0];
@@ -1215,6 +1229,9 @@ u32 explosionTick(struct prop *prop)
 					exp->parts[j].frame = 1;
 					exp->parts[j].size = (1.0f + RANDOMFRAC() * 0.5f) * type->innersize;
 					exp->parts[j].rot = RANDOMFRAC() * M_BADTAU;
+#ifndef PLATFORM_N64
+					firstfree = j + 1; // [B10d] slots <= j are now all occupied
+#endif
 					break;
 				}
 			}
@@ -1352,6 +1369,9 @@ Gfx *explosionRender(struct prop *prop, Gfx *gdl, bool xlupass)
 		struct coord *coord = roomGetPosPtr(roomnum);
 		Col *colours;
 		s32 tmp;
+#ifndef PLATFORM_N64
+		s32 partsperbucket[15];
+#endif
 
 		if (func0f08e5a8(prop->rooms, &screenbox) > 0) {
 			gdl = bgScissorWithinViewport(gdl, screenbox.xmin, screenbox.ymin, screenbox.xmax, screenbox.ymax);
@@ -1403,7 +1423,37 @@ Gfx *explosionRender(struct prop *prop, Gfx *gdl, bool xlupass)
 
 		gSPColor(gdl++, osVirtualToPhysical(colours), 1);
 
+#ifndef PLATFORM_N64
+		// GPU load (opt A13): the loop below emits two full texture loads per
+		// bucket then scans all 40 parts, even for buckets no part maps to.
+		// One O(40) pre-pass counts parts per bucket (same index derivation as
+		// the inner-loop test) so empty buckets skip both the texture loads
+		// and the part scan. Occupied buckets emit identically, in the same
+		// order.
 		for (i = 14; i >= 0; i--) {
+			partsperbucket[i] = 0;
+		}
+
+		for (j = 0; j < ARRAYCOUNT(exp->parts); j++) {
+			if (exp->parts[j].frame > 0) {
+#if PAL
+				s32 bucket = (s32)((f32)(exp->parts[j].frame - 1) / (g_ExplosionTypes[exp->type].flarespeed * 0.83333331346512f));
+#else
+				s32 bucket = (s32)((f32)(exp->parts[j].frame - 1) / g_ExplosionTypes[exp->type].flarespeed);
+#endif
+				if (bucket >= 0 && bucket <= 14) {
+					partsperbucket[bucket]++;
+				}
+			}
+		}
+#endif
+
+		for (i = 14; i >= 0; i--) {
+#ifndef PLATFORM_N64
+			if (partsperbucket[i] == 0) {
+				continue;
+			}
+#endif
 			gDPSetTextureImage(gdl++, G_IM_FMT_IA, G_IM_SIZ_16b, 1, g_ExplosionTexturePairs[i].texturenum1);
 			gDPLoadSync(gdl++);
 			gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, 1567, 0);

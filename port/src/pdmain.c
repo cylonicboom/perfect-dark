@@ -355,11 +355,10 @@ void mainProc(void)
  * The developers would have used rmon to create a table of name/value pairs,
  * then this function would have looked up the given variable name in the table
  * and written the new value to the variable's address.
+ *
+ * Port: defined as a static inline no-op in lib/main.h so calls compile away;
+ * no out-of-line definition is needed here.
  */
-void mainOverrideVariable(char *name, void *value)
-{
-	// empty
-}
 
 /**
  * This function enters an infinite loop which iterates once per stage load.

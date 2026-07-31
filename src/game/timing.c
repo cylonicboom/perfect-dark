@@ -37,7 +37,11 @@ void frametimeCalculate(void)
 	u32 diffframe60;
 	u32 diffframe240;
 
-	do {
+#ifndef PLATFORM_N64
+	// Sleep only when the wait condition actually holds - the old do/while
+	// slept EXTRA_SLEEP_TIME unconditionally once per frame even when the
+	// tick was already due, adding pure latency.
+	while (true) {
 		count = osGetCount();
 		diffframet = count - g_Vars.thisframestartt;
 		g_Vars.diffframet = diffframet;
@@ -45,12 +49,24 @@ void frametimeCalculate(void)
 		diffframe60 = (g_Vars.lostframetime60t + diffframet + CYCLES_PER_FRAME / 2) / CYCLES_PER_FRAME;
 		diffframe240 = (g_Vars.lostframetime240t + diffframet + CYCLES_PER_FRAME / 2 / 4) / (CYCLES_PER_FRAME / 4);
 
-#ifndef PLATFORM_N64
+		if (!(g_Vars.mininc60 && diffframe60 < g_Vars.mininc60)) {
+			break;
+		}
+
 		if (g_TickExtraSleep) {
 			sysSleep(EXTRA_SLEEP_TIME);
 		}
-#endif
+	}
+#else
+	do {
+		count = osGetCount();
+		diffframet = count - g_Vars.thisframestartt;
+		g_Vars.diffframet = diffframet;
+
+		diffframe60 = (g_Vars.lostframetime60t + diffframet + CYCLES_PER_FRAME / 2) / CYCLES_PER_FRAME;
+		diffframe240 = (g_Vars.lostframetime240t + diffframet + CYCLES_PER_FRAME / 2 / 4) / (CYCLES_PER_FRAME / 4);
 	} while (g_Vars.mininc60 && diffframe60 < g_Vars.mininc60);
+#endif
 
 	g_Vars.lostframetime60t = g_Vars.lostframetime60t + diffframet - diffframe60 * CYCLES_PER_FRAME;
 	g_Vars.lostframetime240t = g_Vars.lostframetime240t + diffframet - diffframe240 * (CYCLES_PER_FRAME / 4);

@@ -4469,6 +4469,7 @@ void pakExecuteDebugOperations(void)
 	bool disablepolling = false;
 	s8 i;
 
+#ifdef PLATFORM_N64 // [B12b] debug hook is empty off-N64; flags keep their defaults
 	mainOverrideVariable("forcescrub", &g_PakDebugForceScrub);
 	mainOverrideVariable("pakdump", &g_PakDebugPakDump);
 	mainOverrideVariable("pakcache", &g_PakDebugPakCache);
@@ -4476,6 +4477,7 @@ void pakExecuteDebugOperations(void)
 	mainOverrideVariable("corruptme", &g_PakDebugCorruptMe);
 	mainOverrideVariable("wipeeeprom", &g_PakDebugWipeEeprom);
 	mainOverrideVariable("dumpeeprom", &g_PakDebugDumpEeprom);
+#endif
 
 	if (g_PakDebugCorruptMe) {
 		g_PakDebugCorruptMe = false;
@@ -4512,7 +4514,29 @@ void pakExecuteDebugOperations(void)
 		g_PakDebugForceScrub = false;
 	}
 
+#ifndef PLATFORM_N64
+	// [B12b] pakCheckPlugged is hotplug DETECTION only: it edge-detects
+	// joyShiftPfsStates() against g_PaksPlugged and writes nothing in steady
+	// state. Poll it every 15th call - a plug/unplug is noticed up to ~15
+	// frames (~0.25s) late, after which the PROBE/UNPLUGGING transitions and
+	// the pakTickState sweep below (which still runs every call) proceed
+	// identically.
+	{
+		static u32 s_pakplugpoll = 0;
+
+		if (s_pakplugpoll == 0) {
+			pakCheckPlugged();
+		}
+
+		s_pakplugpoll++;
+
+		if (s_pakplugpoll >= 15) {
+			s_pakplugpoll = 0;
+		}
+	}
+#else
 	pakCheckPlugged();
+#endif
 
 	for (i = 0; i < ARRAYCOUNT(g_Paks); i++) {
 		if (g_Paks[i].features) {

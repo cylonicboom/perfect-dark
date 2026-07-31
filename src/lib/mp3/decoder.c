@@ -2955,6 +2955,18 @@ bool mp3decDecodeFrame(struct asistream *stream)
 		return true;
 	}
 
+#ifndef PLATFORM_N64
+	// The PCM produced below is discarded on the port: the caller
+	// (mp3.c func00037fc0) emits an aPlayMP3 command that has minimp3
+	// (port/src/mixer.c aPlayMP3Impl) re-decode this frame into the same
+	// output slot. Everything the caller consumes has already happened at
+	// this point — the header/side-info parse set numchannels, and
+	// mp3main00043dd0 above consumed the frame's main data so the stream
+	// cursor sits at the next frame header. Skip the huffman/requantize/
+	// IMDCT/polyphase synthesis stages.
+	return true;
+#endif
+
 	for (ch = 0; ch < stream->numchannels; ch++) {
 		mp3dec00042238(stream, gr, ch);
 		mp3dec00040164(stream, gr, ch);

@@ -411,8 +411,11 @@ static inline void sync_framerate_with_timer(void) {
 
     const int64_t next = previous_time + 10 * FRAME_INTERVAL_US_NUMERATOR / FRAME_INTERVAL_US_DENOMINATOR;
     int64_t left = next - t;
-    // We want to exit a bit early, so we can busy-wait the rest to never miss the deadline
-    left -= 15000UL;
+    // We want to exit a bit early, so we can busy-wait the rest to never miss
+    // the deadline. 300us of margin (was 1.5ms): sysSleep uses a
+    // high-resolution waitable timer on Windows 10 1803+ (system.c), so the
+    // old margin burned ~9% of a core per frame at 60fps busy-spinning.
+    left -= 3000UL;
     if (left > 0) {
         sysSleep(left);
     }

@@ -262,9 +262,25 @@ void schedStartFrame(OSSched *sc)
 void schedAudioFrame(OSSched *sc)
 {
 	s32 i;
+	s32 numpasses;
 
 	if (!g_SndDisabled) {
-		for (i = 0; i < g_Vars.diffframe60; i++) {
+		// Clamp post-hitch catch-up: after a long frame diffframe60 demands
+		// that many full synthesis passes in one go, amplifying the hitch.
+		numpasses = g_Vars.diffframe60;
+
+		if (numpasses > 2) {
+			numpasses = 2;
+		}
+
+		for (i = 0; i < numpasses; i++) {
+			// Skip synthesis entirely while the output queue is already at
+			// its push limit — audioEndFrame would drop the freshly-mixed
+			// samples on the floor anyway (the queueLimit check in audio.c).
+			if (audioGetQueueLimit() > 0 && audioGetSamplesBuffered() >= audioGetQueueLimit()) {
+				break;
+			}
+
 			amgrFrame();
 			audioEndFrame();
 		}

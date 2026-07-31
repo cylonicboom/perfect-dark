@@ -151,7 +151,16 @@ u8 *animDma(u8 *dst, u32 segoffset, u32 len)
 		return dst;
 	}
 
+#ifndef PLATFORM_N64
+	// The animations segment is fully resident on the port (romptr_t is a
+	// direct pointer - see dmaStart's bcopy), so point at it instead of
+	// copying into the slot buffer. Every consumer only reads through these
+	// pointers - the mod-replacement branches in animLoadFrame/animLoadHeader
+	// already rely on exactly that.
+	return (u8 *)((romptr_t) REF_SEG _animationsSegmentRomStart + segoffset);
+#else
 	return dmaExecWithAutoAlign(dst, (romptr_t) REF_SEG _animationsSegmentRomStart + segoffset, len);
+#endif
 }
 
 /**
@@ -349,6 +358,81 @@ void animForgetFrameBirths(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Per-part offset index for loaded anim headers.
+ *
+ * The header is a variable-stride stream of one entry per part, so reading
+ * part N used to require walking parts 0..N-1 - O(parts^2) across a model's
+ * joints, repeated per frame slot and again when merging animations. This
+ * table is built once when a header slot is (re)filled and memoizes, for each
+ * part, the byte offset of its header entry and the accumulated frame-data
+ * bit offset. Headers are immutable while resident, so the memoized values
+ * are bit-identical to what the walk would produce. Parts beyond
+ * ANIM_INDEX_MAX_PARTS (or past a truncated header) fall back to the
+ * original walk.
+ */
+#define ANIM_INDEX_MAX_PARTS 250
+
+struct animheaderindex {
+	u16 numparts;
+	u16 byteoffsets[ANIM_INDEX_MAX_PARTS];
+	u32 bitoffsets[ANIM_INDEX_MAX_PARTS];
+};
+
+static struct animheaderindex g_AnimHeaderIndexes[ANIM_HEADER_CACHE_SIZE];
+
+static void animBuildHeaderIndex(s32 slot, s16 animnum)
+{
+	struct animheaderindex *idx = &g_AnimHeaderIndexes[slot];
+	u8 *start = g_AnimHeaderBytes[slot];
+	u8 *ptr = start;
+	u8 *end = start + g_Anims[animnum].headerlen;
+	u32 bitoffset = 0;
+	s32 i = 0;
+
+	while (ptr < end && i < ANIM_INDEX_MAX_PARTS) {
+		u8 flags;
+
+		idx->byteoffsets[i] = (u16)(ptr - start);
+		idx->bitoffsets[i] = bitoffset;
+		i++;
+
+		flags = *ptr;
+		ptr++;
+
+		if (flags & ANIMFIELD_08) {
+			bitoffset += ptr[2] + ptr[5] + ptr[8] + ptr[11];
+			ptr += 12;
+		} else if (flags & ANIMFIELD_S16_TRANSLATE) {
+			bitoffset += ptr[2] + ptr[5] + ptr[8];
+			ptr += 9;
+		} else if (flags & ANIMFIELD_S32_TRANSLATE) {
+			bitoffset += ptr[0] + ptr[5] + ptr[10];
+			ptr += 15;
+		}
+
+		if (flags & ANIMFIELD_S16_ROTATE) {
+			bitoffset += ptr[2] + ptr[5] + ptr[8];
+			ptr += 9;
+		} else if (flags & ANIMFIELD_F32_ROTATE) {
+			bitoffset += 96;
+		}
+
+		if (flags & ANIMFIELD_CAMERA) {
+			bitoffset += ptr[0];
+			ptr += 5;
+		}
+
+		if (flags & ANIMFIELD_F32_SCALE) {
+			bitoffset += 96;
+		}
+	}
+
+	idx->numparts = i;
+}
+#endif
+
 void animLoadHeader(s16 animnum)
 {
 	s32 i;
@@ -390,6 +474,10 @@ void animLoadHeader(s16 animnum)
 		g_AnimHeaderAnimNums[slot] = animnum;
 		g_AnimHeaderBirths[slot] = g_Vars.thisframestart240;
 		g_NextAnimHeaderIndex = (slot + 1) % ANIM_HEADER_CACHE_SIZE;
+
+#ifndef PLATFORM_N64
+		animBuildHeaderIndex(slot, animnum);
+#endif
 	}
 }
 
@@ -479,6 +567,18 @@ void animGetRotTranslateScale(s32 part, bool flip, struct skeleton *skel, s16 an
 	bitoffset = 0;
 	end = ptr + g_Anims[animnum].headerlen;
 
+#ifndef PLATFORM_N64
+	{
+		struct animheaderindex *idx = &g_AnimHeaderIndexes[g_AnimToHeaderSlot[animnum]];
+
+		if (part < idx->numparts) {
+			ptr += idx->byteoffsets[part];
+			bitoffset = idx->bitoffsets[part];
+			goto walked;
+		}
+	}
+#endif
+
 	for (i = 0; i < part && ptr < end; i++) {
 		u8 flags = *ptr;
 		ptr++;
@@ -511,6 +611,9 @@ void animGetRotTranslateScale(s32 part, bool flip, struct skeleton *skel, s16 an
 		}
 	}
 
+#ifndef PLATFORM_N64
+walked:
+#endif
 	if (ptr < end) {
 		u8 flags = *ptr;
 		ptr++;
@@ -685,6 +788,18 @@ u16 animGetPosAngleAsInt(s32 part, bool flip, struct skeleton *skel, s16 animnum
 		bitoffset = 0;
 		ptr = g_AnimHeaderBytes[g_AnimToHeaderSlot[animnum]];
 
+#ifndef PLATFORM_N64
+		{
+			struct animheaderindex *idx = &g_AnimHeaderIndexes[g_AnimToHeaderSlot[animnum]];
+
+			if (part < idx->numparts) {
+				ptr += idx->byteoffsets[part];
+				bitoffset = idx->bitoffsets[part];
+				goto walked;
+			}
+		}
+#endif
+
 		for (i = 0; i < part; i++) {
 			u8 flags = *ptr;
 			ptr++;
@@ -717,6 +832,9 @@ u16 animGetPosAngleAsInt(s32 part, bool flip, struct skeleton *skel, s16 animnum
 			}
 		}
 
+#ifndef PLATFORM_N64
+walked:
+#endif
 		readbitlen = ptr[3];
 		inttranslate[0] = animReadSignedShort(framebytes, readbitlen, bitoffset) + ptr[1] * 256 + ptr[2];
 		bitoffset += readbitlen;
@@ -776,6 +894,18 @@ f32 animGetCameraValue(s32 part, s16 animnum, u8 frameslot)
 	s32 i;
 	u8 *end = ptr + g_Anims[animnum].headerlen;
 
+#ifndef PLATFORM_N64
+	{
+		struct animheaderindex *idx = &g_AnimHeaderIndexes[g_AnimToHeaderSlot[animnum]];
+
+		if (part < idx->numparts) {
+			ptr += idx->byteoffsets[part];
+			bitoffset = idx->bitoffsets[part];
+			goto walked;
+		}
+	}
+#endif
+
 	for (i = 0; i < part && ptr < end; i++) {
 		u8 flags = ptr[0];
 		ptr++;
@@ -808,6 +938,9 @@ f32 animGetCameraValue(s32 part, s16 animnum, u8 frameslot)
 		}
 	}
 
+#ifndef PLATFORM_N64
+walked:
+#endif
 	if (ptr < end) {
 		u8 flags = ptr[0];
 		ptr++;

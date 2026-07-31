@@ -278,6 +278,7 @@ void mtx00016784(void)
  */
 void mtx00016798(Mtxf *src, Mtxf *dst)
 {
+#ifndef GBI_FLOATS
 	u32 *srcwords = (u32 *) src;
 	f32 *dstfloats = (f32 *) dst;
 	s32 i;
@@ -289,10 +290,26 @@ void mtx00016798(Mtxf *src, Mtxf *dst)
 		dstfloats[(i << 1) + 0] = (s32) ((word1 & 0xffff0000) | (word2 >> 16)) / var8005ef10[0];
 		dstfloats[(i << 1) + 1] = (s32) ((word1 << 16) | (word2 & 0xffff)) / var8005ef10[i & 1];
 	}
+#else
+	// GBI_FLOATS: inverse of mtxF2L's float branch - divide the baked
+	// var8005ef10 scale back out (values were never fixed-point, so only
+	// the scale factor needs removing).
+	f32 s0 = var8005ef10[0] * (1.0f / 65536.0f);
+	f32 s1 = var8005ef10[1] * (1.0f / 65536.0f);
+	s32 i;
+
+	for (i = 0; i < 4; i++) {
+		dst->m[i][0] = src->m[i][0] / s0;
+		dst->m[i][1] = src->m[i][1] / s0;
+		dst->m[i][2] = src->m[i][2] / s0;
+		dst->m[i][3] = src->m[i][3] / s1;
+	}
+#endif
 }
 
 void mtx00016820(Mtx *src, Mtx *dst)
 {
+#ifndef GBI_FLOATS
 	u32 *srcwords = (u32 *) src;
 	u32 *dstwords = (u32 *) dst;
 	s32 i;
@@ -304,6 +321,14 @@ void mtx00016820(Mtx *src, Mtx *dst)
 		dstwords[(i << 1) + 0] = (word1 & 0xffff0000) | (word2 >> 16);
 		dstwords[(i << 1) + 1] = (word1 << 16) | (word2 & 0xffff);
 	}
+#else
+	// GBI_FLOATS: the RSP interleave shuffle is meaningless on float
+	// matrices. Its only output (player mtxl0060 -> mtxl1738) has no
+	// readers, so a straight copy keeps the data harmlessly float.
+	if (src != dst) {
+		bcopy(src, dst, sizeof(*dst));
+	}
+#endif
 }
 
 void mtx00016874(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, f32 lookz, f32 upx, f32 upy, f32 upz)

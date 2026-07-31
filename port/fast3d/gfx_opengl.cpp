@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <map>
 #include <unordered_map>
@@ -45,6 +46,23 @@ struct ShaderProgram {
     GLint palette_enable_location;  // uPaletteEnable
     GLint palette_w_location;       // uPaletteW (palette texture width)
     GLint shade_route_location;     // uShadeRoute (3 bits/input)
+
+    // Per-program uniform cache (round-2 opt): last-uploaded values plus the
+    // global generation this program last synced against. 0 = never synced;
+    // the value fields are only meaningful once uniform_generation != 0 has
+    // been through gfx_opengl_set_uniforms (zero-init matches GL's post-link
+    // uniform default of 0, so the first sync is still correct).
+    uint64_t uniform_generation;
+    uint32_t cached_frame_count;
+    float cached_noise_scale;
+    int cached_three_point_filter[2];
+    float cached_mvp[16];
+    int cached_use_vertex_fog;
+    float cached_fog_mul;
+    float cached_fog_off;
+    int cached_palette_enable;
+    float cached_palette_w;
+    int cached_shade_route;
 };
 
 #define GFX_PALETTE_TEX_UNIT 2 // uTex0=0, uTex1=1, palette=2
@@ -120,6 +138,36 @@ static int gfx_current_palette_enable = 0;
 static float gfx_current_palette_w = 1.f;
 static int gfx_current_shade_routing = 0;
 
+// --- Round-2 GL-call-reduction state (docs/PORT_OPT_ROUND2_CANDIDATES.md A3/A6 + Tier-A3) ---
+
+// Global uniform generation: bumped by every site that changes any global read
+// by gfx_opengl_set_uniforms (mvp, fog, palette, shade routing, frame count,
+// noise scale, per-tile linear-filter flags). Invariant: a program whose
+// uniform_generation equals this has GL uniform values equal to the current
+// globals, so its sync can be skipped entirely.
+static uint64_t gfx_uniform_generation = 1;
+
+// Redundant-state shadows. Sentinel (-1 / UINT32_MAX) = unknown, must
+// re-issue. Reset in start_frame (external GL state can change between
+// frames), around the rt/retro passes, and at every site in this file that
+// touches the corresponding GL state outside the shadowed setters.
+#define GFX_NUM_TEX_UNITS 3 // uTex0=0, uTex1=1, palette=2 (GFX_PALETTE_TEX_UNIT)
+static int s_active_texture_unit = -1;              // GL_TEXTURE0-relative
+static uint32_t s_bound_texture[GFX_NUM_TEX_UNITS] = { 0xffffffffu, 0xffffffffu, 0xffffffffu };
+static int s_blend_enabled = -1;                    // glEnable(GL_BLEND)
+static int s_blend_modulate = -1;                   // 1 = DST_COLOR/ZERO, 0 = SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+static int s_polygon_offset_fill = -1;              // 1 = enabled at (-2,-2), 0 = disabled at (0,0)
+
+static void gfx_opengl_invalidate_state_shadows(void) {
+    s_active_texture_unit = -1;
+    for (int i = 0; i < GFX_NUM_TEX_UNITS; i++) {
+        s_bound_texture[i] = 0xffffffffu;
+    }
+    s_blend_enabled = -1;
+    s_blend_modulate = -1;
+    s_polygon_offset_fill = -1;
+}
+
 static int gfx_opengl_get_max_texture_size() {
     GLint max_texture_size;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
@@ -148,51 +196,68 @@ static void gfx_opengl_vertex_array_set_attribs(struct ShaderProgram* prg) {
     }
 }
 
+// Syncs prg's uniforms to the current globals. prg MUST be the currently bound
+// program (glUseProgram). Skips entirely when the program already synced at the
+// current generation; otherwise uploads only values that actually changed.
 static void gfx_opengl_set_uniforms(struct ShaderProgram* prg) {
-    if (prg->frame_count_location >= 0) {
+    if (prg->uniform_generation == gfx_uniform_generation) {
+        return;
+    }
+    if (prg->frame_count_location >= 0 && prg->cached_frame_count != frame_count) {
         glUniform1i(prg->frame_count_location, frame_count);
+        prg->cached_frame_count = frame_count;
     }
-    if (prg->noise_scale_location >= 0) {
+    if (prg->noise_scale_location >= 0 && prg->cached_noise_scale != current_noise_scale) {
         glUniform1f(prg->noise_scale_location, current_noise_scale);
+        prg->cached_noise_scale = current_noise_scale;
     }
-    if (prg->three_point_filter_locations[0] >= 0) {
-        glUniform1i(prg->three_point_filter_locations[0], current_textures_linear_filter[0]);
+    for (int i = 0; i < 2; i++) {
+        const int tpf = current_textures_linear_filter[i] ? 1 : 0;
+        if (prg->three_point_filter_locations[i] >= 0 && prg->cached_three_point_filter[i] != tpf) {
+            glUniform1i(prg->three_point_filter_locations[i], tpf);
+            prg->cached_three_point_filter[i] = tpf;
+        }
     }
-    if (prg->three_point_filter_locations[1] >= 0) {
-        glUniform1i(prg->three_point_filter_locations[1], current_textures_linear_filter[1]);
-    }
-    if (prg->mvp_location >= 0) {
+    if (prg->mvp_location >= 0 && memcmp(prg->cached_mvp, gfx_current_mvp, sizeof(gfx_current_mvp)) != 0) {
         glUniformMatrix4fv(prg->mvp_location, 1, GL_FALSE, gfx_current_mvp);
+        memcpy(prg->cached_mvp, gfx_current_mvp, sizeof(gfx_current_mvp));
     }
-    if (prg->use_vertex_fog_location >= 0) {
+    if (prg->use_vertex_fog_location >= 0 && prg->cached_use_vertex_fog != gfx_current_use_vertex_fog) {
         glUniform1i(prg->use_vertex_fog_location, gfx_current_use_vertex_fog);
+        prg->cached_use_vertex_fog = gfx_current_use_vertex_fog;
     }
-    if (prg->fog_mul_location >= 0) {
+    if (prg->fog_mul_location >= 0 && prg->cached_fog_mul != gfx_current_fog_mul) {
         glUniform1f(prg->fog_mul_location, gfx_current_fog_mul);
+        prg->cached_fog_mul = gfx_current_fog_mul;
     }
-    if (prg->fog_off_location >= 0) {
+    if (prg->fog_off_location >= 0 && prg->cached_fog_off != gfx_current_fog_off) {
         glUniform1f(prg->fog_off_location, gfx_current_fog_off);
+        prg->cached_fog_off = gfx_current_fog_off;
     }
-    if (prg->palette_enable_location >= 0) {
+    if (prg->palette_enable_location >= 0 && prg->cached_palette_enable != gfx_current_palette_enable) {
         glUniform1i(prg->palette_enable_location, gfx_current_palette_enable);
+        prg->cached_palette_enable = gfx_current_palette_enable;
     }
-    if (prg->palette_w_location >= 0) {
+    if (prg->palette_w_location >= 0 && prg->cached_palette_w != gfx_current_palette_w) {
         glUniform1f(prg->palette_w_location, gfx_current_palette_w);
+        prg->cached_palette_w = gfx_current_palette_w;
     }
-    if (prg->shade_route_location >= 0) {
+    if (prg->shade_route_location >= 0 && prg->cached_shade_route != gfx_current_shade_routing) {
         glUniform1i(prg->shade_route_location, gfx_current_shade_routing);
+        prg->cached_shade_route = gfx_current_shade_routing;
     }
+    prg->uniform_generation = gfx_uniform_generation;
 }
 
 static void gfx_opengl_set_mvp(const float m[16]) {
     for (int i = 0; i < 16; i++) {
         gfx_current_mvp[i] = m[i];
     }
+    gfx_uniform_generation++;
     // Apply immediately to the bound program so a set_mvp between draws (without
-    // a reload) takes effect; future load_shader/set_uniforms calls pick it up
-    // from gfx_current_mvp.
-    if (gfx_current_shader_program != NULL && gfx_current_shader_program->mvp_location >= 0) {
-        glUniformMatrix4fv(gfx_current_shader_program->mvp_location, 1, GL_FALSE, gfx_current_mvp);
+    // a reload) takes effect; other programs sync on their next bind.
+    if (gfx_current_shader_program != NULL) {
+        gfx_opengl_set_uniforms(gfx_current_shader_program);
     }
 }
 
@@ -200,33 +265,25 @@ static void gfx_opengl_set_fog_params(int use_vertex_fog, float fog_mul, float f
     gfx_current_use_vertex_fog = use_vertex_fog;
     gfx_current_fog_mul = fog_mul;
     gfx_current_fog_off = fog_off;
-    struct ShaderProgram* p = gfx_current_shader_program;
-    if (p != NULL) {
-        if (p->use_vertex_fog_location >= 0) {
-            glUniform1i(p->use_vertex_fog_location, use_vertex_fog);
-        }
-        if (p->fog_mul_location >= 0) {
-            glUniform1f(p->fog_mul_location, fog_mul);
-        }
-        if (p->fog_off_location >= 0) {
-            glUniform1f(p->fog_off_location, fog_off);
-        }
+    gfx_uniform_generation++;
+    if (gfx_current_shader_program != NULL) {
+        gfx_opengl_set_uniforms(gfx_current_shader_program);
     }
 }
 
 static void gfx_opengl_set_palette_enable(int enable) {
     gfx_current_palette_enable = enable;
-    struct ShaderProgram* p = gfx_current_shader_program;
-    if (p != NULL && p->palette_enable_location >= 0) {
-        glUniform1i(p->palette_enable_location, enable);
+    gfx_uniform_generation++;
+    if (gfx_current_shader_program != NULL) {
+        gfx_opengl_set_uniforms(gfx_current_shader_program);
     }
 }
 
 static void gfx_opengl_set_shade_routing(int packed) {
     gfx_current_shade_routing = packed;
-    struct ShaderProgram* p = gfx_current_shader_program;
-    if (p != NULL && p->shade_route_location >= 0) {
-        glUniform1i(p->shade_route_location, packed);
+    gfx_uniform_generation++;
+    if (gfx_current_shader_program != NULL) {
+        gfx_opengl_set_uniforms(gfx_current_shader_program);
     }
 }
 
@@ -950,6 +1007,9 @@ static void gfx_opengl_clear_shaders(void) {
         glDeleteProgram(pair.second.opengl_program_id);
     }
     shader_program_pool.clear();
+    // The pool owned this pointer; the uniform-sync path both reads and writes
+    // through it, so it must not dangle past the pool's destruction.
+    gfx_current_shader_program = NULL;
 }
 
 static GLuint gfx_opengl_new_texture(void) {
@@ -960,18 +1020,43 @@ static GLuint gfx_opengl_new_texture(void) {
 
 static void gfx_opengl_delete_texture(uint32_t texID) {
     glDeleteTextures(1, &texID);
+    // GL reverts the binding of a deleted texture to 0 on every unit it was
+    // bound to (current context) — mirror that in the shadow.
+    for (int i = 0; i < GFX_NUM_TEX_UNITS; i++) {
+        if (s_bound_texture[i] == texID) {
+            s_bound_texture[i] = 0;
+        }
+    }
 }
 
 static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_filter) {
-    glActiveTexture(GL_TEXTURE0 + tile);
-    glBindTexture(GL_TEXTURE_2D, texture_id);
+    // Shadowed: skip the activate/bind when unchanged. Post-condition preserved
+    // either way: active unit == tile with texture_id bound (upload_texture and
+    // set_sampler_parameters rely on the active unit). Reused ids from gfx_pc's
+    // free_texture_ids pool are the same still-live GL texture object, so a
+    // matching shadow entry is a genuine bind.
+    if (s_active_texture_unit != tile) {
+        glActiveTexture(GL_TEXTURE0 + tile);
+        s_active_texture_unit = tile;
+    }
+    if (tile >= GFX_NUM_TEX_UNITS || s_bound_texture[tile] != texture_id) {
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+        if (tile < GFX_NUM_TEX_UNITS) {
+            s_bound_texture[tile] = texture_id;
+        }
+    }
 
-    current_textures_linear_filter[tile] = linear_filter;
+    if (current_textures_linear_filter[tile] != linear_filter) {
+        current_textures_linear_filter[tile] = linear_filter;
+        gfx_uniform_generation++; // feeds the three_point_filter uniforms
+    }
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, bool gen_mipmaps) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
-	if (gen_mipmaps || current_filter_mode == FILTER_THREE_POINT) {
+	// Note: FILTER_THREE_POINT no longer forces mipmap generation — its
+	// min_filters row is all GL_NEAREST, so the chain was never sampled (A17).
+	if (gen_mipmaps) {
 		glGenerateMipmap(GL_TEXTURE_2D);
 	}
 }
@@ -1003,7 +1088,10 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
     const GLint min_filter = linear_filter ? min_filters[current_filter_mode][mip_idx] : GL_NEAREST;
     const GLint max_filter = linear_filter && (current_filter_mode == FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
 
-    glActiveTexture(GL_TEXTURE0 + tile);
+    if (s_active_texture_unit != tile) {
+        glActiveTexture(GL_TEXTURE0 + tile);
+        s_active_texture_unit = tile;
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, max_filter);
 
@@ -1013,6 +1101,22 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, gfx_cm_to_opengl(cms));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, gfx_cm_to_opengl(cmt));
+}
+
+// Only two polygon-offset states ever exist (disabled at 0,0 / decal at -2,-2);
+// shadowed so the common disabled->disabled case costs no GL calls.
+static void gfx_opengl_set_polygon_offset_state(int enabled) {
+    if (s_polygon_offset_fill == enabled) {
+        return;
+    }
+    if (enabled) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-2, -2);
+    } else {
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(0, 0);
+    }
+    s_polygon_offset_fill = enabled;
 }
 
 static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
@@ -1026,8 +1130,7 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
             switch (zmode) {
                 case ZMODE_INTER:
                     glDepthFunc(GL_LEQUAL);
-                    glDisable(GL_POLYGON_OFFSET_FILL);
-                    glPolygonOffset(0, 0);
+                    gfx_opengl_set_polygon_offset_state(0);
                     break;
 
                 case ZMODE_OPA:
@@ -1037,20 +1140,17 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
                     } else {
                         glDepthFunc(GL_LESS);
                     }
-                    glDisable(GL_POLYGON_OFFSET_FILL);
-                    glPolygonOffset(0, 0);
+                    gfx_opengl_set_polygon_offset_state(0);
                     break;
 
                 case ZMODE_DEC:
                     glDepthFunc(GL_LEQUAL);
-                    glEnable(GL_POLYGON_OFFSET_FILL);
-                    glPolygonOffset(-2, -2);
+                    gfx_opengl_set_polygon_offset_state(1);
                     break;
             }
         } else {
             glDepthFunc(GL_ALWAYS);
-            glDisable(GL_POLYGON_OFFSET_FILL);
-            glPolygonOffset(0, 0);
+            gfx_opengl_set_polygon_offset_state(0);
         }
     } else {
         glDisable(GL_DEPTH_TEST);
@@ -1074,15 +1174,25 @@ static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
 }
 
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
-    if (use_alpha) {
-        glEnable(GL_BLEND);
-    } else {
-        glDisable(GL_BLEND);
+    // Shadowed independently: enable state and blend func are separate GL
+    // state, each skipped when unchanged (-1 shadow = unknown, always issue).
+    const int ena = use_alpha ? 1 : 0;
+    const int mod = modulate ? 1 : 0;
+    if (s_blend_enabled != ena) {
+        if (use_alpha) {
+            glEnable(GL_BLEND);
+        } else {
+            glDisable(GL_BLEND);
+        }
+        s_blend_enabled = ena;
     }
-    if (modulate) {
-        glBlendFunc(GL_DST_COLOR, GL_ZERO);
-    } else {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (s_blend_modulate != mod) {
+        if (modulate) {
+            glBlendFunc(GL_DST_COLOR, GL_ZERO);
+        } else {
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        s_blend_modulate = mod;
     }
 }
 
@@ -1190,10 +1300,20 @@ static uint32_t gfx_opengl_cache_create_palette(void) {
     return t;
 }
 
+// Allocated width per palette texture id, so refresh uploads of an unchanged
+// size can use glTexSubImage2D instead of a full respecify + param set (A6).
+// Entries are erased in cache_delete_palette — the only teardown path for ids
+// minted by cache_create_palette (gfx_pc owns the pairing).
+static std::unordered_map<uint32_t, int> s_palette_alloc;
+
 static void gfx_opengl_cache_delete_palette(uint32_t id) {
     if (id != 0) {
         GLuint t = id;
         glDeleteTextures(1, &t);
+        s_palette_alloc.erase(id);
+        if (s_bound_texture[GFX_PALETTE_TEX_UNIT] == id) {
+            s_bound_texture[GFX_PALETTE_TEX_UNIT] = 0; // GL reverts deleted bindings to 0
+        }
     }
 }
 
@@ -1203,22 +1323,39 @@ static void gfx_opengl_cache_upload_palette(uint32_t id, const void* rgba, int c
     }
     glActiveTexture(GL_TEXTURE0 + GFX_PALETTE_TEX_UNIT);
     glBindTexture(GL_TEXTURE_2D, id);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, count, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    s_bound_texture[GFX_PALETTE_TEX_UNIT] = id;
+    auto it = s_palette_alloc.find(id);
+    if (it == s_palette_alloc.end() || it->second != count) {
+        // first upload (or size change): allocate + set the immutable params
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, count, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        s_palette_alloc[id] = count;
+    } else {
+        // same size: refresh contents only, no respecify
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, count, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    }
     glActiveTexture(GL_TEXTURE0);
+    s_active_texture_unit = 0;
 }
 
 static void gfx_opengl_cache_bind_palette(uint32_t id, int count) {
-    glActiveTexture(GL_TEXTURE0 + GFX_PALETTE_TEX_UNIT);
-    glBindTexture(GL_TEXTURE_2D, id);
-    glActiveTexture(GL_TEXTURE0);
-    gfx_current_palette_w = (float)(count > 0 ? count : 1);
-    struct ShaderProgram* p = gfx_current_shader_program;
-    if (p != NULL && p->palette_w_location >= 0) {
-        glUniform1f(p->palette_w_location, gfx_current_palette_w);
+    if (s_bound_texture[GFX_PALETTE_TEX_UNIT] != id) {
+        glActiveTexture(GL_TEXTURE0 + GFX_PALETTE_TEX_UNIT);
+        glBindTexture(GL_TEXTURE_2D, id);
+        glActiveTexture(GL_TEXTURE0);
+        s_bound_texture[GFX_PALETTE_TEX_UNIT] = id;
+        s_active_texture_unit = 0;
+    }
+    const float w = (float)(count > 0 ? count : 1);
+    if (w != gfx_current_palette_w) {
+        gfx_current_palette_w = w;
+        gfx_uniform_generation++;
+        if (gfx_current_shader_program != NULL) {
+            gfx_opengl_set_uniforms(gfx_current_shader_program);
+        }
     }
 }
 
@@ -1473,6 +1610,12 @@ static void gfx_opengl_init(void) {
         // core/es will explode if we don't use a VAO for our VBO
         glGenVertexArrays(1, &opengl_vao);
         glBindVertexArray(opengl_vao);
+    } else if (glad_glGenVertexArrays && glad_glBindVertexArray) {
+        // compat profile 3.0+ (the shipping Windows path): not required, but
+        // keep attrib state in one VAO anyway — groundwork for VAO-based state
+        // reuse, and drivers fast-path VAO-owned attribs (A3).
+        glGenVertexArrays(1, &opengl_vao);
+        glBindVertexArray(opengl_vao);
     }
 
     if (GLAD_GL_ARB_depth_clamp) {
@@ -1505,10 +1648,15 @@ static void gfx_opengl_on_resize(void) {
 
 static void gfx_opengl_start_frame(void) {
     frame_count++;
+    gfx_uniform_generation++; // frame_count feeds the noise shaders
+    // External GL state may have changed between frames (SDL, overlays, other
+    // passes) — force the redundant-state shadows to re-issue on first use.
+    gfx_opengl_invalidate_state_shadows();
 }
 
 static void gfx_opengl_end_frame(void) {
-    glFlush();
+    // No explicit glFlush: SDL_GL_SwapWindow performs an implicit flush, and
+    // the original call carried no rationale (present since the initial import).
 }
 
 static void gfx_opengl_finish_render(void) {
@@ -1525,6 +1673,7 @@ static int gfx_opengl_create_framebuffer() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
+    gfx_opengl_invalidate_state_shadows(); // bound textures on whatever unit was active
     framebuffers[i].clrbuf = clrbuf;
 
     if (!gfx_framebuffers_enabled) {
@@ -1566,6 +1715,7 @@ static void gfx_opengl_update_framebuffer_parameters(int fb_id, uint32_t width, 
                     glBindTexture(GL_TEXTURE_2D, fb.clrbuf);
                     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
                     glBindTexture(GL_TEXTURE_2D, 0);
+                    gfx_opengl_invalidate_state_shadows(); // bound textures on whatever unit was active
                     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.clrbuf, 0);
                 } else {
                     glBindRenderbuffer(GL_RENDERBUFFER, fb.clrbuf_msaa);
@@ -1607,7 +1757,11 @@ bool gfx_opengl_start_draw_to_framebuffer(int fb_id, float noise_scale) {
     if (gfx_framebuffers_enabled && fb_id < (int)framebuffers.size()) {
         Framebuffer& fb = framebuffers[fb_id];
         if (noise_scale != 0.0f) {
-            current_noise_scale = 1.0f / noise_scale;
+            const float ns = 1.0f / noise_scale;
+            if (ns != current_noise_scale) {
+                current_noise_scale = ns;
+                gfx_uniform_generation++; // feeds the noise_scale uniform
+            }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, fb.fbo);
         current_framebuffer = fb_id;
@@ -1659,10 +1813,20 @@ void* gfx_opengl_get_framebuffer_texture_id(int fb_id) {
 
 void gfx_opengl_select_texture_fb(int fb_id) {
     // glDisable(GL_DEPTH_TEST);
-    glActiveTexture(GL_TEXTURE0 + 0);
-    glBindTexture(GL_TEXTURE_2D, framebuffers[fb_id].clrbuf);
+    const GLuint tex = framebuffers[fb_id].clrbuf;
+    if (s_active_texture_unit != 0) {
+        glActiveTexture(GL_TEXTURE0 + 0);
+        s_active_texture_unit = 0;
+    }
+    if (s_bound_texture[0] != tex) {
+        glBindTexture(GL_TEXTURE_2D, tex);
+        s_bound_texture[0] = tex;
+    }
 
-    current_textures_linear_filter[0] = true;
+    if (!current_textures_linear_filter[0]) {
+        current_textures_linear_filter[0] = true;
+        gfx_uniform_generation++; // feeds the three_point_filter uniforms
+    }
 }
 
 void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool flip_y, bool use_back) {
@@ -1756,6 +1920,12 @@ static void gfx_opengl_rt_resolve(const void* cam, int vx, int vy, int vw, int v
     // update_framebuffer_parameters(0, ...) call.
     gfx_rt_resolve((const rtcamera*)cam, vx, vy, vw, vh, fb.fbo, (int)fb.width, (int)fb.height,
                    (int)(fb.msaa_level > 1 ? fb.msaa_level : 1), fb.invert_y, gl_glsl_version_str);
+    // The RT passes bind textures/programs/blend behind the backend's back.
+    // Their glGet save/restore keeps real GL state truthful, but drop the
+    // redundant-state shadows anyway so the next draw re-issues rather than
+    // trusting them (per-program uniforms are untouched by rt, so the uniform
+    // caches stay valid).
+    gfx_opengl_invalidate_state_shadows();
 }
 
 // Chaos retro/post filter (docs/PORT_CHAOS.md). gfx_retro.cpp does the work
@@ -1768,6 +1938,9 @@ static void gfx_opengl_retro_filter(int pixw, int pixh, int cmode, int clevels, 
     const Framebuffer& fb = framebuffers[current_framebuffer];
     gfx_retro_filter(pixw, pixh, cmode, clevels, fx, warp, fb.fbo, (int)fb.width, (int)fb.height,
                      gl_glsl_version_str);
+    // Same reasoning as the rt_resolve wrapper: the pass touches texture/blend
+    // state directly, so the shadows can't be trusted afterwards.
+    gfx_opengl_invalidate_state_shadows();
 }
 
 // Barycentric wireframe needs gl_VertexID (GLSL 130+) and is pointless on GL ES,

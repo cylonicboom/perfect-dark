@@ -47,5 +47,30 @@ void mtxF2LBulk(Mtxf *mtx, s32 count)
 
 		count--;
 	} while (count);
+#else
+	// GBI_FLOATS: matrices stay float end-to-end, but the fixed-point path
+	// baked var8005ef10 (65536 * scale_bg2gfx for cols 0-2, 65536 for col 3)
+	// into the values the RSP saw. Reproduce the scale (without the 4.12
+	// quantization) so rendering matches; when the scale is 1 this is a no-op.
+	f32 s0 = var8005ef10[0] * (1.0f / 65536.0f);
+	f32 s1 = var8005ef10[1] * (1.0f / 65536.0f);
+	s32 i;
+
+	if (s0 == 1.0f && s1 == 1.0f) {
+		return;
+	}
+
+	do {
+		for (i = 0; i < 4; i++) {
+			mtx->m[i][0] *= s0;
+			mtx->m[i][1] *= s0;
+			mtx->m[i][2] *= s0;
+			mtx->m[i][3] *= s1;
+		}
+
+		mtx++;
+
+		count--;
+	} while (count);
 #endif
 }

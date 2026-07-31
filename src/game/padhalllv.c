@@ -311,6 +311,157 @@ void waygroupSetStepIfUndiscovered(s32 *groupnums, s32 step, u32 ignoremask)
 	}
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Port: frontier-queue BFS replacements for the repeated full scans in
+ * waygroupDiscoverSteps() and waypointDiscoverSteps() below - O(V+E) instead
+ * of O(steps * V).
+ *
+ * These MUST assign bit-identical step values to the originals: route
+ * reconstruction re-reads node->step, and the *ChooseNeighbour functions
+ * consume RNG while walking candidates filtered by step, so any difference
+ * desyncs netplay. The originals are level-synchronous BFS in disguise:
+ * each pass sweeps the scan domain for nodes at step N and first-touch-marks
+ * their eligible neighbours N + 1, completing the whole pass before the outer
+ * loop re-checks the target. The set of nodes marked N + 1 by a full pass is
+ * a union over the level-N frontier, so it is independent of the order the
+ * frontier is visited in - a queue-based level-synchronous BFS with the same
+ * seed, the same eligibility predicate and the same scan domain produces the
+ * same steps and the same pass count.
+ *
+ * If a graph exceeds the scratch caps, the callers fall back to the original
+ * sweep loops.
+ */
+#define NAV_BFS_MAX_WAYGROUPS 4096
+#define NAV_BFS_MAX_WAYPOINTS 8192
+
+static s32 g_NavBfsQueue[NAV_BFS_MAX_WAYPOINTS];
+static u32 g_NavBfsPointStamp[NAV_BFS_MAX_WAYPOINTS];
+static u32 g_NavBfsEpoch = 0;
+
+/**
+ * Port: BFS equivalent of the waygroupDiscoverOneStep() loop in
+ * waygroupDiscoverSteps(). The caller has already reset every group's step
+ * to -1 and set from->step to 0. count is the number of groups before the
+ * NULL-neighbours terminator, ie. the original's scan domain.
+ */
+static bool waygroupDiscoverStepsBfs(struct waygroup *from, struct waygroup *to, struct waygroup *groups, s32 count, bool discoverall, u32 ignoremask)
+{
+	bool result = true;
+	s32 head = 0;
+	s32 tail = 0;
+	s32 levelend;
+	s32 step;
+	s32 fromindex = from - groups;
+
+	// Pass 0 of the original scans [0, count) for step == 0, which can only
+	// be `from` (everything was just reset to -1 and marks assign >= 1).
+	// If from is outside the scanned range the original finds an empty
+	// frontier, which an empty queue replicates.
+	if (fromindex >= 0 && fromindex < count) {
+		g_NavBfsQueue[tail++] = fromindex;
+	}
+
+	for (step = 0; (discoverall || to->step < 0) && result; step++) {
+		// One waygroupDiscoverOneStep() pass. The frontier is exactly the set
+		// of groups whose step == step; the original's return value is "did
+		// any group in the scan domain have this step".
+		result = head < tail;
+		levelend = tail;
+
+		while (head < levelend) {
+			s32 *groupnums = groups[g_NavBfsQueue[head++]].neighbours;
+
+			while (*groupnums >= 0) {
+				if ((*groupnums & ignoremask) == 0) {
+					s32 nindex = WPSEG_GET_ID(*groupnums);
+					struct waygroup *group = &groups[nindex];
+
+					if (group->step < 0) {
+						group->step = step + 1;
+
+						// The original's sweep stops at the terminator, so a
+						// group marked outside [0, count) keeps its step but
+						// is never expanded. Replicate by not enqueueing it.
+						if (nindex < count && tail < NAV_BFS_MAX_WAYPOINTS) {
+							g_NavBfsQueue[tail++] = nindex;
+						}
+					}
+				}
+
+				groupnums++;
+			}
+		}
+	}
+
+	return result;
+}
+
+/**
+ * Port: BFS equivalent of the waypointDiscoverOneStep() loop in
+ * waypointDiscoverSteps(). The caller has already reset the steps of the
+ * group's listed waypoints to -1, set from->step to 0, and stamped
+ * g_NavBfsPointStamp with the current epoch for every listed waypoint
+ * (the original's scan domain).
+ */
+static void waypointDiscoverStepsBfs(struct waypoint *from, struct waypoint *to, bool discoverall, u32 ignoremask)
+{
+	struct waypoint *points = g_StageSetup.waypoints;
+	s32 groupnum = from->groupnum;
+	bool more = true;
+	s32 head = 0;
+	s32 tail = 0;
+	s32 levelend;
+	s32 step;
+	s32 fromindex = from - points;
+
+	// Pass 0 of the original scans the group's waypoint list for step == 0,
+	// which can only be `from`. If from is not in the list the original finds
+	// an empty frontier.
+	if (g_NavBfsPointStamp[fromindex] == g_NavBfsEpoch) {
+		g_NavBfsQueue[tail++] = fromindex;
+	}
+
+	for (step = 0; (discoverall || to->step < 0) && more; step++) {
+		// One waypointDiscoverOneStep() pass. The original's return value is
+		// "did any listed waypoint have this step AND a neighbour list", so
+		// frontier members with a NULL neighbour list don't count.
+		more = false;
+		levelend = tail;
+
+		while (head < levelend) {
+			s32 *pointnums = points[g_NavBfsQueue[head++]].neighbours;
+
+			if (pointnums) {
+				more = true;
+
+				while (*pointnums >= 0) {
+					if ((*pointnums & ignoremask) == 0) {
+						s32 nindex = WPSEG_GET_ID(*pointnums);
+						struct waypoint *npoint = &points[nindex];
+
+						if (npoint->groupnum == groupnum && npoint->step < 0) {
+							npoint->step = step + 1;
+
+							// The original only ever sweeps waypoints in the
+							// group's list, so a marked waypoint outside the
+							// list keeps its step but is never expanded.
+							if (nindex < NAV_BFS_MAX_WAYPOINTS
+									&& g_NavBfsPointStamp[nindex] == g_NavBfsEpoch
+									&& tail < NAV_BFS_MAX_WAYPOINTS) {
+								g_NavBfsQueue[tail++] = nindex;
+							}
+						}
+					}
+
+					pointnums++;
+				}
+			}
+		}
+	}
+}
+#endif
+
 /**
  * Do one scan of all waygroups, finding ones at the given step.
  * Set their neighbours to step + 1 if they haven't been discovered yet.
@@ -352,6 +503,20 @@ bool waygroupDiscoverSteps(struct waygroup *from, struct waygroup *to, struct wa
 	}
 
 	from->step = 0;
+
+#ifndef PLATFORM_N64
+	// Port: O(V+E) frontier BFS instead of one full-array sweep per step.
+	// Assigns identical step values and returns the identical result
+	// (see waygroupDiscoverStepsBfs). `group` points at the terminator here,
+	// so group - groups is the scan-domain size.
+	{
+		s32 count = group - groups;
+
+		if (count <= NAV_BFS_MAX_WAYGROUPS) {
+			return waygroupDiscoverStepsBfs(from, to, groups, count, discoverall, ignoremask);
+		}
+	}
+#endif
 
 	for (step = 0; (discoverall || to->step < 0) && result; step++) {
 		result = waygroupDiscoverOneStep(groups, step, ignoremask);
@@ -498,14 +663,49 @@ void waypointDiscoverSteps(struct waypoint *from, struct waypoint *to, bool disc
 	s32 *pointnums = groups[from->groupnum].waypoints;
 	s32 i;
 	bool more;
+#ifndef PLATFORM_N64
+	// Port: stamp the group's waypoint list (the original's scan domain) with
+	// a fresh epoch while resetting steps, then run the O(V+E) frontier BFS.
+	// Falls back to the original sweeps if any index exceeds the scratch cap.
+	bool usebfs = true;
+	s32 fromindex = from - points;
+
+	if (fromindex < 0 || fromindex >= NAV_BFS_MAX_WAYPOINTS) {
+		usebfs = false;
+	}
+
+	g_NavBfsEpoch++;
+
+	if (g_NavBfsEpoch == 0) {
+		for (i = 0; i < NAV_BFS_MAX_WAYPOINTS; i++) {
+			g_NavBfsPointStamp[i] = 0;
+		}
+
+		g_NavBfsEpoch = 1;
+	}
+#endif
 
 	while (*pointnums >= 0) {
+#ifndef PLATFORM_N64
+		if (*pointnums < NAV_BFS_MAX_WAYPOINTS) {
+			g_NavBfsPointStamp[*pointnums] = g_NavBfsEpoch;
+		} else {
+			usebfs = false;
+		}
+#endif
 		point = &points[*pointnums];
 		point->step = -1;
 		pointnums++;
 	}
 
 	from->step = 0;
+
+#ifndef PLATFORM_N64
+	if (usebfs) {
+		waypointDiscoverStepsBfs(from, to, discoverall, ignoremask);
+		return;
+	}
+#endif
 
 	more = true;
 

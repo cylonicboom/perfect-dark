@@ -742,7 +742,28 @@ u32 text0f1543ac(s32 x, s32 y, u32 colourarg)
 
 		if (x - g_Blend.diagrefx > -3000 && x - g_Blend.diagrefx < 3000
 				&& y - g_Blend.diagrefy > -3000 && y - g_Blend.diagrefy < 3000) {
+#ifndef PLATFORM_N64
+			// Port: during menu wipes text0f1566cc calls this twice per glyph
+			// with the same x/y (env colour, then prim alpha), computing the
+			// same distance sqrtf twice. The result is a pure function of
+			// (dx, dy), so memoize the last one. |dx| and |dy| are <= 2999
+			// here, so the sentinel can never collide with a real delta.
+			static s32 lastdx = 0x7fffffff;
+			static s32 lastdy = 0x7fffffff;
+			static f32 lastdist = 0.0f;
+			s32 dx = x - g_Blend.diagrefx;
+			s32 dy = y - g_Blend.diagrefy;
+
+			if (dx != lastdx || dy != lastdy) {
+				lastdx = dx;
+				lastdy = dy;
+				lastdist = sqrtf(dx * dx + dy * dy);
+			}
+
+			f12 = lastdist;
+#else
 			f12 = sqrtf((x - g_Blend.diagrefx) * (x - g_Blend.diagrefx) + (y - g_Blend.diagrefy) * (y - g_Blend.diagrefy));
+#endif
 		} else {
 			f12 = 3000.0f;
 		}
@@ -2136,6 +2157,15 @@ Gfx *text0f1566cc(Gfx *gdl, u32 arg1, u32 arg2)
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+// Port: viGetWidth/viGetHeight are out-of-line getters (no LTO), and
+// textRenderChar called both once per glyph. Vi dimensions only change on mode
+// switches between frames, never mid-string, so textRender snapshots them once
+// per string instead.
+static s32 g_TextViWidthCached = 0;
+static s32 g_TextViHeightCached = 0;
+#endif
+
 Gfx *textRenderChar(Gfx *gdl, s32 *x, s32 *y, struct fontchar *char1, struct fontchar *char2,
 		struct font *font, s32 arg6, s32 arg7, s32 arg8, s32 arg9, s32 arg10)
 {
@@ -2148,8 +2178,13 @@ Gfx *textRenderChar(Gfx *gdl, s32 *x, s32 *y, struct fontchar *char1, struct fon
 	*x -= (tmp - 1) * var8007fad0;
 
 	if (*x > 0
+#ifndef PLATFORM_N64
+			&& *x <= g_TextViWidthCached
+			&& sp38 + char1->baseline <= g_TextViHeightCached
+#else
 			&& *x <= viGetWidth()
 			&& sp38 + char1->baseline <= viGetHeight()
+#endif
 			&& *x <= arg6 + arg8
 			&& char1->baseline + sp38 <= arg7 + arg9
 			&& *x >= arg6
@@ -2177,6 +2212,28 @@ Gfx *textRenderChar(Gfx *gdl, s32 *x, s32 *y, struct fontchar *char1, struct fon
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+// Port: text0f156a24 computes 1024 / var8007fad0 for every glyph rectangle.
+// The divisor is only ever assigned 1 or 2 (text0f1531dc + title.c), but it is
+// written from multiple files, so revalidate lazily here instead of caching at
+// the write sites. Integer-division semantics are identical for any value.
+static s32 textCachedDsdx1024(void)
+{
+	static s32 lastdivisor = 1;
+	static s32 lastquotient = 1024;
+
+	if (var8007fad0 != lastdivisor) {
+		lastdivisor = var8007fad0;
+		lastquotient = 1024 / var8007fad0;
+	}
+
+	return lastquotient;
+}
+#define TEXT_DSDX_1024() textCachedDsdx1024()
+#else
+#define TEXT_DSDX_1024() (1024 / var8007fad0)
+#endif
+
 Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 arg5, s32 arg6, s32 arg7)
 {
 	if (arg4 + arg6 >= char1->width + x + 2) {
@@ -2191,7 +2248,7 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 							G_TX_RENDERTILE,
 							0,
 							(char1->height + 1) << 5,
-							1024 / var8007fad0,
+							TEXT_DSDX_1024(),
 							-1024);
 				} else {
 					gSPTextureRectangleEXT(gdl++,
@@ -2202,7 +2259,7 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 							G_TX_RENDERTILE,
 							0,
 							0,
-							1024 / var8007fad0,
+							TEXT_DSDX_1024(),
 							1024);
 				}
 			} else {
@@ -2215,7 +2272,7 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 							G_TX_RENDERTILE,
 							0,
 							0,
-							1024 / var8007fad0,
+							TEXT_DSDX_1024(),
 							1024);
 				}
 			}
@@ -2229,7 +2286,7 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 						G_TX_RENDERTILE,
 						0,
 						(arg5 - char1->baseline - y) << 5,
-						1024 / var8007fad0,
+						TEXT_DSDX_1024(),
 						1024);
 			}
 		}
@@ -2248,6 +2305,12 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
 	u8 prevchar;
 #else
 	s32 prevchar;
+#endif
+
+#ifndef PLATFORM_N64
+	// Port: snapshot the vi dims once per string for textRenderChar (below)
+	g_TextViWidthCached = viGetWidth();
+	g_TextViHeightCached = viGetHeight();
 #endif
 
 	*x *= g_ScaleX;

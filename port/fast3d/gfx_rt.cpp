@@ -98,6 +98,37 @@ enum {
 };
 static GLuint s_prog[PROG_COUNT];
 
+// Every uniform name rtU is queried with, resolved once per program at init
+// (the sampler-loop pattern in rtLink) instead of glGetUniformLocation by
+// string at draw time (A20). GLSL-side names are unchanged; the X-macro keeps
+// the enum and the name table in sync.
+#define RT_UNIFORM_LIST(X) \
+    X(uRect) X(uProj) X(uYSign) X(uTexel) X(uFrame) \
+    X(uAOOn) X(uShadowOn) X(uAOSamples) X(uShadowSteps) \
+    X(uAORadius) X(uShadowLen) X(uSun) X(uDir) \
+    X(uRays) X(uSteps) X(uBounces) X(uGIRadius) X(uSky) \
+    X(uCurToPrev) X(uBlend) X(uSSRSteps) X(uMaxDist) \
+    X(uLightCount) X(uLightPosRad) X(uLightCol) X(uLightShadows) \
+    X(uLightSteps) X(uTorch) X(uTorchInt) X(uTorchRange) X(uLightMax) \
+    X(uMode) X(uAOInt) X(uShInt) X(uDark) X(uDarkAmbient) X(uAmbientCol) \
+    X(uGIOn) X(uSSROn) X(uLightsOn) X(uGIInt) X(uSSRInt) X(uRelight)
+
+enum {
+#define RT_U_ENUM(n) RTU_##n,
+    RT_UNIFORM_LIST(RT_U_ENUM)
+#undef RT_U_ENUM
+    RTU_COUNT
+};
+
+static const char* kRtUniformNames[RTU_COUNT] = {
+#define RT_U_NAME(n) #n,
+    RT_UNIFORM_LIST(RT_U_NAME)
+#undef RT_U_NAME
+};
+
+// per-program cached locations, filled in rtInit once all programs are built
+static GLint s_uloc[PROG_COUNT][RTU_COUNT];
+
 // (quality presets + matrix helpers come from gfx_rt_common.h)
 
 // ---------------------------------------------------------------------------
@@ -470,6 +501,13 @@ static bool rtInit(const char* glsl_version) {
         }
     }
 
+    // resolve every uniform location once; rtU serves these from here on
+    for (int i = 0; i < PROG_COUNT; i++) {
+        for (int u = 0; u < RTU_COUNT; u++) {
+            s_uloc[i][u] = glGetUniformLocation(s_prog[i], kRtUniformNames[u]);
+        }
+    }
+
     // fullscreen triangle
     static const float verts[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
     if (glad_glGenVertexArrays) {
@@ -489,8 +527,14 @@ static bool rtInit(const char* glsl_version) {
 // ---------------------------------------------------------------------------
 // per-pass helpers
 
-static GLint rtU(GLuint prog, const char* name) {
-    return glGetUniformLocation(prog, name);
+static GLint rtU(GLuint prog, int u) {
+    // cached lookup: locations were resolved once per program in rtInit
+    for (int i = 0; i < PROG_COUNT; i++) {
+        if (s_prog[i] == prog) {
+            return s_uloc[i][u];
+        }
+    }
+    return -1;
 }
 
 // per-frame constants shared by every pass
@@ -505,11 +549,11 @@ struct RtFrame {
 static void rtSetCommon(GLuint prog, const RtFrame* f) {
     glUseProgram(prog);
     GLint loc;
-    if ((loc = rtU(prog, "uRect")) >= 0) glUniform4fv(loc, 1, f->rect);
-    if ((loc = rtU(prog, "uProj")) >= 0) glUniform4fv(loc, 1, f->proj);
-    if ((loc = rtU(prog, "uYSign")) >= 0) glUniform1f(loc, f->ysign);
-    if ((loc = rtU(prog, "uTexel")) >= 0) glUniform2fv(loc, 1, f->texel);
-    if ((loc = rtU(prog, "uFrame")) >= 0) glUniform1i(loc, f->frame);
+    if ((loc = rtU(prog, RTU_uRect)) >= 0) glUniform4fv(loc, 1, f->rect);
+    if ((loc = rtU(prog, RTU_uProj)) >= 0) glUniform4fv(loc, 1, f->proj);
+    if ((loc = rtU(prog, RTU_uYSign)) >= 0) glUniform1f(loc, f->ysign);
+    if ((loc = rtU(prog, RTU_uTexel)) >= 0) glUniform2fv(loc, 1, f->texel);
+    if ((loc = rtU(prog, RTU_uFrame)) >= 0) glUniform1i(loc, f->frame);
 }
 
 static void rtDraw(void) {
@@ -685,13 +729,13 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glViewport(vx, vy, vw, vh);
         GLuint pr = s_prog[PROG_AOSHADOW];
         rtSetCommon(pr, &fr);
-        glUniform1i(rtU(pr, "uAOOn"), (ao_on || dbg == RT_DEBUG_AO) ? 1 : 0);
-        glUniform1i(rtU(pr, "uShadowOn"), (sh_on || dbg == RT_DEBUG_SHADOW) ? 1 : 0);
-        glUniform1i(rtU(pr, "uAOSamples"), kQuality[q].ao_samples);
-        glUniform1i(rtU(pr, "uShadowSteps"), kQuality[q].shadow_steps);
-        glUniform1f(rtU(pr, "uAORadius"), gfx_rt_ao_radius);
-        glUniform1f(rtU(pr, "uShadowLen"), gfx_rt_shadow_length);
-        glUniform3fv(rtU(pr, "uSun"), 1, sv);
+        glUniform1i(rtU(pr, RTU_uAOOn), (ao_on || dbg == RT_DEBUG_AO) ? 1 : 0);
+        glUniform1i(rtU(pr, RTU_uShadowOn), (sh_on || dbg == RT_DEBUG_SHADOW) ? 1 : 0);
+        glUniform1i(rtU(pr, RTU_uAOSamples), kQuality[q].ao_samples);
+        glUniform1i(rtU(pr, RTU_uShadowSteps), kQuality[q].shadow_steps);
+        glUniform1f(rtU(pr, RTU_uAORadius), gfx_rt_ao_radius);
+        glUniform1f(rtU(pr, RTU_uShadowLen), gfx_rt_shadow_length);
+        glUniform3fv(rtU(pr, RTU_uSun), 1, sv);
         rtDraw();
 
         // blur H: ao -> aotmp, blur V: aotmp -> ao
@@ -699,11 +743,11 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         rtSetCommon(pr, &fr);
         glBindFramebuffer(GL_FRAMEBUFFER, s_aotmp_fbo);
         rtBindTex(0, s_ao_tex);
-        glUniform2f(rtU(pr, "uDir"), fr.texel[0], 0.0f);
+        glUniform2f(rtU(pr, RTU_uDir), fr.texel[0], 0.0f);
         rtDraw();
         glBindFramebuffer(GL_FRAMEBUFFER, s_ao_fbo);
         rtBindTex(0, s_aotmp_tex);
-        glUniform2f(rtU(pr, "uDir"), 0.0f, fr.texel[1]);
+        glUniform2f(rtU(pr, RTU_uDir), 0.0f, fr.texel[1]);
         rtDraw();
     }
 
@@ -728,18 +772,18 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glViewport(givx, givy, givw, givh);
         GLuint pr = s_prog[PROG_TRACE];
         rtSetCommon(pr, &fr);
-        glUniform1i(rtU(pr, "uRays"), rays);
-        glUniform1i(rtU(pr, "uSteps"), kQuality[q].gi_steps);
-        glUniform1i(rtU(pr, "uBounces"), bounces);
-        glUniform1f(rtU(pr, "uGIRadius"), gfx_rt_ao_radius * 20.0f);
+        glUniform1i(rtU(pr, RTU_uRays), rays);
+        glUniform1i(rtU(pr, RTU_uSteps), kQuality[q].gi_steps);
+        glUniform1i(rtU(pr, RTU_uBounces), bounces);
+        glUniform1f(rtU(pr, RTU_uGIRadius), gfx_rt_ao_radius * 20.0f);
         if (gfx_rt_skylight && cam->skylight_ok) {
             // sky-derived GI miss radiance (day/sunset/night)
             const float sk[3] = { cam->skylight[0] * gfx_rt_skylight_gain,
                                   cam->skylight[1] * gfx_rt_skylight_gain,
                                   cam->skylight[2] * gfx_rt_skylight_gain };
-            glUniform3fv(rtU(pr, "uSky"), 1, sk);
+            glUniform3fv(rtU(pr, RTU_uSky), 1, sk);
         } else {
-            glUniform3fv(rtU(pr, "uSky"), 1, gfx_rt_sky);
+            glUniform3fv(rtU(pr, RTU_uSky), 1, gfx_rt_sky);
         }
         rtDraw();
 
@@ -763,8 +807,8 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         rtSetCommon(pr, &fr);
         rtBindTex(0, s_gitrace_tex);
         rtBindTex(6, s_hist_tex[pl][hread]);
-        glUniformMatrix4fv(rtU(pr, "uCurToPrev"), 1, GL_FALSE, cur_to_prev);
-        glUniform1f(rtU(pr, "uBlend"), (mode == RT_GI_PATHTRACE) ? 0.93f : 0.85f);
+        glUniformMatrix4fv(rtU(pr, RTU_uCurToPrev), 1, GL_FALSE, cur_to_prev);
+        glUniform1f(rtU(pr, RTU_uBlend), (mode == RT_GI_PATHTRACE) ? 0.93f : 0.85f);
         rtDraw();
         s_hist_idx[pl] = hwrite;
 
@@ -773,11 +817,11 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         rtSetCommon(pr, &fr);
         glBindFramebuffer(GL_FRAMEBUFFER, s_gitmp_fbo);
         rtBindTex(0, s_hist_tex[pl][hwrite]);
-        glUniform2f(rtU(pr, "uDir"), 1.0f / s_giw, 0.0f);
+        glUniform2f(rtU(pr, RTU_uDir), 1.0f / s_giw, 0.0f);
         rtDraw();
         glBindFramebuffer(GL_FRAMEBUFFER, s_gifinal_fbo);
         rtBindTex(0, s_gitmp_tex);
-        glUniform2f(rtU(pr, "uDir"), 0.0f, 1.0f / s_gih);
+        glUniform2f(rtU(pr, RTU_uDir), 0.0f, 1.0f / s_gih);
         rtDraw();
     }
 
@@ -796,8 +840,8 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glViewport(vx, vy, vw, vh);
         GLuint pr = s_prog[PROG_SSR];
         rtSetCommon(pr, &fr);
-        glUniform1i(rtU(pr, "uSSRSteps"), kQuality[q].ssr_steps);
-        glUniform1f(rtU(pr, "uMaxDist"), fr.proj[3] * 0.35f);
+        glUniform1i(rtU(pr, RTU_uSSRSteps), kQuality[q].ssr_steps);
+        glUniform1f(rtU(pr, RTU_uMaxDist), fr.proj[3] * 0.35f);
         rtDraw();
     }
 
@@ -824,17 +868,17 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         glViewport(vx, vy, vw, vh);
         GLuint pr = s_prog[PROG_LIGHT];
         rtSetCommon(pr, &fr);
-        glUniform1i(rtU(pr, "uLightCount"), nlights);
+        glUniform1i(rtU(pr, RTU_uLightCount), nlights);
         if (nlights > 0) {
-            glUniform4fv(rtU(pr, "uLightPosRad"), nlights, posrad);
-            glUniform4fv(rtU(pr, "uLightCol"), nlights, lcol);
+            glUniform4fv(rtU(pr, RTU_uLightPosRad), nlights, posrad);
+            glUniform4fv(rtU(pr, RTU_uLightCol), nlights, lcol);
         }
-        glUniform1i(rtU(pr, "uLightShadows"), gfx_rt_light_shadows);
-        glUniform1i(rtU(pr, "uLightSteps"), kQuality[q].light_steps);
-        glUniform1i(rtU(pr, "uTorch"), gfx_rt_torch);
-        glUniform1f(rtU(pr, "uTorchInt"), gfx_rt_torch_intensity);
-        glUniform1f(rtU(pr, "uTorchRange"), gfx_rt_torch_range);
-        glUniform1f(rtU(pr, "uLightMax"), gfx_rt_light_max > 0.005f ? gfx_rt_light_max : 0.005f);
+        glUniform1i(rtU(pr, RTU_uLightShadows), gfx_rt_light_shadows);
+        glUniform1i(rtU(pr, RTU_uLightSteps), kQuality[q].light_steps);
+        glUniform1i(rtU(pr, RTU_uTorch), gfx_rt_torch);
+        glUniform1f(rtU(pr, RTU_uTorchInt), gfx_rt_torch_intensity);
+        glUniform1f(rtU(pr, RTU_uTorchRange), gfx_rt_torch_range);
+        glUniform1f(rtU(pr, RTU_uLightMax), gfx_rt_light_max > 0.005f ? gfx_rt_light_max : 0.005f);
         rtDraw();
     }
 
@@ -849,7 +893,7 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
         rtBindTex(1, s_gifinal_tex);
         rtBindTex(2, s_ssr_tex);
         rtBindTex(7, s_light_tex);
-        glUniform1i(rtU(pr, "uMode"), dbg);
+        glUniform1i(rtU(pr, RTU_uMode), dbg);
         rtDraw();
     } else {
         if (ao_on || sh_on || dark_on) {
@@ -858,17 +902,17 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
             GLuint pr = s_prog[PROG_COMP_MUL];
             rtSetCommon(pr, &fr);
             rtBindTex(0, s_ao_tex);
-            glUniform1i(rtU(pr, "uAOOn"), ao_on ? 1 : 0);
-            glUniform1i(rtU(pr, "uShadowOn"), sh_on ? 1 : 0);
-            glUniform1f(rtU(pr, "uAOInt"), gfx_rt_ao_intensity);
-            glUniform1f(rtU(pr, "uShInt"), gfx_rt_shadow_intensity);
-            glUniform1i(rtU(pr, "uDark"), dark_on ? 1 : 0);
-            glUniform1f(rtU(pr, "uDarkAmbient"), gfx_rt_dark_ambient);
+            glUniform1i(rtU(pr, RTU_uAOOn), ao_on ? 1 : 0);
+            glUniform1i(rtU(pr, RTU_uShadowOn), sh_on ? 1 : 0);
+            glUniform1f(rtU(pr, RTU_uAOInt), gfx_rt_ao_intensity);
+            glUniform1f(rtU(pr, RTU_uShInt), gfx_rt_shadow_intensity);
+            glUniform1i(rtU(pr, RTU_uDark), dark_on ? 1 : 0);
+            glUniform1f(rtU(pr, RTU_uDarkAmbient), gfx_rt_dark_ambient);
             if (gfx_rt_skylight && cam->skylight_ok) {
-                glUniform3fv(rtU(pr, "uAmbientCol"), 1, cam->skylight);
+                glUniform3fv(rtU(pr, RTU_uAmbientCol), 1, cam->skylight);
             } else {
                 const float white[3] = { 1.0f, 1.0f, 1.0f };
-                glUniform3fv(rtU(pr, "uAmbientCol"), 1, white);
+                glUniform3fv(rtU(pr, RTU_uAmbientCol), 1, white);
             }
             rtDraw();
             glDisable(GL_BLEND);
@@ -881,14 +925,14 @@ void gfx_rt_resolve(const rtcamera* cam, int vx, int vy, int vw, int vh,
             rtBindTex(1, s_gifinal_tex);
             rtBindTex(2, s_ssr_tex);
             rtBindTex(7, s_light_tex);
-            glUniform1i(rtU(pr, "uGIOn"), gi_mode != RT_GI_OFF ? 1 : 0);
-            glUniform1i(rtU(pr, "uSSROn"), ssr_on ? 1 : 0);
-            glUniform1i(rtU(pr, "uLightsOn"), lights_run ? 1 : 0);
-            glUniform1f(rtU(pr, "uGIInt"), gfx_rt_gi_intensity);
-            glUniform1f(rtU(pr, "uSSRInt"), gfx_rt_ssr_intensity);
-            glUniform1i(rtU(pr, "uDark"), dark_on ? 1 : 0);
-            glUniform1f(rtU(pr, "uDarkAmbient"), gfx_rt_dark_ambient);
-            glUniform1f(rtU(pr, "uRelight"), gfx_rt_relight_amount);
+            glUniform1i(rtU(pr, RTU_uGIOn), gi_mode != RT_GI_OFF ? 1 : 0);
+            glUniform1i(rtU(pr, RTU_uSSROn), ssr_on ? 1 : 0);
+            glUniform1i(rtU(pr, RTU_uLightsOn), lights_run ? 1 : 0);
+            glUniform1f(rtU(pr, RTU_uGIInt), gfx_rt_gi_intensity);
+            glUniform1f(rtU(pr, RTU_uSSRInt), gfx_rt_ssr_intensity);
+            glUniform1i(rtU(pr, RTU_uDark), dark_on ? 1 : 0);
+            glUniform1f(rtU(pr, RTU_uDarkAmbient), gfx_rt_dark_ambient);
+            glUniform1f(rtU(pr, RTU_uRelight), gfx_rt_relight_amount);
             rtDraw();
             glDisable(GL_BLEND);
         }

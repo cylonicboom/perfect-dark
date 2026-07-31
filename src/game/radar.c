@@ -480,6 +480,11 @@ Gfx *radarRenderRTrackedProps(Gfx *gdl)
 	struct coord dist1;
 	u32 stack2;
 	struct coord dist2;
+#ifndef PLATFORM_N64
+	// [B10a] cheatIsActive is a pure bank read and nothing in this loop can
+	// change cheat state - hoist it out of the per-prop walk (bit-identical).
+	bool rtrackeractive = cheatIsActive(CHEAT_RTRACKER);
+#endif
 
 	while (prop) {
 		switch (prop->type) {
@@ -488,8 +493,13 @@ Gfx *radarRenderRTrackedProps(Gfx *gdl)
 		case PROPTYPE_WEAPON:
 			obj = prop->obj;
 
+#ifndef PLATFORM_N64
+			if ((obj->flags3 & OBJFLAG3_RTRACKED_YELLOW) ||
+					(rtrackeractive && (obj->flags3 & OBJFLAG3_RTRACKED_BLUE))) {
+#else
 			if ((obj->flags3 & OBJFLAG3_RTRACKED_YELLOW) ||
 					(cheatIsActive(CHEAT_RTRACKER) && (obj->flags3 & OBJFLAG3_RTRACKED_BLUE))) {
+#endif
 				dist1.x = prop->pos.x - playerpos->x;
 				dist1.y = prop->pos.y - playerpos->y;
 				dist1.z = prop->pos.z - playerpos->z;

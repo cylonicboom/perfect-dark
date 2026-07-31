@@ -366,8 +366,19 @@ void mtxF2L(Mtxf *src, Mtxf *dst)
 	dst->l[3][2] = src30 << 16 | (src31 & 0xffff);
 	dst->l[3][3] = src32 << 16 | (src33 & 0xffff);
 #else
-	if (src != dst) {
-		bcopy(src, dst, sizeof(*dst));
+	// GBI_FLOATS: keep floats, but apply the var8005ef10 scale the fixed
+	// path baked in (65536 * scale_bg2gfx for cols 0-2, 65536 for col 3).
+	// The upstream bcopy branch dropped the scale, which is wrong on stages
+	// with scale_bg2gfx != 1.
+	f32 s0 = var8005ef10[0] * (1.0f / 65536.0f);
+	f32 s1 = var8005ef10[1] * (1.0f / 65536.0f);
+	s32 i;
+
+	for (i = 0; i < 4; i++) {
+		dst->m[i][0] = src->m[i][0] * s0;
+		dst->m[i][1] = src->m[i][1] * s0;
+		dst->m[i][2] = src->m[i][2] * s0;
+		dst->m[i][3] = src->m[i][3] * s1;
 	}
 #endif
 }

@@ -166,6 +166,28 @@ void *mempGetNextStageAllocation(void)
 	return next;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * 1-per-second throttle for the pool-full warnings (the propssort_guard
+ * pattern): a stage that exhausts a pool otherwise re-warns on every
+ * allocation attempt, which is per-frame log I/O. Wall-clock based rather than
+ * g_Vars.lvframe60 because lvframe60 is reset to 0 on stage load (lv.c) —
+ * exactly when the OOM burst happens. Each call site keeps its own stamp so
+ * the mempAlloc caller-attribution line can't be eaten by the bank warning.
+ */
+static bool mempWarnReady(u64 *lastus)
+{
+	u64 now = sysGetMicroseconds();
+
+	if (*lastus != 0 && now - *lastus < 1000000) {
+		return false;
+	}
+
+	*lastus = now;
+	return true;
+}
+#endif
+
 void *mempAllocFromBank(struct memorypool *pool, u32 size, u8 poolnum)
 {
 	u8 *allocation;
@@ -179,12 +201,24 @@ void *mempAllocFromBank(struct memorypool *pool, u32 size, u8 poolnum)
 	}
 
 	if (pool->leftpos > pool->rightpos) {
-		sysLogPrintf(LOG_NOTE, "#warning: memory pool %x is full. Req: %d\n", pool, size);
+#ifndef PLATFORM_N64
+		static u64 lastwarnus = 0;
+		if (mempWarnReady(&lastwarnus))
+#endif
+		{
+			sysLogPrintf(LOG_NOTE, "#warning: memory pool %x is full. Req: %d\n", pool, size);
+		}
 		return 0;
 	}
 
 	if (pool->leftpos + size > pool->rightpos) {
-		sysLogPrintf(LOG_NOTE, "#warning: memory pool %x is full. Req: %d\n", pool, size);
+#ifndef PLATFORM_N64
+		static u64 lastwarnus = 0;
+		if (mempWarnReady(&lastwarnus))
+#endif
+		{
+			sysLogPrintf(LOG_NOTE, "#warning: memory pool %x is full. Req: %d\n", pool, size);
+		}
 		return 0;
 	}
 
@@ -217,8 +251,11 @@ void *mempAlloc(u32 len, u8 pool)
 	// Pools 7/8 excluded like the original debug print below — they are
 	// try-then-fallback pools that fail by design.
 	if (pool != MEMPOOL_8 && pool != MEMPOOL_7 && len) {
-		sysLogPrintf(LOG_NOTE, "#warning: mempAlloc(%u, pool %d) failed — caller %p",
-				len, pool, __builtin_return_address(0));
+		static u64 lastwarnus = 0;
+		if (mempWarnReady(&lastwarnus)) {
+			sysLogPrintf(LOG_NOTE, "#warning: mempAlloc(%u, pool %d) failed — caller %p",
+					len, pool, __builtin_return_address(0));
+		}
 	}
 #endif
 

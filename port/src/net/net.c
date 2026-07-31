@@ -3103,63 +3103,72 @@ void netEndFrame(void)
 			// svsendtick: rides the same state-send cadence as the chr streams.
 			if (svsendtick && g_Vars.coopplayernum >= 0) {
 				const s32 maxprops = g_Vars.maxprops;
-				// Pass 1: moving objs, every tick.
-				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 64; i++) {
-					struct prop *prop = &g_Vars.props[i];
-					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
-							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)) {
-						// Only RUNTIME-spawned props (syncid at or above the
-						// stage-load watermark) may be spawn-broadcast. Static
-						// level objects already exist on the client from its own
-						// deterministic stage load, and the spawn READER has no
-						// constructor for a non-autogun OBJ — under "latest
-						// spawn wins" it frees its existing copy and then bails,
-						// so re-broadcasting crates/terminals/glass permanently
-						// deleted them client-side. No-op for the projectile
-						// passes (projectiles are always runtime).
-						if (prop->syncid >= g_NetFirstDynamicSyncId
-								&& !netPropWasSpawnBroadcast(prop->syncid)) {
-							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
-						}
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
-					}
-				}
-				// Pass 2: settled objs, round-robin (a few per tick from a cursor).
+				// MERGED single scan (was two full passes): moving objs are sent
+				// inline every tick; settled objs are only COLLECTED here (first
+				// 4 from the round-robin cursor, exactly what the old pass 2
+				// picked) and sent after the loop — so all moving sends still
+				// consume buffer budget ahead of any settled send, preserving
+				// the old pass-1-then-pass-2 priority. The two predicates are
+				// disjoint (PROJECTILE vs !PROJECTILE), so the sent set is
+				// unchanged; only the within-packet ordering across distinct
+				// props differs (harmless: latest-wins per prop, one message
+				// per prop per tick).
 				static s32 coopobjcursor = 0;
 				if (coopobjcursor >= maxprops) {
 					coopobjcursor = 0;
 				}
-				s32 scanned = 0;
-				s32 sent = 0;
+				struct prop *settled[4];
+				s32 nsettled = 0;
+				s32 cursorend = coopobjcursor;
+				s32 cursorlatched = 0;
 				s32 i = coopobjcursor;
-				while (scanned < maxprops && sent < 4 && g_NetMsg.wp < NET_BUFSIZE - 64) {
+				for (s32 scanned = 0; scanned < maxprops && g_NetMsg.wp < NET_BUFSIZE - 64; scanned++) {
 					struct prop *prop = &g_Vars.props[i];
-					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ
-							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE) == 0) {
-						// Only RUNTIME-spawned props (syncid at or above the
-						// stage-load watermark) may be spawn-broadcast. Static
-						// level objects already exist on the client from its own
-						// deterministic stage load, and the spawn READER has no
-						// constructor for a non-autogun OBJ — under "latest
-						// spawn wins" it frees its existing copy and then bails,
-						// so re-broadcasting crates/terminals/glass permanently
-						// deleted them client-side. No-op for the projectile
-						// passes (projectiles are always runtime).
-						if (prop->syncid >= g_NetFirstDynamicSyncId
-								&& !netPropWasSpawnBroadcast(prop->syncid)) {
-							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
+					if (prop->syncid && prop->obj && prop->type == PROPTYPE_OBJ) {
+						if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
+							// Moving obj: send every tick.
+							// Only RUNTIME-spawned props (syncid at or above the
+							// stage-load watermark) may be spawn-broadcast. Static
+							// level objects already exist on the client from its own
+							// deterministic stage load, and the spawn READER has no
+							// constructor for a non-autogun OBJ — under "latest
+							// spawn wins" it frees its existing copy and then bails,
+							// so re-broadcasting crates/terminals/glass permanently
+							// deleted them client-side. No-op for the projectile
+							// passes (projectiles are always runtime).
+							if (prop->syncid >= g_NetFirstDynamicSyncId
+									&& !netPropWasSpawnBroadcast(prop->syncid)) {
+								netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
+							}
+							const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						} else if (nsettled < 4) {
+							// Settled obj: round-robin refresh, a few per tick.
+							settled[nsettled++] = prop;
+							if (nsettled == 4) {
+								cursorend = (i + 1) % maxprops;
+								cursorlatched = 1;
+							}
 						}
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
-						sent++;
 					}
 					i = (i + 1) % maxprops;
-					scanned++;
 				}
-				coopobjcursor = i; // resume here next tick
+				if (!cursorlatched) {
+					cursorend = i; // full lap (or budget stop): same as the old pass 2
+				}
+				for (s32 k = 0; k < nsettled && g_NetMsg.wp < NET_BUFSIZE - 64; k++) {
+					struct prop *prop = settled[k];
+					// (same runtime-spawn-only rule as the moving branch above)
+					if (prop->syncid >= g_NetFirstDynamicSyncId
+							&& !netPropWasSpawnBroadcast(prop->syncid)) {
+						netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
+					}
+					const u32 b0 = g_NetMsg.wp;
+					netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+					netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+				}
+				coopobjcursor = cursorend; // resume here next tick
 			}
 
 			// Combat Sim dynamic-prop position sync (catalog §5.2 "floating /
@@ -3189,72 +3198,77 @@ void netEndFrame(void)
 			// svsendtick: rides the same state-send cadence as the chr streams.
 			if (svsendtick && g_Vars.coopplayernum < 0 && g_Vars.normmplayerisrunning) {
 				const s32 maxprops = g_Vars.maxprops;
-				// Pass 1: props in projectile motion, every tick.
-				for (s32 i = 0; i < maxprops && g_NetMsg.wp < NET_BUFSIZE - 160; i++) {
+				// MERGED single scan (same structure as the co-op block above):
+				// projectile-motion props send inline every tick; settled props
+				// are collected (first 4 from the round-robin cursor) and sent
+				// after the loop, keeping moving sends ahead of settled sends
+				// for buffer budget. Predicates are disjoint on
+				// OBJHFLAG_PROJECTILE; the shared exclusions (parented,
+				// embedded, held rockets — see the original rationale below)
+				// are hoisted into the common gate.
+				static s32 mpobjcursor = 0;
+				if (mpobjcursor >= maxprops) {
+					mpobjcursor = 0;
+				}
+				struct prop *settled[4];
+				s32 nsettled = 0;
+				s32 cursorend = mpobjcursor;
+				s32 cursorlatched = 0;
+				s32 i = mpobjcursor;
+				for (s32 scanned = 0; scanned < maxprops && g_NetMsg.wp < NET_BUFSIZE - 160; scanned++) {
 					struct prop *prop = &g_Vars.props[i];
 					if (prop->syncid && prop->obj && prop->parent == NULL
 							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
-							&& (prop->obj->hidden & OBJHFLAG_PROJECTILE)
 							&& (prop->obj->hidden & OBJHFLAG_EMBEDDED) == 0
 							// Held rockets are first-person viewmodel cosmetics
 							// (re-placed at the holder's muzzle every frame, not
 							// world physics) — never wire their position; the
 							// fired projectile they become is what syncs.
 							&& (prop->obj->flags & OBJFLAG_HELDROCKET) == 0) {
-						// Only RUNTIME-spawned props (syncid at or above the
-						// stage-load watermark) may be spawn-broadcast. Static
-						// level objects already exist on the client from its own
-						// deterministic stage load, and the spawn READER has no
-						// constructor for a non-autogun OBJ — under "latest
-						// spawn wins" it frees its existing copy and then bails,
-						// so re-broadcasting crates/terminals/glass permanently
-						// deleted them client-side. No-op for the projectile
-						// passes (projectiles are always runtime).
-						if (prop->syncid >= g_NetFirstDynamicSyncId
-								&& !netPropWasSpawnBroadcast(prop->syncid)) {
-							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
+						if (prop->obj->hidden & OBJHFLAG_PROJECTILE) {
+							// In projectile motion: send every tick.
+							// Only RUNTIME-spawned props (syncid at or above the
+							// stage-load watermark) may be spawn-broadcast. Static
+							// level objects already exist on the client from its own
+							// deterministic stage load, and the spawn READER has no
+							// constructor for a non-autogun OBJ — under "latest
+							// spawn wins" it frees its existing copy and then bails,
+							// so re-broadcasting crates/terminals/glass permanently
+							// deleted them client-side. No-op for the projectile
+							// passes (projectiles are always runtime).
+							if (prop->syncid >= g_NetFirstDynamicSyncId
+									&& !netPropWasSpawnBroadcast(prop->syncid)) {
+								netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
+							}
+							const u32 b0 = g_NetMsg.wp;
+							netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+							netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+						} else if (nsettled < 4) {
+							// Settled: round-robin refresh, a few per tick.
+							settled[nsettled++] = prop;
+							if (nsettled == 4) {
+								cursorend = (i + 1) % maxprops;
+								cursorlatched = 1;
+							}
 						}
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
-					}
-				}
-				// Pass 2: settled props, round-robin (a few per tick).
-				static s32 mpobjcursor = 0;
-				if (mpobjcursor >= maxprops) {
-					mpobjcursor = 0;
-				}
-				s32 scanned = 0;
-				s32 sent = 0;
-				s32 i = mpobjcursor;
-				while (scanned < maxprops && sent < 4 && g_NetMsg.wp < NET_BUFSIZE - 160) {
-					struct prop *prop = &g_Vars.props[i];
-					if (prop->syncid && prop->obj && prop->parent == NULL
-							&& (prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_OBJ)
-							&& (prop->obj->hidden & (OBJHFLAG_PROJECTILE | OBJHFLAG_EMBEDDED)) == 0
-							&& (prop->obj->flags & OBJFLAG_HELDROCKET) == 0) {
-						// Only RUNTIME-spawned props (syncid at or above the
-						// stage-load watermark) may be spawn-broadcast. Static
-						// level objects already exist on the client from its own
-						// deterministic stage load, and the spawn READER has no
-						// constructor for a non-autogun OBJ — under "latest
-						// spawn wins" it frees its existing copy and then bails,
-						// so re-broadcasting crates/terminals/glass permanently
-						// deleted them client-side. No-op for the projectile
-						// passes (projectiles are always runtime).
-						if (prop->syncid >= g_NetFirstDynamicSyncId
-								&& !netPropWasSpawnBroadcast(prop->syncid)) {
-							netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
-						}
-						const u32 b0 = g_NetMsg.wp;
-						netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
-						netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
-						sent++;
 					}
 					i = (i + 1) % maxprops;
-					scanned++;
 				}
-				mpobjcursor = i; // resume here next tick
+				if (!cursorlatched) {
+					cursorend = i; // full lap (or budget stop): same as the old pass 2
+				}
+				for (s32 k = 0; k < nsettled && g_NetMsg.wp < NET_BUFSIZE - 160; k++) {
+					struct prop *prop = settled[k];
+					// (same runtime-spawn-only rule as the moving branch above)
+					if (prop->syncid >= g_NetFirstDynamicSyncId
+							&& !netPropWasSpawnBroadcast(prop->syncid)) {
+						netSyncPropSpawn(prop); // spawn-before-move (self-heals a lost spawn)
+					}
+					const u32 b0 = g_NetMsg.wp;
+					netmsgSvcPropMoveWrite(&g_NetMsg, prop, NULL);
+					netStatAdd(NETSTAT_PROPMOVE, g_NetMsg.wp - b0);
+				}
+				mpobjcursor = cursorend; // resume here next tick
 			}
 
 			// Co-op stage flags: scripts, objectives and triggered events gate on
@@ -6899,6 +6913,26 @@ s32 netConsoleCommand(const char *line)
 					g_RoomShinyAlphaFloor,
 					g_RoomShinyAlphaFloor ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "losmemo") == 0) {
+		// /losmemo [on|off]  toggle the per-chr per-frame AI line-of-sight memo
+		// (g_ChrLosMemoEnabled, chraction.c — Part B opt B1). Behaviour-adjacent:
+		// a memo hit can be stale by same-frame door/chr movement, so this
+		// toggle exists for A/B'ing AI feel and netplay determinism soaks.
+		// All netplay peers should run the same setting.
+		{
+			extern s32 g_ChrLosMemoEnabled;
+
+			if (strcmp(arg, "on") == 0) {
+				g_ChrLosMemoEnabled = 1;
+			} else if (strcmp(arg, "off") == 0) {
+				g_ChrLosMemoEnabled = 0;
+			} else if (arg[0]) {
+				g_ChrLosMemoEnabled = atoi(arg) != 0;
+			}
+
+			sysLogPrintf(LOG_CHAT, "LOSMEMO: %s (AI same-frame line-of-sight memo)",
+					g_ChrLosMemoEnabled ? "ON" : "OFF");
+		}
 	} else if (strcmp(cmd, "octree") == 0) {
 		// /octree [on|off]    toggle outdoor-room octree frustum culling
 		// /octree forcecull   debug: cull every batch (flagged rooms go black)
@@ -6925,6 +6959,13 @@ s32 netConsoleCommand(const char *line)
 			} else {
 				sysLogPrintf(LOG_CHAT, "OCTREE: couldn't mark current room (in a loaded room?)");
 			}
+		} else if (strncmp(arg, "autobatch", 9) == 0) {
+			if (arg[9]) {
+				g_BgOctreeAutoBatchThreshold = atoi(arg + 9);
+			}
+			sysLogPrintf(LOG_CHAT, "OCTREE: autobatch threshold=%d %s (octree-cull rooms with more vtxbatches than this)",
+					g_BgOctreeAutoBatchThreshold,
+					g_BgOctreeAutoBatchThreshold > 0 ? "ON" : "OFF");
 		} else if (strcmp(arg, "markall") == 0 || strcmp(arg, "mark all") == 0) {
 			g_BgOctreeMarkAll = !g_BgOctreeMarkAll;
 			sysLogPrintf(LOG_CHAT, "OCTREE: mark-all %s (every loaded room octree-culled, lazy-built)",

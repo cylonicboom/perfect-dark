@@ -9,7 +9,9 @@ Acmd *n_alAuxBusPull(s32 sampleOffset, Acmd *cmdptr, s32 fxBus, s32 *numpulls)
 	u32 i;
 	s32 sp34 = 0;
 	u32 sp30 = 1;
+#ifdef PLATFORM_N64
 	u32 sp2c;
+#endif
 
 	aClearBuffer(cmd++, 1984, 736);
 
@@ -27,6 +29,9 @@ Acmd *n_alAuxBusPull(s32 sampleOffset, Acmd *cmdptr, s32 fxBus, s32 *numpulls)
 		}
 	}
 
+#ifdef PLATFORM_N64
+	// n_aNoop maps to the empty aDisableImpl stub on the port (mixer.h);
+	// skip the sqrtf/divide that only feeds it.
 	if (sp34) {
 		sp30 -= 62;
 
@@ -39,6 +44,7 @@ Acmd *n_alAuxBusPull(s32 sampleOffset, Acmd *cmdptr, s32 fxBus, s32 *numpulls)
 		n_aNoop(cmd++, 1248, sp2c, sp30);
 		n_aNoop(cmd++, 1616, sp2c, sp30);
 	}
+#endif
 
 	for (i = 0; i < bus->sourceCount; i++) {
 		if ((sources[i]->vvoice && sources[i]->vvoice->fxBus == fxBus && (sources[i]->vvoice->pvoice == NULL || sources[i]->vvoice->pvoice->unk8c < 64))

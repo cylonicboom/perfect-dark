@@ -266,9 +266,11 @@ void viBlack(bool black)
 
 void viHandleRetrace(void)
 {
+#ifdef PLATFORM_N64
 	s32 prevmask;
-	s32 offset;
 	s32 reg;
+#endif
+	s32 offset;
 
 	if (g_ViShakeTimer != 0) {
 		g_ViShakeTimer--;
@@ -281,6 +283,14 @@ void viHandleRetrace(void)
 	offset = g_ViShakeDirection * g_ViShakeIntensity;
 	g_ViShakeDirection = -g_ViShakeDirection;
 
+	// The port only consumes the shake timer/offset (videoSetWindowOffset) and
+	// the unblack timer (osViBlack clears the screen while blacked). The VI
+	// register work below feeds osViSetMode/osViSetXScale/osViSetYScale/
+	// osViSetSpecialFeatures, which are all empty stubs in port/src/libultra.c,
+	// and the var8008dd60 fldRegs writes are only ever read back by those stubs
+	// (pdsched.c's mode-change path reads g_SchedViModesPending + var8008dcc0,
+	// both written in viUpdateMode, not here).
+#ifdef PLATFORM_N64
 #if VERSION >= VERSION_NTSC_1_0
 	prevmask = osSetIntMask(1);
 #endif
@@ -294,16 +304,19 @@ void viHandleRetrace(void)
 #if VERSION >= VERSION_NTSC_1_0
 	osSetIntMask(prevmask);
 #endif
-
-#ifndef PLATFORM_N64
+#else
 	videoSetWindowOffset(0, offset);
 #endif
 
+#ifdef PLATFORM_N64
 	osViSetMode(var8008dd60[1 - var8005ce74]);
+#endif
 	osViBlack(g_ViUnblackTimer);
+#ifdef PLATFORM_N64
 	osViSetXScale(g_ViXScalesBySlot[1 - var8005ce74]);
 	osViSetYScale(g_ViYScalesBySlot[1 - var8005ce74]);
 	osViSetSpecialFeatures(OS_VI_GAMMA_OFF | OS_VI_DITHER_FILTER_ON);
+#endif
 }
 
 void viUpdateMode(void)

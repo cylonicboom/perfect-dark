@@ -328,6 +328,7 @@ Acmd *_n_saveBuffer(ALFx *r, s32 arg1, s16 *curr_ptr, s32 buff, Acmd *p)
 
 Acmd *_n_filterBuffer(ALLowPass *lp, s32 buff, s32 count, Acmd *p)
 {
+#ifdef PLATFORM_N64
 	Acmd *ptr = p;
 	s16 tmp = count >> 8;
 
@@ -336,6 +337,12 @@ Acmd *_n_filterBuffer(ALLowPass *lp, s32 buff, s32 count, Acmd *p)
 	lp->first = 0;
 
 	return ptr;
+#else
+	// n_aPoleFilter is a no-op in the port mixer and the n_aLoadADPCM here
+	// only feeds it (every real ADPCM decode reloads its own book first, see
+	// n_alAdpcmPull); lp->first is only read by the skipped command.
+	return p;
+#endif
 }
 
 /**

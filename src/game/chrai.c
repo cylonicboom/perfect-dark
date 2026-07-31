@@ -13,6 +13,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "system.h" // sysLogPrintf/LOG_* for the chraiRunLoop iteration cap
 #endif
 
 bool (*g_CommandPointers[])(void) = {
@@ -655,8 +656,235 @@ s32 chraiGetListIdByList(u8 *ailist, bool *is_global)
 	return -1;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * B6 (port perf): lazily-built per-ailist {offset -> label} index for
+ * chraiGoToLabel, which otherwise linearly re-scans the bytecode on every taken
+ * branch of every chr every tick (the s_lenlist memo in chraiLuaStep is the
+ * precedent for per-list lazy caching; ailists are immutable once loaded).
+ *
+ * Walk semantics being reproduced (see the fallback loop below): starting at
+ * aioffset INCLUSIVE, scan forward command-by-command; the first CMD_LABEL with
+ * a matching id returns its offset, and hitting CMD_END first returns 0 (which
+ * callers use as "restart at list top"). Consequently offsets past the FIRST
+ * CMD_END from offset 0 are unreachable through chraiGoToLabel (any scan from
+ * before it stops there), so the index covers exactly [0, first CMD_END].
+ * Queries with aioffset beyond that region fall back to the original walk.
+ *
+ * Only lists registered in g_GlobalAilists / g_StageSetup.ailists are cached:
+ * chraiExecSingleCommand feeds chraiGoToLabel a stack buffer whose address is
+ * reused with different contents, so unknown pointers always take the walk.
+ * The cache is invalidated when the stage ailist table changes (stage loads
+ * reallocate setup data, so list pointers can be reused), and every returned
+ * offset is validated against the live bytes (CMD_LABEL + id, or the CMD_END
+ * sentinel) - a stale cache self-heals by dropping everything and walking.
+ * Honest limit: an aioffset that is not on a command boundary reachable from
+ * offset 0 (only possible via a hand-written Lua ctx:exec offset) could make
+ * the index disagree with a walk from that misaligned offset - the walk itself
+ * would be parsing garbage in that case.
+ */
+#define AILBL_MAX_LISTS   128
+#define AILBL_HASH_SIZE   256     // power of two, > 2*AILBL_MAX_LISTS
+#define AILBL_MAX_MARKERS 4096
+#define AILBL_MAX_SCAN    0x40000 // build bound: no CMD_END by here -> unindexable
+
+struct ailabelindex {
+	u8 *list;
+	u32 endoffset; // offset of the first CMD_END from 0
+	u32 first;     // index into s_AiLabelMarkers
+	u32 count;     // number of CMD_LABEL markers
+	u8 unindexable;
+};
+
+static struct ailabelindex s_AiLabelLists[AILBL_MAX_LISTS];
+static u32 s_AiLabelMarkers[AILBL_MAX_MARKERS]; // (offset << 8) | labelid
+static s16 s_AiLabelHash[AILBL_HASH_SIZE];      // index into s_AiLabelLists, -1 = empty
+static u32 s_AiLabelNumLists = 0;
+static u32 s_AiLabelNumMarkers = 0;
+static uintptr_t s_AiLabelGen = 0;
+static bool s_AiLabelInit = false;
+
+static void chraiLabelIndexReset(void)
+{
+	s32 i;
+
+	for (i = 0; i < AILBL_HASH_SIZE; i++) {
+		s_AiLabelHash[i] = -1;
+	}
+
+	s_AiLabelNumLists = 0;
+	s_AiLabelNumMarkers = 0;
+}
+
+static struct ailabelindex *chraiLabelIndexForList(u8 *ailist)
+{
+	uintptr_t h = (uintptr_t)ailist;
+	u32 slot;
+	u32 probes;
+	struct ailabelindex *entry;
+	bool isglobal;
+	u32 offset;
+	u32 nummarkers;
+
+	h ^= h >> 9;
+	h *= 2654435761u;
+	slot = (u32)((h >> 4) & (AILBL_HASH_SIZE - 1));
+
+	for (probes = 0; probes < AILBL_HASH_SIZE; probes++) {
+		s16 idx = s_AiLabelHash[slot];
+
+		if (idx < 0) {
+			break; // empty slot: list not cached yet
+		}
+
+		if (s_AiLabelLists[idx].list == ailist) {
+			return &s_AiLabelLists[idx];
+		}
+
+		slot = (slot + 1) & (AILBL_HASH_SIZE - 1);
+	}
+
+	if (probes == AILBL_HASH_SIZE || s_AiLabelNumLists >= AILBL_MAX_LISTS) {
+		return NULL; // cache full - caller walks
+	}
+
+	// Never cache a pointer that isn't a registered ailist (stack buffers)
+	if (chraiGetListIdByList(ailist, &isglobal) == -1) {
+		return NULL;
+	}
+
+	// Build: forward walk from 0 (the same stepping as the fallback loop),
+	// recording every CMD_LABEL until the first CMD_END
+	entry = &s_AiLabelLists[s_AiLabelNumLists];
+	entry->list = ailist;
+	entry->endoffset = 0;
+	entry->first = s_AiLabelNumMarkers;
+	entry->count = 0;
+	entry->unindexable = false;
+
+	offset = 0;
+	nummarkers = 0;
+
+	while (true) {
+		u8 *cmd = offset + ailist;
+		u32 type = (cmd[0] << 8) + cmd[1];
+
+		if (type == CMD_END) {
+			entry->endoffset = offset;
+			break;
+		}
+
+		if (type == CMD_LABEL) {
+			if (s_AiLabelNumMarkers >= AILBL_MAX_MARKERS) {
+				entry->unindexable = true;
+				break;
+			}
+
+			s_AiLabelMarkers[s_AiLabelNumMarkers] = (offset << 8) | cmd[2];
+			s_AiLabelNumMarkers++;
+			nummarkers++;
+		}
+
+		offset += chraiGetCommandLength(ailist, offset);
+
+		if (offset >= AILBL_MAX_SCAN) {
+			// no CMD_END within bounds - corrupt/unterminated list
+			entry->unindexable = true;
+			break;
+		}
+	}
+
+	if (entry->unindexable) {
+		s_AiLabelNumMarkers = entry->first; // roll back partial markers
+	} else {
+		entry->count = nummarkers;
+	}
+
+	s_AiLabelHash[slot] = (s16)s_AiLabelNumLists;
+	s_AiLabelNumLists++;
+
+	return entry;
+}
+
+static bool chraiLabelIndexLookup(u8 *ailist, u32 aioffset, u8 label, u32 *result)
+{
+	uintptr_t gen;
+	struct ailabelindex *entry;
+	u32 i;
+	u8 *cmd;
+
+	// Invalidate everything when the stage ailist table changes
+	gen = (uintptr_t)g_StageSetup.ailists
+			^ ((uintptr_t)g_NumLvAilists << 1)
+			^ ((uintptr_t)g_NumGlobalAilists << 16);
+
+	if (g_StageSetup.ailists && g_NumLvAilists > 0) {
+		gen ^= (uintptr_t)g_StageSetup.ailists[0].list * 3;
+	}
+
+	if (!s_AiLabelInit || gen != s_AiLabelGen) {
+		chraiLabelIndexReset();
+		s_AiLabelGen = gen;
+		s_AiLabelInit = true;
+	}
+
+	entry = chraiLabelIndexForList(ailist);
+
+	if (entry == NULL || entry->unindexable) {
+		return false;
+	}
+
+	if (aioffset > entry->endoffset) {
+		return false; // past the indexed region - walk (preserves odd cases)
+	}
+
+	// Self-check: the indexed CMD_END must still be there; otherwise the cache
+	// is stale (pointer reuse the generation check missed) - drop it all
+	cmd = entry->endoffset + ailist;
+
+	if (((cmd[0] << 8) + cmd[1]) != CMD_END) {
+		chraiLabelIndexReset();
+		return false;
+	}
+
+	// Markers are in ascending offset order, so the first matching label at
+	// offset >= aioffset is exactly what the walk would find. No match before
+	// the CMD_END means the walk would return 0.
+	for (i = 0; i < entry->count; i++) {
+		u32 marker = s_AiLabelMarkers[entry->first + i];
+		u32 offset = marker >> 8;
+
+		if (offset >= aioffset && (marker & 0xff) == label) {
+			cmd = offset + ailist;
+
+			if (((cmd[0] << 8) + cmd[1]) != CMD_LABEL || cmd[2] != label) {
+				chraiLabelIndexReset();
+				return false;
+			}
+
+			*result = offset;
+			return true;
+		}
+	}
+
+	*result = 0;
+	return true;
+}
+#endif
+
 u32 chraiGoToLabel(u8 *ailist, u32 aioffset, u8 label)
 {
+#ifndef PLATFORM_N64
+	// B6: try the per-list label index; false means walk as before
+	{
+		u32 result;
+
+		if (chraiLabelIndexLookup(ailist, aioffset, label, &result)) {
+			return result;
+		}
+	}
+#endif
+
 	do {
 		u8 *cmd = aioffset + ailist;
 		u32 type = (cmd[0] << 8) + cmd[1];
@@ -1032,9 +1260,36 @@ void chraiPrepare(void *entity, s32 proptype)
 
 void chraiRunLoop(void)
 {
+#ifndef PLATFORM_N64
+	// B13: bound the interpreter loop. A non-yielding ailist cycle (corrupt or
+	// adversarial bytecode) would otherwise hang the sim - decompiled loops
+	// hang, they don't crash. 100k iterations is far beyond any legitimate
+	// list; a triggered cap yields (returns) rather than aborting the game.
+	s32 iterations = 0;
+#endif
+
 	while (g_Vars.ailist) {
 		u8 *cmd = g_Vars.aioffset + g_Vars.ailist;
 		s32 type = (cmd[0] << 8) + cmd[1];
+
+#ifndef PLATFORM_N64
+		if (++iterations >= 100000) {
+			static s32 s_NextWarn60 = 0;
+
+			if (g_Vars.lvframe60 >= s_NextWarn60) {
+				bool isglobal = false;
+
+				s_NextWarn60 = g_Vars.lvframe60 + 60;
+				sysLogPrintf(LOG_WARNING,
+						"chrai: runaway ailist (100000 iterations without yield) - yielding; chr %d list %d offset 0x%x",
+						g_Vars.chrdata ? g_Vars.chrdata->chrnum : -1,
+						chraiGetListIdByList(g_Vars.ailist, &isglobal),
+						g_Vars.aioffset);
+			}
+
+			break;
+		}
+#endif
 
 		if (type >= 0 && type < ARRAYCOUNT(g_CommandPointers)) {
 			if (g_CommandPointers[type]()) {

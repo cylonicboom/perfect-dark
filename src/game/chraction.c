@@ -7003,6 +7003,143 @@ void chrRecordLastVisibleTargetTime(struct chrdata *chr)
 	chr->lastvisibletarget60 = g_Vars.lvframe60;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * B1 (port perf): per-chr per-frame LOS memo.
+ *
+ * The LOS family below issues a full portal-flood + geo + prop raycast per call,
+ * and the AI frequently repeats IDENTICAL queries within one tick (the three
+ * chrTryAttack* callers, the aiIf* commands, aiDetectEnemy's per-candidate
+ * chrHasLosToProp). This memo caches the boolean result of a query for the
+ * duration of the current frame (keyed on g_Vars.lvframe60), so repeats return
+ * the cached answer instead of re-raycasting.
+ *
+ * Indexing scheme: chrs are NOT indexed by slot (chrs can live in g_ChrSlots OR
+ * g_BgChrs, so `chr - g_ChrSlots` is not universally valid). Instead the chr
+ * POINTER is hashed together with the query key into a global 64-entry
+ * direct-mapped table. A hash collision simply evicts the older entry and the
+ * query recomputes - never returns a wrong result, because a hit requires an
+ * exact match of {chr, frame, variant, all key words}.
+ *
+ * Correctness/staleness: a hit returns what the repeated raycast would return
+ * given the same world state. World geometry is immutable within a frame except
+ * for door movement (objTick) and chr/prop movement, which are interleaved with
+ * chr AI in the prop loop - so a memo hit later in the same frame can be stale
+ * by at most that same-frame movement. LOS itself is only sampled once per tick
+ * per query site, and a raycast against a mid-swing door is already
+ * frame-quantized, so this is within the game's existing tolerance (<=1 frame).
+ * Because this changes cross-machine-observable AI decisions only in those
+ * interleavings, the whole memo is gated behind g_ChrLosMemoEnabled (toggleable;
+ * netplay-deterministic sims must run the same setting on all peers).
+ *
+ * Side effects on the memoized paths:
+ * - chrRecordLastVisibleTargetTime (lastvisibletarget60 = lvframe60) is REPLAYED
+ *   on a hit (recorded flag) - idempotent, same frame writes the same value, so
+ *   downstream readers (chraTickBg census) see identical state.
+ * - chrSetPerimEnabled/propSetPerimEnabled pairs are set+restored - net zero.
+ * - cdTestLos* leaves global cd hit state; a memo hit skips that write. No
+ *   memoized caller reads cd hit state after these functions return.
+ * No memoized path consumes RNG.
+ */
+s32 g_ChrLosMemoEnabled = true;
+
+#define CHRLOSMEMO_SIZE 64
+
+#define CHRLOSMEMO_VARIANT_ENTITY 1 // chrHasLosToEntity, AIMATTARGET only
+#define CHRLOSMEMO_VARIANT_CHR    2 // chrHasLosToChr
+#define CHRLOSMEMO_VARIANT_POS    3 // chrHasLosToPos (outside chrHasLosToProp)
+#define CHRLOSMEMO_VARIANT_PROP   4 // chrHasLosToProp
+
+struct chrlosmemo {
+	struct chrdata *chr;
+	s32 frame;   // g_Vars.lvframe60 at commit, or -1 while pending
+	u32 variant;
+	uintptr_t key1;
+	u32 key2;
+	u32 key3;
+	u32 key4;
+	u32 key5;
+	s16 roomout;
+	u8 result;
+	u8 recorded;
+};
+
+static struct chrlosmemo g_ChrLosMemoTable[CHRLOSMEMO_SIZE];
+
+// True while inside chrHasLosToProp's body: the target prop's perim is disabled
+// there, so an inner chrHasLosToPos ray has different semantics than a direct
+// call with the same position. The POS variant bypasses the memo in that
+// context (the PROP variant covers it).
+static bool g_ChrLosMemoInProp = false;
+
+static u32 chrLosMemoF32Bits(f32 value)
+{
+	union {
+		f32 f;
+		u32 u;
+	} bits;
+
+	bits.f = value;
+	return bits.u;
+}
+
+static struct chrlosmemo *chrLosMemoFind(struct chrdata *chr, u32 variant, uintptr_t key1, u32 key2, u32 key3, u32 key4, u32 key5, bool *hit)
+{
+	uintptr_t h = (uintptr_t)chr;
+	struct chrlosmemo *entry;
+
+	h ^= h >> 7;
+	h ^= key1 ^ (key1 >> 9);
+	h ^= (uintptr_t)key2 * 2654435761u;
+	h ^= (uintptr_t)key3 * 40503u;
+	h ^= (uintptr_t)key4 * 2246822519u;
+	h += key5 + variant;
+
+	entry = &g_ChrLosMemoTable[h % CHRLOSMEMO_SIZE];
+
+	if (entry->chr == chr
+			&& entry->frame == g_Vars.lvframe60
+			&& entry->variant == variant
+			&& entry->key1 == key1
+			&& entry->key2 == key2
+			&& entry->key3 == key3
+			&& entry->key4 == key4
+			&& entry->key5 == key5) {
+		*hit = true;
+		return entry;
+	}
+
+	*hit = false;
+
+	// Claim the slot for this query (evicting whatever was there);
+	// it only becomes a valid hit once chrLosMemoCommit stamps the frame.
+	entry->chr = chr;
+	entry->frame = -1;
+	entry->variant = variant;
+	entry->key1 = key1;
+	entry->key2 = key2;
+	entry->key3 = key3;
+	entry->key4 = key4;
+	entry->key5 = key5;
+
+	return entry;
+}
+
+static void chrLosMemoCommit(struct chrlosmemo *entry, struct chrdata *chr, u32 variant, bool result, bool recorded, s16 roomout)
+{
+	// If a nested query reclaimed this slot between find and commit,
+	// don't stamp our result over its keys
+	if (entry->frame != -1 || entry->chr != chr || entry->variant != variant) {
+		return;
+	}
+
+	entry->frame = g_Vars.lvframe60;
+	entry->result = result ? 1 : 0;
+	entry->recorded = recorded ? 1 : 0;
+	entry->roomout = roomout;
+}
+#endif
+
 bool chrHasLosToEntity(struct chrdata *chr, struct coord *chrpos, RoomNum *chrrooms, bool allowextraheight, u32 attackflags, u32 entityid)
 {
 	bool result = false;
@@ -7012,6 +7149,36 @@ bool chrHasLosToEntity(struct chrdata *chr, struct coord *chrpos, RoomNum *chrro
 	struct chrdata *targetchr;
 	u32 types;
 	struct prop *weaponprop;
+#ifndef PLATFORM_N64
+	struct chrlosmemo *memo = NULL;
+
+	// B1: memoize the AIMATTARGET raycast only. AIMFORWARD is trivially true
+	// (nothing to save), and AIMATCHR/AIMATPAD resolve entityid through
+	// chrResolveId whose special values (CHR_TARGET etc) can re-resolve
+	// differently within a frame, so those are deliberately not memoized.
+	// Key: {target prop identity, chrpos f32 bits, attackflags, allowextraheight}.
+	// The target prop pointer is in the key so a mid-tick target change cannot
+	// return a stale answer for the wrong entity.
+	if (g_ChrLosMemoEnabled
+			&& (attackflags & ATTACKFLAG_AIMFORWARD) == 0
+			&& (attackflags & ATTACKFLAG_AIMATTARGET) != 0) {
+		bool memohit = false;
+
+		memo = chrLosMemoFind(chr, CHRLOSMEMO_VARIANT_ENTITY, (uintptr_t)chrGetTargetProp(chr),
+				chrLosMemoF32Bits(chrpos->x), chrLosMemoF32Bits(chrpos->y), chrLosMemoF32Bits(chrpos->z),
+				attackflags | (allowextraheight ? 0x80000000u : 0), &memohit);
+
+		if (memohit) {
+			if (memo->recorded) {
+				// Replay the timestamp write the raycast success path would have
+				// made - idempotent within the frame (same lvframe60 value)
+				chrRecordLastVisibleTargetTime(chr);
+			}
+
+			return memo->result;
+		}
+	}
+#endif
 
 	if (attackflags & ATTACKFLAG_AIMFORWARD) {
 		result = true;
@@ -7090,6 +7257,15 @@ bool chrHasLosToEntity(struct chrdata *chr, struct coord *chrpos, RoomNum *chrro
 		chrSetPerimEnabled(chr, true);
 	}
 
+#ifndef PLATFORM_N64
+	if (memo != NULL) {
+		// recorded == result here: on the memoized (AIMATTARGET, non-AIMFORWARD)
+		// path every result=true assignment is paired with a
+		// chrRecordLastVisibleTargetTime call, and result=false never records
+		chrLosMemoCommit(memo, chr, CHRLOSMEMO_VARIANT_ENTITY, result, result, -1);
+	}
+#endif
+
 	return result;
 }
 
@@ -7111,6 +7287,24 @@ bool chrHasLosToChr(struct chrdata *chr, struct chrdata *target, RoomNum *room)
 	bool cansee = false;
 	u32 stack;
 	RoomNum sp88[] = {-1, 0, 0, 0, 0, 0, 0, 0};
+#ifndef PLATFORM_N64
+	struct chrlosmemo *memo = NULL;
+
+	// B1: key on the target chr's identity; the room out-param is stored too
+	if (g_ChrLosMemoEnabled) {
+		bool memohit = false;
+
+		memo = chrLosMemoFind(chr, CHRLOSMEMO_VARIANT_CHR, (uintptr_t)target, 0, 0, 0, 0, &memohit);
+
+		if (memohit) {
+			if (room) {
+				*room = memo->roomout;
+			}
+
+			return memo->result;
+		}
+	}
+#endif
 
 	if (!botIsTargetInvisible(chr, target)) {
 		struct prop *prop = chr->prop;
@@ -7135,6 +7329,12 @@ bool chrHasLosToChr(struct chrdata *chr, struct chrdata *target, RoomNum *room)
 		chrSetPerimEnabled(chr, true);
 		chrSetPerimEnabled(target, true);
 	}
+
+#ifndef PLATFORM_N64
+	if (memo != NULL) {
+		chrLosMemoCommit(memo, chr, CHRLOSMEMO_VARIANT_CHR, cansee, false, sp88[0]);
+	}
+#endif
 
 	if (room) {
 		*room = sp88[0];
@@ -7177,6 +7377,23 @@ bool chrHasLosToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms)
 	bool result = false;
 	struct coord eyepos;
 	RoomNum chrrooms[8];
+#ifndef PLATFORM_N64
+	struct chrlosmemo *memo = NULL;
+
+	// B1: key on the exact f32 bits of the queried position. The rooms arg is
+	// not keyed - callers always pass rooms consistent with pos. Bypassed while
+	// inside chrHasLosToProp (target-prop perim disabled changes semantics).
+	if (g_ChrLosMemoEnabled && !g_ChrLosMemoInProp) {
+		bool memohit = false;
+
+		memo = chrLosMemoFind(chr, CHRLOSMEMO_VARIANT_POS, 0,
+				chrLosMemoF32Bits(pos->x), chrLosMemoF32Bits(pos->y), chrLosMemoF32Bits(pos->z), 0, &memohit);
+
+		if (memohit) {
+			return memo->result;
+		}
+	}
+#endif
 
 	eyepos.x = prop->pos.x;
 	eyepos.y = chr->ground + chr->height - 20;
@@ -7192,6 +7409,12 @@ bool chrHasLosToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms)
 	}
 
 	chrSetPerimEnabled(chr, true);
+
+#ifndef PLATFORM_N64
+	if (memo != NULL) {
+		chrLosMemoCommit(memo, chr, CHRLOSMEMO_VARIANT_POS, result, false, -1);
+	}
+#endif
 
 	return result;
 }
@@ -7221,10 +7444,34 @@ bool chrHasLosToPosWasteful(struct chrdata *chr, struct coord *pos, RoomNum *roo
 bool chrHasLosToProp(struct chrdata *chr, struct prop *prop)
 {
 	bool result;
+#ifndef PLATFORM_N64
+	struct chrlosmemo *memo = NULL;
+
+	// B1: key on the target prop's identity
+	if (g_ChrLosMemoEnabled) {
+		bool memohit = false;
+
+		memo = chrLosMemoFind(chr, CHRLOSMEMO_VARIANT_PROP, (uintptr_t)prop, 0, 0, 0, 0, &memohit);
+
+		if (memohit) {
+			return memo->result;
+		}
+	}
+
+	g_ChrLosMemoInProp = true;
+#endif
 
 	propSetPerimEnabled(prop, false);
 	result = chrHasLosToPosWasteful(chr, &prop->pos, prop->rooms);
 	propSetPerimEnabled(prop, true);
+
+#ifndef PLATFORM_N64
+	g_ChrLosMemoInProp = false;
+
+	if (memo != NULL) {
+		chrLosMemoCommit(memo, chr, CHRLOSMEMO_VARIANT_PROP, result, false, -1);
+	}
+#endif
 
 	return result;
 }
@@ -20381,7 +20628,15 @@ struct chrdata *chrFindById(struct chrdata *basechr, s32 chrnum)
 	}
 
 	lower = 0;
+#ifndef PLATFORM_N64
+	// B13: with the inclusive `upper >= lower` loop the last valid index is
+	// g_NumBgChrs - 1; seeding upper with the count lets a miss probe
+	// g_BgChrnums[g_NumBgChrs] (one-element OOB read that can garbage-match).
+	// In-bounds keys are found identically - only the OOB probe goes away.
+	upper = g_NumBgChrs - 1;
+#else
 	upper = g_NumBgChrs;
+#endif
 
 	while (upper >= lower) {
 		i = (lower + upper) / 2;

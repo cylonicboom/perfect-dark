@@ -14,42 +14,44 @@ struct t0slot {
 	u16 unk06;
 };
 
-struct t0slot *t0slot;
-u8 *t2ptr8;
-s32 t3;
-u8 *t3ptr8;
-s32 t4;
-u8 *t6ptr8;
-s32 v1;
-s32 s0;
-s32 s1;
-s32 s2;
-s32 s3;
-s32 s4;
-s32 sr8;
-s32 f0int;
-f32 f0;
-f32 f1;
-f32 f2;
-f32 f3;
-f32 f4;
-f32 f5;
+// These pseudo-registers are static so the compiler can prove they aren't
+// aliased across the helper calls below and keep them in real registers.
+static struct t0slot *t0slot;
+static u8 *t2ptr8;
+static s32 t3;
+static u8 *t3ptr8;
+static s32 t4;
+static u8 *t6ptr8;
+static s32 v1;
+static s32 s0;
+static s32 s1;
+static s32 s2;
+static s32 s3;
+static s32 s4;
+static s32 sr8;
+static s32 f0int;
+static f32 f0;
+static f32 f1;
+static f32 f2;
+static f32 f3;
+static f32 f4;
+static f32 f5;
 
 // f12-f23 are used as rotation matrix
-f32 f12;
-f32 f13;
-f32 f14;
-f32 f15;
-f32 f16;
-f32 f17;
-f32 f18;
-f32 f19;
-f32 f20;
-f32 f21;
-f32 f22;
-f32 f23;
+static f32 f12;
+static f32 f13;
+static f32 f14;
+static f32 f15;
+static f32 f16;
+static f32 f17;
+static f32 f18;
+static f32 f19;
+static f32 f20;
+static f32 f21;
+static f32 f22;
+static f32 f23;
 
-s32 gp;
+static s32 gp;
 
 static bool modelasmIterateThings1(void);
 static bool modelasmIterateThings2(void);
@@ -1107,11 +1109,29 @@ static u32 modelasmReadFrameData(void)
 	while (v1 > gp) {
 		v1 -= gp;
 		v0 |= (((1 << gp) - 1) & sr8) << v1;
+#ifndef PLATFORM_N64
+		// The original clamp below subtracts the FRAME cursor (t6ptr8) from
+		// the HEADER end (t3ptr8) - two different buffers. On N64 (and the
+		// old copied-slot port) the header slots sat far above the frame
+		// slots in memory, so the difference was always a huge positive
+		// number and the clamp was dead code (s6 == 4 every iteration).
+		// With animDma returning direct pointers into the resident
+		// animations segment, frame data sits AT/ABOVE the header end, the
+		// difference goes <= 0, the switch below matches nothing, gp stays 0
+		// and the while loop never terminates (hard lock in bheadReset on
+		// stage load). Reproduce the only behaviour the old layout ever
+		// exhibited: read up to a whole aligned word. Over-reading a few
+		// bytes past the frame is safe - the frame lives inside the large
+		// resident segment (the old slot buffers had +34 bytes of slack for
+		// exactly this reason).
+		s6 = 4;
+#else
 		s6 = t3ptr8 - t6ptr8;
 
 		if (s6 >= 4) {
 			s6 = 4;
 		}
+#endif
 
 		sr8 = ((uintptr_t) t6ptr8 & 3) - 4;
 		sr8 = -sr8;

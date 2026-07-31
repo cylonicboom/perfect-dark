@@ -197,13 +197,29 @@ void sysLogPrintf(s32 level, const char *fmt, ...)
 	va_end(ap);
 
 	if (logPath[0]) {
-		FILE *f = fopen(logPath, "ab");
-		if (f) {
+		// Persistent handle: the old fopen+fprintf+fclose per line was a
+		// syscall stall whenever a per-frame warning fired. Opened once in
+		// append mode on first use (sysLogSetPath already truncated the file
+		// at init). Retry-on-NULL matches the old per-line fopen behaviour if
+		// the path is transiently unwritable.
+		static FILE *logFile = NULL;
+		if (!logFile) {
+			logFile = fopen(logPath, "ab");
+		}
+		if (logFile) {
 			// mask off LOGFLAG_* bits like the console path below — indexing
 			// prefix[] with a flagged level (e.g. LOG_CHAT) read garbage
 			// pointers and wrote binary junk prefixes into the log file
-			fprintf(f, "%s%s\n", prefix[level & 0x0f], logmsg);
-			fclose(f);
+			fprintf(logFile, "%s%s\n", prefix[level & 0x0f], logmsg);
+			// Flush on WARNING/ERROR only. fflush pushes the whole stream
+			// buffer, so the crash path stays complete: crash.c's handlers log
+			// FATAL lines at LOG_ERROR through this function, which flushes
+			// every buffered NOTE line ahead of them. Only an unhandled
+			// instant termination can now lose the tail (bounded by the stdio
+			// buffer, ~4KB).
+			if ((level & 0x0f) >= (LOG_WARNING & 0x0f)) {
+				fflush(logFile);
+			}
 		}
 	}
 

@@ -47,6 +47,12 @@ void lightsTick(void);
 void roomFlashLighting(s32 roomnum, s32 start, s32 limit);
 void roomFlashLocalLighting(s32 roomnum, s32 increment, s32 limit);
 void roomHighlight(s32 roomnum);
+#ifndef PLATFORM_N64
+// Per-room vertex-colour generation counter: bumped whenever roomHighlight
+// actually rewrites the room's published palette. bg.c's display-list cache
+// compares it to detect lighting changes (replaces the whole-palette FNV hash).
+u32 roomHighlightColoursGen(s32 roomnum);
+#endif
 void func0f004c6c(void);
 void func0f00505c(void);
 f32 func0f0053d0(s32 room1, struct coord *arg1, s32 portal1, s32 room2, struct coord *arg4, s32 portal2, f32 *arg6);

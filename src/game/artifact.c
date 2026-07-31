@@ -398,6 +398,34 @@ void artifactsCalculateGlaresForRoom(s32 roomnum)
 				}
 
 				if (s1[i * 3 + 1] > 0) {
+#ifndef PLATFORM_N64
+					// One LOS ray per light (to its origin) instead of one per
+					// bbox corner, refreshed every 4th frame (staggered by
+					// light index) - shotTestLos is a full portal walk +
+					// room-geometry intersection, and 4 of them per visible
+					// light per frame was a dominant SP/co-op frame cost.
+					// Purely cosmetic: glares already fade, so a <=4-frame
+					// refresh latency is imperceptible.
+					bool los;
+					{
+						// Slot encoding: 0 = unknown (BSS zero-init), 1 = no
+						// LOS, 2 = LOS.
+						static u8 loscache[2048][32];
+						bool cacheable = roomnum >= 0 && roomnum < 2048 && i < 32;
+						u8 *slot = cacheable ? &loscache[roomnum][i] : NULL;
+
+						if (slot && *slot != 0 && ((g_BgFrameCount + i) & 3) != 0) {
+							los = (*slot == 2);
+						} else {
+							los = artifactTestLos(&origin, &g_BgRooms[roomnum].pos, (s32)x, (s32)y);
+
+							if (slot) {
+								*slot = los ? 2 : 1;
+							}
+						}
+					}
+#endif
+
 					for (j = 0; j < ARRAYCOUNT(roomlights[i].bbox); j++) {
 						spec.x = origin.x + (roomlights[i].bbox[j].x - origin.x) * 0.6f;
 						spec.y = origin.y + (roomlights[i].bbox[j].y - origin.y) * 0.6f;
@@ -444,7 +472,7 @@ void artifactsCalculateGlaresForRoom(s32 roomnum)
 
 								if (index < MAX_ARTIFACTS) {
 #ifndef PLATFORM_N64
-									artifact->visiblelos = artifactTestLos(&spec, &g_BgRooms[roomnum].pos, xi, yi);
+									artifact->visiblelos = los;
 #endif
 									/**
 									 * the original game performs artifact depth comparison

@@ -149,6 +149,16 @@ s32 g_BgNumAttemptedDrawSlots = 0;
 // need extra parameters.
 bool g_BgNoCull = false;
 bool g_BgNoDrawSlotLimit = false;
+// Per-portal AABBs precomputed at stage load (the g_PortalMetrics pattern).
+// Portal vertices are immutable level data, but bgCalculatePortalBbox used to
+// re-sweep them on every bgFindEnteredRooms flood-fill — which chr movement
+// calls several times per chr per tick. NULL when no stage data is loaded;
+// bgCalculatePortalBbox falls back to the raw sweep in that case.
+struct portalbbox {
+	struct coord bbmin;
+	struct coord bbmax;
+};
+static struct portalbbox *g_PortalBboxes = NULL;
 // Defined in the fast3d renderer (port/fast3d/gfx_pc.cpp) as a C++ `bool`
 // (1 byte). Set each frame in bgTickPortals from CHEAT_WIREFRAME so the GL
 // backend draws depth-tested 3D geometry as polygon outlines (HUD/2D stays
@@ -240,6 +250,10 @@ bool g_BgOctreeMarkAll = false;      // debug: treat every loaded room as octree
 bool g_BgOctreeBigRoom = false;      // /octree bigroom: portal culling off + octree-cull every room (whole level as one space)
 bool g_BgOctreePortalCull = true;    // /octree portal: cull octree nodes against each room's portal-clipped draw-slot box (vs the full viewport)
 bool g_BgOctreeAutoOutdoor = true;   // /octree auto (DEFAULT ON): octree-cull every ROOMFLAG_OUTDOORS room automatically (level-data driven, no manual /octree mark)
+// Opt A14 size heuristic: octree-cull ANY room whose numvtxbatches exceeds
+// this (big indoor halls submit everything otherwise). 0 = disabled.
+// Tuned live via /octree autobatch N (handler in port/src/net/net.c).
+s32 g_BgOctreeAutoBatchThreshold = 64;
 struct bgoctreestats g_BgOctreeStats;
 
 // Display-list cache master toggle (/dlcache on|off). When on, non-octree,
@@ -1057,6 +1071,10 @@ Gfx *bgRenderSceneInXray(Gfx *gdl)
 		roomnumptr++;
 	}
 
+#ifndef PLATFORM_N64
+	propsRenderBuildRoomIndex(roomnumsbyprop);
+#endif
+
 	gdl = envStopFog(gdl);
 
 	gSPClearGeometryMode(gdl++, G_CULL_BOTH);
@@ -1115,6 +1133,13 @@ Gfx *bgRenderSceneInXray(Gfx *gdl)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Opt A15: propsRender may now skip its trailing viewport-restore when a
+	// pass drew nothing, and skyRenderSuns draws sun discs with no scissor of
+	// its own — re-establish the full-viewport scissor it historically
+	// inherited from that restore.
+	gdl = bgScissorToViewport(gdl);
+#endif
 	gdl = skyRenderSuns(gdl, true);
 
 	return gdl;
@@ -1131,7 +1156,9 @@ Gfx *bgRenderScene(Gfx *gdl)
 	struct drawslot *thing;
 	RoomNum *roomnumptr;
 	struct prop *prop;
+#ifdef PLATFORM_N64
 	s16 tmp;
+#endif
 	RoomNum *room;
 #ifdef PLATFORM_N64
 	s16 roomorder[60];
@@ -1179,6 +1206,23 @@ Gfx *bgRenderScene(Gfx *gdl)
 	}
 
 	// Sort them by distance ascending
+#ifndef PLATFORM_N64
+	// Stable insertion sort (same stability as the original bubble sort, but
+	// ~O(n) on the near-sorted input instead of O(n^2) at the port's 255-slot
+	// cap in bigroom mode).
+	for (i = 1; i < g_BgNumDrawSlots; i++) {
+		s16 orderkey = roomorder[i];
+		RoomNum numkey = roomnums[i];
+
+		for (roomnum = i - 1; roomnum >= 0 && roomorder[roomnum] > orderkey; roomnum--) {
+			roomorder[roomnum + 1] = roomorder[roomnum];
+			roomnums[roomnum + 1] = roomnums[roomnum];
+		}
+
+		roomorder[roomnum + 1] = orderkey;
+		roomnums[roomnum + 1] = numkey;
+	}
+#else
 	if (g_BgNumDrawSlots >= 2) {
 		do {
 			i = false;
@@ -1198,6 +1242,7 @@ Gfx *bgRenderScene(Gfx *gdl)
 			}
 		} while (i);
 	}
+#endif
 
 	gdl = bgScissorToViewport(gdl);
 
@@ -1305,6 +1350,10 @@ Gfx *bgRenderScene(Gfx *gdl)
 
 		roomnumptr++;
 	}
+
+#ifndef PLATFORM_N64
+	propsRenderBuildRoomIndex(roomnumsbyprop);
+#endif
 
 	// Render the opaque passes
 	for (i = 0; i < g_BgNumDrawSlots; i++) {
@@ -1803,6 +1852,12 @@ void bgReset(s32 stagenum)
 
 	var800a4920 = *(u32 *)g_BgPrimaryData;
 
+#ifndef PLATFORM_N64
+	// Old cache points into the previous stage's MEMPOOL_STAGE — invalidate
+	// before any path that might skip the rebuild below.
+	g_PortalBboxes = NULL;
+#endif
+
 	if (var800a4920 == 0) {
 		g_BgPrimaryData2 = (uintptr_t*)g_BgPrimaryData;
 		g_BgRooms = (struct bgroom *)(g_BgPrimaryData2[1] + g_BgPrimaryData - 0x0f000000);
@@ -2076,6 +2131,22 @@ void bgBuildTables(s32 stagenum)
 			metric->min = tmp.min;
 			metric->max = tmp.max;
 		}
+
+#ifndef PLATFORM_N64
+		// Precompute per-portal AABBs. Fill while g_PortalBboxes is still NULL
+		// so bgCalculatePortalBbox takes its raw-sweep path, then publish.
+		{
+			struct portalbbox *bboxes = mempAlloc(ALIGN16((numportals == 0 ? 1 : numportals) * sizeof(struct portalbbox)), MEMPOOL_STAGE);
+
+			g_PortalBboxes = NULL;
+
+			for (i = 0; i < numportals; i++) {
+				bgCalculatePortalBbox(i, &bboxes[i].bbmin, &bboxes[i].bbmax);
+			}
+
+			g_PortalBboxes = bboxes;
+		}
+#endif
 
 		portal0f0b65a8(numportals);
 
@@ -2505,6 +2576,10 @@ void bgClearPortalCameraCache(void)
 	}
 }
 
+#ifndef PLATFORM_N64
+static bool bg3dPosTo2dPosMtx(struct coord *cornerpos, struct coord *screenpos, Mtxf *matrix);
+#endif
+
 bool bgRoomIntersectsScreenBox(s32 room, struct screenbox *screen)
 {
 	s32 i;
@@ -2516,6 +2591,9 @@ bool bgRoomIntersectsScreenBox(s32 room, struct screenbox *screen)
 	s32 numright = 0;
 	s32 numbelow = 0;
 	s32 numabove = 0;
+#ifndef PLATFORM_N64
+	Mtxf *w2smtx = camGetWorldToScreenMtxf();
+#endif
 
 	for (i = 0; i != 8; i++) {
 		if (i & 1) {
@@ -2536,7 +2614,11 @@ bool bgRoomIntersectsScreenBox(s32 room, struct screenbox *screen)
 			corner.z = g_Rooms[room].bbmax[2];
 		}
 
+#ifndef PLATFORM_N64
+		if (bg3dPosTo2dPosMtx(&corner, &roomscreenpos, w2smtx) == 0) {
+#else
 		if (bg3dPosTo2dPos(&corner, &roomscreenpos) == 0) {
+#endif
 			// Corner is behind the camera
 			if (g_BgSnake.zrange.far <= -roomscreenpos.z) {
 				numfar++;
@@ -2591,6 +2673,31 @@ bool bgRoomIntersectsScreenBox(s32 room, struct screenbox *screen)
 	return true;
 }
 
+#ifndef PLATFORM_N64
+// Matrix-hoisted variant for callers that project many points against the same
+// camera (the 8-corner AABB tests): fetch the world-to-screen matrix once per
+// bbox instead of once per corner.
+static bool bg3dPosTo2dPosMtx(struct coord *cornerpos, struct coord *screenpos, Mtxf *matrix)
+{
+	screenpos->x = cornerpos->x;
+	screenpos->y = cornerpos->y;
+	screenpos->z = cornerpos->z;
+
+	mtx4TransformVecInPlace(matrix, screenpos);
+	cam0f0b4d68(screenpos, screenpos->f);
+
+	if (screenpos->z > 0) {
+		return false;
+	}
+
+	return true;
+}
+
+bool bg3dPosTo2dPos(struct coord *cornerpos, struct coord *screenpos)
+{
+	return bg3dPosTo2dPosMtx(cornerpos, screenpos, camGetWorldToScreenMtxf());
+}
+#else
 bool bg3dPosTo2dPos(struct coord *cornerpos, struct coord *screenpos)
 {
 	Mtxf *matrix = camGetWorldToScreenMtxf();
@@ -2608,6 +2715,7 @@ bool bg3dPosTo2dPos(struct coord *cornerpos, struct coord *screenpos)
 
 	return true;
 }
+#endif
 
 bool bgGetPortalScreenBbox(s32 portalnum, struct screenbox *box)
 {
@@ -4008,13 +4116,14 @@ static bool bgBboxOnScreen(f32 *bbmin, f32 *bbmax, struct screenbox *screen)
 	s32 numright = 0;
 	s32 numbelow = 0;
 	s32 numabove = 0;
+	Mtxf *w2smtx = camGetWorldToScreenMtxf();
 
 	for (i = 0; i != 8; i++) {
 		corner.x = (i & 1) ? bbmin[0] : bbmax[0];
 		corner.y = (i & 2) ? bbmin[1] : bbmax[1];
 		corner.z = (i & 4) ? bbmin[2] : bbmax[2];
 
-		if (bg3dPosTo2dPos(&corner, &screenpos) == 0) {
+		if (bg3dPosTo2dPosMtx(&corner, &screenpos, w2smtx) == 0) {
 			if (g_BgSnake.zrange.far <= -screenpos.z) numfar++;
 			if (screenpos.x > screen->xmin) numleft++;
 			if (screenpos.x < screen->xmax) numright++;
@@ -4107,7 +4216,13 @@ static void bgCullBeginPass(s32 roomnum)
 	// treated as octree-enabled without a manual /octree mark - lazy-built below
 	// like markall, no permanent extra_flags mutation so toggling is instant.
 	bool autoout = g_BgOctreeAutoOutdoor && (room->flags & ROOMFLAG_OUTDOORS);
-	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll && !g_BgOctreeBigRoom && !autoout) return;
+	// Opt A14: also engage for any sufficiently batch-heavy room regardless of
+	// flags (big indoor halls). bgBuildRoomOctree carries no outdoors
+	// assumption — its root box is the room's world bbox and it splits all
+	// three axes — and the lazy build below is alloc-guarded, so arbitrary
+	// indoor rooms are safe (same coverage /octree markall already exercises).
+	bool autobig = g_BgOctreeAutoBatchThreshold > 0 && n > g_BgOctreeAutoBatchThreshold;
+	if (!(room->extra_flags & ROOMFLAG_EX_OCTREE) && !g_BgOctreeMarkAll && !g_BgOctreeBigRoom && !autoout && !autobig) return;
 	if (n <= 0) return;
 	if (room->octree == NULL) {
 		// Lazy build for /octree markall (and any room flagged after load). A
@@ -4138,12 +4253,18 @@ static void bgCullEndPass(void)
  * (&g_BgCullVisible[startidx]) so cached replay can octree-cull per batch.
  */
 /**
- * Detect whether a room's (per-frame, dynamically lit) vertex colours changed
- * since last frame, so the display-list cache can re-record its leaves and reflect
- * dynamic lighting (shot-out lights, muzzle flash, sparks). roomHighlight() rebuilds
- * g_Rooms[roomnum].colours each frame; we FNV-hash the result once per room per
- * frame (cached in dlcolourhashframe) and compare. See docs/PORT_DLCACHE.md.
+ * Detect whether a room's (dynamically lit) vertex colours changed since last
+ * frame, so the display-list cache can re-record its leaves and reflect
+ * dynamic lighting (shot-out lights, muzzle flash, sparks). roomHighlight()
+ * (dlights.c) now memoises the palette behind an input-tuple check and bumps a
+ * per-room generation counter whenever it actually rewrites the published
+ * colours, so "did the palette change" is answered in O(1) by comparing
+ * generations instead of FNV-hashing the whole palette byte-by-byte
+ * (CPU optimisation #18). room->dlcolourhash stores the last-seen generation.
+ * See docs/PORT_DLCACHE.md.
  */
+#if 0
+// Superseded by roomHighlightColoursGen() - kept for reference.
 static u32 bgHashColours(Col *colours, s32 numcolours)
 {
 	u32 h = 2166136261u;
@@ -4157,18 +4278,17 @@ static u32 bgHashColours(Col *colours, s32 numcolours)
 
 	return h;
 }
+#endif
 
 static bool bgDlCacheRoomColoursDirty(s32 roomnum)
 {
 	struct room *room = &g_Rooms[roomnum];
 
-	// Compute once per room per frame; later leaves of the same room reuse it.
+	// Check once per room per frame; later leaves of the same room reuse it.
 	if (room->dlcolourhashframe != (s32)g_BgFrameCount) {
-		u32 h = (room->colours != NULL)
-			? bgHashColours(room->colours, room->gfxdata->numcolours)
-			: 0;
-		room->dlcolourdirty = (h != room->dlcolourhash);
-		room->dlcolourhash = h;
+		u32 gen = roomHighlightColoursGen(roomnum);
+		room->dlcolourdirty = (gen != room->dlcolourhash);
+		room->dlcolourhash = gen;
 		room->dlcolourhashframe = (s32)g_BgFrameCount;
 	}
 
@@ -4180,13 +4300,33 @@ static s32 bgFindLeafBatchStart(s32 roomnum, Gfx *gdl)
 	struct vtxbatch *batches = g_Rooms[roomnum].vtxbatches;
 	s32 numbatches = g_Rooms[roomnum].numvtxbatches;
 	s32 i;
+	// Leaves are rendered in stored order and a room's batches are grouped by
+	// leaf, so consecutive queries for one room advance monotonically. Resume
+	// the scan where the last query for this room left off (wrapping once)
+	// instead of walking the whole batch array per leaf. Pure search-order
+	// change - the match (first batch with this gdl) is unique per leaf.
+	static s32 hintroom = -1;
+	static s32 hintidx = 0;
 
 	if (batches == NULL) {
 		return -1;
 	}
 
-	for (i = 0; i < numbatches; i++) {
+	if (roomnum != hintroom || hintidx >= numbatches) {
+		hintroom = roomnum;
+		hintidx = 0;
+	}
+
+	for (i = hintidx; i < numbatches; i++) {
 		if (batches[i].gdl == gdl) {
+			hintidx = i;
+			return i;
+		}
+	}
+
+	for (i = 0; i < hintidx; i++) {
+		if (batches[i].gdl == gdl) {
+			hintidx = i;
 			return i;
 		}
 	}
@@ -4207,7 +4347,7 @@ static Gfx *bgEmitLeafCulled(Gfx *gdl, s32 roomnum, struct roomblock *block)
 	struct vtxbatch *batches = room->vtxbatches;
 	s32 numbatches = room->numvtxbatches;
 	Gfx *src = block->gdl;
-	s32 startidx = -1;
+	s32 startidx;
 	s32 numcmds;
 	s32 numvisible;
 	s32 numinleaf;
@@ -4217,12 +4357,7 @@ static Gfx *bgEmitLeafCulled(Gfx *gdl, s32 roomnum, struct roomblock *block)
 	Gfx *scratch;
 	Gfx *out;
 
-	for (i = 0; i < numbatches; i++) {
-		if (batches[i].gdl == src) {
-			startidx = i;
-			break;
-		}
-	}
+	startidx = bgFindLeafBatchStart(roomnum, src);
 
 	if (startidx < 0) {
 		// No batch info for this leaf - emit unchanged.
@@ -7117,7 +7252,24 @@ void bgTickPortals(void)
 							&& (g_StageIndex != STAGEINDEX_TEST_ARCH || room != 0x01) // Suburb
 #endif
 							&& (g_StageIndex != STAGEINDEX_ATTACKSHIP || room != 0x71)) {
+#ifndef PLATFORM_N64
+						// Opt A11: portal-less stage, so no portal traversal to
+						// assign draw order — same distance-bucket scheme as the
+						// bigroom branch above, and for the same reason: with
+						// every room at draworder 0 bgRenderScene can't sort
+						// them, causing overdraw and wrong cross-room XLU order.
+						f32 dx = g_Rooms[room].centre.x - player->cam_pos.x;
+						f32 dy = g_Rooms[room].centre.y - player->cam_pos.y;
+						f32 dz = g_Rooms[room].centre.z - player->cam_pos.z;
+						f32 dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy) + (dz < 0 ? -dz : dz);
+						s32 order = (s32)(dist * (1.0f / 256.0f));
+						if (order > 255) {
+							order = 255;
+						}
+						bgSetRoomOnscreen(room, order, &box);
+#else
 						bgSetRoomOnscreen(room, 0, &box);
+#endif
 					}
 				}
 			} else {
@@ -7570,6 +7722,14 @@ void bgCalculatePortalBbox(s32 portalnum, struct coord *bbmin, struct coord *bbm
 	struct portalvertices *pvertices;
 	s32 i;
 	s32 j;
+
+#ifndef PLATFORM_N64
+	if (g_PortalBboxes != NULL) {
+		*bbmin = g_PortalBboxes[portalnum].bbmin;
+		*bbmax = g_PortalBboxes[portalnum].bbmax;
+		return;
+	}
+#endif
 
 	bbmin->x = MAXFLOAT;
 	bbmin->y = MAXFLOAT;

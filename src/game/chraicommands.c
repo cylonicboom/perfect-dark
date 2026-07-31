@@ -55,6 +55,68 @@
 
 #ifndef PLATFORM_N64
 #include "game/mplayer/mplayer.h"
+
+// B1/B11: LOS memo master toggle, defined in chraction.c
+extern s32 g_ChrLosMemoEnabled;
+
+/**
+ * B5 (port perf): the team/squadron census loops below call
+ * chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum) with the chr POINTER already
+ * in hand, paying a redundant chrResolveId + chrFindByLiteralId binary search
+ * per candidate per tick. Round-trip identity, verified against chrResolveId /
+ * chrFindById / chrFindByLiteralId:
+ * - the chrnum came from the chr itself (which came from chrFindByLiteralId on
+ *   a registered team-list id), so chrFindByLiteralId(chr->chrnum) returns the
+ *   same chr, and chrFindById returns it before the bgchr fallback search;
+ * - the ONE exception is a chrnum in the CHR_* special-id range
+ *   (CHR_P1P2_OPPOSITE 0xf1 .. CHR_SELF 0xfd), which chrResolveId would remap
+ *   to a different chr - those fall back to the original call, making the
+ *   replacement unconditionally identical.
+ * The math below keeps chrGetDistanceToChr's exact operand order and sqrtf so
+ * results are bit-identical, including the distance==0 result for a prop-less
+ * chr. Same scheme for propGetIndexByChrId (which for a non-special chrnum with
+ * a prop provably returns chr->prop - g_Vars.props).
+ */
+#define CHRNUM_IS_SPECIAL(chrnum) ((chrnum) >= CHR_P1P2_OPPOSITE && (chrnum) <= CHR_SELF)
+
+static f32 chraiDistanceToChrFast(struct chrdata *chr1, struct chrdata *chr2)
+{
+	struct prop *prop1;
+	f32 xdiff;
+	f32 ydiff;
+	f32 zdiff;
+
+	if (CHRNUM_IS_SPECIAL(chr2->chrnum)) {
+		return chrGetDistanceToChr(chr1, chr2->chrnum);
+	}
+
+	if (chr2->prop == NULL) {
+		return 0;
+	}
+
+	prop1 = chr1->prop;
+	xdiff = chr2->prop->pos.x - prop1->pos.x;
+	ydiff = chr2->prop->pos.y - prop1->pos.y;
+	zdiff = chr2->prop->pos.z - prop1->pos.z;
+
+	return sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+}
+
+static s32 chraiPropIndexFast(struct chrdata *basechr, struct chrdata *chr2)
+{
+	if (CHRNUM_IS_SPECIAL(chr2->chrnum) || chr2->prop == NULL) {
+		return propGetIndexByChrId(basechr, chr2->chrnum);
+	}
+
+	return (s32)(chr2->prop - g_Vars.props);
+}
+
+#define CHRAI_DISTTOCHR(chr1, chr2) chraiDistanceToChrFast(chr1, chr2)
+#define CHRAI_CHRPROPINDEX(basechr, chr2) chraiPropIndexFast(basechr, chr2)
+#else
+// N64 build: expand to the original calls so the byte stream is unchanged
+#define CHRAI_DISTTOCHR(chr1, chr2) chrGetDistanceToChr(chr1, (chr2)->chrnum)
+#define CHRAI_CHRPROPINDEX(basechr, chr2) propGetIndexByChrId(basechr, (chr2)->chrnum)
 #endif
 
 /**
@@ -1610,6 +1672,17 @@ bool aiIfSeesSuspiciousItem(void)
 				pass = true;
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// B11: once pass is set, further iterations cannot change it - they
+		// only issue more raycasts. Skipping them leaves different residual cd
+		// hit-state than vanilla (the skipped raycasts targeted other props),
+		// so this shares the LOS-memo toggle; no reader of cd hit-state between
+		// this command's return and the next raycast has been identified.
+		if (pass && g_ChrLosMemoEnabled) {
+			break;
+		}
+#endif
 
 		ptr++;
 	}
@@ -6208,7 +6281,7 @@ bool aiIfSafety2LessThan(void)
 				&& chr->alertness > 100
 				&& g_Vars.chrdata->squadron == chr->squadron
 				&& g_Vars.chrdata->chrnum != chr->chrnum
-				&& chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum) < 3500) {
+				&& CHRAI_DISTTOCHR(g_Vars.chrdata, chr) < 3500) {
 			numnearby++;
 		}
 
@@ -6383,7 +6456,7 @@ bool aiDetectEnemyOnSameFloor(void)
 						|| (chr->hidden & CHRHFLAG_ANTINONINTERACTABLE) == 0
 						|| (chr->hidden & CHRHFLAG_DONTSHOOTME))
 					&& g_Vars.chrdata->chrnum != chr->chrnum) {
-				distance = chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum);
+				distance = CHRAI_DISTTOCHR(g_Vars.chrdata, chr);
 
 				if (distance < closestdist) {
 					if (distance < scandist || stageGetIndex(g_Vars.stagenum) == STAGEINDEX_MAIANSOS) {
@@ -6424,6 +6497,11 @@ bool aiDetectEnemy(void)
 	f32 closestdist = 10000000;
 	f32 maxdist = (s32)cmd[2] * 10.0f;
 	s16 closesttarg = -1;
+#ifndef PLATFORM_N64
+	// B5: keep the winning candidate's pointer so the final target assignment
+	// can skip the propGetIndexByChrId lookup chain
+	struct chrdata *closestchr = NULL;
+#endif
 
 	chrnums = teamGetChrIds(1);
 
@@ -6465,7 +6543,7 @@ bool aiDetectEnemy(void)
 						(g_Vars.chrdata->hidden & CHRHFLAG_PSYCHOSISED) == 0
 						|| (chr->hidden & CHRHFLAG_ANTINONINTERACTABLE) == 0
 						|| (chr->hidden & CHRHFLAG_DONTSHOOTME))) {
-				f32 distance = chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum);
+				f32 distance = CHRAI_DISTTOCHR(g_Vars.chrdata, chr);
 
 				if (distance < maxdist && distance != 0 && distance < closestdist
 						&& chrHasLosToProp(g_Vars.chrdata, chr->prop)
@@ -6473,13 +6551,19 @@ bool aiDetectEnemy(void)
 					if (g_Vars.chrdata->yvisang == 0) {
 						closestdist = distance;
 						closesttarg = chr->chrnum;
+#ifndef PLATFORM_N64
+						closestchr = chr;
+#endif
 					} else {
 						s16 prevtarget = g_Vars.chrdata->target;
-						g_Vars.chrdata->target = propGetIndexByChrId(g_Vars.chrdata, chr->chrnum);
+						g_Vars.chrdata->target = CHRAI_CHRPROPINDEX(g_Vars.chrdata, chr);
 
 						if (chrIsVerticalAngleToTargetWithin(g_Vars.chrdata, g_Vars.chrdata->yvisang)) {
 							closestdist = distance;
 							closesttarg = chr->chrnum;
+#ifndef PLATFORM_N64
+							closestchr = chr;
+#endif
 						}
 
 						g_Vars.chrdata->target = prevtarget;
@@ -6501,7 +6585,13 @@ bool aiDetectEnemy(void)
 	} while (team < 8);
 
 	if (closesttarg != -1) {
+#ifndef PLATFORM_N64
+		// closestchr is always non-NULL here: it is set alongside every
+		// closesttarg assignment, and its prop was checked in the filter
+		g_Vars.chrdata->target = CHRAI_CHRPROPINDEX(g_Vars.chrdata, closestchr);
+#else
 		g_Vars.chrdata->target = propGetIndexByChrId(g_Vars.chrdata, closesttarg);
+#endif
 		g_Vars.aioffset = chraiGoToLabel(g_Vars.ailist, g_Vars.aioffset, cmd[3]);
 	} else {
 		g_Vars.aioffset = g_Vars.aioffset + 4;
@@ -6531,7 +6621,7 @@ bool aiIfSafetyLessThan(void)
 				&& !chrIsDead(chr)
 				&& chr->actiontype != ACT_DEAD
 				&& g_Vars.chrdata->chrnum != chr->chrnum
-				&& chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum) < 3500) {
+				&& CHRAI_DISTTOCHR(g_Vars.chrdata, chr) < 3500) {
 			numnearby++;
 		}
 
@@ -7002,7 +7092,7 @@ bool aiSayQuip(void)
 						&& g_Vars.chrdata->squadron == loopchr->squadron
 						&& loopchr->alertness >= 100
 						&& g_Vars.chrdata->chrnum != loopchr->chrnum
-						&& chrGetDistanceToChr(g_Vars.chrdata, loopchr->chrnum) < 7000) {
+						&& CHRAI_DISTTOCHR(g_Vars.chrdata, loopchr) < 7000) {
 					numnearbychrs++;
 
 					if (loopchr->soundtimer < TICKS(60) && cmd[6] != 0 && cmd[6] != 255) {
@@ -7192,7 +7282,7 @@ bool aiIncreaseSquadronAlertness(void)
 				chr->actiontype != ACT_DEAD &&
 				(g_Vars.chrdata->squadron == chr->squadron || g_Vars.chrdata->squadron == 255) &&
 				g_Vars.chrdata->chrnum != chr->chrnum &&
-				(chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum) < 1000 || chrHasFlag(g_Vars.chrdata, CHRFLAG0_SQUADALERTANYDIST, BANK_0))) {
+				(CHRAI_DISTTOCHR(g_Vars.chrdata, chr) < 1000 || chrHasFlag(g_Vars.chrdata, CHRFLAG0_SQUADALERTANYDIST, BANK_0))) {
 			incrementByte(&chr->alertness, cmd[2]);
 		}
 	}
@@ -7255,7 +7345,7 @@ bool aiSetTeamOrders(void)
 						|| chr->myaction == MA_NORMAL
 						|| chr->myaction == MA_WAITING
 						|| chr->myaction == MA_SHOOTING) {
-					if (chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum) < 3500) {
+					if (CHRAI_DISTTOCHR(g_Vars.chrdata, chr) < 3500) {
 						chrcount++;
 						chraction->chrnum = chr->chrnum;
 						chraction->myaction = chr->myaction;
@@ -7444,7 +7534,7 @@ bool aiIfChrInSquadronDoingAction(void)
 					chr->actiontype != ACT_DEAD &&
 					chrCompareTeams(g_Vars.chrdata, chr, COMPARE_FRIENDS) &&
 					g_Vars.chrdata->chrnum != chr->chrnum &&
-					chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum) < 3500 &&
+					CHRAI_DISTTOCHR(g_Vars.chrdata, chr) < 3500 &&
 					chr->myaction == cmd->b2) {
 				ret = 2;
 				break;
@@ -7505,7 +7595,7 @@ bool aiSetChrPresetToUnalertedTeammate(void)
 				(g_Vars.chrdata->squadron == chr->squadron || g_Vars.chrdata->squadron == 0xff) &&
 				g_Vars.chrdata->chrnum != chr->chrnum) {
 
-			f32 distance = chrGetDistanceToChr(g_Vars.chrdata, chr->chrnum);
+			f32 distance = CHRAI_DISTTOCHR(g_Vars.chrdata, chr);
 
 			if (distance < closest_distance &&
 					(distance < 100.0f * (s32)cmd[2] || cmd[2] == 0) &&

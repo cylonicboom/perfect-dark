@@ -122,6 +122,7 @@ extern bool g_BgOctreeMarkAll;       // debug: treat every loaded room as octree
 extern bool g_BgOctreeBigRoom;       // /octree bigroom: portal culling off + octree-cull every room
 extern bool g_BgOctreePortalCull;    // /octree portal: cull against each room's portal-clipped draw-slot box
 extern bool g_BgOctreeAutoOutdoor;   // /octree auto: auto octree-cull every ROOMFLAG_OUTDOORS room
+extern s32 g_BgOctreeAutoBatchThreshold; // /octree autobatch N: octree-cull any room with more vtxbatches than N (0 = off)
 extern struct bgoctreestats g_BgOctreeStats;
 
 extern bool g_DlCacheEnabled;        // display-list cache master toggle (/dlcache on|off)

@@ -35,7 +35,17 @@
  * pointers throughout the game code which mema cannot do.
  */
 
+#ifndef PLATFORM_N64
+// The port grew the mema heap well past the N64's 300KB, so 124 space slots
+// saturate far sooner (relative to heap size), making memaMakeSlot's
+// ~MAX_SPACES^2 saturation path — and its lose-a-free-run fallback — more
+// likely. More slots = saturation effectively unreachable. g_MemaHeap lives in
+// this file's BSS only (nothing serializes it or sizes a save/wire format from
+// MAX_SPACES).
+#define MAX_SPACES 508
+#else
 #define MAX_SPACES 124
+#endif
 
 struct memaspace {
 	uintptr_t addr;
@@ -289,7 +299,19 @@ void memaPrint(void)
 	s32 over;
 	char buffer[124];
 
+#ifndef PLATFORM_N64
+	// Called every frame from pdmain.c's mainTick. The defrag pass is not pure
+	// waste (memaAlloc relies on defrag as a fallback and the merging fights
+	// spaces-array fragmentation), but it doesn't need to run at 60Hz —
+	// rate-limit it to every 30th call. N64 keeps the per-frame pass.
+	static u32 defragcounter = 0;
+
+	if (defragcounter++ % 30 == 0) {
+		memaDefragPass(&g_MemaHeap);
+	}
+#else
 	memaDefragPass(&g_MemaHeap);
+#endif
 
 #ifdef DEBUG
 #if VERSION == VERSION_PAL_BETA

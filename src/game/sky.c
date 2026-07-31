@@ -289,6 +289,23 @@ Gfx *skyRender(Gfx *gdl)
 #endif
 			) {
 		if (PLAYERCOUNT() == 1) {
+#ifndef PLATFORM_N64
+			// Opt A16: the port clears the framebuffer to black every frame
+			// (gfx_*_clear_framebuffer), so when the sky fill colour is black
+			// this full-viewport FILL rect repaints what's already there —
+			// skip it. Kept for XRAY and the wireframe backdrop (special
+			// modes with their own colour rules), and the DP fill-colour set
+			// is still emitted so register state matches vanilla. Cycle type
+			// is not a concern: the clouds-enabled path already returns with
+			// a non-FILL cycle, so no downstream consumer can assume it.
+			// N64 has no frame clear (this rect IS the clear) — untouched.
+			if (g_Vars.currentplayer->visionmode != VISIONMODE_XRAY
+					&& !cheatIsActive(CHEAT_WIREFRAME)
+					&& env->sky_r == 0 && env->sky_g == 0 && env->sky_b == 0) {
+				gdl = viSetFillColour(gdl, 0, 0, 0);
+				return gdl;
+			}
+#endif
 			gDPSetCycleType(gdl++, G_CYC_FILL);
 
 			if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {

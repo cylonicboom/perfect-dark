@@ -48,6 +48,11 @@ void guMtxIdent(Mtx *m)
 
 void guMtxL2F(float mf[4][4], Mtx *m)
 {
+#ifdef GBI_FLOATS
+	if ((Mtx *)mf != m) {
+		bcopy(m, mf, sizeof(*m));
+	}
+#else
 	int i, j;
 	unsigned int e1,e2;
 	unsigned int *ai,*af;
@@ -67,4 +72,5 @@ void guMtxL2F(float mf[4][4], Mtx *m)
 			mf[i][j*2+1] = FIX32TOF(q2);
 		}
 	}
+#endif
 }

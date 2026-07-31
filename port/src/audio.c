@@ -669,6 +669,11 @@ s32 audioGetSamplesBuffered(void)
 	return audioGetBytesBuffered() / 4;
 }
 
+s32 audioGetQueueLimit(void)
+{
+	return queueLimit;
+}
+
 void audioSetNextBuffer(const s16 *buf, u32 len)
 {
 #ifdef DEDICATED_SERVER

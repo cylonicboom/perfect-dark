@@ -1433,6 +1433,34 @@ bool menuIsItemDisabled(struct menuitem *item, struct menudialog *dialog)
 		return true;
 	}
 
+#ifndef PLATFORM_N64
+	// Port: this function is called per item per frame from several render
+	// sites, and the tail below re-measures the item (handler calls + text
+	// measurement) purely to test height == 0. dialogCalculateContentSize
+	// already stored this frame's height in menu->rows[] (menuCreateRows
+	// appends exactly one row per item in item order, so the item's row is
+	// the dialog's first row + its item index - verified via the row's
+	// itemindex before trusting it). Reuse it when it's provably fresh:
+	// - DISABLERESIZE dialogs only lay out at open, so skip those;
+	// - dialog0f0f1ef4 (shrink-to-fit) mutates LIST/SCROLLABLE/MODEL row
+	//   heights after layout, so those types fall back to a fresh measure.
+	if ((dialog->definition->flags & MENUDIALOGFLAG_DISABLERESIZE) == 0
+			&& item->type != MENUITEMTYPE_LIST
+			&& item->type != MENUITEMTYPE_SCROLLABLE
+			&& item->type != MENUITEMTYPE_MODEL
+			&& dialog->numcols > 0) {
+		s32 itemindex = item - dialog->definition->items;
+		s32 rowindex = g_Menus[g_MpPlayerNum].cols[dialog->colstart].rowstart + itemindex;
+		s32 lastcol = dialog->colstart + dialog->numcols - 1;
+		s32 rowlimit = g_Menus[g_MpPlayerNum].cols[lastcol].rowstart + g_Menus[g_MpPlayerNum].cols[lastcol].numrows;
+
+		if (itemindex >= 0 && rowindex < rowlimit
+				&& g_Menus[g_MpPlayerNum].rows[rowindex].itemindex == (u8)itemindex) {
+			return g_Menus[g_MpPlayerNum].rows[rowindex].height == 0;
+		}
+	}
+#endif
+
 	menuCalculateItemSize(item, &width, &height, dialog);
 
 	if (height == 0) {

@@ -1076,16 +1076,28 @@ void sndIncrementAges(void)
 ALEnvelope *sndLoadEnvelope(uintptr_t offset, u16 cacheindex)
 {
 #if VERSION >= VERSION_NTSC_1_0
+#ifdef PLATFORM_N64
 	u8 spaf[0x90];
+#endif
 	u8 sp5f[0x90];
+#ifdef PLATFORM_N64
 	ALEnvelope *s2 = (ALEnvelope *)ALIGN16((uintptr_t)spaf);
+#endif
 	ALEnvelope *s1 = (ALEnvelope *)ALIGN16((uintptr_t)sp5f);
+#ifdef PLATFORM_N64
 	s32 i;
 	s32 sum1;
 	s32 sum2;
+#endif
 
 	offset += (romptr_t) REF_SEG _sfxctlSegmentRomStart;
 
+#ifndef PLATFORM_N64
+	// dmaExecHighPriority is a bcopy from resident data on the port; the
+	// DMA-twice-and-checksum-compare loop below defends against a PI transfer
+	// race that cannot occur here, so read once.
+	dmaExecHighPriority(s1, offset, 16 * sizeof(uintptr_t));
+#else
 	do {
 		dmaExecHighPriority(s2, offset, 16 * sizeof(uintptr_t));
 		sum1 = 0;
@@ -1103,6 +1115,7 @@ ALEnvelope *sndLoadEnvelope(uintptr_t offset, u16 cacheindex)
 
 		if (1);
 	} while (sum1 != sum2);
+#endif
 #else
 	u8 sp5f[0x50];
 	ALEnvelope *s1 = (ALEnvelope *)ALIGN16((uintptr_t)sp5f);
@@ -1123,16 +1136,26 @@ ALEnvelope *sndLoadEnvelope(uintptr_t offset, u16 cacheindex)
 ALKeyMap *sndLoadKeymap(uintptr_t offset, u16 cacheindex)
 {
 #if VERSION >= VERSION_NTSC_1_0
+#ifdef PLATFORM_N64
 	u8 spaf[0x90];
+#endif
 	u8 sp5f[0x90];
+#ifdef PLATFORM_N64
 	ALKeyMap *s2 = (ALKeyMap *)ALIGN16((uintptr_t)spaf);
+#endif
 	ALKeyMap *s1 = (ALKeyMap *)ALIGN16((uintptr_t)sp5f);
+#ifdef PLATFORM_N64
 	s32 i;
 	s32 sum1;
 	s32 sum2;
+#endif
 
 	offset += (romptr_t) REF_SEG _sfxctlSegmentRomStart;
 
+#ifndef PLATFORM_N64
+	// Single read; see sndLoadEnvelope.
+	dmaExecHighPriority(s1, offset, 16 * sizeof(uintptr_t));
+#else
 	do {
 		dmaExecHighPriority(s2, offset, 16 * sizeof(uintptr_t));
 		sum1 = 0;
@@ -1150,6 +1173,7 @@ ALKeyMap *sndLoadKeymap(uintptr_t offset, u16 cacheindex)
 
 		if (1);
 	} while (sum1 != sum2);
+#endif
 #else
 	u8 sp5f[0x50];
 	ALKeyMap *s1 = (ALKeyMap *)ALIGN16((uintptr_t)sp5f);
@@ -1170,16 +1194,26 @@ ALKeyMap *sndLoadKeymap(uintptr_t offset, u16 cacheindex)
 ALADPCMBook *sndLoadAdpcmBook(uintptr_t offset, u16 cacheindex)
 {
 #if VERSION >= VERSION_NTSC_1_0
+#ifdef PLATFORM_N64
 	u8 spaf[0x150];
+#endif
 	u8 sp5f[0x150];
+#ifdef PLATFORM_N64
 	ALADPCMBook *s2 = (ALADPCMBook *)ALIGN16((uintptr_t)spaf);
+#endif
 	ALADPCMBook *s1 = (ALADPCMBook *)ALIGN16((uintptr_t)sp5f);
+#ifdef PLATFORM_N64
 	s32 i;
 	s32 sum1;
 	s32 sum2;
+#endif
 
 	offset += (romptr_t) REF_SEG _sfxctlSegmentRomStart;
 
+#ifndef PLATFORM_N64
+	// Single read; see sndLoadEnvelope.
+	dmaExecHighPriority(s1, offset, 0x140);
+#else
 	do {
 		dmaExecHighPriority(s2, offset, 0x140);
 		sum1 = 0;
@@ -1197,6 +1231,7 @@ ALADPCMBook *sndLoadAdpcmBook(uintptr_t offset, u16 cacheindex)
 
 		if (1);
 	} while (sum1 != sum2);
+#endif
 #else
 	u8 sp5f[0x150];
 	ALADPCMBook *s1 = (ALADPCMBook *)ALIGN16((uintptr_t)sp5f);
@@ -1217,13 +1252,19 @@ ALADPCMBook *sndLoadAdpcmBook(uintptr_t offset, u16 cacheindex)
 ALADPCMloop *sndLoadAdpcmLoop(uintptr_t offset, u16 cacheindex)
 {
 #if VERSION >= VERSION_NTSC_1_0
+#ifdef PLATFORM_N64
 	u8 spaf[0x90];
+#endif
 	u8 sp5f[0x90];
+#ifdef PLATFORM_N64
 	ALADPCMloop *s2 = (ALADPCMloop *)ALIGN16((uintptr_t)spaf);
+#endif
 	ALADPCMloop *s1 = (ALADPCMloop *)ALIGN16((uintptr_t)sp5f);
+#ifdef PLATFORM_N64
 	s32 i;
 	s32 sum1;
 	s32 sum2;
+#endif
 
 	if (offset == 0) {
 		return NULL;
@@ -1231,6 +1272,10 @@ ALADPCMloop *sndLoadAdpcmLoop(uintptr_t offset, u16 cacheindex)
 
 	offset += (romptr_t) REF_SEG _sfxctlSegmentRomStart;
 
+#ifndef PLATFORM_N64
+	// Single read; see sndLoadEnvelope.
+	dmaExecHighPriority(s1, offset, 16 * sizeof(uintptr_t));
+#else
 	do {
 		dmaExecHighPriority(s2, offset, 16 * sizeof(uintptr_t));
 		sum1 = 0;
@@ -1248,6 +1293,7 @@ ALADPCMloop *sndLoadAdpcmLoop(uintptr_t offset, u16 cacheindex)
 
 		if (1);
 	} while (sum1 != sum2);
+#endif
 #else
 	u8 sp5f[0x50];
 	ALADPCMloop *s1 = (ALADPCMloop *)ALIGN16((uintptr_t)sp5f);
@@ -1272,17 +1318,27 @@ ALADPCMloop *sndLoadAdpcmLoop(uintptr_t offset, u16 cacheindex)
 ALWaveTable *sndLoadWavetable(uintptr_t offset, u16 cacheindex)
 {
 #if VERSION >= VERSION_NTSC_1_0
+#ifdef PLATFORM_N64
 	u8 spaf[0x90];
+#endif
 	u8 sp5f[0x90];
+#ifdef PLATFORM_N64
 	ALWaveTable *s2 = (ALWaveTable *)ALIGN16((uintptr_t)spaf);
+#endif
 	ALWaveTable *s1 = (ALWaveTable *)ALIGN16((uintptr_t)sp5f);
+#ifdef PLATFORM_N64
 	s32 i;
 	s32 sum1;
 	s32 sum2;
+#endif
 	ALWaveTable *tmp;
 
 	offset += (romptr_t) REF_SEG _sfxctlSegmentRomStart;
 
+#ifndef PLATFORM_N64
+	// Single read; see sndLoadEnvelope.
+	dmaExecHighPriority(s1, offset, 16 * sizeof(uintptr_t));
+#else
 	do {
 		dmaExecHighPriority(s2, offset, 16 * sizeof(uintptr_t));
 		sum1 = 0;
@@ -1300,6 +1356,7 @@ ALWaveTable *sndLoadWavetable(uintptr_t offset, u16 cacheindex)
 
 		if (1);
 	} while (sum1 != sum2);
+#endif
 #else
 	u8 sp5f[0x50];
 	ALWaveTable *s1 = (ALWaveTable *)ALIGN16((uintptr_t)sp5f);
@@ -1974,12 +2031,18 @@ void sndTick(void)
 	// the port's larger pool must be reflected here or the walk writes past both
 	// arrays (stack smash, including the return address).
 	struct sndstate *stateptrs[SND_MAX_STATES];
+#ifdef PLATFORM_N64
+	// The states[] copies are never read back; skip the ~13-21 KB of per-frame
+	// struct copies on the port.
 	struct sndstate states[SND_MAX_STATES];
+#endif
 	s32 i;
 	s32 curtime;
 	struct sndstate *state;
 #endif
+#ifdef PLATFORM_N64
 	OSPri prevpri;
+#endif
 	s32 s0;
 	union soundnumhack sp50;
 	s32 index;
@@ -1990,8 +2053,11 @@ void sndTick(void)
 
 	sndIncrementAges();
 
+#ifdef PLATFORM_N64
+	// Thread priorities are stubs on the port (single-threaded audio).
 	prevpri = osGetThreadPri(NULL);
 	osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
+#endif
 
 	curtime = sndpGetCurTime();
 	state = sndpGetHeadState();
@@ -1999,9 +2065,11 @@ void sndTick(void)
 	g_SndNumPlaying = 0;
 	i = 0;
 
-	while (state && i < (s32)ARRAYCOUNT(states)) {
+	while (state && i < (s32)ARRAYCOUNT(stateptrs)) {
 		stateptrs[i] = state;
+#ifdef PLATFORM_N64
 		states[i] = *state;
+#endif
 
 		g_SndNumPlaying++;
 
@@ -2018,7 +2086,9 @@ void sndTick(void)
 		i++;
 	}
 
+#ifdef PLATFORM_N64
 	osSetThreadPri(0, prevpri);
+#endif
 
 	if (g_SndNumPlaying > g_SndMostEverPlaying) {
 		g_SndMostEverPlaying = g_SndNumPlaying;

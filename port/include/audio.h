@@ -6,6 +6,7 @@
 s32 audioInit(void);
 s32 audioGetBytesBuffered(void);
 s32 audioGetSamplesBuffered(void);
+s32 audioGetQueueLimit(void); /* Audio.QueueLimit: audioEndFrame drops pushes at/over this many samples */
 void audioSetNextBuffer(const s16 *buf, u32 len);
 void audioEndFrame(void);
 // Chaos audio extras (docs/PORT_CHAOS.md), all applied at the single push

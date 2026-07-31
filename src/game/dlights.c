@@ -120,6 +120,260 @@ void roomShinyAlphaDebug(s32 roomnum)
 	sysLogPrintf(LOG_CHAT, "SHINYALPHA: authored a: 0:%d 1-63:%d 64-127:%d 128-191:%d 192-254:%d 255:%d",
 			buckets[0], buckets[1], buckets[2], buckets[3], buckets[4], buckets[5]);
 }
+
+// ---------------------------------------------------------------------------
+// CPU optimisations #17/#27 (docs/PORT_CPU_OPTIMIZATION_CANDIDATES.md).
+//
+// #17: roomHighlight() used to rebuild a room's whole vertex-colour palette
+// into a fresh per-frame gfxAllocateColours buffer every viewport frame
+// (g_BgFrameCount bumps PER PLAYER VIEWPORT). The output is a pure function of
+// a small input tuple, so each room now keeps a persistent stage-lifetime
+// palette buffer plus the tuple that produced it; when the tuple matches, the
+// buffer is republished without recomputing. A per-room generation counter
+// (bumped only when the content is actually rewritten) replaces bg.c's
+// whole-palette FNV hash for the dlcache dirty check (#18).
+//
+// #27: roomsTickLighting() ran 3-4 full room-array sweeps per frame even when
+// every room was idle. The sweeps' per-room work is a no-op unless a lightop
+// is active, a flash is decaying, a dirty flag is pending or goggles are
+// switching, so a count of active lightops + a count of active flashes + a
+// sticky "something changed" event flag let the whole function early-out.
+// Any accounting error can only leave a counter stale-HIGH or the event stuck
+// on, which degrades to the vanilla always-sweep behaviour, never to a skip.
+
+// --- #27 fast-path state -----------------------------------------------------
+
+static s32 g_RoomsActiveLightops = 0; // rooms with lightop != LIGHTOP_NONE
+static s32 g_RoomsFlashing = 0;       // rooms with br_flash != 0
+static bool g_RoomLightingEvent = true; // sticky: run the full sweeps next tick
+
+// Chaos tint / chaos highlight state feeds both the reshade and the sweep-D
+// highlightfrac math but can change without any roomSetLightOp call, so it is
+// snapshot-compared once per tick.
+static void roomsCheckChaosLightingChanged(void)
+{
+	static s32 prevtinton = 0;
+	static f32 prevtint[3] = {1.0f, 1.0f, 1.0f};
+	static s32 prevhlon = 0;
+	static s32 prevhlcol[3] = {255, 64, 64};
+	static u8 prevhlmask[CHAOS_ROOMHL_MAX / 8];
+	bool changed = false;
+	s32 i;
+
+	if (prevtinton != g_ChaosRoomTintOn || prevhlon != g_ChaosRoomHlOn) {
+		changed = true;
+	}
+
+	for (i = 0; i < 3; i++) {
+		if (prevtint[i] != g_ChaosRoomTintFrac[i] || prevhlcol[i] != g_ChaosRoomHlCol[i]) {
+			changed = true;
+		}
+	}
+
+	for (i = 0; i < (s32)sizeof(prevhlmask); i++) {
+		if (prevhlmask[i] != g_ChaosRoomHlMask[i]) {
+			changed = true;
+		}
+	}
+
+	if (changed) {
+		prevtinton = g_ChaosRoomTintOn;
+		prevhlon = g_ChaosRoomHlOn;
+
+		for (i = 0; i < 3; i++) {
+			prevtint[i] = g_ChaosRoomTintFrac[i];
+			prevhlcol[i] = g_ChaosRoomHlCol[i];
+		}
+
+		for (i = 0; i < (s32)sizeof(prevhlmask); i++) {
+			prevhlmask[i] = g_ChaosRoomHlMask[i];
+		}
+
+		g_RoomLightingEvent = true;
+	}
+}
+
+// For the perfect-darkness configure functions, which write room lightops
+// directly (bypassing roomSetLightOp) for every room at once: recount rather
+// than track transitions. Rare (cheat/tickmode edges only).
+static void roomsRecountLightops(void)
+{
+	s32 count = 0;
+	s32 i;
+
+	for (i = 1; i < g_Vars.roomcount; i++) {
+		if (g_Rooms[i].lightop != LIGHTOP_NONE) {
+			count++;
+		}
+	}
+
+	g_RoomsActiveLightops = count;
+	g_RoomLightingEvent = true;
+}
+
+// --- #17 persistent per-room palettes ---------------------------------------
+
+// The complete scalar input tuple that determines roomHighlight()'s output for
+// a room (given the room's static authored vertex/colour data, which is keyed
+// separately by gfxdata pointer identity). A missed input here = stale colours
+// on screen, so the list mirrors every non-static read in the reshade loop.
+struct roomhlinputs {
+	s32 regbr;       // roomGetSettledRegionalBrightnessForPlayer (folds br_settled_regional, BRIGHTNESS_CALCED, NV/IR var8009caec)
+	s32 flash;       // br_flash ("extra")
+	s32 goggles;     // USINGDEVICE(NIGHTVISION/IRSCANNER) on the current player (grayscale + extra=0 branches)
+	s32 lightopzero; // lightop_cur_frac == 0.0f (the black-room extra gate)
+	s32 lightsoff;   // ROOMFLAG_LIGHTSOFF (same gate)
+	s32 highlight;   // lightop == LIGHTOP_HIGHLIGHT
+	s32 probelo[3];  // highlight colour transform probed at rgb(0,0,0)
+	s32 probehi[3];  // highlight colour transform probed at rgb(65535,65535,65535)
+	s32 tinton;      // g_ChaosRoomTintOn
+	f32 tint[3];     // g_ChaosRoomTintFrac
+	s32 shinyfloor;  // g_RoomShinyAlphaFloor (docs/PORT_SHINY_ALPHA.md)
+};
+
+struct roomhlcache {
+	struct roomgfxdata *gfxdata; // load-generation key: room gfxdata is re-allocated on every (re)load. NULL = inputs/palette not valid
+	Col *palette;                // persistent palette buffer (MEMPOOL_STAGE), NULL until first reshade
+	s32 palettecolours;          // allocated size of palette, in colours
+	u32 publishedswap;           // g_GfxNumSwaps when palette was last published to g_Rooms[].colours
+	u32 gen;                     // content generation - bumped whenever the room's published colours change (bg.c dlcache dirty check)
+	bool renderalways;           // room is in the RENDERALWAYS publish-authored-src mode
+	struct roomhlinputs inputs;
+};
+
+#define ROOMHL_SWAP_NEVER 0xfffffff5u // publishedswap sentinel g_GfxNumSwaps can't normally hold
+
+static struct roomhlcache *g_RoomHlCaches = NULL;
+static struct room *g_RoomHlCachesRooms = NULL;
+static s32 g_RoomHlCachesCount = 0;
+
+static struct roomhlcache *roomHighlightCache(s32 roomnum)
+{
+	// Lazy per-stage allocation. func0f002a98 NULLs the pointer on stage init;
+	// the g_Rooms/roomcount comparison is belt-and-braces (g_Rooms itself is a
+	// fresh MEMPOOL_STAGE allocation each stage).
+	if (g_RoomHlCaches == NULL || g_RoomHlCachesRooms != g_Rooms || g_RoomHlCachesCount != g_Vars.roomcount) {
+		struct roomhlcache *caches = mempAlloc(ALIGN16(g_Vars.roomcount * sizeof(struct roomhlcache)), MEMPOOL_STAGE);
+		s32 i;
+
+		g_RoomHlCaches = caches;
+		g_RoomHlCachesRooms = g_Rooms;
+		g_RoomHlCachesCount = g_Vars.roomcount;
+
+		if (caches == NULL) {
+			// Pool full (mempAlloc warned): fall back to the vanilla
+			// per-frame path; retried on the next call.
+			return NULL;
+		}
+
+		for (i = 0; i < g_Vars.roomcount; i++) {
+			caches[i].gfxdata = NULL;
+			caches[i].palette = NULL;
+			caches[i].palettecolours = 0;
+			caches[i].publishedswap = ROOMHL_SWAP_NEVER;
+			caches[i].gen = 0;
+			caches[i].renderalways = false;
+		}
+	}
+
+	return g_RoomHlCaches != NULL ? &g_RoomHlCaches[roomnum] : NULL;
+}
+
+// Probe the LIGHTOP_HIGHLIGHT colour transform (scenarioHighlightRoom + the
+// chaos override, in the same order the reshade loop applies them) with a
+// known input. Every current implementation is per-channel AFFINE - the
+// scenarios multiply each channel by a state-derived factor (KoH pulse, team
+// colours, the 0.25 green) and chaos sets an absolute colour - so probing at
+// 0 and 65535 captures the full transform: any scenario/chaos state change
+// that could alter a vertex's output alters a probe. (A future NON-affine
+// highlight implementation would need its state added to the tuple instead.)
+static void roomHighlightProbe(s32 roomnum, s32 seed, s32 *out)
+{
+	s32 r = seed;
+	s32 g = seed;
+	s32 b = seed;
+
+	scenarioHighlightRoom(roomnum, &r, &g, &b);
+
+	if (chaosRoomIsHighlighted(roomnum)) {
+		r = g_ChaosRoomHlCol[0];
+		g = g_ChaosRoomHlCol[1];
+		b = g_ChaosRoomHlCol[2];
+	}
+
+	out[0] = r;
+	out[1] = g;
+	out[2] = b;
+}
+
+static void roomHighlightBuildInputs(s32 roomnum, s32 regbr, s32 extra, struct roomhlinputs *in)
+{
+	in->regbr = regbr;
+	in->flash = extra;
+	in->goggles = (USINGDEVICE(DEVICE_NIGHTVISION) || USINGDEVICE(DEVICE_IRSCANNER)) ? 1 : 0;
+	in->lightopzero = g_Rooms[roomnum].lightop_cur_frac == 0.0f ? 1 : 0;
+	in->lightsoff = (g_Rooms[roomnum].flags & ROOMFLAG_LIGHTSOFF) ? 1 : 0;
+	in->highlight = g_Rooms[roomnum].lightop == LIGHTOP_HIGHLIGHT ? 1 : 0;
+
+	if (in->highlight) {
+		roomHighlightProbe(roomnum, 0, in->probelo);
+		roomHighlightProbe(roomnum, 65535, in->probehi);
+	} else {
+		in->probelo[0] = in->probelo[1] = in->probelo[2] = 0;
+		in->probehi[0] = in->probehi[1] = in->probehi[2] = 0;
+	}
+
+	in->tinton = g_ChaosRoomTintOn ? 1 : 0;
+
+	if (in->tinton) {
+		in->tint[0] = g_ChaosRoomTintFrac[0];
+		in->tint[1] = g_ChaosRoomTintFrac[1];
+		in->tint[2] = g_ChaosRoomTintFrac[2];
+	} else {
+		in->tint[0] = in->tint[1] = in->tint[2] = 0.0f;
+	}
+
+	in->shinyfloor = g_RoomShinyAlphaFloor;
+}
+
+static bool roomHighlightInputsEqual(const struct roomhlinputs *a, const struct roomhlinputs *b)
+{
+	s32 i;
+
+	if (a->regbr != b->regbr
+			|| a->flash != b->flash
+			|| a->goggles != b->goggles
+			|| a->lightopzero != b->lightopzero
+			|| a->lightsoff != b->lightsoff
+			|| a->highlight != b->highlight
+			|| a->tinton != b->tinton
+			|| a->shinyfloor != b->shinyfloor) {
+		return false;
+	}
+
+	for (i = 0; i < 3; i++) {
+		if (a->probelo[i] != b->probelo[i]
+				|| a->probehi[i] != b->probehi[i]
+				|| a->tint[i] != b->tint[i]) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+// bg.c dlcache dirty check (#18): the room's published vertex colours changed
+// iff this generation changed. If the cache array couldn't be allocated,
+// report an ever-changing value for any room with a live dynamic palette so
+// the dlcache conservatively re-records (vanilla-hash semantics).
+u32 roomHighlightColoursGen(s32 roomnum)
+{
+	if (g_RoomHlCaches == NULL) {
+		return g_Rooms[roomnum].colours != NULL ? (0x80000000u | g_BgFrameCount) : 0;
+	}
+
+	return g_RoomHlCaches[roomnum].gen;
+}
 #endif
 
 const char var7f1a78e0[] = "LIGHTS : Hit occured on light %d in room %d\n";
@@ -364,7 +618,20 @@ bool lightIsOn(s32 roomnum, s32 lightnum)
 
 void roomSetFlashBrightness(s32 roomnum, s32 value)
 {
+#ifndef PLATFORM_N64
+	s16 prev = g_Rooms[roomnum].br_flash;
+#endif
+
 	g_Rooms[roomnum].br_flash = value;
+
+#ifndef PLATFORM_N64
+	// #27 fast-path bookkeeping (compare the STORED value - br_flash is s16).
+	if ((prev == 0) != (g_Rooms[roomnum].br_flash == 0)) {
+		g_RoomsFlashing += g_Rooms[roomnum].br_flash == 0 ? -1 : 1;
+	}
+
+	g_RoomLightingEvent = true;
+#endif
 }
 
 void lightGetDirection(s32 roomnum, u32 lightnum, struct coord *dir)
@@ -637,6 +904,10 @@ void roomSetLightsFaulty(s32 roomnum, s32 chance)
 #endif
 
 	g_Rooms[roomnum].flags |= ROOMFLAG_LIGHTS_DIRTY;
+
+#ifndef PLATFORM_N64
+	g_RoomLightingEvent = true; // #27
+#endif
 }
 
 void roomSetLightBroken(s32 roomnum, s32 lightnum)
@@ -646,6 +917,10 @@ void roomSetLightBroken(s32 roomnum, s32 lightnum)
 	light->on = false;
 
 	g_Rooms[roomnum].flags |= ROOMFLAG_LIGHTS_DIRTY;
+
+#ifndef PLATFORM_N64
+	g_RoomLightingEvent = true; // #27
+#endif
 }
 
 void lightsReset(void)
@@ -998,6 +1273,18 @@ void func0f002a98(void)
 #endif
 	g_Vars.remakewallhitvtx = 0;
 
+#ifndef PLATFORM_N64
+	// New stage: MEMPOOL_STAGE was reset, so the previous stage's per-room
+	// palette caches (#17) are dead memory, and roomSetDefaults below zeroes
+	// every lightop/flash the fast-path counters (#27) were tracking.
+	g_RoomHlCaches = NULL;
+	g_RoomHlCachesRooms = NULL;
+	g_RoomHlCachesCount = 0;
+	g_RoomsActiveLightops = 0;
+	g_RoomsFlashing = 0;
+	g_RoomLightingEvent = true;
+#endif
+
 	for (i = 1; i < g_Vars.roomcount; i++) {
 		roomSetDefaults(&g_Rooms[i]);
 		roomInitLights(i);
@@ -1032,6 +1319,10 @@ void roomSetLightsOn(s32 roomnum, s32 enable)
 	}
 
 	g_Rooms[roomnum].flags |= ROOMFLAG_LIGHTS_DIRTY;
+
+#ifndef PLATFORM_N64
+	g_RoomLightingEvent = true; // #27
+#endif
 }
 
 /**
@@ -1042,6 +1333,17 @@ void roomSetLightsOn(s32 roomnum, s32 enable)
 void roomSetLightOp(s32 roomnum, s32 operation, u8 br_to, u8 br_from, u8 duration60)
 {
 	if (cheatIsActive(CHEAT_PERFECTDARKNESS) == false) {
+#ifndef PLATFORM_N64
+		// #27 fast-path bookkeeping: this is the choke point for lightop
+		// activation (scenarios, AI commands, training, chaos all come
+		// through here; the only writers that bypass it are the
+		// perfect-darkness configures, which recount instead).
+		if ((g_Rooms[roomnum].lightop == LIGHTOP_NONE) != (operation == LIGHTOP_NONE)) {
+			g_RoomsActiveLightops += operation == LIGHTOP_NONE ? -1 : 1;
+		}
+
+		g_RoomLightingEvent = true;
+#endif
 		g_Rooms[roomnum].lightop = operation;
 
 		switch (operation) {
@@ -1236,6 +1538,10 @@ void lightsConfigureForPerfectDarknessCutscene(void)
 			light++;
 		}
 	}
+
+#ifndef PLATFORM_N64
+	roomsRecountLightops(); // #27: lightops written directly above
+#endif
 }
 #endif
 
@@ -1261,6 +1567,10 @@ void lightsConfigureForPerfectDarknessGameplay(void)
 			light++;
 		}
 	}
+
+#ifndef PLATFORM_N64
+	roomsRecountLightops(); // #27: lightops written directly above
+#endif
 }
 #endif
 
@@ -1296,6 +1606,8 @@ void lightsConfigureForPerfectDarknessOff(void)
 			light++;
 		}
 	}
+
+	roomsRecountLightops(); // #27: lightops written directly above
 
 	g_LightsPrevTickMode = 0;
 }
@@ -1353,6 +1665,29 @@ void roomsTickLighting(void)
 	if (var80061420 == NULL) {
 		return;
 	}
+
+#ifndef PLATFORM_N64
+	// #27 fast path: skip the 3-4 full room-array sweeps when the world's
+	// lighting is provably idle - no active lightops (the switch bodies and
+	// timer decrement would be no-ops), no decaying flashes, no goggle switch,
+	// and no dirty event since the last full tick. Every dirty producer either
+	// sets g_RoomLightingEvent at its write site (roomSetLightOp / light
+	// break / flash setters / chaos snapshot below), or - for the flags set
+	// by bgLoadRoom and by roomHighlight's !BRIGHTNESS_CALCED path - is
+	// noticed by roomHighlight when the room is actually rendered, which
+	// matches the vanilla one-tick-behind timing (sweep D reads ONSCREEN
+	// flags from the previous frame's render). Dirty flags pending on rooms
+	// that are never rendered stay pending, exactly as they do in vanilla
+	// (sweep D only ever processes onscreen/standby rooms).
+	roomsCheckChaosLightingChanged();
+
+	if (!g_RoomLightingEvent && !g_IsSwitchingGoggles
+			&& g_RoomsActiveLightops == 0 && g_RoomsFlashing == 0) {
+		return;
+	}
+
+	g_RoomLightingEvent = false; // consumed: this tick runs the full sweeps
+#endif
 
 	for (i = 1; i < g_Vars.roomcount; i++) {
 		g_Rooms[i].flags &= ~ROOMFLAG_BRIGHTNESS_DIRTY_TEMP;
@@ -1513,6 +1848,14 @@ void roomsTickLighting(void)
 
 				g_Rooms[i].br_flash += increment;
 			}
+
+#ifndef PLATFORM_N64
+			// #27: the flash just decayed to rest (we entered with a
+			// nonzero br_flash) - drop it from the active count.
+			if (g_Rooms[i].br_flash == 0) {
+				g_RoomsFlashing--;
+			}
+#endif
 
 			g_Rooms[i].flags |= ROOMFLAG_BRIGHTNESS_DIRTY_TEMP;
 		}
@@ -1689,6 +2032,10 @@ void roomFlashLighting(s32 roomnum, s32 start, s32 limit)
 
 void roomFlashLocalLighting(s32 roomnum, s32 increment, s32 limit)
 {
+#ifndef PLATFORM_N64
+	s16 prev = g_Rooms[roomnum].br_flash;
+#endif
+
 	if (roomnum) {
 		if (g_Rooms[roomnum].flags & ROOMFLAG_ONSCREEN) {
 			if (increment > 0) {
@@ -1712,6 +2059,17 @@ void roomFlashLocalLighting(s32 roomnum, s32 increment, s32 limit)
 			}
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// #27 fast-path bookkeeping.
+	if ((prev == 0) != (g_Rooms[roomnum].br_flash == 0)) {
+		g_RoomsFlashing += g_Rooms[roomnum].br_flash == 0 ? -1 : 1;
+	}
+
+	if (prev != g_Rooms[roomnum].br_flash) {
+		g_RoomLightingEvent = true;
+	}
+#endif
 }
 
 void roomHighlight(s32 roomnum)
@@ -1732,6 +2090,12 @@ void roomHighlight(s32 roomnum)
 	s32 max;
 	f32 mult;
 	u32 stack;
+#ifndef PLATFORM_N64
+	struct roomhlcache *cache = NULL;
+	struct roomhlinputs inputs;
+	bool usepersistent = false;
+	bool tuplematch = false;
+#endif
 
 	if (g_BgFrameCount != g_Rooms[roomnum].hlupdatedframe && g_Rooms[roomnum].loaded240 != 0) {
 		g_Rooms[roomnum].hlupdatedframe = g_BgFrameCount;
@@ -1740,10 +2104,23 @@ void roomHighlight(s32 roomnum)
 			g_Rooms[roomnum].flags |= ROOMFLAG_BRIGHTNESS_DIRTY_PERM;
 		}
 
+#ifndef PLATFORM_N64
+		// #27 fast path: a RENDERED room with pending regional-lighting work
+		// (set here above, or by bgLoadRoom on (re)load) must run the
+		// roomsTickLighting sweeps next tick. This matches vanilla timing:
+		// sweep D reads the ONSCREEN flags produced by the previous frame's
+		// render pass, so it never processed a newly visible room any sooner.
+		if (g_Rooms[roomnum].flags & (ROOMFLAG_BRIGHTNESS_DIRTY_PERM | ROOMFLAG_BRIGHTNESS_DIRTY_TEMP)) {
+			g_RoomLightingEvent = true;
+		}
+#endif
+
 		br_settled_regional = roomGetSettledRegionalBrightnessForPlayer(roomnum);
 		numcolours = g_Rooms[roomnum].gfxdata->numcolours;
+#ifdef PLATFORM_N64
 		dst = gfxAllocateColours(numcolours);
 		g_Rooms[roomnum].colours = dst;
+#endif
 
 		extra = g_Rooms[roomnum].br_flash;
 		src = (Col *)((uintptr_t)g_Rooms[roomnum].gfxdata->vertices + g_Rooms[roomnum].gfxdata->numvertices * sizeof(Vtx));
@@ -1751,8 +2128,80 @@ void roomHighlight(s32 roomnum)
 
 		if (g_Rooms[roomnum].flags & ROOMFLAG_RENDERALWAYS) {
 			g_Rooms[roomnum].colours = src;
+#ifndef PLATFORM_N64
+			// Publish-authored-src mode: the palette is the static source
+			// data, so it only "changes" (for the dlcache) on mode entry.
+			cache = roomHighlightCache(roomnum);
+
+			if (cache != NULL && !cache->renderalways) {
+				cache->renderalways = true;
+				cache->gfxdata = NULL;
+				cache->gen++;
+			}
+#endif
 			return;
 		}
+
+#ifndef PLATFORM_N64
+		// #17: persistent per-room palette with an input-tuple dirty check.
+		// When the tuple that fully determines this reshade's output matches
+		// the one that produced the persistent buffer, republish the buffer
+		// without recomputing (splitscreen viewports and static scenes hit
+		// this every frame). In-place recompute is safe because the port
+		// executes the frame's display list synchronously (videoSubmitCommands
+		// -> gfx_run walks the whole list before returning), so nothing
+		// references last frame's buffer contents by the time we rewrite it -
+		// EXCEPT another viewport of the SAME frame (per-player goggle state
+		// can diverge the tuple), in which case we compute into a vanilla
+		// per-frame buffer and leave the persistent contents alone.
+		cache = roomHighlightCache(roomnum);
+
+		if (cache != NULL) {
+			roomHighlightBuildInputs(roomnum, br_settled_regional, extra, &inputs);
+
+			if (cache->renderalways) {
+				// Leaving publish-src mode - content is about to change.
+				cache->renderalways = false;
+				cache->gfxdata = NULL;
+				cache->gen++;
+			}
+
+			tuplematch = cache->gfxdata == g_Rooms[roomnum].gfxdata
+				&& roomHighlightInputsEqual(&cache->inputs, &inputs);
+
+			if (tuplematch && cache->palette != NULL) {
+				g_Rooms[roomnum].colours = cache->palette;
+				cache->publishedswap = g_GfxNumSwaps;
+				return;
+			}
+
+			if (!tuplematch) {
+				cache->gen++;
+			}
+
+			if (cache->palette == NULL) {
+				cache->palette = mempAlloc(ALIGN16(numcolours * sizeof(Col)), MEMPOOL_STAGE);
+				cache->palettecolours = cache->palette != NULL ? numcolours : 0;
+				cache->publishedswap = ROOMHL_SWAP_NEVER;
+			}
+
+			if (cache->palette != NULL && cache->palettecolours == numcolours
+					&& !(cache->gfxdata != NULL && cache->publishedswap == g_GfxNumSwaps)) {
+				usepersistent = true;
+			}
+		}
+
+		if (usepersistent) {
+			dst = cache->palette;
+		} else {
+			// Vanilla per-frame path: cache unavailable, allocation failed,
+			// or the persistent buffer's current contents were already
+			// published this frame by another viewport.
+			dst = gfxAllocateColours(numcolours);
+		}
+
+		g_Rooms[roomnum].colours = dst;
+#endif
 
 		for (i = 0; i < numcolours; i++) {
 			// @bug? Why is this looking up vertices using a colour index?
@@ -1883,6 +2332,24 @@ void roomHighlight(s32 roomnum)
 				dst[i].a = alpha;
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// #17: record what the freshly computed content corresponds to.
+		// When we computed into the persistent buffer, the tuple + gfxdata
+		// key now describe it. When we have no buffer at all (allocation
+		// failed), the tuple still tracks the last-computed content so the
+		// generation counter doesn't churn on identical recomputes. When we
+		// fell back BECAUSE the persistent buffer is in use this frame, the
+		// stored tuple still describes the persistent contents - leave it.
+		if (cache != NULL && (usepersistent || cache->palette == NULL)) {
+			cache->gfxdata = g_Rooms[roomnum].gfxdata;
+			cache->inputs = inputs;
+
+			if (usepersistent) {
+				cache->publishedswap = g_GfxNumSwaps;
+			}
+		}
+#endif
 	}
 }
 

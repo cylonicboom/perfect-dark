@@ -2924,7 +2924,14 @@ s32 chrTick(struct prop *prop)
 		model->anim->average = false;
 
 		if (chr->chrflags & CHRCFLAG_FORCETOGROUND) {
+#ifndef PLATFORM_N64
+			// fulltick gate, same class as the PROPTYPE_PLAYER fix below:
+			// without it this chr advances lvupdate240 once per viewport pass
+			// (PLAYERCOUNT()x movement per frame in multi-viewport modes).
+			if (fulltick)
+#endif
 			chr0f0220ec(chr, lvupdate240, true);
+
 			needsupdate = func0f08e8ac(prop, &prop->pos, modelGetEffectiveScale(model), true);
 		} else {
 			needsupdate = func0f08e8ac(prop, &prop->pos, modelGetEffectiveScale(model), true);
@@ -5535,6 +5542,13 @@ void chrsCheckForNoise(f32 noiseradius)
 {
 	s32 i;
 	f32 add = 0.075f;
+#ifndef PLATFORM_N64
+	// B12: hoist the loop-invariant prefix of the hearing-range product.
+	// noiseradius and add are never written in the loop (the loop body only
+	// writes chr fields), and left-to-right association is preserved:
+	// ((noiseradius*100) * hearingscale) * (1+add) - bit-identical results.
+	f32 range = noiseradius * 100;
+#endif
 
 	for (i = 0; i < g_NumChrSlots; i++) {
 		if (g_ChrSlots[i].model) {
@@ -5548,7 +5562,11 @@ void chrsCheckForNoise(f32 noiseradius)
 				if (distance == 0) {
 					distance = 2;
 				} else {
+#ifndef PLATFORM_N64
+					distance = (range * g_ChrSlots[i].hearingscale * (1.0f + add)) / distance;
+#else
 					distance = (noiseradius * 100 * g_ChrSlots[i].hearingscale * (1.0f + add)) / distance;
+#endif
 				}
 
 				if (distance > 1.0f) {
@@ -5579,7 +5597,15 @@ void chrsCheckForNoise(f32 noiseradius)
 struct chrdata *chrFindByLiteralId(s32 chrnum)
 {
 	s32 lower = 0;
+#ifndef PLATFORM_N64
+	// B13: with the inclusive `upper >= lower` loop the last valid index is
+	// g_NumChrs - 1; seeding upper with the count lets a miss probe
+	// g_Chrnums[g_NumChrs] (one-element OOB read that can garbage-match).
+	// In-bounds keys are found identically - only the OOB probe goes away.
+	s32 upper = g_NumChrs - 1;
+#else
 	s32 upper = g_NumChrs;
+#endif
 	s32 i;
 
 	while (upper >= lower) {

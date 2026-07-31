@@ -472,6 +472,26 @@ void wallhitsTick(void)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// [B10b] Walk the active list instead of all g_WallhitsMax slots (every
+	// inuse wallhit is on g_ActiveWallhits: create pushes, wallhitFree
+	// unlinks). wallhitFree can unlink the CURRENT node mid-body, so capture
+	// globalnext before the body runs. Per-element updates (aging, fade
+	// alpha, vertices2, unk6f_05) are independent of visit order; see the
+	// same-observable-state note in the session report for the only order
+	// effect (free-list stacking order when several expire in one tick).
+	{
+		struct wallhit *nextactive;
+
+		for (wallhit = g_ActiveWallhits; wallhit != NULL; wallhit = nextactive) {
+			f32 f0 = sp12c;
+
+			nextactive = wallhit->globalnext;
+
+			if (!wallhit->inuse) {
+				continue;
+			}
+#else
 	wallhit = g_Wallhits;
 
 	for (i = 0; i < g_WallhitsMax; i++, wallhit++) {
@@ -480,6 +500,7 @@ void wallhitsTick(void)
 		if (!wallhit->inuse) {
 			continue;
 		}
+#endif
 
 		if (wallhit->timerspeed != 8) {
 			f0 *= 0.6f * ((wallhit->timerspeed - 8.0f) * 0.125f);
@@ -612,6 +633,9 @@ void wallhitsTick(void)
 
 		wallhit->unk6f_05 = true;
 	}
+#ifndef PLATFORM_N64
+	} // [B10b] close the active-list walk scope
+#endif
 }
 
 const char var7f1b5a5c[] = "g_MaxRound = %s%s%f";

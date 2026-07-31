@@ -1161,6 +1161,79 @@ bool cd000276c8Cyl(struct geocyl *cyl, f32 x, f32 z, f32 radius, struct prop *pr
 
 s32 cdTestRampWall(struct geotilei *tile, struct coord *pos, f32 width, f32 y1, f32 y2);
 
+#ifndef PLATFORM_N64
+/**
+ * Per-room union of every geo entry's queryable flags, computed lazily and
+ * cached for the stage (tile data is immutable once loaded). Lets the
+ * geoflag-filtered collectors skip a room's whole variable-stride stream when
+ * it provably contains nothing matching the query - e.g. the twice-per-tick
+ * player ladder probe (GEOFLAG_LADDER) on stages with no ladders at all.
+ * Bit-identical: a skipped room contributes zero candidates either way.
+ *
+ * GEOTYPE_BLOCK entries match queries for WALL/BLOCK_SIGHT/BLOCK_SHOOT
+ * regardless of their own flags (see cdCollectGeoForCylFromList), so blocks
+ * contribute those bits. A malformed stream (unknown type would infinite-loop
+ * the real walks too) marks the room 0xffff = never skipped.
+ */
+#define CD_GEOFLAG_UNION_MAXROOMS 2048
+
+static u16 g_CdRoomGeoFlagUnions[CD_GEOFLAG_UNION_MAXROOMS];
+static u8 g_CdRoomGeoFlagValid[CD_GEOFLAG_UNION_MAXROOMS];
+static u8 *g_CdRoomGeoFlagBase = NULL;
+
+static u16 cdRoomGeoFlagUnion(s32 roomnum)
+{
+	struct geo *geo;
+	struct geo *end;
+	u16 unionflags;
+	s32 i;
+
+	if (roomnum < 0 || roomnum >= CD_GEOFLAG_UNION_MAXROOMS || roomnum + 1 > g_TileNumRooms) {
+		return 0xffff;
+	}
+
+	if (g_CdRoomGeoFlagBase != g_TileFileData.u8) {
+		for (i = 0; i < CD_GEOFLAG_UNION_MAXROOMS; i++) {
+			g_CdRoomGeoFlagValid[i] = 0;
+		}
+
+		g_CdRoomGeoFlagBase = g_TileFileData.u8;
+	}
+
+	if (g_CdRoomGeoFlagValid[roomnum]) {
+		return g_CdRoomGeoFlagUnions[roomnum];
+	}
+
+	geo = (struct geo *) (g_TileFileData.u8 + g_TileRooms[roomnum]);
+	end = (struct geo *) (g_TileFileData.u8 + g_TileRooms[roomnum + 1]);
+	unionflags = 0;
+
+	while (geo < end) {
+		if (geo->type == GEOTYPE_TILE_I) {
+			unionflags |= geo->flags;
+			geo = (struct geo *)((uintptr_t)geo + ((struct geotilei *) geo)->header.numvertices * 6 + 0xe);
+		} else if (geo->type == GEOTYPE_TILE_F) {
+			unionflags |= geo->flags;
+			geo = (struct geo *)((uintptr_t)geo + (((struct geotilef *) geo)->header.numvertices - 0x40) * 0xc + 0x310);
+		} else if (geo->type == GEOTYPE_BLOCK) {
+			unionflags |= GEOFLAG_WALL | GEOFLAG_BLOCK_SIGHT | GEOFLAG_BLOCK_SHOOT;
+			geo = (struct geo *)((uintptr_t)geo + 0x4c);
+		} else if (geo->type == GEOTYPE_CYL) {
+			unionflags |= geo->flags;
+			geo = (struct geo *)((uintptr_t)geo + 0x18);
+		} else {
+			unionflags = 0xffff;
+			break;
+		}
+	}
+
+	g_CdRoomGeoFlagUnions[roomnum] = unionflags;
+	g_CdRoomGeoFlagValid[roomnum] = 1;
+
+	return unionflags;
+}
+#endif
+
 void cdCollectGeoForCylFromList(struct coord *pos, f32 radius, u8 *start, u8 *end, u16 geoflags,
 		bool checkvertical, f32 arg6, f32 arg7, struct prop *prop,
 		struct collision *collisions, s32 maxcollisions, s32 *numcollisions, s32 roomnum)
@@ -1279,6 +1352,15 @@ void cdCollectGeoForCyl(struct coord *pos, f32 radius, RoomNum *rooms, u32 types
 
 		while (roomnum != -1) {
 			if (roomnum < g_TileNumRooms) {
+#ifndef PLATFORM_N64
+				// Skip rooms that provably contain no geometry matching the
+				// query flags (bit-identical - they'd contribute nothing).
+				if ((cdRoomGeoFlagUnion(roomnum) & geoflags) == 0) {
+					roomptr++;
+					roomnum = *roomptr;
+					continue;
+				}
+#endif
 				start = g_TileFileData.u8 + g_TileRooms[roomnum];
 				end = g_TileFileData.u8 + g_TileRooms[roomnum + 1];
 
@@ -1607,6 +1689,15 @@ void cdCollectGeoForCylMove(struct coord *pos, f32 width, RoomNum *rooms, u32 ty
 
 		while (roomnum != -1) {
 			if (roomnum < g_TileNumRooms) {
+#ifndef PLATFORM_N64
+				// Skip rooms with no geometry matching the query flags
+				// (bit-identical; see cdRoomGeoFlagUnion).
+				if ((cdRoomGeoFlagUnion(roomnum) & geoflags) == 0) {
+					roomptr++;
+					roomnum = *roomptr;
+					continue;
+				}
+#endif
 				start = g_TileFileData.u8 + g_TileRooms[roomnum];
 				end = g_TileFileData.u8 + g_TileRooms[roomnum + 1];
 

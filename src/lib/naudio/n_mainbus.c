@@ -32,6 +32,12 @@ Acmd *n_alMainBusPull(s32 sampleOffset, Acmd *p)
 			aMix(ptr++, 0, 0x7fff, N_AL_AUX_L_OUT, N_AL_MAIN_L_OUT);
 		}
 
+#ifdef PLATFORM_N64
+		// n_aPoleFilter is a no-op in the port mixer; the func0003ba64
+		// coefficient build (atan2f etc.) and the n_aLoadADPCM only feed it
+		// (every real ADPCM decode reloads its own book first, see
+		// n_alAdpcmPull). The skipped state (unk28, fx.unk08) is only read
+		// inside this block.
 		if (n_syn->auxBus[i].unk44->fx.unk02 > 0) {
 			struct auxbus44 *bus44 = n_syn->auxBus[i].unk44;
 
@@ -46,6 +52,7 @@ Acmd *n_alMainBusPull(s32 sampleOffset, Acmd *p)
 
 			bus44->unk28 = 0;
 		}
+#endif
 	}
 
 	return ptr;

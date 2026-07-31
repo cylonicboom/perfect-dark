@@ -36,6 +36,13 @@ bool modelmgrCanSlotFitRwdata(struct model *modelslot, struct modeldef *modeldef
 
 void modelmgrPrintCounts(void)
 {
+#ifndef PLATFORM_N64
+	// Called every frame from lvTick, but its five full array scans only feed
+	// the g_ModelMost* high-water globals, which nothing reads on the port
+	// (write-only outside this file + the modelmgrreset.c zeroing), and the
+	// osSyncPrintfs compile to nothing. Skip the dead work.
+	return;
+#endif
 	s32 i;
 	s32 numtype1 = 0;
 	s32 numtype2 = 0;

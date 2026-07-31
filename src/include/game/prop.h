@@ -25,6 +25,10 @@ void propReparent(struct prop *mover, struct prop *adopter);
 void propDetach(struct prop *prop);
 Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass);
 Gfx *propsRender(Gfx *gdl, RoomNum renderroomnum, s32 renderpass, RoomNum *roomnumsbyprop);
+#ifndef PLATFORM_N64
+void propsRenderBuildRoomIndex(RoomNum *roomnumsbyprop);
+void propsRenderInvalidateRoomIndex(void);
+#endif
 void weaponPlayWhooshSound(s32 weaponnum, struct prop *prop);
 void func0f060bac(s32 weaponnum, struct prop *prop);
 struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpos2d, struct coord *gundir2d, struct coord *gunpos3d, struct coord *gundir3d, u32 arg6, f32 distance, bool arg8);

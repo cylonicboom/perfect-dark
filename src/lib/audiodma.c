@@ -61,11 +61,23 @@ void admaInit(void)
  * that this buffer was last used in this frame. This is important for the
  * admaBeginFrame routine.
  */
-#ifdef PLATFORM_N64
-s32 admaExec(s32 offset, s32 len, void *state)
-#else
+#ifndef PLATFORM_N64
 uintptr_t admaExec(uintptr_t offset, s32 len, void *state)
-#endif
+{
+	// On the port the audio "ROM" data is fully resident in RAM
+	// (port/src/romdata.c; osPiStartDma is a memcpy) and offset is already a
+	// directly-readable host address (snd.c sndLoadWavetable rebases wavetable
+	// bases onto _sfxtblSegmentRomStart; mp3PlayFile receives a resident file
+	// address). Hand it straight back instead of staging 0x400-byte windows
+	// through the cache list below. All callers (n_load.c _decodeChunk,
+	// mp3.c func00038ba8 / mp3Dma) treat the result strictly as a read-only
+	// source pointer. Odd offsets need no special handling: the caller-visible
+	// contract is "address of the byte at offset", which the N64 path's
+	// delta adjustment also produced.
+	return offset;
+}
+#else
+s32 admaExec(s32 offset, s32 len, void *state)
 {
 	void *foundbuffer;
 	s32 delta;
@@ -142,6 +154,7 @@ uintptr_t admaExec(uintptr_t offset, s32 len, void *state)
 
 	return osVirtualToPhysical(foundbuffer) + delta;
 }
+#endif
 
 /**
  * Initialize the DMA buffers and return the address of the procedure that will
@@ -182,6 +195,11 @@ void *admaNew(struct admastate **state)
  */
 void admaBeginFrame(void)
 {
+#ifndef PLATFORM_N64
+	// admaExec no longer stages windows through the cache on the port;
+	// there is nothing to age out and no DMAs were queued.
+	return;
+#else
 	struct admaitem *item = g_AdmaState.firstused;
 
 	while (item) {
@@ -213,6 +231,7 @@ void admaBeginFrame(void)
 
 	g_AdmaCurFrame++;
 	g_AdmaNumItemsThisFrame = 0;
+#endif
 }
 
 /**
@@ -226,6 +245,10 @@ void admaBeginFrame(void)
  */
 void admaReceiveAll(void)
 {
+#ifndef PLATFORM_N64
+	// No DMAs are issued on the port (see admaExec); nothing to receive.
+	return;
+#else
 	s32 i;
 
 	/**
@@ -237,4 +260,5 @@ void admaReceiveAll(void)
 			// empty
 		}
 	}
+#endif
 }

@@ -46,6 +46,7 @@
 #include "net/netmsg.h"
 #include "net/netprop.h"
 #include "system.h" // sysLogPrintf/LOG_* for the proptick guards
+#include <string.h> // memset for the roomGetProps visit-stamp wrap
 #endif
 
 #ifndef PLATFORM_N64
@@ -85,7 +86,9 @@ void propsSort(void)
 #ifndef PLATFORM_N64
 	struct prop *prev = NULL; // last valid prop; names a corrupt ->next in the guard below
 #endif
+#ifdef PLATFORM_N64
 	s32 swapindex;
+#endif
 	f32 depth;
 	s32 i;
 	s32 j;
@@ -145,7 +148,31 @@ void propsSort(void)
 	g_Vars.onscreenprops[count] = NULL;
 	g_Vars.endonscreenprops = &g_Vars.onscreenprops[count];
 
+#ifndef PLATFORM_N64
+	// The per-room render index (propsRenderBuildRoomIndex) is now stale.
+	propsRenderInvalidateRoomIndex();
+#endif
+
 	// Sort the onscreenprops list
+#ifndef PLATFORM_N64
+	// Stable insertion sort, descending on depth. The list is near-sorted
+	// frame to frame so this is ~O(n) in practice, vs the original selection
+	// sort's O(n^2) which fell over at the port's 1024-prop cap. Stability
+	// matters: onscreenprops order feeds both XLU draw order and
+	// shotCalculateHits iteration.
+	for (i = 1; i < count; i++) {
+		depth = depths[i];
+		prop = g_Vars.onscreenprops[i];
+
+		for (j = i - 1; j >= 0 && depths[j] < depth; j--) {
+			depths[j + 1] = depths[j];
+			g_Vars.onscreenprops[j + 1] = g_Vars.onscreenprops[j];
+		}
+
+		depths[j + 1] = depth;
+		g_Vars.onscreenprops[j + 1] = prop;
+	}
+#else
 	for (i = 0; i < count; i++) {
 		swapindex = -1;
 		depth = -4294967296;
@@ -168,6 +195,7 @@ void propsSort(void)
 			depths[swapindex] = depth;
 		}
 	}
+#endif
 }
 
 /**
@@ -748,11 +776,125 @@ Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass)
  * terminal in the pre-bg pass and the screen in the post-bg pass, likely to
  * avoid Z-fighting issues.
  */
+#ifndef PLATFORM_N64
+// Per-room index over the onscreenprops list so each propsRender call visits
+// only its room's props instead of rescanning the whole list once per draw
+// slot per pass (O(slots x props x 3) -> O(props) per frame). Built by
+// bgRenderScene right after it fills roomnumsbyprop; counting sort keyed on
+// room, so each room's slice holds ascending onscreenprops indices - OPA
+// passes walk the slice backwards (near-to-far) and XLU walks it forwards,
+// reproducing the original iteration order exactly. Invalidated by propsSort
+// and falls back to the full scan whenever it isn't valid.
+#define PROPRENDER_MAXROOMS 2048
+
+static s16 g_PropRenderStart[PROPRENDER_MAXROOMS + 2];
+static s16 g_PropRenderCursor[PROPRENDER_MAXROOMS + 2];
+static s16 g_PropRenderOrder[MAX_ONSCREEN_PROPS];
+static bool g_PropRenderIndexValid = false;
+
+void propsRenderInvalidateRoomIndex(void)
+{
+	g_PropRenderIndexValid = false;
+}
+
+void propsRenderBuildRoomIndex(RoomNum *roomnumsbyprop)
+{
+	s32 count = g_Vars.endonscreenprops - g_Vars.onscreenprops;
+	s32 maxroom = g_Vars.roomcount + 1;
+	s32 i;
+
+	g_PropRenderIndexValid = false;
+
+	if (maxroom > PROPRENDER_MAXROOMS || count > MAX_ONSCREEN_PROPS || count < 0) {
+		return;
+	}
+
+	for (i = 0; i <= maxroom; i++) {
+		g_PropRenderStart[i] = 0;
+	}
+
+	for (i = 0; i < count; i++) {
+		RoomNum room = roomnumsbyprop[i];
+
+		if (room < 0 || room >= maxroom) {
+			return;
+		}
+
+		g_PropRenderStart[room + 1]++;
+	}
+
+	for (i = 1; i <= maxroom; i++) {
+		g_PropRenderStart[i] += g_PropRenderStart[i - 1];
+	}
+
+	for (i = 0; i < maxroom; i++) {
+		g_PropRenderCursor[i] = g_PropRenderStart[i];
+	}
+
+	for (i = 0; i < count; i++) {
+		g_PropRenderOrder[g_PropRenderCursor[roomnumsbyprop[i]]++] = i;
+	}
+
+	g_PropRenderIndexValid = true;
+}
+#endif
+
 Gfx *propsRender(Gfx *gdl, RoomNum renderroomnum, s32 renderpass, RoomNum *roomnumsbyprop)
 {
 	struct prop **ptr;
 	struct prop *prop;
 	RoomNum *proprooms;
+#ifndef PLATFORM_N64
+	// Opt A15-lite: when a pass emits nothing at all (gdl unmoved), skip the
+	// trailing viewport-restore scissor — it splits GPU batches for no reason.
+	// Safe because nothing propsRender might have left is observable (zero
+	// emissions), and every later draw establishes its own scissor first:
+	// props self-scissor per prop (objRender propobj.c, chrRender chr.c,
+	// explosions.c, smoke.c) and bg.c re-scissors per draw slot / before
+	// wallhits / before skyRenderSuns. See the call-site trace in bg.c.
+	Gfx *gdlstart = gdl;
+#endif
+
+#ifndef PLATFORM_N64
+	if (g_PropRenderIndexValid && renderroomnum >= 0 && renderroomnum < g_Vars.roomcount + 1) {
+		s32 first = g_PropRenderStart[renderroomnum];
+		s32 end = g_PropRenderStart[renderroomnum + 1];
+		s32 k;
+
+		if (renderpass == RENDERPASS_OPA_PREBG || renderpass == RENDERPASS_OPA_POSTBG) {
+			// Near to far = descending onscreenprops index
+			for (k = end - 1; k >= first; k--) {
+				prop = g_Vars.onscreenprops[g_PropRenderOrder[k]];
+
+				if (prop) {
+					if ((renderpass == RENDERPASS_OPA_PREBG && (prop->flags & (PROPFLAG_DRAWONTOP | PROPFLAG_RENDERPOSTBG)) == 0)
+							|| (renderpass == RENDERPASS_OPA_POSTBG && (prop->flags & (PROPFLAG_DRAWONTOP | PROPFLAG_RENDERPOSTBG)) == PROPFLAG_RENDERPOSTBG)) {
+						gdl = propRender(gdl, prop, false);
+					}
+				}
+			}
+		} else {
+			// Far to near = ascending onscreenprops index
+			for (k = first; k < end; k++) {
+				prop = g_Vars.onscreenprops[g_PropRenderOrder[k]];
+
+				if (prop) {
+					if (prop->flags & PROPFLAG_DRAWONTOP) {
+						gdl = propRender(gdl, prop, false);
+					}
+
+					gdl = propRender(gdl, prop, true);
+				}
+			}
+		}
+
+		if (gdl != gdlstart) {
+			gdl = bgScissorToViewport(gdl);
+		}
+
+		return gdl;
+	}
+#endif
 
 	if (renderpass == RENDERPASS_OPA_PREBG || renderpass == RENDERPASS_OPA_POSTBG) {
 		// Iterate onscreen props near to far
@@ -799,6 +941,12 @@ Gfx *propsRender(Gfx *gdl, RoomNum renderroomnum, s32 renderpass, RoomNum *roomn
 		}
 	}
 
+#ifndef PLATFORM_N64
+	if (gdl == gdlstart) {
+		// Opt A15-lite: nothing drawn, nothing emitted — skip the restore.
+		return gdl;
+	}
+#endif
 	gdl = bgScissorToViewport(gdl);
 
 	return gdl;
@@ -4086,6 +4234,19 @@ void roomGetProps(RoomNum *rooms, s16 *propnums, s32 len)
 	RoomNum room;
 	s32 i;
 	s32 j;
+#ifndef PLATFORM_N64
+	// O(1) membership test: a prop is already in the output list iff its stamp
+	// matches this call's epoch. Output contents and order are identical to the
+	// original linear-scan dedupe. Sized for the full s16 propnum range because
+	// g_Vars.maxprops has no compile-time cap.
+	static u32 g_PropVisitStamps[32768];
+	static u32 g_PropVisitEpoch = 0;
+
+	if (++g_PropVisitEpoch == 0) {
+		memset(g_PropVisitStamps, 0, sizeof(g_PropVisitStamps));
+		g_PropVisitEpoch = 1;
+	}
+#endif
 
 	room = *rooms;
 
@@ -4101,6 +4262,13 @@ void roomGetProps(RoomNum *rooms, s16 *propnums, s32 len)
 				s16 propnum = g_RoomPropListChunks[chunkindex].propnums[i];
 
 				if (propnum >= 0) {
+#ifndef PLATFORM_N64
+					if (g_PropVisitStamps[propnum] != g_PropVisitEpoch) {
+						g_PropVisitStamps[propnum] = g_PropVisitEpoch;
+						writeptr++;
+						writeptr[-1] = propnum;
+					}
+#else
 					// Check if it's in the list already
 					s16 *ptr = propnums;
 
@@ -4117,6 +4285,7 @@ void roomGetProps(RoomNum *rooms, s16 *propnums, s32 len)
 						writeptr++;
 						writeptr[-1] = propnum;
 					}
+#endif
 				}
 			}
 

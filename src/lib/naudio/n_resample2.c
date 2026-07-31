@@ -8,10 +8,19 @@ void func0003ba64(struct fx *fx, f32 outputrate);
 Acmd *n_alResamplePull2(N_PVoice *e, s16 *outp, s32 outCount, Acmd *p)
 {
 	Acmd *ptr = p;
+#ifdef PLATFORM_N64
 	f32 sp28;
+#endif
 
 	ptr = n_alResamplePull(e, outp, p);
 
+#ifdef PLATFORM_N64
+	// On the port both blocks below only assemble commands that are no-ops in
+	// the mixer (n_aNoop -> aDisableImpl, n_aPoleFilter -> aPoleFilterImpl,
+	// both empty stubs; the n_aLoadADPCM here only feeds the pole filter —
+	// every real ADPCM decode reloads its own book first, see n_alAdpcmPull).
+	// Skip computing their arguments (sqrtf / func0003ba64's atan2f). The
+	// skipped state (e->unkb8, e->fx.unk08) is only read inside this block.
 	if (e->unk8c != 0 && e->unk8c < 64) {
 		if (e->unk8c >= 6) {
 			sp28 = 26755 / sqrtf(e->unk8c + 1.0f);
@@ -41,6 +50,7 @@ Acmd *n_alResamplePull2(N_PVoice *e, s16 *outp, s32 outCount, Acmd *p)
 
 		e->unkb8 = 0;
 	}
+#endif
 
 	return ptr;
 }

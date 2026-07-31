@@ -75,6 +75,10 @@ using namespace std;
 // reads (SDL's automatic sync would make that correct anyway, just slow).
 #define GFX_SDLGPU_VTX_RING 3
 
+// frames the front-buffer snapshot blit stays armed after a capture or an
+// fb0 (re)creation (see gpu.front_wanted)
+#define GFX_SDLGPU_FRONT_KEEP 4
+
 // depth comparison selected by set_depth_mode
 enum { DF_LEQUAL, DF_LESS, DF_ALWAYS };
 
@@ -94,6 +98,7 @@ struct GpuFb {
     uint32_t w, h;
     uint32_t msaa;           // applied sample count (1/2/4/8, clamped to device support)
     bool has_depth;
+    bool depth_sampled; // depth was created with SAMPLER usage (RT on at creation)
     bool color_virgin; // never rendered to since (re)creation: first pass clears
     bool depth_virgin;
 };
@@ -134,6 +139,12 @@ static struct {
     SDL_GPUCommandBuffer *upload_cb;
     SDL_GPUCommandBuffer *render_cb;
 
+    // batched copy pass held open on upload_cb across consecutive uploads
+    // (opened lazily by upload_pass_get, closed by upload_pass_close before
+    // anything else records on upload_cb: mipmap gen, the end_frame vtx
+    // copy, submit). Always NULL outside start_frame..end_frame.
+    SDL_GPUCopyPass *upload_pass;
+
     // immediate-path vertex streaming (triple-buffered, see GFX_SDLGPU_VTX_RING)
     SDL_GPUBuffer *vtx_buf[GFX_SDLGPU_VTX_RING];
     SDL_GPUTransferBuffer *vtx_tbuf[GFX_SDLGPU_VTX_RING];
@@ -152,13 +163,20 @@ static struct {
     bool dbg_msaa_pipeline_logged;
     bool dbg_resolve_logged;
 
-    // GL front-buffer emulation: snapshot of fb0 taken at the end of every
+    // GL front-buffer emulation: snapshot of fb0 taken at the end of a
     // frame. copy_framebuffer(use_back=false) means glReadBuffer(GL_FRONT) in
     // the GL backend — the previously PRESENTED frame — which the pause-menu
     // blur and menu backgrounds rely on (at copy time the current fb0 is
     // freshly cleared, so reading it directly yields black).
+    // Demand-driven (A1): the blit only runs while front_wanted > 0 — armed
+    // for GFX_SDLGPU_FRONT_KEEP frames by each capture and by fb0
+    // (re)creation (so the first capture after boot/resize isn't garbage),
+    // decremented once per frame. A capture landing while dis-armed reads
+    // the snapshot from the last armed window; it re-arms, so follow-up
+    // captures are back to the 1-frame-stale GL_FRONT semantics.
     SDL_GPUTexture *front_tex;
     uint32_t front_w, front_h;
+    uint32_t front_wanted;
 
     // Video.GpuDriver default for when --gpu-driver isn't passed
     char driver_default[16];
@@ -387,6 +405,83 @@ static SDL_GPUCommandBuffer *upload_cb_get(bool *adhoc) {
 static void upload_cb_end(SDL_GPUCommandBuffer *cb, bool adhoc) {
     if (adhoc && cb) {
         SDL_SubmitGPUCommandBuffer(cb);
+    }
+}
+
+// Transfer-buffer pool (A8): upload staging buffers come in power-of-two
+// size classes and are reused across frames instead of created+destroyed
+// per upload. Released buffers park in pending_transfers until end_frame's
+// submits, then move graveyard -> pool (overflow past the caps is destroyed
+// as before). A buffer is therefore never re-handed-out within the frame
+// that recorded it; cross-frame reuse maps with cycle=true, which is safe
+// here because the copy command records AFTER the map — the vtx-ring
+// cycle=false rule (see GFX_SDLGPU_VTX_RING) is about binds recorded BEFORE
+// the fill, which upload staging never does.
+struct PooledTransfer {
+    SDL_GPUTransferBuffer *tb;
+    uint32_t size; // power-of-two class size
+};
+#define GFX_SDLGPU_TB_POOL_MAX_BYTES (64u * 1024u * 1024u)
+#define GFX_SDLGPU_TB_POOL_MAX_PER_CLASS 16
+static std::vector<PooledTransfer> transfer_pool;     // free buffers, keyed by exact class size
+static std::vector<PooledTransfer> pending_transfers; // released; in flight until this frame's submits
+static uint32_t transfer_pool_bytes;
+
+static uint32_t tb_class_size(uint32_t size) {
+    uint32_t c = 256;
+    while (c < size) {
+        c <<= 1;
+    }
+    return c;
+}
+
+static SDL_GPUTransferBuffer *tb_pool_acquire(uint32_t size, uint32_t *class_size) {
+    const uint32_t cs = tb_class_size(size);
+    *class_size = cs;
+    for (size_t i = transfer_pool.size(); i-- > 0;) {
+        if (transfer_pool[i].size == cs) {
+            SDL_GPUTransferBuffer *tb = transfer_pool[i].tb;
+            transfer_pool[i] = transfer_pool.back();
+            transfer_pool.pop_back();
+            transfer_pool_bytes -= cs;
+            return tb;
+        }
+    }
+    SDL_GPUTransferBufferCreateInfo tbci;
+    SDL_zero(tbci);
+    tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbci.size = cs;
+    return SDL_CreateGPUTransferBuffer(gpu.device, &tbci);
+}
+
+static void tb_pool_release_deferred(SDL_GPUTransferBuffer *tb, uint32_t class_size) {
+    pending_transfers.push_back({ tb, class_size });
+}
+
+// Batched copy pass (A8): consecutive in-frame uploads share one copy pass
+// on the upload CB instead of opening a private one each. Ad-hoc CBs (boot
+// time, outside start_frame..end_frame) still get a one-shot local pass
+// closed by upload_pass_finish before the immediate submit.
+static SDL_GPUCopyPass *upload_pass_get(SDL_GPUCommandBuffer *cb, bool adhoc) {
+    if (adhoc) {
+        return SDL_BeginGPUCopyPass(cb);
+    }
+    if (!gpu.upload_pass) {
+        gpu.upload_pass = SDL_BeginGPUCopyPass(cb);
+    }
+    return gpu.upload_pass;
+}
+
+static void upload_pass_finish(SDL_GPUCopyPass *cp, bool adhoc) {
+    if (adhoc && cp) {
+        SDL_EndGPUCopyPass(cp); // the batched pass stays open; upload_pass_close ends it
+    }
+}
+
+static void upload_pass_close(void) {
+    if (gpu.upload_pass) {
+        SDL_EndGPUCopyPass(gpu.upload_pass);
+        gpu.upload_pass = NULL;
     }
 }
 
@@ -883,7 +978,12 @@ static void gfx_sdlgpu_upload_texture(const uint8_t *rgba32_buf, uint32_t width,
         e.tex = NULL;
     }
 
-    const bool mips = gen_mipmaps || gpu.filter_mode == FILTER_THREE_POINT;
+    // A17: three-point never samples mips (set_sampler_parameters' use_mips
+    // excludes it, matching GL's all-NEAREST three-point min filters), so
+    // don't generate chains — or force COLOR_TARGET usage — for that mode.
+    // Safe against runtime filter switches: gfx_pc clears shaders + textures
+    // around set_texture_filter, so every texture re-imports through here.
+    const bool mips = gen_mipmaps && gpu.filter_mode != FILTER_THREE_POINT;
     uint32_t levels = 1;
     if (mips) {
         uint32_t m = width > height ? width : height;
@@ -914,16 +1014,15 @@ static void gfx_sdlgpu_upload_texture(const uint8_t *rgba32_buf, uint32_t width,
     e.w = width;
     e.h = height;
 
-    SDL_GPUTransferBufferCreateInfo tbci;
-    SDL_zero(tbci);
-    tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbci.size = width * height * 4;
-    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(gpu.device, &tbci);
+    uint32_t tb_class = 0;
+    SDL_GPUTransferBuffer *tb = tb_pool_acquire(width * height * 4, &tb_class);
     if (!tb) {
         sysLogPrintf(LOG_WARNING, "SDL_GPU: could not create texture transfer buffer: %s", SDL_GetError());
         return;
     }
-    void *map = SDL_MapGPUTransferBuffer(gpu.device, tb, false);
+    // cycle: a pooled buffer's last GPU read may still be in flight from a
+    // previous frame (see the PooledTransfer comment)
+    void *map = SDL_MapGPUTransferBuffer(gpu.device, tb, true);
     if (map) {
         memcpy(map, rgba32_buf, width * height * 4);
         SDL_UnmapGPUTransferBuffer(gpu.device, tb);
@@ -932,7 +1031,7 @@ static void gfx_sdlgpu_upload_texture(const uint8_t *rgba32_buf, uint32_t width,
     bool adhoc = false;
     SDL_GPUCommandBuffer *cb = upload_cb_get(&adhoc);
     if (cb) {
-        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cb);
+        SDL_GPUCopyPass *cp = upload_pass_get(cb, adhoc);
         SDL_GPUTextureTransferInfo src;
         SDL_zero(src);
         src.transfer_buffer = tb;
@@ -943,13 +1042,15 @@ static void gfx_sdlgpu_upload_texture(const uint8_t *rgba32_buf, uint32_t width,
         dst.h = height;
         dst.d = 1;
         SDL_UploadToGPUTexture(cp, &src, &dst, false);
-        SDL_EndGPUCopyPass(cp);
+        upload_pass_finish(cp, adhoc);
         if (mips && levels > 1) {
+            // mipmap gen records blit passes on this CB; no copy pass may be open
+            upload_pass_close();
             SDL_GenerateMipmapsForGPUTexture(cb, e.tex);
         }
         upload_cb_end(cb, adhoc);
     }
-    dead_transfers.push_back(tb);
+    tb_pool_release_deferred(tb, tb_class);
 }
 
 static void gfx_sdlgpu_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
@@ -1615,6 +1716,7 @@ static void gfx_sdlgpu_end_frame(void) {
     }
 
     if (gpu.upload_cb) {
+        upload_pass_close(); // the batched texture-upload copy pass, if open
         if (gpu.vtx_used > 0) {
             // one bulk copy of everything draw_triangles wrote this frame; the
             // upload CB is submitted before the render CB, so the data is in
@@ -1636,10 +1738,12 @@ static void gfx_sdlgpu_end_frame(void) {
         gpu.upload_cb = NULL;
     }
 
-    if (gpu.render_cb && fbs[0].color) {
+    if (gpu.render_cb && fbs[0].color && gpu.front_wanted > 0) {
         // refresh the front-buffer snapshot (recorded after all of the
         // frame's passes, so it holds the completed frame — GL_FRONT
-        // semantics for next frame's copy_framebuffer(use_back=false))
+        // semantics for next frame's copy_framebuffer(use_back=false)).
+        // Demand-driven: only while armed (see gpu.front_wanted).
+        gpu.front_wanted--;
         if (!gpu.front_tex || gpu.front_w != fbs[0].w || gpu.front_h != fbs[0].h) {
             if (gpu.front_tex) {
                 dead_textures.push_back(gpu.front_tex);
@@ -1735,6 +1839,25 @@ static void gfx_sdlgpu_end_frame(void) {
         SDL_ReleaseGPUBuffer(gpu.device, b);
     }
     dead_buffers.clear();
+
+    // pooled transfer buffers released this frame: graveyard -> pool now
+    // that the submits are in; overflow past the caps is destroyed as before
+    for (const PooledTransfer &pt : pending_transfers) {
+        int nclass = 0;
+        for (const PooledTransfer &e : transfer_pool) {
+            if (e.size == pt.size) {
+                nclass++;
+            }
+        }
+        if (transfer_pool_bytes + pt.size <= GFX_SDLGPU_TB_POOL_MAX_BYTES &&
+            nclass < GFX_SDLGPU_TB_POOL_MAX_PER_CLASS) {
+            transfer_pool.push_back(pt);
+            transfer_pool_bytes += pt.size;
+        } else {
+            SDL_ReleaseGPUTransferBuffer(gpu.device, pt.tb);
+        }
+    }
+    pending_transfers.clear();
 }
 
 static void gfx_sdlgpu_finish_render(void) {
@@ -1764,7 +1887,16 @@ static void gfx_sdlgpu_update_framebuffer_parameters(int fb_id, uint32_t width, 
     // opengl_invert_y is a GL-ism (FBO rendering is flipped there); SDL_GPU
     // renders top-down uniformly, so it's ignored on purpose.
 
-    if (fb.color && fb.w == width && fb.h == height && fb.has_depth == has_depth_buffer && fb.msaa == msaa) {
+    // A10: depth textures request SAMPLER usage only while the RT suite is
+    // on (the usage costs depth compression on every depth-tested draw).
+    // Part of the early-out tuple so an /rt toggle recreates the fb: both
+    // fb0 (gfx_run) and game_framebuffer (gfx_start_frame, whose condition
+    // includes gfx_rt_enabled) get this call every frame.
+    const bool want_depth_sampler =
+        has_depth_buffer && msaa <= 1 && gpu.depth_samplable && gfx_rt_enabled != 0;
+
+    if (fb.color && fb.w == width && fb.h == height && fb.has_depth == has_depth_buffer && fb.msaa == msaa &&
+        fb.depth_sampled == want_depth_sampler) {
         return;
     }
 
@@ -1818,9 +1950,10 @@ static void gfx_sdlgpu_update_framebuffer_parameters(int fb_id, uint32_t width, 
     if (has_depth_buffer) {
         tci.format = gpu.depth_format;
         // non-msaa depth doubles as the RT suite's depth input (msaa depth
-        // can be neither sampled nor resolved in SDL_GPU)
+        // can be neither sampled nor resolved in SDL_GPU) — but only while
+        // RT is actually on (want_depth_sampler above)
         tci.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
-                    ((msaa <= 1 && gpu.depth_samplable) ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
+                    (want_depth_sampler ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
         tci.sample_count = msaa_to_enum(msaa);
         fb.depth = SDL_CreateGPUTexture(gpu.device, &tci);
         if (!fb.depth) {
@@ -1833,8 +1966,15 @@ static void gfx_sdlgpu_update_framebuffer_parameters(int fb_id, uint32_t width, 
     fb.h = height;
     fb.msaa = (fb.color != NULL) ? msaa : 1;
     fb.has_depth = has_depth_buffer && fb.depth != NULL;
+    fb.depth_sampled = want_depth_sampler && fb.depth != NULL;
     fb.color_virgin = true;
     fb.depth_virgin = true;
+
+    if (fb_id == 0) {
+        // prime the demand-driven front snapshot so the first capture after
+        // boot / a resize isn't garbage (see gpu.front_wanted)
+        gpu.front_wanted = GFX_SDLGPU_FRONT_KEEP;
+    }
 
     // recreation-gated, so this only logs on boot / resize / msaa change —
     // ground truth for whether MSAA is actually applied to the game fb
@@ -1874,24 +2014,40 @@ static void gfx_sdlgpu_clear_framebuffer(bool clear_color, bool clear_depth) {
     // an immediate empty pass whose load ops do the clearing; full-target,
     // like GL's scissor-disabled glClear. Virgin attachments clear too so
     // their first use never loads garbage.
-    SDL_GPUColorTargetInfo ct;
-    SDL_zero(ct);
-    ct.texture = fb.color;
-    ct.load_op = (clear_color || fb.color_virgin) ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-    ct.store_op = SDL_GPU_STOREOP_STORE;
-    ct.clear_color.a = 1.0f;
+    const bool has_depth = fb.depth != NULL;
+    const bool want_color = clear_color || fb.color_virgin;
+    const bool want_depth = has_depth && (clear_depth || fb.depth_virgin);
 
     SDL_GPUDepthStencilTargetInfo ds;
     SDL_zero(ds);
-    const bool has_depth = fb.depth != NULL;
     if (has_depth) {
         ds.texture = fb.depth;
-        ds.load_op = (clear_depth || fb.depth_virgin) ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+        ds.load_op = want_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
         ds.store_op = SDL_GPU_STOREOP_STORE;
         ds.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
         ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
         ds.clear_depth = 1.0f;
     }
+
+    if (!want_color) {
+        // A7(b) safe subset: depth-only clear (the per-viewport
+        // G_CLEAR_DEPTH_EXT case) doesn't round-trip the colour attachment —
+        // SDL_GPU allows a render pass with zero colour targets and only a
+        // depth target. Nothing to do at all when depth isn't wanted either.
+        if (want_depth) {
+            SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, NULL, 0, &ds);
+            SDL_EndGPURenderPass(p);
+            fb.depth_virgin = false;
+        }
+        return;
+    }
+
+    SDL_GPUColorTargetInfo ct;
+    SDL_zero(ct);
+    ct.texture = fb.color;
+    ct.load_op = SDL_GPU_LOADOP_CLEAR; // want_color
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.clear_color.a = 1.0f;
 
     SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, has_depth ? &ds : NULL);
     SDL_EndGPURenderPass(p);
@@ -1931,7 +2087,22 @@ static void gfx_sdlgpu_copy_framebuffer(int fb_dst, int fb_src, int left, int to
     // are resolved into their readable resolve target first.
     SDL_GPUTexture *src_tex;
     uint32_t src_w = src.w, src_h = src.h;
-    if (fb_src == 0 && !use_back && gpu.front_tex) {
+    bool front_stale = false;
+    if (fb_src == 0 && !use_back) {
+        // A capture landing while dis-armed would read the snapshot from the
+        // LAST armed window — arbitrarily old (user-confirmed stale first
+        // pause-blur frame). But at capture time (game tick, between frames)
+        // fb0 itself still holds the previous COMPLETED frame — exactly the
+        // GL_FRONT semantics — so serve a stale capture from fb0 directly and
+        // arm the snapshot for the follow-ups (the combat blur re-captures
+        // every frame while active).
+        front_stale = gpu.front_wanted == 0 || !gpu.front_tex;
+
+        if (gpu.front_wanted < GFX_SDLGPU_FRONT_KEEP) {
+            gpu.front_wanted = GFX_SDLGPU_FRONT_KEEP;
+        }
+    }
+    if (fb_src == 0 && !use_back && gpu.front_tex && !front_stale) {
         src_tex = gpu.front_tex;
         src_w = gpu.front_w;
         src_h = gpu.front_h;
@@ -2128,35 +2299,33 @@ static uint32_t gfx_sdlgpu_cache_create_buffer(const float *data, size_t num_flo
         return 0;
     }
 
-    SDL_GPUTransferBufferCreateInfo tbci;
-    SDL_zero(tbci);
-    tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbci.size = size;
-    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(gpu.device, &tbci);
+    uint32_t tb_class = 0;
+    SDL_GPUTransferBuffer *tb = tb_pool_acquire(size, &tb_class);
     if (!tb) {
         SDL_ReleaseGPUBuffer(gpu.device, buf);
         return 0;
     }
-    void *map = SDL_MapGPUTransferBuffer(gpu.device, tb, false);
+    // cycle: pooled staging may still be in flight from a previous frame
+    void *map = SDL_MapGPUTransferBuffer(gpu.device, tb, true);
     if (!map) {
-        SDL_ReleaseGPUTransferBuffer(gpu.device, tb);
+        tb_pool_release_deferred(tb, tb_class);
         SDL_ReleaseGPUBuffer(gpu.device, buf);
         return 0;
     }
     memcpy(map, data, size);
     SDL_UnmapGPUTransferBuffer(gpu.device, tb);
 
-    // one-shot upload; fresh buffer so no cycling concerns. Recording happens
-    // mid-frame on the upload CB (executes before the render CB's draws);
-    // the ad-hoc path covers out-of-frame creation.
+    // one-shot upload. Recording happens mid-frame on the upload CB
+    // (executes before the render CB's draws); the ad-hoc path covers
+    // out-of-frame creation.
     bool adhoc = false;
     SDL_GPUCommandBuffer *cb = upload_cb_get(&adhoc);
     if (!cb) {
-        SDL_ReleaseGPUTransferBuffer(gpu.device, tb);
+        tb_pool_release_deferred(tb, tb_class);
         SDL_ReleaseGPUBuffer(gpu.device, buf);
         return 0;
     }
-    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cb);
+    SDL_GPUCopyPass *cp = upload_pass_get(cb, adhoc);
     SDL_GPUTransferBufferLocation src;
     src.transfer_buffer = tb;
     src.offset = 0;
@@ -2165,9 +2334,9 @@ static uint32_t gfx_sdlgpu_cache_create_buffer(const float *data, size_t num_flo
     dst.offset = 0;
     dst.size = size;
     SDL_UploadToGPUBuffer(cp, &src, &dst, false);
-    SDL_EndGPUCopyPass(cp);
+    upload_pass_finish(cp, adhoc);
     upload_cb_end(cb, adhoc);
-    dead_transfers.push_back(tb);
+    tb_pool_release_deferred(tb, tb_class);
 
     for (size_t i = 0; i < cache_bufs.size(); i++) {
         if (!cache_bufs[i].in_use) {
@@ -2326,15 +2495,13 @@ static void gfx_sdlgpu_cache_upload_palette(uint32_t id, const void *rgba, int c
     }
     e.count = count;
 
-    SDL_GPUTransferBufferCreateInfo tbci;
-    SDL_zero(tbci);
-    tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbci.size = (Uint32)count * 4;
-    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(gpu.device, &tbci);
+    uint32_t tb_class = 0;
+    SDL_GPUTransferBuffer *tb = tb_pool_acquire((Uint32)count * 4, &tb_class);
     if (!tb) {
         return;
     }
-    void *map = SDL_MapGPUTransferBuffer(gpu.device, tb, false);
+    // cycle: pooled staging may still be in flight from a previous frame
+    void *map = SDL_MapGPUTransferBuffer(gpu.device, tb, true);
     if (map) {
         memcpy(map, rgba, (size_t)count * 4);
         SDL_UnmapGPUTransferBuffer(gpu.device, tb);
@@ -2343,7 +2510,7 @@ static void gfx_sdlgpu_cache_upload_palette(uint32_t id, const void *rgba, int c
     bool adhoc = false;
     SDL_GPUCommandBuffer *cb = upload_cb_get(&adhoc);
     if (cb) {
-        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cb);
+        SDL_GPUCopyPass *cp = upload_pass_get(cb, adhoc);
         SDL_GPUTextureTransferInfo src;
         SDL_zero(src);
         src.transfer_buffer = tb;
@@ -2354,10 +2521,10 @@ static void gfx_sdlgpu_cache_upload_palette(uint32_t id, const void *rgba, int c
         dst.h = 1;
         dst.d = 1;
         SDL_UploadToGPUTexture(cp, &src, &dst, false);
-        SDL_EndGPUCopyPass(cp);
+        upload_pass_finish(cp, adhoc);
         upload_cb_end(cb, adhoc);
     }
-    dead_transfers.push_back(tb);
+    tb_pool_release_deferred(tb, tb_class);
 }
 
 static void gfx_sdlgpu_cache_bind_palette(uint32_t id, int count) {
@@ -2789,6 +2956,13 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
             rt.depth_warned = true;
             sysLogPrintf(LOG_WARNING, "SDL_GPU RT: depth format not samplable on this driver — raytracing disabled");
         }
+        return;
+    }
+    if (!fb.depth_sampled) {
+        // depth texture predates the RT toggle (A10: SAMPLER usage is only
+        // requested while RT is on); update_framebuffer_parameters recreates
+        // it within a frame of the flip, so skip quietly rather than sample
+        // a texture created without SAMPLER usage
         return;
     }
 

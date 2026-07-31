@@ -57,7 +57,7 @@ uintptr_t gfxFramebuffer;
 #define RATIO_X (gfx_current_dimensions.width / (float)SCREEN_WIDTH)
 #define RATIO_Y (gfx_current_dimensions.height / (float)SCREEN_HEIGHT)
 
-#define MAX_BUFFERED 256
+#define MAX_BUFFERED 4096
 #define MAX_LIGHTS 4
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
@@ -244,6 +244,14 @@ static struct RenderingState {
     struct ShaderProgram* shader_program;
     TextureCacheNode* textures[SHADER_MAX_TEXTURES];
 } rendering_state;
+
+// Full-screen viewport for 2D rects. gfx_draw_rectangle computes it (instead of
+// swapping rdp.viewport in and out, which forced a flush per rect) and
+// gfx_sp_tri1's is_rect path compares it against rendering_state.viewport
+// directly, so consecutive rects batch with zero viewport changes. Fields are
+// written individually so the zero-initialised padding stays zero (the 3D path
+// memcmps whole structs).
+static struct XYWidthHeight rect_viewport;
 
 struct GfxDimensions gfx_current_window_dimensions;
 int32_t gfx_current_window_position_x;
@@ -1910,12 +1918,15 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->z = z;
         d->w = w;
 
-        // Object-space position for the display-list cache (GPU-side uMVP).
-        d->ox = v->v[0];
-        d->oy = v->v[1];
-        d->oz = v->v[2];
-        // Palette index for the shader-side GPU palette (live dynamic lighting).
-        d->colour_index = (float)(v->colour >> 2);
+        // Object-space position + palette index for the display-list cache
+        // recorder (GPU-side uMVP / shader-side GPU palette). Only the recording
+        // tee in gfx_sp_tri1 reads these, so skip the stores when not recording.
+        if (g_DlCacheRecording) {
+            d->ox = v->v[0];
+            d->oy = v->v[1];
+            d->oz = v->v[2];
+            d->colour_index = (float)(v->colour >> 2);
+        }
 
         if (rsp.geometry_mode & G_FOG) {
             if (fabsf(w) < 0.001f) {
@@ -2058,8 +2069,23 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         rendering_state.depth_mode = depth_mode;
     }
 
+    if (is_rect) {
+        // Rects bypass the game viewport: apply the full-screen rect viewport
+        // (computed by gfx_draw_rectangle) only when it differs from what is
+        // bound, so consecutive rects produce zero viewport swaps and flushes.
+        // Field-wise compare: rect_viewport's padding is zero by construction,
+        // but this stays correct even if rendering_state.viewport's isn't.
+        if (rect_viewport.x != rendering_state.viewport.x || rect_viewport.y != rendering_state.viewport.y ||
+            rect_viewport.width != rendering_state.viewport.width ||
+            rect_viewport.height != rendering_state.viewport.height) {
+            gfx_flush();
+            gfx_rapi->set_viewport(rect_viewport.x, rect_viewport.y, rect_viewport.width, rect_viewport.height);
+            rendering_state.viewport = rect_viewport;
+        }
+    }
+
     if (rdp.viewport_or_scissor_changed) {
-        if (memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0) {
+        if (!is_rect && memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0) {
             gfx_flush();
             gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
             rendering_state.viewport = rdp.viewport;
@@ -2067,9 +2093,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0) {
             gfx_flush();
             // Mirror only 3D-geometry scissors, not 2D rects: gfx_draw_rectangle
-            // writes un-mirrored vertices directly and temporarily forces a
-            // full-screen viewport, so reflecting its scissor would misplace the
-            // HUD (notably in split-screen). is_rect distinguishes the two.
+            // writes un-mirrored vertices directly and draws under the
+            // full-screen rect viewport, so reflecting its scissor would misplace
+            // the HUD (notably in split-screen). is_rect distinguishes the two.
             // Chaos "Speen": an axis-aligned scissor can't follow rotated
             // geometry — per-room portal scissors would carve chunks out of
             // the spinning world. Expand 3D scissors to the whole viewport
@@ -2174,8 +2200,45 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         const uint32_t tile = rdp.first_tile_index + gfx_lod_tile_offset(i);
         if (comb->used_textures[i]) {
             if (rdp.textures_changed[i]) {
-                gfx_flush();
-                import_texture(i, tile, false);
+                // Redundant re-import check: gDPLoadTextureBlock sets
+                // textures_changed even when it loads the texture that is
+                // already bound, needlessly splitting the batch. Compute the
+                // TextureCacheKey exactly as import_texture would and skip the
+                // flush + import if it matches the currently-bound texture.
+                // Bail to the old path whenever import_texture would first
+                // mutate loaded_texture (mip/LOD setup or NULL addr) — the key
+                // can't be cheaply predicted then.
+                bool skip_import = false;
+                if (rendering_state.textures[i] != NULL) {
+                    const LoadedTexture& lt = rdp.loaded_texture[rdp.texture_tile[tile].tmem];
+                    if (!((rdp.tex_lod && tile >= rdp.first_tile_index + rdp.tex_detail) || !lt.addr)) {
+                        const uint8_t k_fmt = rdp.texture_tile[tile].fmt;
+                        const uint8_t k_siz = rdp.texture_tile[tile].siz;
+                        const uint8_t k_pal = rdp.texture_tile[tile].palette;
+                        const uint8_t k_ext = gfx_flattex_mode ? 0 : (uint8_t)(lt.ext_key >> (7 * 8));
+                        TextureCacheKey key;
+                        if (k_ext) {
+                            key = { 0, {}, 0, 0, 0, lt.ext_key, lt.id_mask };
+                        } else if (k_fmt == G_IM_FMT_CI) {
+                            key = { lt.addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, k_fmt, k_siz, k_pal };
+                        } else {
+                            key = { lt.addr, {}, k_fmt, k_siz, k_pal };
+                        }
+                        if (key == rendering_state.textures[i]->first) {
+                            // Same texture already bound: mirror import_texture's
+                            // cache-hit side effects (LRU refresh + id_mask
+                            // consumption) without flushing or re-binding.
+                            gfx_texture_cache.lru.splice(gfx_texture_cache.lru.end(), gfx_texture_cache.lru,
+                                                         rendering_state.textures[i]->second.lru_location);
+                            rdp.loaded_texture[rdp.texture_tile[tile].tmem].id_mask = 0;
+                            skip_import = true;
+                        }
+                    }
+                }
+                if (!skip_import) {
+                    gfx_flush();
+                    import_texture(i, tile, false);
+                }
                 rdp.textures_changed[i] = false;
             }
 
@@ -3035,22 +3098,26 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     ur->z = -1.0f;
     ur->w = 1.0f;
 
-    // The coordinates for texture rectangle shall bypass the viewport setting
-    struct XYWidthHeight default_viewport = { 0, (int16_t)SCREEN_HEIGHT, (uint32_t)SCREEN_WIDTH, (uint32_t)SCREEN_HEIGHT };
-    struct XYWidthHeight viewport_saved = rdp.viewport;
+    // The coordinates for texture rectangle shall bypass the viewport setting.
+    // rdp.viewport is left untouched: gfx_sp_tri1's is_rect path applies
+    // rect_viewport itself (only when it actually changes), so consecutive
+    // rects batch without per-rect viewport swaps and flushes.
     uint32_t geometry_mode_saved = rsp.geometry_mode;
 
-    gfx_adjust_viewport_or_scissor(&default_viewport);
+    rect_viewport.x = 0;
+    rect_viewport.y = (int16_t)SCREEN_HEIGHT;
+    rect_viewport.width = (uint32_t)SCREEN_WIDTH;
+    rect_viewport.height = (uint32_t)SCREEN_HEIGHT;
+    gfx_adjust_viewport_or_scissor(&rect_viewport);
 
-    rdp.viewport = default_viewport;
-    rdp.viewport_or_scissor_changed = true;
     rsp.geometry_mode = 0;
 
     gfx_sp_tri1(MAX_VERTICES + 0, MAX_VERTICES + 1, MAX_VERTICES + 3, true);
     gfx_sp_tri1(MAX_VERTICES + 1, MAX_VERTICES + 2, MAX_VERTICES + 3, true);
 
     rsp.geometry_mode = geometry_mode_saved;
-    rdp.viewport = viewport_saved;
+    // Make the next 3D triangle re-compare rdp.viewport against the rect
+    // viewport left in rendering_state and restore it.
     rdp.viewport_or_scissor_changed = true;
 
     if (cycle_type == G_CYC_COPY) {
@@ -3396,6 +3463,27 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     // splits the merge.
     struct ShaderProgram* curprg = NULL;
     uint32_t applied_group = (uint32_t)-1;
+    // Applied-state mirror for this replay: state_group is a monotonic counter
+    // assigned at record time, so two groups with IDENTICAL contents never
+    // compare equal — without value comparison every group boundary re-issues
+    // the full state block (~20-30 driver calls). Track what was actually
+    // applied and skip no-ops. Scope is this replay call only: the immediate
+    // path runs between leaves with arbitrary state, and the tail reset below
+    // already forces it to re-establish its own state afterwards.
+    bool st_have_depth = false, st_have_alpha = false, st_have_cull = false;
+    bool st_have_fog = false, st_have_route = false;
+    bool st_depth_test = false, st_depth_update = false, st_depth_compare = false, st_depth_prim = false;
+    uint16_t st_zmode = 0;
+    bool st_alpha = false, st_modulate = false;
+    int st_cull = -1;
+    int st_fog_vtx = 0;
+    float st_fog_mul = 0.0f, st_fog_off = 0.0f;
+    int st_route = 0;
+    bool st_have_tex[2] = { false, false };
+    uint32_t st_tex_id[2] = { 0, 0 };
+    bool st_tex_linear[2] = { false, false };
+    uint8_t st_tex_cms[2] = { 0, 0 }, st_tex_cmt[2] = { 0, 0 };
+    bool st_tex_lod[2] = { false, false };
     struct ShaderProgram* pend_prg = NULL;
     size_t pend_base = 0;
     size_t pend_tris = 0;
@@ -3438,18 +3526,51 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             g_DlCacheFrameVisCulled += gap_batches;
             gap_tris = 0;
             gap_batches = 0;
-            gfx_rapi->set_depth_mode(seg.depth_test, seg.depth_update, seg.depth_compare,
-                                     seg.depth_source_prim, seg.zmode);
+            if (!st_have_depth || st_depth_test != seg.depth_test || st_depth_update != seg.depth_update
+                    || st_depth_compare != seg.depth_compare || st_depth_prim != seg.depth_source_prim
+                    || st_zmode != seg.zmode) {
+                gfx_rapi->set_depth_mode(seg.depth_test, seg.depth_update, seg.depth_compare,
+                                         seg.depth_source_prim, seg.zmode);
+                st_have_depth = true;
+                st_depth_test = seg.depth_test;
+                st_depth_update = seg.depth_update;
+                st_depth_compare = seg.depth_compare;
+                st_depth_prim = seg.depth_source_prim;
+                st_zmode = seg.zmode;
+            }
             // viewport/scissor are set once above from live state (view-dependent).
-            gfx_rapi->set_use_alpha(seg.alpha_blend, seg.modulate);
+            if (!st_have_alpha || st_alpha != seg.alpha_blend || st_modulate != seg.modulate) {
+                gfx_rapi->set_use_alpha(seg.alpha_blend, seg.modulate);
+                st_have_alpha = true;
+                st_alpha = seg.alpha_blend;
+                st_modulate = seg.modulate;
+            }
             for (int i = 0; i < 2; i++) {
                 if (seg.tex_used[i]) {
-                    gfx_rapi->select_texture(i, seg.tex_id[i], seg.tex_linear[i]);
-                    gfx_rapi->set_sampler_parameters(i, seg.tex_linear[i], seg.tex_cms[i], seg.tex_cmt[i], seg.tex_lod);
+                    const bool sametex = st_have_tex[i] && st_tex_id[i] == seg.tex_id[i]
+                            && st_tex_linear[i] == seg.tex_linear[i];
+                    const bool samesamp = sametex && st_tex_cms[i] == seg.tex_cms[i]
+                            && st_tex_cmt[i] == seg.tex_cmt[i] && st_tex_lod[i] == seg.tex_lod;
+
+                    if (!sametex) {
+                        gfx_rapi->select_texture(i, seg.tex_id[i], seg.tex_linear[i]);
+                    }
+                    if (!samesamp) {
+                        gfx_rapi->set_sampler_parameters(i, seg.tex_linear[i], seg.tex_cms[i], seg.tex_cmt[i], seg.tex_lod);
+                    }
+                    st_have_tex[i] = true;
+                    st_tex_id[i] = seg.tex_id[i];
+                    st_tex_linear[i] = seg.tex_linear[i];
+                    st_tex_cms[i] = seg.tex_cms[i];
+                    st_tex_cmt[i] = seg.tex_cmt[i];
+                    st_tex_lod[i] = seg.tex_lod;
+
                     // Mark this texture most-recently-used so the LRU eviction below
                     // doesn't drop a texture that's actively on screen via cached
-                    // replay (which otherwise never refreshes the cache LRU).
-                    if (seg.tex_node[i]) {
+                    // replay (which otherwise never refreshes the cache LRU). Once
+                    // per (texture, sampler state) per replay is enough — repeats
+                    // within the same replay would splice/write identical values.
+                    if (seg.tex_node[i] && (!sametex || !samesamp)) {
                         gfx_texture_cache.lru.splice(gfx_texture_cache.lru.end(), gfx_texture_cache.lru,
                                                      seg.tex_node[i]->second.lru_location);
                         // set_sampler_parameters mutates state owned by the TEXTURE
@@ -3489,8 +3610,14 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             // CHEAT_MIRROR reflects the cached geometry (negated X in uMVP above),
             // reversing winding — flip the front-face sense so GPU back-face
             // culling keeps the same faces it would un-mirrored.
+            // (front_ccw is constant for the whole replay, so the mirror only
+            // needs to compare the cull mode.)
             const bool front_ccw = gfx_mirror_mode ? !g_DlCacheFrontCcw : g_DlCacheFrontCcw;
-            gfx_rapi->cache_set_cull(cm, front_ccw);
+            if (!st_have_cull || st_cull != cm) {
+                gfx_rapi->cache_set_cull(cm, front_ccw);
+                st_have_cull = true;
+                st_cull = cm;
+            }
             // Distance fog (G_FOG) must be recomputed per-frame from gl_Position;
             // constant fog is baked in aFog.a (use_vertex_fog = 1). Use the LIVE
             // fog position (rsp.fog_mul/offset — the frame's envStartFog moveword
@@ -3502,13 +3629,25 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             // (The recorded seg.fog_mul/off stay as the segment-split key; fog
             // COLOUR is per-vertex in the recorded VBO, which is why fog changes
             // also flush the cache game-side — chraiLuaFogCacheFlush.)
-            gfx_rapi->set_fog_params(seg.fog_compute ? 0 : 1,
-                    seg.fog_compute ? (float)rsp.fog_mul : seg.fog_mul,
-                    seg.fog_compute ? (float)rsp.fog_offset : seg.fog_off);
+            {
+                const int fog_vtx = seg.fog_compute ? 0 : 1;
+                const float fog_mul = seg.fog_compute ? (float)rsp.fog_mul : seg.fog_mul;
+                const float fog_off = seg.fog_compute ? (float)rsp.fog_offset : seg.fog_off;
+
+                if (!st_have_fog || st_fog_vtx != fog_vtx || st_fog_mul != fog_mul || st_fog_off != fog_off) {
+                    gfx_rapi->set_fog_params(fog_vtx, fog_mul, fog_off);
+                    st_have_fog = true;
+                    st_fog_vtx = fog_vtx;
+                    st_fog_mul = fog_mul;
+                    st_fog_off = fog_off;
+                }
+            }
             // Shader-side palette: route the live shade colour into this combiner's
             // shade input slots (after load_shader so it targets this program).
-            if (use_palette) {
+            if (use_palette && (!st_have_route || st_route != seg.shade_route)) {
                 gfx_rapi->set_shade_routing(seg.shade_route);
+                st_have_route = true;
+                st_route = seg.shade_route;
             }
             applied_group = seg.state_group;
         }
@@ -4225,7 +4364,11 @@ extern "C" void gfx_start_frame(void) {
 
     bool different_size = gfx_current_dimensions.width != gfx_current_game_window_viewport.width ||
                           gfx_current_dimensions.height != gfx_current_game_window_viewport.height;
-    if (gfx_framebuffers_enabled && (different_size || gfx_msaa_level > 1)) {
+    // RT: force the offscreen-framebuffer mode so the RT capture uses the fast
+    // format-matched blit path instead of the fbo==0 fallback (two
+    // glCopyTexSubImage2D reads from the default framebuffer per resolve, a
+    // read-after-write the driver must serialise).
+    if (gfx_framebuffers_enabled && (different_size || gfx_msaa_level > 1 || gfx_rt_enabled)) {
         game_renders_to_framebuffer = true;
         if (different_size) {
             gfx_rapi->update_framebuffer_parameters(game_framebuffer, gfx_current_dimensions.width,
@@ -4335,7 +4478,11 @@ extern "C" void gfx_run(Gfx* commands) {
 
     if (game_renders_to_framebuffer) {
         gfx_rapi->start_draw_to_framebuffer(0, 1);
-        gfx_rapi->clear_framebuffer(true, true);
+        // No clear here: every branch below ends in resolve_msaa_color_buffer(0, ...),
+        // which blits the FULL fb0 rect (colour), and nothing renders 3D into fb0
+        // in this mode (depth unused) — the old clear_framebuffer(true, true) was
+        // a full-window colour+depth clear overwritten wholesale every frame, on
+        // both backends (a standalone render pass on SDL_GPU).
 
         if (gfx_msaa_level > 1) {
             bool different_size = gfx_current_dimensions.width != gfx_current_game_window_viewport.width ||

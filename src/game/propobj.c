@@ -1588,8 +1588,21 @@ s32 func0f068fc8(struct prop *prop, bool arg1)
 			}
 		}
 	} else {
+#ifndef PLATFORM_N64
+		// [B3] Only compute the average the caller asked for (arg1 selects
+		// which one is returned; the other was discarded). Both getters
+		// (roomGetSettledRegionalBrightnessForPlayer / roomGetFlashBrightness)
+		// are pure reads, so skipping the unused one is bit-identical.
+		// Mirrors the door branch's actualptr/extraptr gating above.
+		if (arg1 == 0) {
+			actual = objGetAverageBrightnessInRooms(prop->rooms, 0);
+		} else if (arg1 == 1) {
+			extra = objGetAverageBrightnessInRooms(prop->rooms, 1);
+		}
+#else
 		actual = objGetAverageBrightnessInRooms(prop->rooms, 0);
 		extra = objGetAverageBrightnessInRooms(prop->rooms, 1);
+#endif
 	}
 
 	if (arg1 == 0) {
@@ -1615,11 +1628,28 @@ void propCalculateShadeColour(struct prop *prop, u8 *nextcol, u16 floorcol)
 	s32 roomb;
 	s32 tmp;
 
+#ifdef PLATFORM_N64
 	static u32 scol = 0x00;
 	static u32 salp = 0x00;
 
 	mainOverrideVariable("scol", &scol);
 	mainOverrideVariable("salp", &salp);
+#else
+	// [B12a] scol/salp have no writers besides the mainOverrideVariable debug
+	// hook (empty off-N64), so they are always 0 on the port: drop the pair,
+	// the two static globals and the dead consumer branch at the tail.
+	// [B12a] cheatIsActive(CHEAT_PERFECTDARKNESS) is a pure bank read and this
+	// runs per visible prop per player per frame - cache it once per frame.
+	// Worst case a mid-frame toggle (chaos/console; the menu toggles between
+	// frames) lands one frame late, in this render-only shade path.
+	static s32 s_pdarknessframe = -1;
+	static bool s_pdarknessactive = false;
+
+	if (s_pdarknessframe != g_Vars.lvframe60) {
+		s_pdarknessframe = g_Vars.lvframe60;
+		s_pdarknessactive = cheatIsActive(CHEAT_PERFECTDARKNESS);
+	}
+#endif
 
 	if (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_WEAPON || prop->type == PROPTYPE_DOOR) {
 		obj = prop->obj;
@@ -1650,7 +1680,11 @@ void propCalculateShadeColour(struct prop *prop, u8 *nextcol, u16 floorcol)
 	}
 
 #if VERSION >= VERSION_NTSC_1_0
+#ifndef PLATFORM_N64
+	if (obj == NULL || (obj->flags & OBJFLAG_IGNOREROOMCOLOUR) == 0 || s_pdarknessactive)
+#else
 	if (obj == NULL || (obj->flags & OBJFLAG_IGNOREROOMCOLOUR) == 0 || cheatIsActive(CHEAT_PERFECTDARKNESS))
+#endif
 #else
 	if (obj == NULL || (obj->flags & OBJFLAG_IGNOREROOMCOLOUR) == 0)
 #endif
@@ -1746,10 +1780,12 @@ void propCalculateShadeColour(struct prop *prop, u8 *nextcol, u16 floorcol)
 	nextcol[1] >>= 1;
 	nextcol[2] >>= 1;
 
+#ifdef PLATFORM_N64 // [B12a] scol/salp are always 0 on the port (see prologue)
 	if (scol || salp) {
 		nextcol[0] = nextcol[1] = nextcol[2] = scol;
 		nextcol[3] = salp;
 	}
+#endif
 }
 
 void propCalculateShadeInfo(struct prop *prop, u8 *nextcol, u16 floorcol)
@@ -7946,7 +7982,10 @@ void doorTick(struct prop *doorprop)
 	f32 prevfrac = door->frac;
 	u32 stack[2];
 
-#if VERSION < VERSION_PAL_BETA
+// [B9a] Port: debugdoor's only writer is the mainOverrideVariable debug hook
+// (empty off-N64) so it is always 0 and the block is dead; the discarded
+// sqrtf/distance body is side-effect free. Drop the static + per-frame check.
+#if VERSION < VERSION_PAL_BETA && defined(PLATFORM_N64)
 	static u32 debugdoor = 0;
 
 	mainOverrideVariable("debugdoor", &debugdoor);
@@ -8033,12 +8072,62 @@ void doorTick(struct prop *doorprop)
 	// Update frac
 #ifdef PLATFORM_N64
 	if (door->lastcalc60 < g_Vars.lvframe60 || g_Vars.lvupdate240 == 0) {
+		doorsCalcFrac(door);
+	}
 #else
 	// lastcalc60 actually stores lvframe240
 	if (door->lastcalc60 < g_Vars.lvframe240 || g_Vars.lvupdate240 == 0) {
-#endif
-		doorsCalcFrac(door);
+		// [B9b] Idle-ring early-out. For a ring where every sibling is
+		// settled closed (IDLE, frac 0, fracspeed 0), doorsCalcFrac reduces
+		// to: per sibling, back up frac into lastcalc60 (then overwrite it
+		// with the frame stamp), doorCalcIntendedFrac returning false with
+		// no side effects, an unconditional func0f08d460 (the dl.vertices
+		// restore for DOORFLAG_0004|0080 doors) and the lastcalc60 stamp;
+		// the collision and portal-frac blocks are skipped (checkcollision
+		// false). Mirror exactly that tail here and skip the call.
+		// Excluded from the gate (fall through to the full call):
+		// - laser doors mid-fade (doorCalcIntendedFrac decrements fadetime60
+		//   and writes laserfade even when IDLE);
+		// - OBJFLAG3_DOOR_STICKY doors (their rngRandom stuckage block only
+		//   runs while OPENING/CLOSING, which all-IDLE already excludes, but
+		//   err on the side of not gating them at all).
+		struct doorobj *loopdoor = door;
+		bool allidle = true;
+
+		while (loopdoor) {
+			if (loopdoor->mode != DOORMODE_IDLE
+					|| loopdoor->frac != 0.0f
+					|| loopdoor->fracspeed != 0.0f
+					|| (loopdoor->doortype == DOORTYPE_LASER && loopdoor->fadetime60 != 0)
+					|| (loopdoor->base.flags3 & OBJFLAG3_DOOR_STICKY)) {
+				allidle = false;
+				break;
+			}
+
+			loopdoor = loopdoor->sibling;
+
+			if (loopdoor == door) {
+				break;
+			}
+		}
+
+		if (allidle) {
+			loopdoor = door;
+
+			while (loopdoor) {
+				func0f08d460(loopdoor);
+				loopdoor->lastcalc60 = g_Vars.lvframe240;
+				loopdoor = loopdoor->sibling;
+
+				if (loopdoor == door) {
+					break;
+				}
+			}
+		} else {
+			doorsCalcFrac(door);
+		}
 	}
+#endif
 
 	// Consider playing a sound effect
 	if (model->definition->skel == &g_Skel13) {

@@ -181,10 +181,11 @@ include_directories("${CMAKE_SOURCE_DIR}/port/include")
 include_directories("${CMAKE_BINARY_DIR}/port/include")
 include_directories("${CMAKE_SOURCE_DIR}/port/lua")
 
-# Set Release optimization to -Og until I fix the -O2 issues
-if(NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
-  add_compile_options(-Og)
-endif()
+# Release builds use the build type's own optimization level (-O2 for
+# RelWithDebInfo). A blanket -Og used to be appended here ("until I fix the -O2
+# issues", upstream #529) which silently overrode -O2 for every TU; if -O2
+# breakage resurfaces in a specific file, pin it back down with
+# set_source_files_properties(<file> PROPERTIES COMPILE_OPTIONS -Og) instead.
 
 # Always embed DWARF debug info so the crash handler's addr2line fallback
 # (port/src/crash.c -> crashAppendDwarf) can symbolise pd.crash.log on ANY build
@@ -193,10 +194,23 @@ endif()
 # the Switch .nro is stripped separately below), so this just guarantees symbols.
 add_compile_options(-g)
 
+# GBI_FLOATS: Mtx stays float[4][4] end-to-end — mtxF2L/mtxF2LBulk/guMtxF2L
+# keep floats (applying the var8005ef10 scale where the fixed path baked it
+# in) and the fast3d gfx_sp_matrix path becomes a memcpy, killing the
+# float->s15.16->float round trip per matrix per frame. Breaks N64
+# buildability by design (this CMake build never targets N64).
+add_compile_definitions(GBI_FLOATS)
+
 # Common CFLAGS
+# -fno-strict-aliasing and -fwrapv are load-bearing for decompiled UB (type
+# punning through unions, signed overflow in transliterated MIPS arithmetic) —
+# never remove them. -fno-math-errno lets sqrtf/sinf compile to bare
+# instructions instead of errno-setting libm wrappers (nothing here reads
+# errno after math calls). -fno-inline-functions used to be here alongside the
+# -Og override; both removed together.
 add_compile_options(
-  -fno-inline-functions
   -fno-strict-aliasing
+  -fno-math-errno
   -funsigned-char
   -fwrapv
   -include "versioninfo.h"

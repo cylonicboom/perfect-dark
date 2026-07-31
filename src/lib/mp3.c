@@ -274,7 +274,12 @@ s32 func00037fc0(s32 arg0, Acmd **cmd)
 			}
 		}
 
+#ifdef PLATFORM_N64
+		// Cache-warming read-ahead for admaExec's window cache. On the port
+		// admaExec returns a direct pointer into the resident file data, so
+		// this call would do nothing.
 		mp3Dma();
+#endif
 
 		if (g_Mp3Vars.var8009c3f1 == 0) {
 			sp4c = 0;

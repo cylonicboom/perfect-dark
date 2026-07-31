@@ -2069,6 +2069,15 @@ void sndTick(void)
 	osSetThreadPri(0, osGetThreadPri(&g_AudioManager.thread) + 1);
 #endif
 
+	// On N64 this walk was protected from the audio thread by raising thread
+	// priority above it (the stubbed osSetThreadPri calls). With the port's
+	// audio thread (port/src/audio.c) the same protection is the audio mutex:
+	// the synth can free/relink states mid-walk otherwise.
+	{
+		extern void osIntLock(void);
+		osIntLock();
+	}
+
 	curtime = sndpGetCurTime();
 	state = sndpGetHeadState();
 
@@ -2094,6 +2103,11 @@ void sndTick(void)
 
 		state = (struct sndstate *)state->node.next;
 		i++;
+	}
+
+	{
+		extern void osIntUnlock(void);
+		osIntUnlock();
 	}
 
 #ifdef PLATFORM_N64

@@ -117,6 +117,9 @@ static void cleanup(void)
 		inputSaveBinds();
 		configSave(CONFIG_PATH);
 	}
+	// Join the audio thread BEFORE any SDL teardown so it is never mid-push
+	// into the stream while the subsystems go away.
+	audioThreadStop();
 	videoShutdown();
 	crashShutdown();
 	// TODO: actually shut down all subsystems

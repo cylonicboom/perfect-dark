@@ -7020,9 +7020,11 @@ s32 netConsoleCommand(const char *line)
 					extern s32 g_SndUnderruns;
 					extern s32 g_SndVoiceSteals;
 					extern s32 audioGetSamplesBuffered(void);
-					sysLogPrintf(LOG_CHAT, "SNDPOOL: underruns=%d steals=%d buffered=%d target=%d (underrun = stream drained, steal = note cut)",
+					extern s32 audioThreadActive(void);
+					sysLogPrintf(LOG_CHAT, "SNDPOOL: underruns=%d steals=%d buffered=%d target=%d thread=%s",
 							g_SndUnderruns, g_SndVoiceSteals,
-							audioGetSamplesBuffered(), g_SndQueueTargetSamples);
+							audioGetSamplesBuffered(), g_SndQueueTargetSamples,
+							audioThreadActive() ? "ON" : "OFF");
 
 					if (strcmp(arg, "reset") == 0) {
 						g_SndUnderruns = 0;
@@ -7030,6 +7032,28 @@ s32 netConsoleCommand(const char *line)
 					}
 				}
 			}
+		}
+	} else if (strcmp(cmd, "sndthread") == 0) {
+		// /sndthread [on|off]  audio synthesis on its own device-paced thread
+		// (audio.c audioThreadProc): immune to render-loop hitches, so the
+		// underrun-pop family can't occur and /sndpool depth can be lowered
+		// toward ~1100 (~50ms) for less SFX latency. off = legacy main-thread
+		// synthesis in schedAudioFrame. Config Audio.Thread (default on).
+		{
+			extern s32 g_SndThreadEnabled;
+			extern s32 audioThreadActive(void);
+
+			if (strcmp(arg, "on") == 0) {
+				g_SndThreadEnabled = 1;
+			} else if (strcmp(arg, "off") == 0) {
+				g_SndThreadEnabled = 0;
+			} else if (arg[0]) {
+				sysLogPrintf(LOG_CHAT, "usage: /sndthread [on|off]");
+			}
+
+			sysLogPrintf(LOG_CHAT, "SNDTHREAD: %s (synthesis on the %s)",
+					g_SndThreadEnabled ? "ON" : "OFF",
+					audioThreadActive() ? "audio thread" : "main thread");
 		}
 	} else if (strcmp(cmd, "envmix") == 0) {
 		// /envmix [simd|scalar]  A/B the envelope-mixer implementation

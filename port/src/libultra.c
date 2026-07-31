@@ -6,6 +6,9 @@
 #include <errno.h>
 #include <PR/os_internal.h>
 #include <PR/rcp.h>
+#ifndef DEDICATED_SERVER
+#include <SDL3/SDL.h>
+#endif
 #include "platform.h"
 #include "system.h"
 #include "input.h"
@@ -530,10 +533,63 @@ OSIntMask osGetIntMask(void)
 	return 0;
 }
 
+// --- audio-thread interrupt-mask shim ---------------------------------------
+// On N64 audio ran on its own thread, and every cross-thread critical section
+// in naudio (event-queue post/next/flush in n_event.c, sound-state alloc/free
+// in n_sndplayer.c, player registration, the seq-time read) is bracketed with
+// osSetIntMask: disable interrupts to enter, restore the saved mask to exit.
+// The port stubbed it to a no-op — fine while synthesis ran on the main
+// thread; with the audio thread (port/src/audio.c) those brackets are
+// load-bearing again, so they now take a recursive mutex. Every compiled
+// ENTER passes OS_IM_NONE (or the literal 1, same value) and every EXIT
+// passes back the value the enter returned, so the argument distinguishes
+// the two. SDL mutexes are recursive, so nested brackets balance.
+// osIntLock/osIntUnlock expose the same mutex for the port-side sections the
+// N64 protected by other means (sndTick's state walk ran at raised thread
+// priority; the mp3/ext-voice state never crossed threads at all).
+#ifndef DEDICATED_SERVER
+static SDL_Mutex *g_IntMaskMutex;
+
+void osIntLock(void)
+{
+	if (!g_IntMaskMutex) {
+		// First calls are all main-thread init (the audio thread doesn't
+		// exist yet), so lazy creation is race-free.
+		g_IntMaskMutex = SDL_CreateMutex();
+	}
+	SDL_LockMutex(g_IntMaskMutex);
+}
+
+void osIntUnlock(void)
+{
+	if (g_IntMaskMutex) {
+		SDL_UnlockMutex(g_IntMaskMutex);
+	}
+}
+
+OSIntMask osSetIntMask(OSIntMask mask)
+{
+	if (mask == OS_IM_NONE) {
+		osIntLock();
+		return OS_IM_ALL;
+	}
+	osIntUnlock();
+	return OS_IM_NONE;
+}
+#else
+void osIntLock(void)
+{
+}
+
+void osIntUnlock(void)
+{
+}
+
 OSIntMask osSetIntMask(OSIntMask mask)
 {
 	return 0;
 }
+#endif
 
 /* libc compatibility wrappers */
 

@@ -259,12 +259,25 @@ void schedStartFrame(OSSched *sc)
 	}
 }
 
+// The audio-thread mutex (libultra.c) — every synth pass holds it.
+extern void osIntLock(void);
+extern void osIntUnlock(void);
+
 void schedAudioFrame(OSSched *sc)
 {
 	s32 i;
 	s32 numpasses;
 
 	if (!g_SndDisabled) {
+		// Audio thread (audio.c audioThreadProc): synthesis is paced by the
+		// device queue on its own thread, immune to render-loop hitches —
+		// this whole render-frame-paced path stands down. /sndthread off
+		// re-enters it live (both paths hold the audio mutex per pass, so a
+		// mid-flip overlap only serializes).
+		if (audioThreadActive()) {
+			return;
+		}
+
 		// Clamp post-hitch catch-up: after a long frame diffframe60 demands
 		// that many full synthesis passes in one go, amplifying the hitch.
 		numpasses = g_Vars.diffframe60;
@@ -284,8 +297,12 @@ void schedAudioFrame(OSSched *sc)
 			// and produced crackle whenever the queue hovered at its limit
 			// (user-reported 2026-07-31). The clamp above is the real
 			// hitch-amplification fix; the queue gate is retired.
+			// osIntLock: legacy main-thread path (/sndthread off) still
+			// synchronizes against the idling audio thread's flip window.
+			osIntLock();
 			amgrFrame();
 			audioEndFrame();
+			osIntUnlock();
 		}
 
 		// Depth floor: the clamp above caps post-hitch refill, and nothing
@@ -299,8 +316,10 @@ void schedAudioFrame(OSSched *sc)
 			s32 extra;
 
 			for (extra = 0; extra < 4 && audioGetSamplesBuffered() < 736; extra++) {
+				osIntLock();
 				amgrFrame();
 				audioEndFrame();
+				osIntUnlock();
 			}
 		}
 	}

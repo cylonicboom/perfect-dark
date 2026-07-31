@@ -164,6 +164,19 @@ void amgrStartThread(void)
 {
 	osStartThread(&g_AudioManager.thread);
 	g_AudioIsThreadRunning = true;
+
+#ifndef PLATFORM_N64
+	// The port's audio thread starts HERE — the same place the N64 started
+	// its — because this is the first moment amgrFrame is safe to call:
+	// sndInit has finished the whole audio boot (amgrCreate's audioInfo/
+	// ACMDList allocations, n_alInit, sndp/seq/mp3 creation). Starting it
+	// from audioInit raced boot and crashed on a NULL audioInfo (user crash
+	// log, link=6a6c58ef, amgrFrame at audiomgr.c:346).
+	{
+		extern void audioThreadStart(void);
+		audioThreadStart();
+	}
+#endif
 }
 
 OSMesgQueue *amgrGetFrameMesgQueue(void)

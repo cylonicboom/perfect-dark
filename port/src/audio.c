@@ -25,6 +25,10 @@ extern u16 optionsGetMusicVolume(void);
 // and goes silent while the game is paused, so it resumes cleanly from the menu.
 extern s32 lvIsPaused(void);
 
+// The audio-thread mutex (libultra.c; see the audio-thread block below).
+extern void osIntLock(void);
+extern void osIntUnlock(void);
+
 #ifndef DEDICATED_SERVER
 static SDL_AudioStream *stream;
 static const s16 *nextBuf;
@@ -166,6 +170,9 @@ void audioSetMuted(s32 on)
 void audioSetHold(s32 on)
 {
 #ifndef DEDICATED_SERVER
+	// osIntLock: the audio thread reads/pushes audioHoldBuf in audioEndFrame;
+	// freeing it unlocked would be a use-after-free mid-push.
+	osIntLock();
 	if (on) {
 		audioHoldOn = 1;
 	} else {
@@ -176,6 +183,7 @@ void audioSetHold(s32 on)
 		}
 		audioHoldLen = 0;
 	}
+	osIntUnlock();
 #else
 	(void)on;
 #endif
@@ -228,6 +236,7 @@ void audioSetReverb(f32 wet)
 {
 #ifndef DEDICATED_SERVER
 	wet = wet < 0.0f ? 0.0f : wet > 1.0f ? 1.0f : wet;
+	osIntLock(); // the audio thread runs the effect chain over these buffers
 	if (wet > 0.0f && audioReverbWet <= 0.0f) {
 		// coming from off: flush stale tails
 		SDL_memset(audioReverbComb, 0, sizeof(audioReverbComb));
@@ -235,6 +244,7 @@ void audioSetReverb(f32 wet)
 		SDL_memset(audioReverbCombFilt, 0, sizeof(audioReverbCombFilt));
 	}
 	audioReverbWet = wet;
+	osIntUnlock();
 #else
 	(void)wet;
 #endif
@@ -243,10 +253,12 @@ void audioSetReverb(f32 wet)
 void audioSetReverse(s32 on)
 {
 #ifndef DEDICATED_SERVER
+	osIntLock(); // reversal ring indexes are read by the audio thread
 	audioRevOn = on ? 1 : 0;
 	audioRevPos = 0;
 	audioRevFill = 0;
 	audioRevValid = 0;
+	osIntUnlock();
 #else
 	(void)on;
 #endif
@@ -256,6 +268,7 @@ void audioSetPitch(f32 rate)
 {
 #ifndef DEDICATED_SERVER
 	rate = rate < 0.25f ? 0.25f : rate > 4.0f ? 4.0f : rate;
+	osIntLock(); // the pitch ring heads (f64 read head!) are audio-thread-read
 	if (rate != 1.0f && audioPitchRate == 1.0f) {
 		SDL_memset(audioPitchRing, 0, sizeof(audioPitchRing));
 		// start the read head one grain behind the write head, both offset
@@ -265,6 +278,7 @@ void audioSetPitch(f32 rate)
 		audioPitchFade = 0;
 	}
 	audioPitchRate = rate;
+	osIntUnlock();
 #else
 	(void)rate;
 #endif
@@ -539,7 +553,10 @@ s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic)
 	SDL_free(srcdata);
 
 	{
-		s32 slot = -1, i;
+		// osIntLock: the audio thread mixes extVoices[] in audioEndFrame;
+		// the recycle free / slot rewrite must not race a live mix pass.
+		s32 slot = -1, i, id;
+		osIntLock();
 		for (i = 0; i < EXT_VOICES; i++) {
 			if (extVoices[i].data == NULL) { slot = i; break; }
 		}
@@ -558,7 +575,9 @@ s32 audioPlayExternal(const char *path, s32 loop, s32 followMusic)
 		if (extNextVoiceId >= 0x40000000u) {
 			extNextVoiceId = 1;
 		}
-		return (s32)extVoices[slot].id;
+		id = (s32)extVoices[slot].id;
+		osIntUnlock();
+		return id;
 	}
 #endif
 }
@@ -568,6 +587,7 @@ void audioStopExternal(void)
 {
 #ifndef DEDICATED_SERVER
 	s32 i;
+	osIntLock(); // vs the audio thread's ext-voice mix (use-after-free)
 	for (i = 0; i < EXT_VOICES; i++) {
 		if (extVoices[i].data) {
 			SDL_free(extVoices[i].data);
@@ -578,6 +598,7 @@ void audioStopExternal(void)
 		extVoices[i].followMusic = 0;
 		extVoices[i].id = 0;
 	}
+	osIntUnlock();
 #endif
 }
 
@@ -594,6 +615,7 @@ void audioStopExternalVoice(s32 id)
 		return;
 	}
 
+	osIntLock(); // vs the audio thread's ext-voice mix (use-after-free)
 	for (i = 0; i < EXT_VOICES; i++) {
 		if (extVoices[i].data && extVoices[i].id == (u32)id) {
 			SDL_free(extVoices[i].data);
@@ -602,11 +624,90 @@ void audioStopExternalVoice(s32 id)
 			extVoices[i].loop = 0;
 			extVoices[i].followMusic = 0;
 			extVoices[i].id = 0;
-			return;
+			break;
 		}
 	}
+	osIntUnlock();
 #else
 	(void)id;
+#endif
+}
+
+// --- audio thread ------------------------------------------------------------
+// Synthesis paced by the device queue itself instead of the render loop: a
+// dedicated thread tops the SDL stream up to g_SndQueueTargetSamples, so a
+// long game frame (stage load, shader compile, texture churn) can no longer
+// starve the stream — the structural fix for the underrun-pop family that
+// the queue-depth raises only mitigated. schedAudioFrame stands down while
+// the thread runs (audioThreadActive); /sndthread toggles live (both paths
+// take the same lock, so a mid-flip overlap just serializes). Thread safety
+// is the N64's own design made real again: naudio's cross-thread brackets
+// (osSetIntMask) are a recursive mutex on the port now (libultra.c), the
+// synth pass holds that same mutex for its whole pass, and the few port-side
+// structures both threads touch (ext voices, hold/pitch buffers, sndTick's
+// state walk, mp3 control) take it via osIntLock/osIntUnlock.
+extern void osIntLock(void);
+extern void osIntUnlock(void);
+extern s32 g_SndDisabled;
+extern s32 g_SndQueueTargetSamples; // defined below with the underrun counters
+
+s32 g_SndThreadEnabled = 1; // config Audio.Thread; live /sndthread
+
+#ifndef DEDICATED_SERVER
+static SDL_Thread *sndThread;
+static volatile s32 sndThreadRun;
+
+static int audioThreadProc(void *arg)
+{
+	extern void amgrFrame(void);
+
+	(void)arg;
+	SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+
+	while (sndThreadRun) {
+		if (g_SndThreadEnabled && !g_SndDisabled && stream) {
+			s32 passes = 0;
+
+			// Bounded refill: each pass is one naudio frame (184/368
+			// samples). The cap only limits how fast a deep deficit
+			// recovers; the 2ms cadence refills faster than the device
+			// drains (~367 samples per 16.7ms).
+			while (sndThreadRun && passes < 8
+					&& audioGetSamplesBuffered() < g_SndQueueTargetSamples) {
+				osIntLock();
+				amgrFrame();
+				audioEndFrame();
+				osIntUnlock();
+				passes++;
+			}
+		}
+
+		SDL_Delay(2);
+	}
+
+	return 0;
+}
+#endif
+
+s32 audioThreadActive(void)
+{
+#ifndef DEDICATED_SERVER
+	return sndThread != NULL && g_SndThreadEnabled;
+#else
+	return 0;
+#endif
+}
+
+// Called from main.c's cleanup() BEFORE videoShutdown, so the thread is not
+// mid-push into SDL when the process tears SDL down.
+void audioThreadStop(void)
+{
+#ifndef DEDICATED_SERVER
+	if (sndThread) {
+		sndThreadRun = 0;
+		SDL_WaitThread(sndThread, NULL);
+		sndThread = NULL;
+	}
 #endif
 }
 
@@ -652,6 +753,27 @@ s32 audioInit(void)
 	SDL_ResumeAudioStreamDevice(stream);
 
 	return 0;
+#endif
+}
+
+// Called from amgrStartThread (audiomgr.c) — the end of sndInit's audio boot,
+// the first moment amgrFrame is safe to call (the audioInfo/ACMDList buffers
+// and the synth exist). NOT from audioInit: that raced boot and crashed on a
+// NULL audioInfo. Created even when Audio.Thread=0 — the thread idles on the
+// flag, so /sndthread can flip live.
+void audioThreadStart(void)
+{
+#ifndef DEDICATED_SERVER
+	if (sndThread || !stream) {
+		return; // already running / headless (no device, nothing to pace)
+	}
+
+	sndThreadRun = 1;
+	sndThread = SDL_CreateThread(audioThreadProc, "audio", NULL);
+	if (!sndThread) {
+		sysLogPrintf(LOG_WARNING, "audio: SDL_CreateThread failed (%s); falling back to main-thread synthesis",
+				SDL_GetError());
+	}
 #endif
 }
 
@@ -706,11 +828,16 @@ s32 g_SndVoiceSteals = 0;
 // samples (22020Hz stereo, 1 sample = 1 frame here). This depth is the
 // hitch budget: a game frame longer than the buffered audio underruns the
 // device (an audible pop), so it trades SFX latency for hitch resilience.
-// 2600 ~= 118ms — user-tuned 2026-07-31 (the old hardcoded value was
-// 1100/~50ms, underrun by ordinary long frames; 2208/~100ms still let the
-// odd pop through). Config Audio.QueueTarget; live-tune with
-// /sndpool depth N. Keep well below queueLimit (8192).
-s32 g_SndQueueTargetSamples = 2600;
+// 1104 ~= 50ms — tuned with the audio THREAD (default on): the thread is
+// immune to render-loop hitches, so the queue only needs enough depth to
+// cover the device's draw between 2ms top-ups (runtime-confirmed pop-free
+// at this depth 2026-07-31). With Audio.Thread=0 (legacy render-paced
+// synthesis) this depth IS the hitch budget again — raise it toward ~2600
+// (~118ms) there or long frames will underrun (audible pop). Config
+// Audio.QueueTarget; live-tune with /sndpool depth N. Keep well below
+// queueLimit (8192).
+s32 g_SndQueueTargetSamples = 1104;
+
 
 void audioEndFrame(void)
 {
@@ -885,6 +1012,7 @@ PD_CONSTRUCTOR static void audioConfigInit(void)
 	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 1 * 1024 * 1024);
 	configRegisterInt("Audio.QueueTarget", &g_SndQueueTargetSamples, 368, 8192);
+	configRegisterInt("Audio.Thread", &g_SndThreadEnabled, 0, 1);
 #ifndef DEDICATED_SERVER
 	configRegisterInt("Audio.ExtVolume", &extVolume, 0, 100);
 #endif

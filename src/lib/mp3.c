@@ -93,11 +93,19 @@ void mp3Init(ALHeap *heap)
 	func00038b90(func00038ba8);
 }
 
+// Game-thread mp3 control mutates g_Mp3Vars while the decode runs inside the
+// synth pass (the port's audio thread) — bracket with the audio mutex
+// (libultra.c osIntLock; a no-op stub on builds without the thread).
+extern void osIntLock(void);
+extern void osIntUnlock(void);
+
 void mp3PlayFile(uintptr_t romaddr, s32 filesize)
 {
 	if (g_Mp3Vars.var8009c3dc == NULL) {
 		return;
 	}
+
+	osIntLock();
 
 	g_Mp3Vars.romaddr = romaddr;
 	g_Mp3Vars.filesize = filesize;
@@ -112,26 +120,34 @@ void mp3PlayFile(uintptr_t romaddr, s32 filesize)
 	mp3Dma();
 
 	g_Mp3Vars.var8009c3e0 = 4;
+
+	osIntUnlock();
 }
 
 void func00037e1c(void)
 {
+	osIntLock();
 	g_Mp3Vars.var8009c3e0 = 3;
+	osIntUnlock();
 }
 
 void func00037e38(void)
 {
+	osIntLock();
 	if (g_Mp3Vars.var8009c3e0 == 1) {
 		g_Mp3Vars.var8009c3e0 = 2;
 	}
+	osIntUnlock();
 }
 
 void func00037e68(void)
 {
+	osIntLock();
 	if (g_Mp3Vars.var8009c3e0 == 2) {
 		g_Mp3Vars.var8009c3f0 = 5;
 		g_Mp3Vars.var8009c3e0 = 5;
 	}
+	osIntUnlock();
 }
 
 s32 func00037ea4(void)

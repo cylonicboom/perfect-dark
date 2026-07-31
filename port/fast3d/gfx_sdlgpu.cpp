@@ -622,6 +622,63 @@ static void end_pass(void) {
     }
 }
 
+// A7: deferred clears. gfx_sdlgpu_clear_framebuffer no longer runs an
+// immediate empty render pass — it re-arms the virgin flags and the NEXT
+// real pass on the target clears via its load-ops (ensure_pass), fusing
+// split colour/depth clears into one and deleting the per-clear empty-pass
+// round trip. The one obligation that creates: a framebuffer whose clear is
+// still pending must apply it before its contents are READ — blit source or
+// partial-blit destination (copy_framebuffer), TILE_FB sampling
+// (select_texture_fb), the RT resolve, the present/front-snapshot path — or
+// the reader sees pre-clear pixels. This runs the old empty clear pass for
+// exactly those cases; in a normal frame draws always follow clears and it
+// never fires.
+static void flush_pending_clear(uint32_t fb_id) {
+    if (fb_id >= fbs.size() || !gpu.render_cb) {
+        return;
+    }
+    GpuFb &fb = fbs[fb_id];
+    const bool want_color = fb.color_virgin && fb.color != NULL;
+    const bool want_depth = fb.depth_virgin && fb.depth != NULL;
+    if (!want_color && !want_depth) {
+        return;
+    }
+
+    end_pass(); // only one render pass may be open on the command buffer
+
+    SDL_GPUDepthStencilTargetInfo ds;
+    SDL_zero(ds);
+    if (want_depth) {
+        ds.texture = fb.depth;
+        ds.load_op = SDL_GPU_LOADOP_CLEAR;
+        ds.store_op = SDL_GPU_STOREOP_STORE;
+        ds.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ds.clear_depth = 1.0f;
+    }
+
+    if (!want_color) {
+        SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, NULL, 0, &ds);
+        SDL_EndGPURenderPass(p);
+        fb.depth_virgin = false;
+        return;
+    }
+
+    SDL_GPUColorTargetInfo ct;
+    SDL_zero(ct);
+    ct.texture = fb.color;
+    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.clear_color.a = 1.0f;
+
+    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, want_depth ? &ds : NULL);
+    SDL_EndGPURenderPass(p);
+    fb.color_virgin = false;
+    if (want_depth) {
+        fb.depth_virgin = false;
+    }
+}
+
 static void apply_viewport(void) {
     if (!st.pass || st.vp_w <= 0 || st.vp_h <= 0) {
         return;
@@ -1807,6 +1864,10 @@ static void gfx_sdlgpu_start_frame(void) {
 }
 
 static void gfx_sdlgpu_end_frame(void) {
+    // A7: the present blit + front-snapshot path read fb0 below — a clear
+    // still pending there (nothing drew this frame) must apply first.
+    flush_pending_clear(0);
+
     end_pass();
 
     if (gpu.vtx_map) {
@@ -2135,61 +2196,36 @@ static void gfx_sdlgpu_clear_framebuffer(bool clear_color, bool clear_depth) {
     if (!gpu.render_cb) {
         return;
     }
+    // A7: defer the clear — re-arm the virgin flags and let the next real
+    // pass's load-ops do it (ensure_pass), fusing split colour/depth clears
+    // and deleting the empty render pass this function used to record per
+    // call. Draws already recorded target the pre-clear content; ending the
+    // open pass keeps ordering (its stores are then overwritten by the
+    // deferred CLEAR load). flush_pending_clear covers every
+    // read-before-next-draw case. Full-target like GL's scissor-disabled
+    // glClear, exactly as before.
     GpuFb &fb = fbs[st.cur_fb];
-    if (!fb.color) {
-        return;
+
+    if (clear_color || clear_depth) {
+        end_pass();
     }
-
-    end_pass();
-
-    // an immediate empty pass whose load ops do the clearing; full-target,
-    // like GL's scissor-disabled glClear. Virgin attachments clear too so
-    // their first use never loads garbage.
-    const bool has_depth = fb.depth != NULL;
-    const bool want_color = clear_color || fb.color_virgin;
-    const bool want_depth = has_depth && (clear_depth || fb.depth_virgin);
-
-    SDL_GPUDepthStencilTargetInfo ds;
-    SDL_zero(ds);
-    if (has_depth) {
-        ds.texture = fb.depth;
-        ds.load_op = want_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-        ds.store_op = SDL_GPU_STOREOP_STORE;
-        ds.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-        ds.clear_depth = 1.0f;
+    if (clear_color && fb.color) {
+        fb.color_virgin = true;
     }
-
-    if (!want_color) {
-        // A7(b) safe subset: depth-only clear (the per-viewport
-        // G_CLEAR_DEPTH_EXT case) doesn't round-trip the colour attachment —
-        // SDL_GPU allows a render pass with zero colour targets and only a
-        // depth target. Nothing to do at all when depth isn't wanted either.
-        if (want_depth) {
-            SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, NULL, 0, &ds);
-            SDL_EndGPURenderPass(p);
-            fb.depth_virgin = false;
-        }
-        return;
+    if (clear_depth && fb.depth) {
+        fb.depth_virgin = true;
     }
-
-    SDL_GPUColorTargetInfo ct;
-    SDL_zero(ct);
-    ct.texture = fb.color;
-    ct.load_op = SDL_GPU_LOADOP_CLEAR; // want_color
-    ct.store_op = SDL_GPU_STOREOP_STORE;
-    ct.clear_color.a = 1.0f;
-
-    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, has_depth ? &ds : NULL);
-    SDL_EndGPURenderPass(p);
-    fb.color_virgin = false;
-    fb.depth_virgin = false;
 }
 
 static void gfx_sdlgpu_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool flip_y, bool use_back) {
     if (fb_dst >= (int)fbs.size() || fb_src >= (int)fbs.size() || fb_dst < 0 || fb_src < 0) {
         return;
     }
+    // A7: apply deferred clears before the blit reads src (stale pixels) or
+    // partially overwrites dst (the uncovered border must be cleared pixels).
+    flush_pending_clear((uint32_t)fb_src);
+    flush_pending_clear((uint32_t)fb_dst);
+
     GpuFb &src = fbs[fb_src];
     GpuFb &dst = fbs[fb_dst];
 
@@ -2348,6 +2384,12 @@ static void *gfx_sdlgpu_get_framebuffer_texture_id(int fb_id) {
 }
 
 static void gfx_sdlgpu_select_texture_fb(int fb_id) {
+    // A7: the fb is about to be SAMPLED (menu blur etc.) — apply a deferred
+    // clear now, outside any draw's open pass (selection happens at flush
+    // boundaries; bind_tile_samplers runs mid-pass where we can't).
+    if (fb_id >= 0) {
+        flush_pending_clear((uint32_t)fb_id);
+    }
     st.tile[0].kind = TILE_FB;
     st.tile[0].idx = (uint32_t)fb_id;
     if (st.fs_uni.three_point_filter0 != 1) {
@@ -3138,6 +3180,9 @@ static void gfx_sdlgpu_rt_resolve(const void *camv, int vx, int vy, int vw, int 
     if (cam->playernum < 0 || cam->playernum >= RT_MAX_PLAYERS) {
         return;
     }
+    // A7: RT samples this fb's colour + depth — apply a deferred clear first.
+    flush_pending_clear((uint32_t)st.cur_fb);
+
     GpuFb &fb = fbs[st.cur_fb];
     if (!fb.color || !fb.depth) {
         return;

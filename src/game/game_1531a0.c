@@ -2803,6 +2803,21 @@ glabel textMeasure
 );
 #else
 // Mismatch: Regalloc
+// B8: content-hashed measurement memo. Menus re-measure the same strings
+// every frame (dialogCalculateContentSize + the render sites), and every
+// measure walks per glyph with kerning lookups. The key hashes the STRING
+// CONTENT — pointer-keying would be unsafe (lang-bank reloads and sprintf
+// scratch buffers reuse addresses with new text) — plus every input that
+// shapes the result (fonts, lineheight arg, the var8007fac4 kerning adjust,
+// the ScaleX width multiplier, g_Jpn). One hash pass over the bytes is far
+// cheaper than the glyph walk. Direct-mapped, content-keyed, so it never
+// needs invalidation; a collision merely recomputes.
+static struct {
+	u64 key;
+	s32 w;
+	s32 h;
+} g_TextMeasureMemo[512];
+
 void textMeasure(s32 *textheight, s32 *textwidth, char *text, struct fontchar *font1, struct font *font2, s32 lineheight)
 {
 	char prevchar;
@@ -2815,6 +2830,37 @@ void textMeasure(s32 *textheight, s32 *textwidth, char *text, struct fontchar *f
 	struct fontchar *sp50;
 #endif
 	s32 tmp;
+	u64 memokey = 0;
+	u32 memoidx = 0;
+
+	if (text) {
+		u64 h = 1469598103934665603ull;
+		const u8 *p = (const u8 *)text;
+
+		while (*p) {
+			h = (h ^ *p++) * 1099511628211ull;
+		}
+
+		h = (h ^ (uintptr_t)font1) * 1099511628211ull;
+		h = (h ^ (uintptr_t)font2) * 1099511628211ull;
+		h = (h ^ (u32)lineheight) * 1099511628211ull;
+		h = (h ^ (u32)var8007fac4) * 1099511628211ull;
+		h = (h ^ (u32)(g_ScaleX == 1 ? var8007fad0 : 0)) * 1099511628211ull;
+		h = (h ^ (u32)g_Jpn) * 1099511628211ull;
+
+		if (h == 0) {
+			h = 1; // 0 marks an empty memo slot
+		}
+
+		memokey = h;
+		memoidx = (u32)(h >> 40) & (ARRAYCOUNT(g_TextMeasureMemo) - 1);
+
+		if (g_TextMeasureMemo[memoidx].key == h) {
+			*textwidth = g_TextMeasureMemo[memoidx].w;
+			*textheight = g_TextMeasureMemo[memoidx].h;
+			return;
+		}
+	}
 
 	prevchar = 'H';
 	thischar = '\0';
@@ -2927,6 +2973,12 @@ void textMeasure(s32 *textheight, s32 *textwidth, char *text, struct fontchar *f
 
 	if (longest > *textwidth) {
 		*textwidth = longest;
+	}
+
+	if (memokey != 0) {
+		g_TextMeasureMemo[memoidx].key = memokey;
+		g_TextMeasureMemo[memoidx].w = *textwidth;
+		g_TextMeasureMemo[memoidx].h = *textheight;
 	}
 }
 #endif

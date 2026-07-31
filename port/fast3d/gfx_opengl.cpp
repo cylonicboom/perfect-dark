@@ -19,6 +19,7 @@
 
 #include "gfx_cc.h"
 #include "gfx_rendering_api.h"
+#include "gfx_opengl.h"
 #include "gfx_pc.h"
 #include "gfx_rt.h"
 #include "gfx_retro.h"
@@ -165,6 +166,18 @@ static int s_active_texture_unit = -1;              // GL_TEXTURE0-relative
 static uint32_t s_bound_texture[GFX_NUM_TEX_UNITS] = { 0xffffffffu, 0xffffffffu, 0xffffffffu };
 static int s_blend_enabled = -1;                    // glEnable(GL_BLEND)
 static int s_blend_modulate = -1;                   // 1 = DST_COLOR/ZERO, 0 = SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+
+// A20: value shadows for gfx_opengl_get_rt_state (the RT suite used ~24
+// glGet* round-trips per resolve per player to save state; these let it
+// read CPU-side instead).
+static int s_last_viewport[4];
+static int s_last_scissor[4];
+static int s_last_depth_func = GL_LESS;
+
+static inline void gfx_opengl_depth_func(GLenum func) {
+    glDepthFunc(func);
+    s_last_depth_func = (int)func;
+}
 static int s_polygon_offset_fill = -1;              // 1 = enabled at (-2,-2), 0 = disabled at (0,0)
 
 static void gfx_opengl_invalidate_state_shadows(void) {
@@ -1617,27 +1630,27 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
         if (depth_compare) {
             switch (zmode) {
                 case ZMODE_INTER:
-                    glDepthFunc(GL_LEQUAL);
+                    gfx_opengl_depth_func(GL_LEQUAL);
                     gfx_opengl_set_polygon_offset_state(0);
                     break;
 
                 case ZMODE_OPA:
                 case ZMODE_XLU:
                     if (depth_source_prim) {
-                        glDepthFunc(GL_LEQUAL);
+                        gfx_opengl_depth_func(GL_LEQUAL);
                     } else {
-                        glDepthFunc(GL_LESS);
+                        gfx_opengl_depth_func(GL_LESS);
                     }
                     gfx_opengl_set_polygon_offset_state(0);
                     break;
 
                 case ZMODE_DEC:
-                    glDepthFunc(GL_LEQUAL);
+                    gfx_opengl_depth_func(GL_LEQUAL);
                     gfx_opengl_set_polygon_offset_state(1);
                     break;
             }
         } else {
-            glDepthFunc(GL_ALWAYS);
+            gfx_opengl_depth_func(GL_ALWAYS);
             gfx_opengl_set_polygon_offset_state(0);
         }
     } else {
@@ -1655,10 +1668,18 @@ static void gfx_opengl_set_depth_range(float znear, float zfar) {
 
 static void gfx_opengl_set_viewport(int x, int y, int width, int height) {
     glViewport(x, y, width, height);
+    s_last_viewport[0] = x;
+    s_last_viewport[1] = y;
+    s_last_viewport[2] = width;
+    s_last_viewport[3] = height;
 }
 
 static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
     glScissor(x, y, width, height);
+    s_last_scissor[0] = x;
+    s_last_scissor[1] = y;
+    s_last_scissor[2] = width;
+    s_last_scissor[3] = height;
 }
 
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
@@ -2228,7 +2249,7 @@ static void gfx_opengl_init(void) {
     if (GLAD_GL_ARB_depth_clamp) {
         glEnable(GL_DEPTH_CLAMP);
     }
-    glDepthFunc(GL_LEQUAL);
+    gfx_opengl_depth_func(GL_LEQUAL);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     if (!gl_es) {
@@ -2560,6 +2581,57 @@ static bool gfx_opengl_shader_wireframe_supported(void) {
 // A19: probed once in gfx_opengl_init (desktop GL 3.3+ = texture swizzle core).
 static bool gfx_opengl_compact_texfmt_supported(void) {
     return gl_compact_texfmt;
+}
+
+// A20: fill the RT suite's pre-pass state snapshot from the CPU-side value
+// shadows — zero glGet* round-trips (rtSaveState used ~24 per resolve per
+// player). Validity leans on WHEN this runs: at the G_RTRESOLVE_EXT marker,
+// a gfx_flush boundary mid-game-render, where (a) the bound framebuffer is
+// the tracked current one, (b) GL_SCISSOR_TEST is enabled (the transient
+// disables in clear/copy/resolve all re-enable before returning), (c) cull
+// is disabled (the immediate path culls on the CPU; cache_replay_end
+// restores disabled), and (d) the global VAO/VBO are bound (every transient
+// bind restores them). The restore side is untouched.
+void gfx_opengl_get_rt_state(struct GfxGlRtState* s) {
+    int i;
+
+    s->draw_fbo = (int)framebuffers[current_framebuffer].fbo;
+    s->read_fbo = s->draw_fbo;
+
+    for (i = 0; i < 4; i++) {
+        s->viewport[i] = s_last_viewport[i];
+        s->scissor_box[i] = s_last_scissor[i];
+    }
+
+    s->scissor_test = 1;
+    s->depth_test = s_wireframe_depth_test ? 1 : 0;
+    s->blend = s_blend_enabled == 1;
+    s->cull = 0;
+    s->depth_mask = current_depth_mask ? 1 : 0;
+    s->depth_func = s_last_depth_func;
+
+    if (s_blend_modulate == 1) {
+        s->blend_src_rgb = GL_DST_COLOR;
+        s->blend_dst_rgb = GL_ZERO;
+    } else {
+        s->blend_src_rgb = GL_SRC_ALPHA;
+        s->blend_dst_rgb = GL_ONE_MINUS_SRC_ALPHA;
+    }
+    s->blend_src_a = s->blend_src_rgb;
+    s->blend_dst_a = s->blend_dst_rgb;
+
+    s->program = gfx_current_shader_program != NULL ? (int)gfx_current_shader_program->opengl_program_id : 0;
+    s->active_texture = GL_TEXTURE0 + (s_active_texture_unit >= 0 ? s_active_texture_unit : 0);
+
+    for (i = 0; i < 8; i++) {
+        s->tex_binding[i] = 0;
+    }
+    for (i = 0; i < GFX_NUM_TEX_UNITS; i++) {
+        s->tex_binding[i] = s_bound_texture[i] != 0xffffffffu ? (int)s_bound_texture[i] : 0;
+    }
+
+    s->vao = (int)opengl_vao;
+    s->array_buffer = (int)opengl_vbo;
 }
 
 struct GfxRenderingAPI gfx_opengl_api = {

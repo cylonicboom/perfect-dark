@@ -31,6 +31,7 @@
 #include <math.h>
 
 #include "glad/glad.h"
+#include "gfx_opengl.h"
 #include "gfx_rt.h"
 #include "gfx_rt_common.h" // shared pass bodies, quality table, matrix helpers
 
@@ -149,31 +150,39 @@ struct RtGLState {
 };
 
 static void rtSaveState(RtGLState* s) {
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &s->draw_fbo);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &s->read_fbo);
-    glGetIntegerv(GL_VIEWPORT, s->viewport);
-    glGetIntegerv(GL_SCISSOR_BOX, s->scissor_box);
-    s->scissor_test = glIsEnabled(GL_SCISSOR_TEST);
-    s->depth_test = glIsEnabled(GL_DEPTH_TEST);
-    s->blend = glIsEnabled(GL_BLEND);
-    s->cull = glIsEnabled(GL_CULL_FACE);
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &s->depth_mask);
-    glGetIntegerv(GL_DEPTH_FUNC, &s->depth_func);
-    glGetIntegerv(GL_BLEND_SRC_RGB, &s->blend_src_rgb);
-    glGetIntegerv(GL_BLEND_DST_RGB, &s->blend_dst_rgb);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &s->blend_src_a);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &s->blend_dst_a);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &s->program);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &s->active_texture);
+    // A20: filled from gfx_opengl's CPU-side value shadows — zero glGet*
+    // round-trips (this used to issue ~24 queries per resolve per player,
+    // including 8 glActiveTexture+glGet pairs). The restore below is
+    // unchanged, so the state put BACK is exactly what the shadows say the
+    // game path had — the same values the queries would have returned at
+    // this flush boundary. See gfx_opengl_get_rt_state for the validity
+    // argument per field.
+    GfxGlRtState g;
+    gfx_opengl_get_rt_state(&g);
+
+    s->draw_fbo = g.draw_fbo;
+    s->read_fbo = g.read_fbo;
+    for (int i = 0; i < 4; i++) {
+        s->viewport[i] = g.viewport[i];
+        s->scissor_box[i] = g.scissor_box[i];
+    }
+    s->scissor_test = g.scissor_test;
+    s->depth_test = g.depth_test;
+    s->blend = g.blend;
+    s->cull = g.cull;
+    s->depth_mask = g.depth_mask;
+    s->depth_func = g.depth_func;
+    s->blend_src_rgb = g.blend_src_rgb;
+    s->blend_dst_rgb = g.blend_dst_rgb;
+    s->blend_src_a = g.blend_src_a;
+    s->blend_dst_a = g.blend_dst_a;
+    s->program = g.program;
+    s->active_texture = g.active_texture;
     for (int i = 0; i < 8; i++) {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &s->tex_binding[i]);
+        s->tex_binding[i] = g.tex_binding[i];
     }
-    s->vao = 0;
-    if (glad_glGetIntegerv && glad_glBindVertexArray) {
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &s->vao);
-    }
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &s->array_buffer);
+    s->vao = g.vao;
+    s->array_buffer = g.array_buffer;
 }
 
 static void rtRestoreState(const RtGLState* s) {

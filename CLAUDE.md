@@ -14,12 +14,36 @@ $env:MSYSTEM='MINGW64'; $env:CHERE_INVOKING='1'
 - Builds can take minutes — use a long timeout or run in the background and tail the output.
 - **Do not run the built game** (`pd.*.exe`): it needs a ROM and opens a window. The user runs and reports back.
 
-## Code Writing Guidelines
+## Code Writing Guidelines — PORT-FIRST POLICY (2026-07-31)
 
-- **Do not rename decompiled symbols.** Identifiers under `src/` map to the original N64 binary; renaming silently breaks the decompilation contract.
-- Keep changes minimal and focused on the task at hand — no surrounding cleanup, no speculative abstractions, no refactor-while-you're-there.
-- Respect existing patterns. If you're adding netplay-aware code, use the guard patterns documented in `src/game/CLAUDE.md` (`#ifndef PLATFORM_N64`, `g_NetMode != NETMODE_CLIENT`).
-- Take notes as you work and re-read changes before reporting done — this catches scope creep and broken assumptions early.
+This repo is **no longer N64-matching**. The old byte-matching contract is retired; the
+binding contracts are now, in order:
+
+1. **Netplay determinism.** Server and clients must run identical sims. Bit-identical
+   rewrites ship alone; behaviour-changing ones ([COORD]) deploy server+clients together
+   through the soak harness. This is physics, not tradition — it survives every other rule.
+2. **Serialized formats are frozen.** Any struct that is memcpy'd to disk or wire as an
+   image (mpsetups blocks, ROM mpconfig, wad tails, `MAX_BOTS_PRESET`-pinned images) keeps
+   its exact layout; versioned formats bump their version on ANY layout change.
+3. **Keep decompiled symbol NAMES.** Not for matching — they are the stable coordinate
+   system of 60+ docs, the memory base, the crash-symbol archive, and community code
+   (mods/branches merge because names align). Renaming an individual function during a
+   deep rework is fine with a doc note; mass renaming is not.
+
+What the retirement of matching NEWLY ALLOWS:
+- **Struct layout changes** (repacking for cache locality, growing fields) for any struct
+  NOT covered by rule 2. Check the serialization surfaces first (grep for the struct in
+  save/wire code), then repack freely.
+- **Deleting N64-only code paths** when touching a function, instead of `#ifdef` fencing
+  them. New work does not need `#ifndef PLATFORM_N64` guards at all. Existing guards can
+  be collapsed opportunistically (don't sweep the repo for them; collapse as you touch).
+- Algorithmic rewrites without preserving quirk-for-quirk behaviour, where rule 1 allows.
+
+Unchanged craft rules:
+- Keep changes minimal and focused on the task at hand — no drive-by cleanup.
+- Respect existing patterns; netplay-aware code uses the guards in `src/game/CLAUDE.md`
+  (`g_NetMode != NETMODE_CLIENT` etc.).
+- Take notes as you work and re-read changes before reporting done.
 
 ## Repository Overview
 

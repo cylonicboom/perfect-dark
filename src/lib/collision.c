@@ -14,6 +14,9 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "system.h"
+#endif
 
 #define SURFACE_FLOOR   0
 #define SURFACE_CEILING 1
@@ -1232,6 +1235,415 @@ static u16 cdRoomGeoFlagUnion(s32 roomnum)
 
 	return unionflags;
 }
+
+/**
+ * Per-room XZ spatial index for the cylinder collectors (a pure accelerator
+ * over the room geo streams; composes with cdRoomGeoFlagUnion above).
+ *
+ * Built lazily at first query and cached for the stage (the room tile stream
+ * is immutable after stageParseTiles - the only runtime geo writers are the
+ * per-prop geometry buffers, which this index never covers). Per room it
+ * records, IN STREAM ORDER, one {xz bbox, byte offset} entry per geo, plus a
+ * coarse CD_GRID_DIM x CD_GRID_DIM cell grid over the room's tile bounds
+ * whose cells hold bitsets of the entries overlapping them.
+ *
+ * A query ORs the bitsets of every cell its padded XZ range overlaps and
+ * walks the set bits ascending - which is exactly ascending stream order, so
+ * the candidates visited are a stream-ordered subset of the linear walk.
+ * Determinism argument: an entry is skipped ONLY when its cell range is
+ * disjoint from the query's, which (cell mapping being monotone, and the
+ * query range padded by CD_GRID_PAD >> f32 rounding error at world-coord
+ * magnitudes) proves the entry's XZ bbox fails the arms' own "bbox vs
+ * pos +/- radius" pre-test - the same rejection the linear walk would make,
+ * with no other observable effect. GEOTYPE_BLOCK / GEOTYPE_CYL arms have NO
+ * XZ pre-test in these collectors, so those entries are stored with a huge
+ * bbox and land in every cell = always visited. Everything else (flags, Y,
+ * fine tests, maxcollisions truncation) still runs in the real arm code, so
+ * outputs and tie-breaks are bit-identical.
+ *
+ * Fallbacks (always the plain linear walk): master toggle off, room count /
+ * per-room entry / arena caps exceeded, malformed stream, prop-local geo
+ * streams (the index is only consulted when the caller passes a room stream
+ * via g_CdGridRoomHint), or start/end not matching the room's stream.
+ *
+ * g_CdSpatialIndexVerify runs BOTH paths per room-query and warns on any
+ * divergence in the produced collision arrays (count, geo pointers, order).
+ */
+#define CD_GRID_MAXROOMS          2048
+#define CD_GRID_DIM               8
+#define CD_GRID_CELLS             (CD_GRID_DIM * CD_GRID_DIM)
+#define CD_GRID_MAXENTRIESPERROOM 4096
+#define CD_GRID_ROOMWORDS         (CD_GRID_MAXENTRIESPERROOM / 32)
+#define CD_GRID_ARENAENTRIES      (256 * 1024)
+#define CD_GRID_BITWORDS          (2 * CD_GRID_ARENAENTRIES + CD_GRID_CELLS * CD_GRID_MAXROOMS)
+#define CD_GRID_PAD               8.0f
+#define CD_GRID_HUGE              1e30f
+#define CD_GRID_VERIFYMAX         512
+
+#define CD_GRIDSTATE_UNBUILT 0
+#define CD_GRIDSTATE_READY   1
+#define CD_GRIDSTATE_LINEAR  2
+
+s32 g_CdSpatialIndexEnabled = 1;
+s32 g_CdSpatialIndexVerify = 0;
+
+struct cdgridentry {
+	f32 xmin;
+	f32 xmax;
+	f32 zmin;
+	f32 zmax;
+	u32 offset;
+};
+
+struct cdroomgrid {
+	u8 state;
+	s32 numentries;
+	u32 entrybase;
+	u32 bitbase;
+	u32 cellwords;
+	f32 xmin;
+	f32 zmin;
+	f32 xscale;
+	f32 zscale;
+};
+
+struct cdgridquery {
+	u32 words[CD_GRID_ROOMWORDS];
+	const struct cdgridentry *entries;
+	u8 *base;
+	s32 numwords;
+	s32 wordindex;
+	s32 wordbase;
+	u32 pending;
+};
+
+static struct cdgridentry g_CdGridEntries[CD_GRID_ARENAENTRIES];
+static u32 g_CdGridBitWords[CD_GRID_BITWORDS];
+static struct cdroomgrid g_CdGridRooms[CD_GRID_MAXROOMS];
+static u32 g_CdGridEntryTop = 0;
+static u32 g_CdGridBitTop = 0;
+static u8 *g_CdGridBase = NULL;
+static s32 g_CdGridStage = -1;
+static s32 g_CdGridRoomHint = -1;
+static struct collision g_CdGridVerifyCollisions[CD_GRID_VERIFYMAX];
+static u32 g_CdGridVerifyWarnCount = 0;
+
+/**
+ * Monotone in v for fixed min/scale (f32 subtract and multiply-by-positive
+ * are monotone; the clamps keep it so) - which is what the conservative
+ * overlap argument in the header comment relies on. NaN maps to cell 0.
+ */
+static s32 cdGridCell(f32 v, f32 min, f32 scale)
+{
+	f32 f = (v - min) * scale;
+
+	if (!(f > 0.0f)) {
+		return 0;
+	}
+
+	if (f >= (f32) CD_GRID_DIM) {
+		return CD_GRID_DIM - 1;
+	}
+
+	return (s32) f;
+}
+
+static void cdGridBuildRoom(s32 roomnum)
+{
+	struct cdroomgrid *grid = &g_CdGridRooms[roomnum];
+	u8 *start = g_TileFileData.u8 + g_TileRooms[roomnum];
+	u8 *end = g_TileFileData.u8 + g_TileRooms[roomnum + 1];
+	struct geo *geo = (struct geo *) start;
+	struct cdgridentry *entries = &g_CdGridEntries[g_CdGridEntryTop];
+	s32 numentries = 0;
+	f32 roomxmin = 0.0f;
+	f32 roomxmax = 1.0f;
+	f32 roomzmin = 0.0f;
+	f32 roomzmax = 1.0f;
+	bool haveroombbox = false;
+	f32 xextent;
+	f32 zextent;
+	u32 cellwords;
+	u32 bitwordsneeded;
+	u32 i;
+
+	// Any early return leaves the room permanently on the linear walk
+	// (and consumes no arena space - the tops are only bumped on success)
+	grid->state = CD_GRIDSTATE_LINEAR;
+
+	while (geo < (struct geo *) end) {
+		struct cdgridentry *entry;
+		f32 xmin;
+		f32 xmax;
+		f32 zmin;
+		f32 zmax;
+		u32 size;
+
+		if (geo->type == GEOTYPE_TILE_I) {
+			// Same bbox reads and stride as the collector arms
+			struct geotilei *tile = (struct geotilei *) geo;
+			xmin = *(s16 *)(tile->xmin + (uintptr_t)tile);
+			xmax = *(s16 *)(tile->xmax + (uintptr_t)tile);
+			zmin = *(s16 *)(tile->zmin + (uintptr_t)tile);
+			zmax = *(s16 *)(tile->zmax + (uintptr_t)tile);
+			size = tile->header.numvertices * 6 + 0xe;
+		} else if (geo->type == GEOTYPE_TILE_F) {
+			struct geotilef *tile = (struct geotilef *) geo;
+			xmin = tile->vertices[tile->xmin].x;
+			xmax = tile->vertices[tile->xmax].x;
+			zmin = tile->vertices[tile->zmin].z;
+			zmax = tile->vertices[tile->zmax].z;
+			size = (tile->header.numvertices - 0x40) * 0xc + 0x310;
+		} else if (geo->type == GEOTYPE_BLOCK) {
+			// The BLOCK and CYL collector arms have no XZ pre-test, so these
+			// entries must ALWAYS be visited: huge bbox = present in every cell
+			xmin = -CD_GRID_HUGE;
+			xmax = CD_GRID_HUGE;
+			zmin = -CD_GRID_HUGE;
+			zmax = CD_GRID_HUGE;
+			size = 0x4c;
+		} else if (geo->type == GEOTYPE_CYL) {
+			xmin = -CD_GRID_HUGE;
+			xmax = CD_GRID_HUGE;
+			zmin = -CD_GRID_HUGE;
+			zmax = CD_GRID_HUGE;
+			size = 0x18;
+		} else {
+			// Malformed stream
+			return;
+		}
+
+		if (numentries >= CD_GRID_MAXENTRIESPERROOM
+				|| g_CdGridEntryTop + numentries >= CD_GRID_ARENAENTRIES) {
+			return;
+		}
+
+		entry = &entries[numentries];
+		entry->xmin = xmin;
+		entry->xmax = xmax;
+		entry->zmin = zmin;
+		entry->zmax = zmax;
+		entry->offset = (u32)((u8 *)geo - start);
+		numentries++;
+
+		if (xmax < CD_GRID_HUGE) {
+			if (haveroombbox) {
+				if (xmin < roomxmin) {
+					roomxmin = xmin;
+				}
+				if (xmax > roomxmax) {
+					roomxmax = xmax;
+				}
+				if (zmin < roomzmin) {
+					roomzmin = zmin;
+				}
+				if (zmax > roomzmax) {
+					roomzmax = zmax;
+				}
+			} else {
+				roomxmin = xmin;
+				roomxmax = xmax;
+				roomzmin = zmin;
+				roomzmax = zmax;
+				haveroombbox = true;
+			}
+		}
+
+		geo = (struct geo *)((uintptr_t)geo + size);
+	}
+
+	xextent = roomxmax - roomxmin;
+	zextent = roomzmax - roomzmin;
+
+	if (xextent < 1.0f) {
+		xextent = 1.0f;
+	}
+
+	if (zextent < 1.0f) {
+		zextent = 1.0f;
+	}
+
+	cellwords = ((u32)numentries + 31) / 32;
+	bitwordsneeded = CD_GRID_CELLS * cellwords;
+
+	if (g_CdGridBitTop + bitwordsneeded > CD_GRID_BITWORDS) {
+		return;
+	}
+
+	grid->numentries = numentries;
+	grid->entrybase = g_CdGridEntryTop;
+	grid->bitbase = g_CdGridBitTop;
+	grid->cellwords = cellwords;
+	grid->xmin = roomxmin;
+	grid->zmin = roomzmin;
+	grid->xscale = CD_GRID_DIM / xextent;
+	grid->zscale = CD_GRID_DIM / zextent;
+
+	g_CdGridEntryTop += numentries;
+	g_CdGridBitTop += bitwordsneeded;
+
+	for (i = 0; i < bitwordsneeded; i++) {
+		g_CdGridBitWords[grid->bitbase + i] = 0;
+	}
+
+	for (i = 0; i < (u32)numentries; i++) {
+		struct cdgridentry *e = &entries[i];
+		s32 cx0 = cdGridCell(e->xmin, grid->xmin, grid->xscale);
+		s32 cx1 = cdGridCell(e->xmax, grid->xmin, grid->xscale);
+		s32 cz0 = cdGridCell(e->zmin, grid->zmin, grid->zscale);
+		s32 cz1 = cdGridCell(e->zmax, grid->zmin, grid->zscale);
+		s32 cx;
+		s32 cz;
+
+		for (cz = cz0; cz <= cz1; cz++) {
+			for (cx = cx0; cx <= cx1; cx++) {
+				u32 *cell = &g_CdGridBitWords[grid->bitbase + (u32)(cz * CD_GRID_DIM + cx) * cellwords];
+				cell[i >> 5] |= 1u << (i & 31);
+			}
+		}
+	}
+
+	grid->state = CD_GRIDSTATE_READY;
+}
+
+static struct cdroomgrid *cdGridGetRoom(s32 roomnum)
+{
+	s32 i;
+
+	if (roomnum < 0 || roomnum >= CD_GRID_MAXROOMS || roomnum + 1 > g_TileNumRooms) {
+		return NULL;
+	}
+
+	// New stage (or a same-address reload of a different stage) = rebuild.
+	// Same invalidation family as cdRoomGeoFlagUnion, hardened with the
+	// stage number in case fileLoadToNew reuses an allocation address.
+	if (g_CdGridBase != g_TileFileData.u8 || g_CdGridStage != g_Vars.stagenum) {
+		for (i = 0; i < CD_GRID_MAXROOMS; i++) {
+			g_CdGridRooms[i].state = CD_GRIDSTATE_UNBUILT;
+		}
+
+		g_CdGridEntryTop = 0;
+		g_CdGridBitTop = 0;
+		g_CdGridBase = g_TileFileData.u8;
+		g_CdGridStage = g_Vars.stagenum;
+	}
+
+	if (g_CdGridRooms[roomnum].state == CD_GRIDSTATE_UNBUILT) {
+		cdGridBuildRoom(roomnum);
+	}
+
+	return &g_CdGridRooms[roomnum];
+}
+
+static bool cdGridBeginQuery(struct cdgridquery *query, s32 roomnum, u8 *start, u8 *end, f32 x, f32 z, f32 radius)
+{
+	struct cdroomgrid *grid = cdGridGetRoom(roomnum);
+	s32 cx0;
+	s32 cx1;
+	s32 cz0;
+	s32 cz1;
+	s32 cx;
+	s32 cz;
+	s32 i;
+
+	if (grid == NULL || grid->state != CD_GRIDSTATE_READY) {
+		return false;
+	}
+
+	// Belt and braces: the index only describes the room's own stream
+	if (start != g_TileFileData.u8 + g_TileRooms[roomnum]
+			|| end != g_TileFileData.u8 + g_TileRooms[roomnum + 1]) {
+		return false;
+	}
+
+	query->entries = &g_CdGridEntries[grid->entrybase];
+	query->base = start;
+	query->numwords = (grid->numentries + 31) / 32;
+	query->wordindex = 0;
+	query->wordbase = 0;
+	query->pending = 0;
+
+	for (i = 0; i < query->numwords; i++) {
+		query->words[i] = 0;
+	}
+
+	cx0 = cdGridCell(x - radius - CD_GRID_PAD, grid->xmin, grid->xscale);
+	cx1 = cdGridCell(x + radius + CD_GRID_PAD, grid->xmin, grid->xscale);
+	cz0 = cdGridCell(z - radius - CD_GRID_PAD, grid->zmin, grid->zscale);
+	cz1 = cdGridCell(z + radius + CD_GRID_PAD, grid->zmin, grid->zscale);
+
+	for (cz = cz0; cz <= cz1; cz++) {
+		for (cx = cx0; cx <= cx1; cx++) {
+			u32 *cell = &g_CdGridBitWords[grid->bitbase + (u32)(cz * CD_GRID_DIM + cx) * grid->cellwords];
+
+			for (i = 0; i < (s32)grid->cellwords; i++) {
+				query->words[i] |= cell[i];
+			}
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Next candidate entry in ascending stream order, or NULL when exhausted.
+ * Bits beyond numentries are never set, so no range check is needed.
+ */
+static struct geo *cdGridNextEntry(struct cdgridquery *query)
+{
+	for (;;) {
+		if (query->pending != 0) {
+			s32 bit = __builtin_ctz(query->pending);
+
+			query->pending &= query->pending - 1;
+
+			return (struct geo *)(query->base + query->entries[query->wordbase + bit].offset);
+		}
+
+		if (query->wordindex >= query->numwords) {
+			return NULL;
+		}
+
+		query->pending = query->words[query->wordindex];
+		query->wordbase = query->wordindex * 32;
+		query->wordindex++;
+	}
+}
+
+/**
+ * Debug cross-check (g_CdSpatialIndexVerify): compare the linear walk's
+ * output (authoritative) against the indexed pass over [numbefore, count).
+ * .room is written from the same roomnum parameter in both passes (or not
+ * at all, in the move collector) so geo/vertexindex/prop is the full signal.
+ */
+static void cdGridVerifyCompare(const char *tag, s32 roomnum, struct collision *linear, s32 linearnum, struct collision *indexed, s32 indexednum, s32 numbefore)
+{
+	s32 i;
+
+	if (g_CdGridVerifyWarnCount >= 100) {
+		return;
+	}
+
+	if (linearnum != indexednum) {
+		g_CdGridVerifyWarnCount++;
+		sysLogPrintf(LOG_WARNING, "cdgrid: verify MISMATCH (%s) room %d: count %d vs %d",
+				tag, roomnum, linearnum - numbefore, indexednum - numbefore);
+		return;
+	}
+
+	for (i = numbefore; i < linearnum; i++) {
+		if (linear[i].geo != indexed[i].geo
+				|| linear[i].vertexindex != indexed[i].vertexindex
+				|| linear[i].prop != indexed[i].prop) {
+			g_CdGridVerifyWarnCount++;
+			sysLogPrintf(LOG_WARNING, "cdgrid: verify MISMATCH (%s) room %d: entry %d geo %p/%p vtx %d/%d",
+					tag, roomnum, i - numbefore,
+					(void *)linear[i].geo, (void *)indexed[i].geo,
+					linear[i].vertexindex, indexed[i].vertexindex);
+			return;
+		}
+	}
+}
 #endif
 
 void cdCollectGeoForCylFromList(struct coord *pos, f32 radius, u8 *start, u8 *end, u16 geoflags,
@@ -1240,8 +1652,32 @@ void cdCollectGeoForCylFromList(struct coord *pos, f32 radius, u8 *start, u8 *en
 {
 	struct geo *geo = (struct geo *) start;
 	s32 result;
+#ifndef PLATFORM_N64
+	struct cdgridquery gridquery;
+	bool usegrid = false;
+	s32 gridroom = g_CdGridRoomHint;
+
+	// One-shot hint from the room-stream call sites; prop-geometry callers
+	// never set it, so those streams always take the linear walk
+	g_CdGridRoomHint = -1;
+
+	if (gridroom >= 0 && g_CdSpatialIndexEnabled) {
+		usegrid = cdGridBeginQuery(&gridquery, gridroom, start, end, pos->x, pos->z, radius);
+	}
+#endif
 
 	while (geo < (struct geo *) end) {
+#ifndef PLATFORM_N64
+		if (usegrid) {
+			// Jump to the next candidate (ascending stream order); skipped
+			// entries are exactly those the arms' XZ bbox tests would reject
+			geo = cdGridNextEntry(&gridquery);
+
+			if (geo == NULL) {
+				break;
+			}
+		}
+#endif
 		if (geo->type == GEOTYPE_TILE_I) {
 			struct geotilei *tile = (struct geotilei *) geo;
 
@@ -1364,7 +1800,26 @@ void cdCollectGeoForCyl(struct coord *pos, f32 radius, RoomNum *rooms, u32 types
 				start = g_TileFileData.u8 + g_TileRooms[roomnum];
 				end = g_TileFileData.u8 + g_TileRooms[roomnum + 1];
 
+#ifndef PLATFORM_N64
+				if (g_CdSpatialIndexVerify && g_CdSpatialIndexEnabled && maxcollisions <= CD_GRID_VERIFYMAX) {
+					s32 numbefore = numcollisions;
+					s32 verifynum = numcollisions;
+
+					// Indexed pass into the scratch array, then the linear
+					// walk into the real array (authoritative), then compare
+					g_CdGridRoomHint = roomnum;
+					cdCollectGeoForCylFromList(pos, radius, start, end, geoflags, checkvertical, ymax, ymin, NULL, g_CdGridVerifyCollisions, maxcollisions, &verifynum, roomnum);
+
+					cdCollectGeoForCylFromList(pos, radius, start, end, geoflags, checkvertical, ymax, ymin, NULL, collisions, maxcollisions, &numcollisions, roomnum);
+
+					cdGridVerifyCompare("cyl", roomnum, collisions, numcollisions, g_CdGridVerifyCollisions, verifynum, numbefore);
+				} else {
+					g_CdGridRoomHint = roomnum;
+					cdCollectGeoForCylFromList(pos, radius, start, end, geoflags, checkvertical, ymax, ymin, NULL, collisions, maxcollisions, &numcollisions, roomnum);
+				}
+#else
 				cdCollectGeoForCylFromList(pos, radius, start, end, geoflags, checkvertical, ymax, ymin, NULL, collisions, maxcollisions, &numcollisions, roomnum);
+#endif
 
 				if (numcollisions >= maxcollisions) {
 					goto end;
@@ -1609,8 +2064,32 @@ void cdCollectGeoForCylMoveFromList(u8 *start, u8 *end, struct coord *pos, f32 r
 		struct collision *collisions, s32 maxcollisions, s32 *numcollisions)
 {
 	struct geo *geo = (struct geo *) start;
+#ifndef PLATFORM_N64
+	struct cdgridquery gridquery;
+	bool usegrid = false;
+	s32 gridroom = g_CdGridRoomHint;
+
+	// One-shot hint from the room-stream call site; prop-geometry callers
+	// never set it, so those streams always take the linear walk
+	g_CdGridRoomHint = -1;
+
+	if (gridroom >= 0 && g_CdSpatialIndexEnabled) {
+		usegrid = cdGridBeginQuery(&gridquery, gridroom, start, end, pos->x, pos->z, radius);
+	}
+#endif
 
 	while (geo < (struct geo *) end) {
+#ifndef PLATFORM_N64
+		if (usegrid) {
+			// Jump to the next candidate (ascending stream order); skipped
+			// entries are exactly those the arms' XZ bbox tests would reject
+			geo = cdGridNextEntry(&gridquery);
+
+			if (geo == NULL) {
+				break;
+			}
+		}
+#endif
 		if (geo->type == GEOTYPE_TILE_I) {
 			struct geotilei *tile = (struct geotilei *) geo;
 
@@ -1701,7 +2180,26 @@ void cdCollectGeoForCylMove(struct coord *pos, f32 width, RoomNum *rooms, u32 ty
 				start = g_TileFileData.u8 + g_TileRooms[roomnum];
 				end = g_TileFileData.u8 + g_TileRooms[roomnum + 1];
 
+#ifndef PLATFORM_N64
+				if (g_CdSpatialIndexVerify && g_CdSpatialIndexEnabled && maxcollisions <= CD_GRID_VERIFYMAX) {
+					s32 numbefore = numcollisions;
+					s32 verifynum = numcollisions;
+
+					// Indexed pass into the scratch array, then the linear
+					// walk into the real array (authoritative), then compare
+					g_CdGridRoomHint = roomnum;
+					cdCollectGeoForCylMoveFromList(start, end, pos, width, geoflags, checkvertical, ymax, ymin, NULL, g_CdGridVerifyCollisions, maxcollisions, &verifynum);
+
+					cdCollectGeoForCylMoveFromList(start, end, pos, width, geoflags, checkvertical, ymax, ymin, NULL, collisions, maxcollisions, &numcollisions);
+
+					cdGridVerifyCompare("cylmove", roomnum, collisions, numcollisions, g_CdGridVerifyCollisions, verifynum, numbefore);
+				} else {
+					g_CdGridRoomHint = roomnum;
+					cdCollectGeoForCylMoveFromList(start, end, pos, width, geoflags, checkvertical, ymax, ymin, NULL, collisions, maxcollisions, &numcollisions);
+				}
+#else
 				cdCollectGeoForCylMoveFromList(start, end, pos, width, geoflags, checkvertical, ymax, ymin, NULL, collisions, maxcollisions, &numcollisions);
+#endif
 			}
 
 			roomptr++;

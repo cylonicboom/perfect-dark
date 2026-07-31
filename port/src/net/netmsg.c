@@ -3072,7 +3072,7 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// (co-op SPAWN/FREE replication) a freed chr's syncid can be recycled by
 		// a weapon/obj prop while a stale unreliable chr-state move for the old
 		// chr is still in flight; applying the block below then writes a full
-		// chrdata's worth of state — including the netsnap ring at chr+0x3d4
+		// chrdata's worth of state — including the netsnap ring near the end of chrdata (offset shifts with layout)
 		// onward (netChrRecordSnapshot) — far past the end of the much smaller
 		// objdata, trashing neighbouring stage-pool allocations. (The observed
 		// post-match crash family turned out to be the uninitialised netsnap

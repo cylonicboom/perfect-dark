@@ -1135,31 +1135,85 @@ struct act_skjump {
 	/*0x50*/ f32 ground;
 };
 
+// CACHE-LOCALITY REPACK (2026-07-31, port-first policy): fields are ordered by
+// per-tick heat, not by N64 offset — the full-pool census in chraTickBg and the
+// chrTick dispatch set live in the first two 64-byte lines; the act_* union
+// (hot, opaque, internals untouched) starts at a line boundary; cold script/
+// splat/conversation fields and the streaming bdlist ring sit at the tail ahead
+// of the netsnap ring. The old /*0xNNN*/ comments were N64 offsets and were
+// already wrong on the port (pointers are 8 bytes); they are gone rather than
+// stale. Hard constraints honoured (see the repack investigation record):
+// `geo` stays one contiguous geocyl (chrUpdateGeometry exports its raw byte
+// range), `bdlist` stays one contiguous s32[60] (ring-indexed via a raw
+// pointer), both bitfield blocks move as unsplit units, the union stays
+// 8-aligned with internals verbatim, netsnap[] length stays NET_SNAPSHOT_COUNT.
+// g_ChrSlots is now block-zeroed at allocation (chrmgrConfigure), so field
+// order can never change which stale bytes land in a late-initialised field.
 struct chrdata {
-	/*0x000*/ s16 chrnum;
-	/*0x002*/ s8 accuracyrating;
-	/*0x003*/ s8 speedrating; // 0-100
-	/*0x004*/ u8 firecount[2];
-	/*0x006*/ s8 headnum;
-	/*0x007*/ s8 actiontype;
-	/*0x008*/ s8 sleep;
-	/*0x009*/ s8 invalidmove;
-	/*0x00a*/ s8 numclosearghs;
-	/*0x00b*/ s8 numarghs;
-	/*0x00c*/ u8 fadealpha;
-	/*0x00d*/ s8 arghrating;
-	/*0x00e*/ s8 aimendcount;
-	/*0x00f*/ u8 grenadeprob;
-	/*0x010*/ s16 bodynum;
-	/*0x012*/ s8 flinchcnt;
-	/*0x013*/ s8 path;
-	/*0x014*/ u32 hidden;
-	/*0x018*/ u32 chrflags;
-	/*0x01c*/ struct prop *prop;
-	/*0x020*/ struct model *model;
-	/*0x024*/ f32 radius;
-	/*0x028*/ f32 height;
+	// -- line 0: dispatch + full-pool census hot set ------------------------
+	struct prop *prop;
+	struct model *model;
+	struct aibot *aibot;
+	s8 actiontype;
+	u8 race;
+	u8 team;
+	s8 headnum;
+	s16 chrnum;
+	s16 bodynum;
+	u32 hidden;
+	u32 chrflags;
+	u32 flags;
+	u32 flags2;
+	u16 hidden2; // First 3 bits are a single number - flinch type
+	s16 target; // index into g_Vars.props
+	f32 damage;
+	f32 cshield;
+	s8 sleep;
+	u8 morale;
+	u8 alertness;
+	u8 fadealpha;
+	// -- line 1: movement / ground / census pair ----------------------------
+	f32 manground;
+	f32 ground;
+	f32 sumground;
+	f32 radius;
+	f32 height;
+	f32 maxdamage;
+	struct coord fallspeed;
+	struct coord prevpos;
+	u16 floorcol;
+	RoomNum floorroom;
+	u8 floortype;
+	s8 footstep;
+	u8 myaction;
+	u8 orders;
+	s32 lastseetarget60;
+	s32 lastvisibletarget60;
+	// -- line 2: timers + collision geo -------------------------------------
+	s32 timer60;
+	s32 soundtimer;
+	s32 talktimer;
+	s32 lastheartarget60;
+	struct geocyl geo; // contiguous: exported raw by chrUpdateGeometry
+	s32 lastwalk60;
+	s32 lastmoveok60;
+	f32 visionrange;
+	f32 oldframe;
+	f32 magicframe;
+	f32 magicspeed;
+	// -- line 3: weapons + aim ----------------------------------------------
+	struct prop *weapons_held[3]; // gun 1, gun 2, hat
+	struct prop *gunprop;
+	f32 aimuplshoulder;
+	f32 aimuprshoulder;
+	f32 aimupback;
+	f32 aimsideback;
+	f32 aimendlshoulder;
+	f32 aimendrshoulder;
+	f32 aimendback;
+	f32 aimendsideback;
 
+	// -- lines 4..6: the action union (opaque block, internals verbatim) ----
 	union {
 		struct act_stand act_stand;
 		struct act_anim act_anim;
@@ -1189,129 +1243,33 @@ struct chrdata {
 		struct act_skjump act_skjump;
 	};
 
-	/*0x0b0*/ f32 sumground;
-	/*0x0b4*/ f32 manground;
-	/*0x0b8*/ f32 ground;
-	/*0x0bc*/ struct coord fallspeed;
-	/*0x0c8*/ struct coord prevpos;
-	/*0x0d4*/ s32 lastwalk60;
-	/*0x0d8*/ s32 lastmoveok60;
-	/*0x0dc*/ f32 visionrange;
-	/*0x0e0*/ s32 lastseetarget60;
-	/*0x0e4*/ s32 lastvisibletarget60;
-	/*0x0e8*/ struct prop *poisonprop;
-	/*0x0ec*/ s16 lastshooter;
-	/*0x0ee*/ s16 timeshooter;
-	/*0x0f0*/ f32 hearingscale;
-	/*0x0f4*/ s32 lastheartarget60;
-	/*0x0f8*/ u8 shadecol[4];
-	/*0x0fc*/ u8 nextcol[4];
-	/*0x100*/ f32 damage;
-	/*0x104*/ f32 maxdamage;
-	/*0x108*/ u8 *ailist;
-	/*0x10c*/ u16 aioffset;
-	/*0x10e*/ s16 aireturnlist;
-	/*0x110*/ s16 aishotlist;
-	/*0x112*/ u8 morale;
-	/*0x113*/ u8 alertness;
-	/*0x114*/ u32 flags;
-	/*0x118*/ u32 flags2;
-	/*0x11c*/ s32 timer60;
-	/*0x120*/ s32 soundtimer;
-	/*0x124*/ u8 random;
-	/*0x125*/ u8 team;
-	/*0x126*/ u8 soundgap;
-	/*0x128*/ s16 padpreset1;
-	/*0x12a*/ s16 chrpreset1;
-	/*0x12c*/ s16 proppreset1;
-	/*0x12e*/ s16 chrseeshot;
-	/*0x130*/ s16 chrseedie;
-	/*0x132*/ s16 chrdup;
-	struct geocyl geo;
-	/*0x14c*/ f32 shotbondsum;
-	/*0x150*/ f32 aimuplshoulder;
-	/*0x154*/ f32 aimuprshoulder;
-	/*0x158*/ f32 aimupback;
-	/*0x15c*/ f32 aimsideback;
-	/*0x160*/ f32 aimendlshoulder;
-	/*0x164*/ f32 aimendrshoulder;
-	/*0x168*/ f32 aimendback;
-	/*0x16c*/ f32 aimendsideback;
-	/*0x170*/ struct prop *weapons_held[3]; // gun 1, gun 2, hat
-	/*0x17c*/ s8 fireslots[2];
-	/*0x17e*/ s16 target; // index into g_Vars.props
-	/*0x180*/ f32 cshield;
+	// -- warm: pointers -----------------------------------------------------
+	u8 *ailist;
+	struct prop *poisonprop;
+	struct chrdata *lastattacker;
+	struct prop *lift;
+	struct fireslotthing *unk348[2];
+	// -- warm: coords -------------------------------------------------------
+	struct coord extraspeed;
+	struct coord laddernormal;
+	struct coord runfrompos;
+	struct coord targetlastseenp;
+	struct coord lastdroppos;
+	// -- warm: 4-byte -------------------------------------------------------
+	f32 pushspeed[2];
+	f32 gunroty[2];
+	f32 gunrotx[2];
+	f32 timeextra;
+	f32 elapseextra;
+	f32 shotbondsum;
+	f32 hearingscale;
+	f32 drugheadsway;
+	u32 onladder;
+	u32 convtalk;
+	u32 unk2b4;
+	s32 myspecial; // This is an object tag ID
 
-	// The cm fields are related to the chr's shield visual effect
-	/*0x184*/ s8 cmnum;
-	/*0x185*/ s8 cmnum2;
-	/*0x186*/ s8 cmnum3;
-	/*0x187*/ s8 cmnum4;
-	/*0x188*/ u16 cmcount;
-
-	/*0x18a*/ u16 floorcol;
-	/*0x18c*/ f32 oldframe;
-	/*0x190*/ s8 footstep;
-	/*0x191*/ u8 floortype;
-	/*0x192*/ u16 hidden2; // First 3 bits are a single number - flinch type
-	/*0x194*/ f32 magicframe;
-	/*0x198*/ f32 magicspeed;
-#if VERSION >= VERSION_NTSC_1_0
-	/*0x19c*/ s16 magicanim;
-	/*0x19e*/ s16 goposforce;
-#else
-	/*0x19c*/ s32 magicanim;
-#endif
-	/*0x1a0*/ s32 bdlist[60];
-	/*0x290*/ u8 bdstart;
-	/*0x291*/ u8 goposhitcount;
-	/*0x292*/ s16 cover;
-	/*0x294*/ struct coord targetlastseenp;
-	/*0x2a0*/ u8 myaction;
-	/*0x2a1*/ u8 orders;
-	/*0x2a2*/ u8 squadron;
-	/*0x2a3*/ u8 listening;
-	/*0x2a4*/ u32 convtalk;
-	/*0x2a8*/ s32 talktimer;
-	/*0x2ac*/ u8 question;
-	/*0x2ad*/ u8 talkgap;
-	/*0x2ae*/ u16 unk2ae;
-	/*0x2b0*/ u8 tude;
-	/*0x2b1*/ u8 voicebox;
-	/*0x2b2*/ RoomNum floorroom;
-	/*0x2b4*/ u32 unk2b4;
-	/*0x2b8*/ RoomNum oldrooms[8];
-	/*0x2c8*/ struct coord runfrompos;
-	/*0x2d4*/ struct aibot *aibot;
-	/*0x2d8*/ s16 blurdrugamount;
-
-	// Cloakpause is set to a positive value when shooting, then decreases to
-	// zero over a couple of seconds. When zero is reached, the cloak is
-	// applied again.
-	/*0x2da*/ s16 cloakpause;
-
-	/*0x2dc*/ f32 drugheadsway;
-	/*0x2e0*/ u8 drugheadcount;
-	/*0x2e1*/ u8 cloakfadefrac : 7;
-	/*0x2e1*/ u8 cloakfadefinished : 1;
-	/*0x2e2*/ u8 teamscandist;
-	/*0x2e3*/ u8 naturalanim;
-	/*0x2e4*/ s32 myspecial; // This is an object tag ID
-	/*0x2e8*/ f32 timeextra;
-	/*0x2ec*/ f32 elapseextra;
-	/*0x2f0*/ struct coord extraspeed;
-	/*0x2fc*/ u8 yvisang;
-	/*0x2fd*/ u8 hitpart;
-	/*0x2fe*/ u8 race;
-	/*0x2ff*/ u8 blurnumtimesdied;
-	/*0x300*/ struct prop *gunprop;
-	/*0x304*/ f32 pushspeed[2];
-	/*0x30c*/ f32 gunroty[2];
-	/*0x314*/ f32 gunrotx[2];
-	/*0x31c*/ u32 onladder;
-	/*0x320*/ struct coord laddernormal;
-
-	/*0x32c*/
+	// lift/darkroom/etc bitfield word: moves as one unsplit block
 	u8 liftaction : 8;
 
 	u8 inlift : 1;
@@ -1329,31 +1287,101 @@ struct chrdata {
 
 	u8 specialdie : 8;
 
-	/*0x330*/ u16 roomtosearch;
-	/*0x332*/ u8 propsoundcount;
-	/*0x333*/ s8 patrolnextstep;
-	/*0x334*/ u8 bulletstaken;
-	/*0x335*/ u8 woundedsplatsadded;
-	/*0x336*/ u16 tickssincesplat;
-	/*0x338*/ u8 splatsdroppedhere;
-	/*0x339*/ u8 stdsplatsadded;
-	/*0x33a*/ u8 deaddropsplatsadded;
-	/*0x33b*/ s8 aimtesttimer60;
-	/*0x33c*/ struct coord lastdroppos;
-	/*0x348*/ struct fireslotthing *unk348[2];
-	/*0x350*/ struct chrdata *lastattacker;
-	/*0x354*/ s16 aipunchdodgelist;
-	/*0x356*/ s16 aishootingatmelist;
-	/*0x358*/ s16 poisoncounter;
-	/*0x35a*/ s16 aidarkroomlist;
-	/*0x35c*/ s16 aiplayerdeadlist;
-	/*0x35e*/ u8 dodgerating;
-	/*0x35f*/ u8 maxdodgerating;
-	/*0x360*/ u8 unarmeddodgerating;
-	/*0x361*/ u8 lastfootsample;
-	/*0x362*/ u8 drcarollimage_left : 4;
-	/*0x362*/ u8 drcarollimage_right : 4;
-	/*0x364*/ struct prop *lift;
+#if VERSION >= VERSION_NTSC_1_0
+	s16 magicanim;
+	s16 goposforce;
+#else
+	s32 magicanim;
+#endif
+	// -- warm/cold: 2-byte --------------------------------------------------
+	s16 blurdrugamount;
+
+	// Cloakpause is set to a positive value when shooting, then decreases to
+	// zero over a couple of seconds. When zero is reached, the cloak is
+	// applied again.
+	s16 cloakpause;
+
+	s16 poisoncounter;
+	s16 cover;
+	u16 aioffset;
+	s16 aireturnlist;
+	s16 aishotlist;
+	s16 aipunchdodgelist;
+	s16 aishootingatmelist;
+	s16 aidarkroomlist;
+	s16 aiplayerdeadlist;
+	s16 lastshooter;
+	s16 timeshooter;
+	u16 roomtosearch;
+	u16 cmcount; // shield visual effect (with the cmnum* bytes below)
+	u16 tickssincesplat;
+	s16 chrdup;
+	s16 padpreset1;
+	s16 chrpreset1;
+	s16 proppreset1;
+	s16 chrseeshot;
+	s16 chrseedie;
+	u16 unk2ae;
+	RoomNum oldrooms[8];
+	// -- warm/cold: 1-byte --------------------------------------------------
+	u8 firecount[2];
+	s8 fireslots[2];
+	u8 shadecol[4];
+	u8 nextcol[4];
+
+	// The cm fields are related to the chr's shield visual effect
+	s8 cmnum;
+	s8 cmnum2;
+	s8 cmnum3;
+	s8 cmnum4;
+
+	s8 accuracyrating;
+	s8 speedrating; // 0-100
+	s8 invalidmove;
+	s8 numclosearghs;
+	s8 numarghs;
+	s8 arghrating;
+	s8 aimendcount;
+	u8 grenadeprob;
+	s8 flinchcnt;
+	s8 path;
+	u8 random;
+	u8 soundgap;
+	u8 question;
+	u8 talkgap;
+	u8 tude;
+	u8 voicebox;
+	u8 squadron;
+	u8 listening;
+	u8 bdstart;
+	u8 goposhitcount;
+	u8 yvisang;
+	u8 hitpart;
+	u8 drugheadcount;
+	u8 teamscandist;
+	u8 naturalanim;
+	u8 blurnumtimesdied;
+	u8 propsoundcount;
+	s8 patrolnextstep;
+	u8 bulletstaken;
+	u8 woundedsplatsadded;
+	u8 splatsdroppedhere;
+	u8 stdsplatsadded;
+	u8 deaddropsplatsadded;
+	s8 aimtesttimer60;
+	u8 dodgerating;
+	u8 maxdodgerating;
+	u8 unarmeddodgerating;
+	u8 lastfootsample;
+
+	u8 cloakfadefrac : 7;
+	u8 cloakfadefinished : 1;
+
+	u8 drcarollimage_left : 4;
+	u8 drcarollimage_right : 4;
+
+	// -- cold tail: the streaming bdlist ring (one contiguous s32[60]) ------
+	s32 bdlist[60];
 #ifndef PLATFORM_N64
 	// GoldenEye Style i-frames: tick count of the last damage taken
 	// (in lvframe60 units). Zero = never damaged. Subsequent damage

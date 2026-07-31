@@ -479,7 +479,7 @@ narrower, corruption paths):
   side wasn't. With co-op runtime chr FREE replication recycling syncids, a stale
   **unreliable** chr-state move (`flags` bit 4) arriving after its chr's syncid was
   reused by a weapon/obj prop wrote a full chrdata of state (the `netsnap` ring at
-  `chr+0x3d4`+) over a much smaller objdata — trashing neighbouring stage-pool
+  near the end of `chrdata`) over a much smaller objdata — trashing neighbouring stage-pool
   allocations. Both the chr-state apply and the obj/projectile section are now
   gated on `prop->type` (mirroring the writer); wire bytes are still consumed so
   the stream stays aligned. Mismatches log "recycled syncid?" warnings (tick-throttled).

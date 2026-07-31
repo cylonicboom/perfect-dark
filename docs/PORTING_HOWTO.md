@@ -1,5 +1,11 @@
 # Porting Port-only Features Into Another Branch
 
+> **POLICY NOTE (2026-07-31):** this repo adopted a **port-first policy** — the N64
+> byte-matching contract is retired (see the root CLAUDE.md "PORT-FIRST POLICY").
+> Symbol names stay; struct layouts may change except serialized formats; netplay
+> determinism is the binding contract. The guard-pattern guidance below remains
+> accurate for lifting features into forks that still target N64 or matching.
+
 This is the methodology to follow when lifting any of the port-only features in this repo (GoldenEye Style, KotH Static Hill, Custom Weapon Presets, No Room Culling, Host Spectator, etc.) into a different fork or branch. For per-feature specifics, see `docs/PORT_*.md`.
 
 Read this once, then use it as a checklist alongside the per-feature doc.

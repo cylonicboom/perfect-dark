@@ -168,6 +168,51 @@ static void gfx_opengl_invalidate_state_shadows(void) {
     s_polygon_offset_fill = -1;
 }
 
+// --- Persistent-mapped vertex ring (round-2 A4, docs/PORT_OPT_ROUND2_CANDIDATES.md) ---
+// With GL_ARB_buffer_storage (or GL 4.4+), opengl_vbo is created as ONE
+// immutable buffer of GFX_VTX_RING_REGIONS fenced regions, mapped
+// persistent+coherent once at init, replacing the per-flush variable-size
+// glBufferData(GL_STREAM_DRAW) orphan. Each flush memcpys into the write
+// cursor and draws with a non-zero `first` vertex; attrib pointers stay baked
+// at the current REGION base, so they are re-specified only on shader change
+// (exactly as today, via vertex_array_set_attribs) plus once per region
+// rotation — no per-flush attrib respec, no per-flush buffer rebind, and the
+// single-VAO/attrib state from A3 is untouched. The cursor is aligned to a
+// whole triangle (3 * stride) before each flush so `first` stays a multiple
+// of 3 and the barycentric-wireframe gl_VertexID % 3 corner derivation keeps
+// working. One GLsync per region: created when rotating OFF a region (i.e.
+// after every draw that sourced from it), waited on before that region is
+// written again; a wait timeout/failure degrades to glFinish and logs once.
+// Fallback: if buffer_storage is unavailable or any init step fails,
+// opengl_vbo stays a plain mutable buffer and draw_triangles keeps the
+// original glBufferData path unchanged.
+#define GFX_VTX_RING_REGIONS 3
+// Must cover gfx_pc's worst-case flush: MAX_BUFFERED (4096) tris * 3 verts *
+// 32 floats * 4 bytes = 1.5 MiB; 2 MiB gives headroom. Re-checked per flush —
+// an oversize flush (i.e. gfx_pc's buffer grew) disables the ring for good
+// instead of corrupting.
+#define GFX_VTX_RING_REGION_SIZE (2u * 1024u * 1024u)
+#define GFX_VTX_RING_FENCE_TIMEOUT_NS 1000000000ull // 1 s, generous
+
+// The bundled glad is not generated with ARB_buffer_storage, so the enums and
+// entry point are declared here and the function is probed via SDL.
+#ifndef GL_MAP_PERSISTENT_BIT
+#define GL_MAP_PERSISTENT_BIT 0x0040
+#endif
+#ifndef GL_MAP_COHERENT_BIT
+#define GL_MAP_COHERENT_BIT 0x0080
+#endif
+typedef void (APIENTRY *PFNGLBUFFERSTORAGEPDPROC)(GLenum target, GLsizeiptr size, const void* data,
+                                                  GLbitfield flags);
+
+static bool s_vtx_ring_active = false;
+static uint8_t* s_vtx_ring_map = NULL;    // persistent mapping base
+static int s_vtx_ring_region = 0;         // region currently being written
+static size_t s_vtx_ring_cursor = 0;      // write offset, bytes, buffer-relative
+static size_t s_vtx_ring_attrib_base = 0; // region base baked into the attrib pointers (0 = fallback)
+static GLsync s_vtx_ring_fence[GFX_VTX_RING_REGIONS];
+static bool s_vtx_ring_wait_warned = false;
+
 static int gfx_opengl_get_max_texture_size() {
     GLint max_texture_size;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
@@ -189,11 +234,128 @@ static void gfx_opengl_vertex_array_set_attribs(struct ShaderProgram* prg) {
     for (int i = 0; i < prg->num_attribs; i++) {
         if (prg->attrib_locations[i] >= 0) {
             glEnableVertexAttribArray(prg->attrib_locations[i]);
+            // s_vtx_ring_attrib_base rebases the stream at the vertex ring's
+            // current region; 0 on the glBufferData fallback path.
             glVertexAttribPointer(prg->attrib_locations[i], prg->attrib_sizes[i], GL_FLOAT, GL_FALSE,
-                                num_floats * sizeof(float), (void*)(pos * sizeof(float)));
+                                num_floats * sizeof(float),
+                                (void*)(s_vtx_ring_attrib_base + pos * sizeof(float)));
         }
         pos += prg->attrib_sizes[i];
     }
+}
+
+// Advance the vertex ring to the next region: fence the region being left
+// (created after all draws that sourced from it), then wait out the fence
+// guarding the region being entered before it is overwritten.
+static void gfx_opengl_vtx_ring_rotate(void) {
+    if (s_vtx_ring_fence[s_vtx_ring_region] != NULL) {
+        glDeleteSync(s_vtx_ring_fence[s_vtx_ring_region]); // defensive; cleared on entry below
+    }
+    s_vtx_ring_fence[s_vtx_ring_region] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+    s_vtx_ring_region = (s_vtx_ring_region + 1) % GFX_VTX_RING_REGIONS;
+
+    if (s_vtx_ring_fence[s_vtx_ring_region] != NULL) {
+        const GLenum r = glClientWaitSync(s_vtx_ring_fence[s_vtx_ring_region],
+                                          GL_SYNC_FLUSH_COMMANDS_BIT, GFX_VTX_RING_FENCE_TIMEOUT_NS);
+        if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED) {
+            if (!s_vtx_ring_wait_warned) {
+                sysLogPrintf(LOG_WARNING, "GL: vtx ring fence wait failed (0x%x), using glFinish", r);
+                s_vtx_ring_wait_warned = true;
+            }
+            glFinish();
+        }
+        glDeleteSync(s_vtx_ring_fence[s_vtx_ring_region]);
+        s_vtx_ring_fence[s_vtx_ring_region] = NULL;
+    }
+
+    s_vtx_ring_cursor = (size_t)s_vtx_ring_region * GFX_VTX_RING_REGION_SIZE;
+    // Attrib pointers bake byte offsets: rebase the currently-loaded program at
+    // the new region (later programs rebase on their load_shader as usual).
+    s_vtx_ring_attrib_base = s_vtx_ring_cursor;
+    if (gfx_current_shader_program != NULL) {
+        gfx_opengl_vertex_array_set_attribs(gfx_current_shader_program);
+    }
+}
+
+// Permanently abandon the ring (should-not-happen guard: a flush bigger than a
+// region). The ring buffer's storage is immutable, so glBufferData can't reuse
+// it — swap in a fresh mutable buffer and return to the original stream path.
+static void gfx_opengl_vtx_ring_disable(const char* why) {
+    sysLogPrintf(LOG_WARNING, "GL: disabling vtx ring: %s", why);
+    for (int i = 0; i < GFX_VTX_RING_REGIONS; i++) {
+        if (s_vtx_ring_fence[i] != NULL) {
+            glDeleteSync(s_vtx_ring_fence[i]);
+            s_vtx_ring_fence[i] = NULL;
+        }
+    }
+    GLuint newbuf = 0;
+    glGenBuffers(1, &newbuf);
+    glBindBuffer(GL_ARRAY_BUFFER, newbuf);
+    glDeleteBuffers(1, &opengl_vbo); // also releases the persistent mapping
+    opengl_vbo = newbuf;
+    s_vtx_ring_active = false;
+    s_vtx_ring_map = NULL;
+    s_vtx_ring_region = 0;
+    s_vtx_ring_cursor = 0;
+    s_vtx_ring_attrib_base = 0;
+    if (gfx_current_shader_program != NULL) {
+        gfx_opengl_vertex_array_set_attribs(gfx_current_shader_program);
+    }
+}
+
+// Try to promote the freshly-created (and bound) opengl_vbo into the
+// persistent-mapped ring. On any failure the buffer is left (or restored to)
+// plain mutable storage and the glBufferData path runs unchanged.
+static void gfx_opengl_vtx_ring_init(void) {
+    if (gl_es) {
+        return; // buffer_storage is an EXT on ES; keep this desktop-only
+    }
+    const bool have_bs = (GLVersion.major > 4 || (GLVersion.major == 4 && GLVersion.minor >= 4))
+            || SDL_GL_ExtensionSupported("GL_ARB_buffer_storage");
+    // glad is generated without ARB_buffer_storage, so probe the entry point
+    // directly; the sync/map functions are GL 3.2/3.0 core but may be NULL on
+    // ancient contexts, so check them too.
+    PFNGLBUFFERSTORAGEPDPROC pglBufferStorage =
+            (PFNGLBUFFERSTORAGEPDPROC)SDL_GL_GetProcAddress("glBufferStorage");
+    if (!have_bs || pglBufferStorage == NULL || glad_glFenceSync == NULL || glad_glClientWaitSync == NULL
+            || glad_glDeleteSync == NULL || glad_glMapBufferRange == NULL) {
+        sysLogPrintf(LOG_NOTE, "GL: ARB_buffer_storage: no (using glBufferData vertex streaming)");
+        return;
+    }
+
+    while (glGetError() != GL_NO_ERROR) { } // clear stale errors so the checks below are ours
+
+    const GLsizeiptr total = (GLsizeiptr)GFX_VTX_RING_REGIONS * GFX_VTX_RING_REGION_SIZE;
+    const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    pglBufferStorage(GL_ARRAY_BUFFER, total, NULL, flags);
+    if (glGetError() != GL_NO_ERROR) {
+        // Storage was refused, so the buffer is still storage-less and mutable;
+        // the glBufferData path will define it as before.
+        sysLogPrintf(LOG_WARNING, "GL: glBufferStorage failed, using glBufferData vertex streaming");
+        return;
+    }
+
+    void* map = glMapBufferRange(GL_ARRAY_BUFFER, 0, total, flags);
+    if (map == NULL || glGetError() != GL_NO_ERROR) {
+        // The buffer now has immutable storage but no mapping — it can never
+        // take glBufferData, so it must be replaced with a mutable one.
+        sysLogPrintf(LOG_WARNING, "GL: persistent map failed, using glBufferData vertex streaming");
+        GLuint newbuf = 0;
+        glGenBuffers(1, &newbuf);
+        glBindBuffer(GL_ARRAY_BUFFER, newbuf);
+        glDeleteBuffers(1, &opengl_vbo);
+        opengl_vbo = newbuf;
+        return;
+    }
+
+    s_vtx_ring_map = (uint8_t*)map;
+    s_vtx_ring_region = 0;
+    s_vtx_ring_cursor = 0;
+    s_vtx_ring_attrib_base = 0;
+    s_vtx_ring_active = true;
+    sysLogPrintf(LOG_NOTE, "GL: persistent-mapped vertex ring: %d x %u KiB",
+                 GFX_VTX_RING_REGIONS, (unsigned)(GFX_VTX_RING_REGION_SIZE / 1024u));
 }
 
 // Syncs prg's uniforms to the current globals. prg MUST be the currently bound
@@ -558,9 +720,10 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     if (cc_features.opt_wireframe) {
-        // Every draw in this renderer is a NON-INDEXED triangle list starting at
-        // vertex 0 (glDrawArrays / SDL_DrawGPUPrimitives on both the immediate and
-        // the cached path), so a vertex's corner within its triangle is simply
+        // Every draw in this renderer is a NON-INDEXED triangle list whose first
+        // vertex is a multiple of 3 (glDrawArrays / SDL_DrawGPUPrimitives; 0 on
+        // the cached path, and the vertex ring aligns its cursor to whole
+        // triangles), so a vertex's corner within its triangle is simply
         // gl_VertexID % 3 — no extra vertex attribute needed.
         append_line(vs_buf, &vs_len, "    int bcorner = gl_VertexID % 3;");
         append_line(vs_buf, &vs_len, "    vBary = vec3(bcorner == 0 ? 1.0 : 0.0, bcorner == 1 ? 1.0 : 0.0, bcorner == 2 ? 1.0 : 0.0);");
@@ -1198,7 +1361,33 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     // printf("flushing %d tris\n", buf_vbo_num_tris);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
+    if (buf_vbo_num_tris == 0) {
+        return;
+    }
+
+    GLint first_vtx = 0;
+    const size_t bytes = sizeof(float) * buf_vbo_len;
+    if (s_vtx_ring_active && bytes > GFX_VTX_RING_REGION_SIZE) {
+        gfx_opengl_vtx_ring_disable("flush larger than a ring region");
+    }
+    if (s_vtx_ring_active) {
+        const size_t tri_bytes = bytes / buf_vbo_num_tris; // 3 verts * stride, exact
+        const size_t region_base = (size_t)s_vtx_ring_region * GFX_VTX_RING_REGION_SIZE;
+        // Align the cursor to a whole triangle: keeps the attrib offsets
+        // stride-aligned AND `first` a multiple of 3 for gl_VertexID % 3.
+        size_t rel = s_vtx_ring_cursor - region_base;
+        rel += (tri_bytes - rel % tri_bytes) % tri_bytes;
+        if (rel + bytes > GFX_VTX_RING_REGION_SIZE) {
+            gfx_opengl_vtx_ring_rotate(); // waits the incoming region's fence
+            rel = 0;
+        }
+        const size_t off = (size_t)s_vtx_ring_region * GFX_VTX_RING_REGION_SIZE + rel;
+        memcpy(s_vtx_ring_map + off, buf_vbo, bytes); // coherent mapping: no explicit flush
+        s_vtx_ring_cursor = off + bytes;
+        first_vtx = (GLint)((off - s_vtx_ring_attrib_base) / (tri_bytes / 3));
+    } else {
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
+    }
 
     // Wireframe cheat: draw depth-tested 3D geometry as polygon outlines. Skipped
     // for 2D HUD/menus (no depth test) and on GL ES (glPolygonMode is desktop-GL only).
@@ -1233,7 +1422,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                 gfx_silhouette_color[0], gfx_silhouette_color[1], gfx_silhouette_color[2], 1.0f);
     }
 
-    glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+    glDrawArrays(GL_TRIANGLES, first_vtx, 3 * buf_vbo_num_tris);
 
     if (sil_fill && gfx_silhouette_edges) {
         // White wireframe edges over the flat fill (the iPod-ad geometry
@@ -1242,7 +1431,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glLineWidth(gfx_wireframe_line_width);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         glUniform4f(gfx_current_shader_program->wireframe_color_location, 1.0f, 1.0f, 1.0f, 1.0f);
-        glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+        glDrawArrays(GL_TRIANGLES, first_vtx, 3 * buf_vbo_num_tris);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         glLineWidth(1.0f);
     }
@@ -1603,6 +1792,7 @@ static void gfx_opengl_init(void) {
 
     glGenBuffers(1, &opengl_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    gfx_opengl_vtx_ring_init(); // may promote opengl_vbo into the persistent-mapped ring (A4)
 
     if (gl_core_profile || gl_es) {
         // warn user that funny things can happen

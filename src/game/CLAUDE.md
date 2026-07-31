@@ -2,7 +2,7 @@
 
 > Auto-loads when working under `src/game/`. For the full netplay protocol and CSP/interp/lag-comp design, see [`../../port/src/net/CLAUDE.md`](../../port/src/net/CLAUDE.md).
 
-**Do not rename symbols in this directory.** Files under `src/` are decompiled N64 C — every identifier maps to the original binary.
+**Keep symbol names in this directory** (port-first policy, root CLAUDE.md 2026-07-31): the repo no longer targets N64 or byte-matching, but decompiled names are the stable coordinate system of the docs/memory/crash-symbol base — keep them. Struct repacking and deleting N64-only paths are now allowed (serialized formats stay frozen; netplay determinism is the binding contract).
 
 ---
 
@@ -10,7 +10,7 @@
 
 Many files in this folder have been modified for netplay. Two recurring patterns to preserve when editing:
 
-- **`#ifndef PLATFORM_N64` blocks** — wrap port-only net logic (interpolation, CSP hooks, lag-comp, sim-sync guards). The N64 build must keep the original code path.
+- **`#ifndef PLATFORM_N64` blocks** — the historical guard for port-only logic. Since the 2026-07-31 port-first policy, NEW work doesn't need them (the N64 build is retired); existing guards may be collapsed when touching a function.
 - **`if (g_NetMode != NETMODE_CLIENT)` guards** — gate server-only writes and AI logic so clients don't clobber authoritative state. Examples: `botTick` in `prop.c`, `mpstatsRecordDeath` writes in `mpstats.c`, `bwalkUpdateRemote` force-position early-return in `bondwalk.c`.
 
 When adding logic that should only run on the server, use `g_NetMode != NETMODE_CLIENT` (not `g_NetMode == NETMODE_SERVER` — the host player also has `NETMODE_SERVER`). When adding logic that must be absent from N64 builds, wrap in `#ifndef PLATFORM_N64`.

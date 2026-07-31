@@ -1,6 +1,6 @@
 # Shared Game Headers (`src/include/`)
 
-> Do not rename any symbol in this directory — all identifiers map to decompiled N64 addresses.
+> Keep symbol names (they're the repo's stable coordinate system — see the root CLAUDE.md port-first policy, 2026-07-31). Struct layout may change EXCEPT for serialized formats (mpsetups/wad/ROM-image blocks — see rule 2 in the root policy).
 
 Shared types, constants, BSS layout, and global data declarations for the original N64 game logic.
 

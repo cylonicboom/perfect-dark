@@ -60,6 +60,18 @@ void chrmgrConfigure(s32 numchrs)
 #endif
 	g_ChrSlots = mempAlloc(ALIGN16(g_NumChrSlots * sizeof(struct chrdata)), MEMPOOL_STAGE);
 
+#ifndef PLATFORM_N64
+	// Zero the whole slot array. MEMPOOL_STAGE is rewound, never cleared, so
+	// slots otherwise start as whatever the PREVIOUS stage left at this pool
+	// offset — and chrInit is field-by-field, leaving ~15 fields plus most of
+	// the act_* union running on those stale bytes (the exact mechanism behind
+	// the uninitialised-netsnap crash family; g_BgChrs already block-zeroes via
+	// blankchr in game_00b820.c). Also the precondition for the chrdata cache
+	// repack: with a zeroed start, field ORDER can no longer change which
+	// garbage lands in an uninitialised field.
+	bzero(g_ChrSlots, g_NumChrSlots * sizeof(struct chrdata));
+#endif
+
 	for (i = 0; i < g_NumChrSlots; i++) {
 		g_ChrSlots[i].chrnum = -1;
 		g_ChrSlots[i].model = NULL;

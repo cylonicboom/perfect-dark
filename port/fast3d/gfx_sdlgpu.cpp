@@ -9,13 +9,16 @@
 //    swapchain (swapchain textures are color-target-only); end_frame blits
 //    fb0 -> swapchain. This uniformly handles copy_framebuffer's use_back,
 //    screenshots, and the GL<->Vulkan y-flip question.
-//  - Frame: two command buffers. Texture/vertex uploads record copy passes on
-//    an upload CB as they occur; draws/blits record on a render CB. Submitting
-//    upload-then-render at end_frame guarantees uploads execute first, which
-//    sidesteps "no copy passes inside render passes" entirely. Re-uploads to
-//    an existing texture id allocate a fresh GPU texture (draws recorded
-//    earlier keep referencing the old one), so GL's mid-frame upload ordering
-//    is preserved.
+//  - Frame: three command buffers. Texture/vertex uploads record copy passes
+//    on an upload CB as they occur; draws/blits record on a render CB.
+//    Submitting upload-then-render at end_frame guarantees uploads execute
+//    first, which sidesteps "no copy passes inside render passes" entirely.
+//    Re-uploads to an existing texture id allocate a fresh GPU texture (draws
+//    recorded earlier keep referencing the old one), so GL's mid-frame upload
+//    ordering is preserved. Both submit BEFORE the swapchain wait (A9); the
+//    fb0 -> swapchain present then rides a third, tiny CB, so the GPU chews
+//    on the frame while the CPU blocks on the swapchain. Same-queue
+//    submission order keeps fb0's writes visible to the present blit.
 //  - Coordinates: gfx_pc hands viewport/scissor in GL bottom-left window
 //    coords; converted to SDL_GPU's top-left here. Clip parameters are
 //    { z 0..1, invert_y = false }: SDL_GPU's NDC is +y up with top-left
@@ -1738,6 +1741,8 @@ static void gfx_sdlgpu_end_frame(void) {
         gpu.upload_cb = NULL;
     }
 
+    const bool had_render_cb = gpu.render_cb != NULL;
+
     if (gpu.render_cb && fbs[0].color && gpu.front_wanted > 0) {
         // refresh the front-buffer snapshot (recorded after all of the
         // frame's passes, so it holds the completed frame — GL_FRONT
@@ -1778,55 +1783,85 @@ static void gfx_sdlgpu_end_frame(void) {
     }
 
     if (gpu.render_cb) {
-        SDL_GPUTexture *swap = NULL;
-        Uint32 sw = 0, sh = 0;
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(gpu.render_cb, gpu.window, &swap, &sw, &sh) && swap &&
-            fbs[0].color) {
-            if (gpu.hdr_active && gpu.present_pipeline) {
-                // HDR present: fullscreen triangle sampling fb0 and scaling
-                // SDR-authored content to the configured paper white
-                // (scRGB 1.0 = 80 nits)
-                SDL_GPUColorTargetInfo ct;
-                SDL_zero(ct);
-                ct.texture = swap;
-                ct.load_op = SDL_GPU_LOADOP_DONT_CARE; // fully covered
-                ct.store_op = SDL_GPU_STOREOP_STORE;
-                SDL_GPURenderPass *p = SDL_BeginGPURenderPass(gpu.render_cb, &ct, 1, NULL);
-                SDL_BindGPUGraphicsPipeline(p, gpu.present_pipeline);
-                SDL_GPUTextureSamplerBinding tb;
-                tb.texture = fbs[0].color;
-                tb.sampler = sampler_get(SK_FB_LINEAR);
-                SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
-                // scRGB: 1.0 = 80 nits; HDR10 PQ: absolute, normalized to 10000
-                const float scale = gpu.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084
-                    ? gpu.hdr_paperwhite / 10000.0f
-                    : gpu.hdr_paperwhite / 80.0f;
-                // highlight expansion: white reaches peak nits (boost >= 1)
-                const float boost = gpu.hdr_peak > gpu.hdr_paperwhite ? gpu.hdr_peak / gpu.hdr_paperwhite : 1.0f;
-                const float blk[4] = { scale, boost, 0.0f, 0.0f };
-                SDL_PushGPUFragmentUniformData(gpu.render_cb, 0, blk, sizeof(blk));
-                SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
-                SDL_EndGPURenderPass(p);
-            } else {
-                SDL_GPUBlitInfo b;
-                SDL_zero(b);
-                b.source.texture = fbs[0].color;
-                b.source.w = fbs[0].w;
-                b.source.h = fbs[0].h;
-                b.destination.texture = swap;
-                b.destination.w = sw;
-                b.destination.h = sh;
-                b.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                b.filter = (fbs[0].w == sw && fbs[0].h == sh) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-                SDL_BlitGPUTexture(gpu.render_cb, &b);
-            }
-        }
+        // A9: submit the frame's real work BEFORE the blocking swapchain
+        // wait, so the GPU starts on the frame while the CPU waits to
+        // present. All of the frame's passes (including the front snapshot
+        // above) are recorded by now.
         SDL_SubmitGPUCommandBuffer(gpu.render_cb);
         gpu.render_cb = NULL;
     }
 
-    // deferred releases: safe now that the command buffers are submitted
-    // (SDL_GPU defers actual destruction until the GPU is done with them)
+    // present: fb0 -> swapchain on a third, tiny command buffer. Same-queue
+    // submission order guarantees fb0's writes are visible to this CB's
+    // blit. The swapchain texture binds to the CB that acquires it, so
+    // acquiring here (not on the render CB) is the supported pattern.
+    // Gated on had_render_cb to keep the old failure semantics: no render
+    // CB this frame -> no present.
+    if (had_render_cb) {
+        SDL_GPUCommandBuffer *present_cb = SDL_AcquireGPUCommandBuffer(gpu.device);
+        if (present_cb) {
+            SDL_GPUTexture *swap = NULL;
+            Uint32 sw = 0, sh = 0;
+            SDL_WaitAndAcquireGPUSwapchainTexture(present_cb, gpu.window, &swap, &sw, &sh);
+            if (swap) {
+                if (fbs[0].color) {
+                    if (gpu.hdr_active && gpu.present_pipeline) {
+                        // HDR present: fullscreen triangle sampling fb0 and scaling
+                        // SDR-authored content to the configured paper white
+                        // (scRGB 1.0 = 80 nits)
+                        SDL_GPUColorTargetInfo ct;
+                        SDL_zero(ct);
+                        ct.texture = swap;
+                        ct.load_op = SDL_GPU_LOADOP_DONT_CARE; // fully covered
+                        ct.store_op = SDL_GPU_STOREOP_STORE;
+                        SDL_GPURenderPass *p = SDL_BeginGPURenderPass(present_cb, &ct, 1, NULL);
+                        SDL_BindGPUGraphicsPipeline(p, gpu.present_pipeline);
+                        SDL_GPUTextureSamplerBinding tb;
+                        tb.texture = fbs[0].color;
+                        tb.sampler = sampler_get(SK_FB_LINEAR);
+                        SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
+                        // scRGB: 1.0 = 80 nits; HDR10 PQ: absolute, normalized to 10000
+                        const float scale = gpu.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084
+                            ? gpu.hdr_paperwhite / 10000.0f
+                            : gpu.hdr_paperwhite / 80.0f;
+                        // highlight expansion: white reaches peak nits (boost >= 1)
+                        const float boost =
+                            gpu.hdr_peak > gpu.hdr_paperwhite ? gpu.hdr_peak / gpu.hdr_paperwhite : 1.0f;
+                        const float blk[4] = { scale, boost, 0.0f, 0.0f };
+                        SDL_PushGPUFragmentUniformData(present_cb, 0, blk, sizeof(blk));
+                        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+                        SDL_EndGPURenderPass(p);
+                    } else {
+                        SDL_GPUBlitInfo b;
+                        SDL_zero(b);
+                        b.source.texture = fbs[0].color;
+                        b.source.w = fbs[0].w;
+                        b.source.h = fbs[0].h;
+                        b.destination.texture = swap;
+                        b.destination.w = sw;
+                        b.destination.h = sh;
+                        b.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                        b.filter =
+                            (fbs[0].w == sw && fbs[0].h == sh) ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
+                        SDL_BlitGPUTexture(present_cb, &b);
+                    }
+                }
+                // an acquired swapchain texture MUST ride a submit (cancel
+                // is an error once one is acquired), even if fb0 was missing
+                SDL_SubmitGPUCommandBuffer(present_cb);
+            } else {
+                // no swapchain texture (minimized window / acquire failure):
+                // the frame's work is already submitted above, so the frame
+                // drops cleanly; cancel is legal precisely because no
+                // swapchain texture was acquired on this CB
+                SDL_CancelGPUCommandBuffer(present_cb);
+            }
+        }
+    }
+
+    // deferred releases: safe now that all three command buffers (upload,
+    // render, present) are submitted (SDL_GPU defers actual destruction
+    // until the GPU is done with them)
     for (SDL_GPUTexture *t : dead_textures) {
         SDL_ReleaseGPUTexture(gpu.device, t);
     }

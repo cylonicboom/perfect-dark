@@ -6913,6 +6913,46 @@ s32 netConsoleCommand(const char *line)
 					g_RoomShinyAlphaFloor,
 					g_RoomShinyAlphaFloor ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "fontatlas") == 0) {
+		// /fontatlas [on|off]  per-font glyph atlas (port/src/fontatlas.c,
+		// item A12): whole strings render from one cached texture instead of
+		// one texture load + draw per glyph. off = legacy per-glyph path.
+		{
+			extern s32 g_FontAtlasEnabled;
+
+			if (strcmp(arg, "on") == 0) {
+				g_FontAtlasEnabled = 1;
+			} else if (strcmp(arg, "off") == 0) {
+				g_FontAtlasEnabled = 0;
+			} else if (arg[0]) {
+				g_FontAtlasEnabled = atoi(arg) != 0;
+			}
+
+			sysLogPrintf(LOG_CHAT, "FONTATLAS: %s (text glyph atlas)",
+					g_FontAtlasEnabled ? "ON" : "OFF");
+		}
+	} else if (strcmp(cmd, "cdgrid") == 0) {
+		// /cdgrid [on|off|verify]  per-room collision spatial index
+		// (src/lib/collision.c, deferred item #22). verify toggles the
+		// cross-check mode: runs BOTH the indexed and linear paths and logs
+		// "cdgrid: verify MISMATCH" on any divergence (linear stays
+		// authoritative while verifying). Perf A/B via on/off.
+		{
+			extern s32 g_CdSpatialIndexEnabled;
+			extern s32 g_CdSpatialIndexVerify;
+
+			if (strcmp(arg, "on") == 0) {
+				g_CdSpatialIndexEnabled = 1;
+			} else if (strcmp(arg, "off") == 0) {
+				g_CdSpatialIndexEnabled = 0;
+			} else if (strcmp(arg, "verify") == 0) {
+				g_CdSpatialIndexVerify = !g_CdSpatialIndexVerify;
+			}
+
+			sysLogPrintf(LOG_CHAT, "CDGRID: %s verify=%s (collision spatial index)",
+					g_CdSpatialIndexEnabled ? "ON" : "OFF",
+					g_CdSpatialIndexVerify ? "ON" : "OFF");
+		}
 	} else if (strcmp(cmd, "losmemo") == 0) {
 		// /losmemo [on|off]  toggle the per-chr per-frame AI line-of-sight memo
 		// (g_ChrLosMemoEnabled, chraction.c — Part B opt B1). Behaviour-adjacent:

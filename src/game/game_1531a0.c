@@ -15,6 +15,16 @@
 #include "types.h"
 #include "platform.h"
 
+#if !defined(PLATFORM_N64) && VERSION != VERSION_JPN_FINAL
+// Port: font glyph atlas (opt A12) — one texture per font instead of one
+// texture load + import per glyph. See port/include/fontatlas.h. JPN_FINAL
+// keeps the per-glyph path everywhere (its glyph set is dominated by
+// dynamically generated bitmaps that can't be pre-atlased).
+#define TEXT_ATLAS_ENABLED 1
+#include "fontatlas.h"
+static void textAtlasResetState(void);
+#endif
+
 #define SPACE_WIDTH 5
 
 #define BLENDTYPE_DIAGONAL   0x01
@@ -264,6 +274,13 @@ void textLoadFont(u8 *romstart, u8 *romend, struct font **fontptr, struct fontch
 		(*charsptr)['|' - 0x21].baseline++;
 	}
 #endif
+
+#ifdef TEXT_ATLAS_ENABLED
+	// Port: pack this font's glyph bitmaps into a single atlas texture.
+	// After the monospace/baseline tweaks (metrics only; the bitmaps the
+	// atlas copies are not affected by them).
+	fontAtlasRegister(font, chars, NUMCHARS());
+#endif
 }
 
 void textReset(void)
@@ -278,6 +295,15 @@ void textReset(void)
 	extern u8 EXT_SEG _fonthandelgothiclgSegmentRomStart, EXT_SEG _fonthandelgothiclgSegmentRomEnd;
 	extern u8 EXT_SEG _fontocramdSegmentRomStart,         EXT_SEG _fontocramdSegmentRomEnd;
 	extern u8 EXT_SEG _fontocralgSegmentRomStart,         EXT_SEG _fontocralgSegmentRomEnd;
+
+#ifdef TEXT_ATLAS_ENABLED
+	// Port: the previous stage's atlases lived in MEMPOOL_STAGE alongside the
+	// fonts; forget them before the reloads below re-register each font.
+	// Also drop the per-string atlas pick (it re-arms in every string
+	// prologue, but never leave a stale pointer around a stage change).
+	fontAtlasResetAll();
+	textAtlasResetState();
+#endif
 
 	var8007faec = 0;
 	g_FontTahoma2 = NULL;
@@ -375,6 +401,102 @@ void textReset(void)
 #endif
 	}
 }
+
+#ifdef TEXT_ATLAS_ENABLED
+// Port: font-atlas render state (A12). A string whose font has an atlas
+// (chosen once per string by textAtlasBeginString from the textRender /
+// textRenderProjected prologues) emits the atlas texture once, then draws
+// every glyph as a plain texrect offset into the atlas — no per-glyph
+// SetTextureImage/LoadBlock, so the fast3d cache imports the whole font once
+// and the texrects batch into a single draw. Glyphs that aren't in the atlas
+// (the dynamically generated JPN two-byte glyphs, which are stack fontchars)
+// re-emit the original per-glyph tile setup and fall back mid-string; the
+// next atlas glyph switches back.
+static struct fontatlas *g_TextAtlasCur = NULL; // atlas for the current string, or NULL
+static s32 g_TextAtlasTilesOn = false;          // dlist tiles currently configured for the atlas
+static s32 g_TextAtlasTwoTile = false;          // string uses tiles 0+1 (textRender) vs tile 0 only
+static s32 g_TextAtlasBaseS = 0;                // atlas cell origin in S10.5, added to texrect
+static s32 g_TextAtlasBaseT = 0;                // s/t by text0f156a24; 0 for non-atlas glyphs
+
+static void textAtlasResetState(void)
+{
+	g_TextAtlasCur = NULL;
+	g_TextAtlasTilesOn = false;
+	g_TextAtlasBaseS = 0;
+	g_TextAtlasBaseT = 0;
+}
+
+static Gfx *textAtlasEmitTiles(Gfx *gdl)
+{
+	struct fontatlas *atl = g_TextAtlasCur;
+	s32 line = atl->width >> 4; // CI4: one 8-byte TMEM word per 16 texels
+	s32 lrs = (atl->width - 1) << 2;
+	s32 lrt = (atl->height - 1) << 2;
+
+	// LoadTile rather than LoadBlock: the block lrs field caps at 2047 texel
+	// pairs, which a whole-font atlas exceeds. fast3d sizes the import from
+	// the render tile's line and the loaded byte count, and the tile size
+	// below matches the real dimensions so clamp stays exact.
+	gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_4b, atl->width, atl->pixels);
+	gDPSetTile(gdl++, G_IM_FMT_CI, G_IM_SIZ_4b, line, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+	gDPLoadSync(gdl++);
+	gDPLoadTile(gdl++, G_TX_LOADTILE, 0, 0, lrs, lrt);
+	gDPPipeSync(gdl++);
+	gDPSetTile(gdl++, G_IM_FMT_CI, G_IM_SIZ_4b, line, 0x0000, G_TX_RENDERTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+	gDPSetTileSize(gdl++, G_TX_RENDERTILE, 0, 0, lrs, lrt);
+
+	if (g_TextAtlasTwoTile) {
+		gDPSetTile(gdl++, G_IM_FMT_CI, G_IM_SIZ_4b, line, 0x0000, 1, 1, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+		gDPSetTileSize(gdl++, 1, 0, 0, lrs, lrt);
+	}
+
+	g_TextAtlasTilesOn = true;
+
+	return gdl;
+}
+
+static Gfx *textAtlasEmitLegacyTiles(Gfx *gdl)
+{
+	// restore the tile state the string prologue originally set (line=1,
+	// 16-texel glyph rows) so a per-glyph fallback load renders correctly
+	gDPSetTile(gdl++, G_IM_FMT_CI, G_IM_SIZ_4b, 1, 0x0000, G_TX_RENDERTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+	gDPSetTileSize(gdl++, G_TX_RENDERTILE, 0, 0, 0x007c, 0x007c);
+
+	if (g_TextAtlasTwoTile) {
+		gDPSetTile(gdl++, G_IM_FMT_CI, G_IM_SIZ_4b, 1, 0x0000, 1, 1, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
+		gDPSetTileSize(gdl++, 1, 0, 0, 0x007c, 0x007c);
+	}
+
+	g_TextAtlasTilesOn = false;
+
+	return gdl;
+}
+
+static Gfx *textAtlasBeginString(Gfx *gdl, struct font *font, s32 twotile)
+{
+	g_TextAtlasCur = NULL;
+	g_TextAtlasTilesOn = false;
+	g_TextAtlasTwoTile = twotile;
+
+	// rotated-90 strings use flip texrects whose s/t slots source from
+	// swapped offset variables (text0f15568c); keep them per-glyph
+	if (!g_TextRotated90) {
+		g_TextAtlasCur = fontAtlasForString(font);
+
+		if (g_TextAtlasCur != NULL) {
+			gdl = textAtlasEmitTiles(gdl);
+		}
+	}
+
+	return gdl;
+}
+
+#define TEXT_TR_S(v) (g_TextAtlasBaseS + (v))
+#define TEXT_TR_T(v) (g_TextAtlasBaseT + (v))
+#else
+#define TEXT_TR_S(v) (v)
+#define TEXT_TR_T(v) (v)
+#endif
 
 Gfx *text0f153628(Gfx *gdl)
 {
@@ -1795,10 +1917,38 @@ Gfx *text0f15568c(Gfx *gdl, s32 *x, s32 *y, struct fontchar *curchar, struct fon
 				&& savedy + height >= curchar->baseline + sp90
 				&& *x >= savedx
 				&& curchar->baseline + sp90 + curchar->height >= savedy) {
+#ifdef TEXT_ATLAS_ENABLED
+			s32 atlass = 0;
+			s32 atlast = 0;
+			s32 useatlas = g_TextAtlasCur != NULL && fontAtlasLookup(g_TextAtlasCur, curchar, &atlass, &atlast);
+
+			if (useatlas) {
+				if (!g_TextAtlasTilesOn) {
+					gdl = textAtlasEmitTiles(gdl);
+				}
+
+				// no per-glyph load; the texrects below source their s/t from
+				// var8007fae4/var8007fae8 (always zero — only textReset writes
+				// them), so bias those into the glyph's atlas cell and restore
+				// after the emission tree
+				var8007fae4 += (u32)(atlass << 5);
+				var8007fae8 += (u32)(atlast << 5);
+			} else {
+				if (g_TextAtlasTilesOn) {
+					gdl = textAtlasEmitLegacyTiles(gdl);
+				}
+
+				gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
+				gDPLoadSync(gdl++);
+				gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
+				gDPPipeSync(gdl++);
+			}
+#else
 			gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
 			gDPLoadSync(gdl++);
 			gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
 			gDPPipeSync(gdl++);
+#endif
 
 			if (g_Blend.types) {
 				gdl = text0f154ecc(gdl, *x / g_ScaleX, *y + arg10);
@@ -1885,6 +2035,13 @@ Gfx *text0f15568c(Gfx *gdl, s32 *x, s32 *y, struct fontchar *curchar, struct fon
 					}
 				}
 			}
+
+#ifdef TEXT_ATLAS_ENABLED
+			if (useatlas) {
+				var8007fae4 -= (u32)(atlass << 5);
+				var8007fae8 -= (u32)(atlast << 5);
+			}
+#endif
 		}
 	}
 #endif
@@ -2051,6 +2208,12 @@ Gfx *textRenderProjected(Gfx *gdl, s32 *x, s32 *y, char *text, struct fontchar *
 	gDPSetPrimColorViaWord(gdl++, 0, 0, colour);
 	gDPPipeSync(gdl++);
 
+#ifdef TEXT_ATLAS_ENABLED
+	// Port: if this font has an atlas, emit it now and draw the glyphs below
+	// as texrects into it (single tile: this path's combiner only uses TEXEL0)
+	gdl = textAtlasBeginString(gdl, font, false);
+#endif
+
 	g_Blend.colour04 = colour;
 	g_Blend.colour44 = colour;
 
@@ -2199,12 +2362,44 @@ Gfx *textRenderChar(Gfx *gdl, s32 *x, s32 *y, struct fontchar *char1, struct fon
 		}
 #endif
 
+#ifdef TEXT_ATLAS_ENABLED
+		{
+			s32 atlass;
+			s32 atlast;
+
+			if (g_TextAtlasCur != NULL && fontAtlasLookup(g_TextAtlasCur, char1, &atlass, &atlast)) {
+				// glyph lives in the string's font atlas: no per-glyph texture
+				// load; text0f156a24 offsets its texrect into the atlas cell
+				if (!g_TextAtlasTilesOn) {
+					gdl = textAtlasEmitTiles(gdl);
+				}
+
+				g_TextAtlasBaseS = atlass << 5;
+				g_TextAtlasBaseT = atlast << 5;
+			} else {
+				if (g_TextAtlasTilesOn) {
+					gdl = textAtlasEmitLegacyTiles(gdl);
+				}
+
+				gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, char1->pixeldata);
+				gDPLoadSync(gdl++);
+				gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((char1->height * 8 + 17) >> 1) - 1, 2048);
+				gDPPipeSync(gdl++);
+			}
+		}
+#else
 		gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, char1->pixeldata);
 		gDPLoadSync(gdl++);
 		gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((char1->height * 8 + 17) >> 1) - 1, 2048);
 		gDPPipeSync(gdl++);
+#endif
 
 		gdl = text0f156a24(gdl, *x - var8007fad0, sp38 - 1, char1, arg6, arg7 - 1, arg8, arg9);
+
+#ifdef TEXT_ATLAS_ENABLED
+		g_TextAtlasBaseS = 0;
+		g_TextAtlasBaseT = 0;
+#endif
 	}
 
 	*x += char1->width * var8007fad0;
@@ -2246,8 +2441,8 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 							(y - char1->baseline) * 4,
 							(x + char1->width + 2) * 4,
 							G_TX_RENDERTILE,
-							0,
-							(char1->height + 1) << 5,
+							TEXT_TR_S(0),
+							TEXT_TR_T((char1->height + 1) << 5),
 							TEXT_DSDX_1024(),
 							-1024);
 				} else {
@@ -2257,8 +2452,8 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 							(x + char1->width * var8007fad0 + 2) * 4,
 							(y + char1->baseline + char1->height + 2) * 4,
 							G_TX_RENDERTILE,
-							0,
-							0,
+							TEXT_TR_S(0),
+							TEXT_TR_T(0),
 							TEXT_DSDX_1024(),
 							1024);
 				}
@@ -2270,8 +2465,8 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 							(x + char1->width * var8007fad0 + 2) * 4,
 							(arg5 + arg7) * 4,
 							G_TX_RENDERTILE,
-							0,
-							0,
+							TEXT_TR_S(0),
+							TEXT_TR_T(0),
 							TEXT_DSDX_1024(),
 							1024);
 				}
@@ -2284,8 +2479,8 @@ Gfx *text0f156a24(Gfx *gdl, s32 x, s32 y, struct fontchar *char1, s32 arg4, s32 
 						(x + char1->width * var8007fad0 + 2) * 4,
 						(y + char1->baseline + char1->height + 2) * 4,
 						G_TX_RENDERTILE,
-						0,
-						(arg5 - char1->baseline - y) << 5,
+						TEXT_TR_S(0),
+						TEXT_TR_T((arg5 - char1->baseline - y) << 5),
 						TEXT_DSDX_1024(),
 						1024);
 			}
@@ -2361,6 +2556,12 @@ Gfx *textRender(Gfx *gdl, s32 *x, s32 *y, char *text,
 	gDPSetPrimColorViaWord(gdl++, 0, 0, colour);
 	gDPSetEnvColorViaWord(gdl++, arg6);
 	gDPPipeSync(gdl++);
+
+#ifdef TEXT_ATLAS_ENABLED
+	// Port: if this font has an atlas, emit it now for both tiles (this
+	// path's 2-cycle combiner samples TEXEL0 and TEXEL1_ALPHA)
+	gdl = textAtlasBeginString(gdl, font, true);
+#endif
 
 	g_Blend.colour08 = colour;
 	g_Blend.colour48 = colour;

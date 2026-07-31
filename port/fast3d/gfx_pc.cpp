@@ -523,6 +523,16 @@ struct FBInfo {
 };
 
 static bool fbActive = 0;
+
+// Generation counter for gfx_sp_tri1's derived-state cache: bumped by every
+// mutator of the state that derivation reads (othermodes, combine mode,
+// geometry modes, tile/texture state, grayscale). One integer compare per
+// triangle replaces the full re-derivation while state is unchanged. The few
+// game-written globals that feed the derivation (wireframe/flattex) are
+// compared by value in the cache-validity check instead, since no setter runs
+// when game code pokes them directly.
+static uint64_t g_TriStateGen = 1;
+
 static std::map<int, FBInfo>::iterator active_fb;
 static std::map<int, FBInfo> framebuffers;
 
@@ -1012,6 +1022,7 @@ void gfx_texture_cache_clear() {
     gfx_texture_cache.map.clear();
     gfx_texture_cache.lru.clear();
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    g_TriStateGen++;
     memset(rendering_state.textures, 0, sizeof(rendering_state.textures));
     extTexFree(); // drop decoded ext_tex PNG data along with the GPU cache
 }
@@ -2195,6 +2206,33 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     uint32_t tm = 0;
     uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
 
+    // Derived-state cache: the per-unit block below (texture-dim derivation
+    // with two integer divides per unit, clamp-mask assembly, sampler-param
+    // sync) only depends on state whose mutators bump g_TriStateGen, so while
+    // the generation is unchanged the previous triangle's results are exact.
+    // The import/skip-import sub-block self-invalidates: textures_changed can
+    // only be set by gen-bumping sites, so a valid generation implies both
+    // flags are false and the whole block is skippable. Also caches the
+    // per-vertex UV normalization as reciprocals + resolved clamp coords
+    // (multiply instead of divide per vertex; ULP-level render-only change).
+    static struct {
+        uint64_t gen;               // 0 = invalid, else matches g_TriStateGen
+        const ColorCombiner* comb;  // identity only (used_textures selector)
+        uint32_t tm;
+        uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
+        float inv_w[2], inv_h[2], clamp_u[2], clamp_v[2];
+    } tricache;
+
+    if (tricache.gen == g_TriStateGen && tricache.comb == comb) {
+        tm = tricache.tm;
+        for (int i = 0; i < 2; i++) {
+            tex_width[i] = tricache.tex_width[i];
+            tex_height[i] = tricache.tex_height[i];
+            tex_width2[i] = tricache.tex_width2[i];
+            tex_height2[i] = tricache.tex_height2[i];
+        }
+    } else {
+
     for (int i = 0; i < 2; i++) {
         // TODO: fix this; for now just ignore smaller mips
         const uint32_t tile = rdp.first_tile_index + gfx_lod_tile_offset(i);
@@ -2238,6 +2276,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 if (!skip_import) {
                     gfx_flush();
                     import_texture(i, tile, false);
+                    // import can rewrite loaded_texture (mip/LOD substitution),
+                    // which feeds the cached tex-dim derivation below
+                    g_TriStateGen++;
                 }
                 rdp.textures_changed[i] = false;
             }
@@ -2298,6 +2339,36 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
     }
 
+    // Store the derived state for the next triangle. The generation is
+    // captured AFTER the loop so a mid-loop import (which bumps it) leaves
+    // the cache keyed to the post-import state it actually derived from.
+    tricache.gen = g_TriStateGen;
+    tricache.comb = comb;
+    tricache.tm = tm;
+    for (int i = 0; i < 2; i++) {
+        tricache.tex_width[i] = tex_width[i];
+        tricache.tex_height[i] = tex_height[i];
+        tricache.tex_width2[i] = tex_width2[i];
+        tricache.tex_height2[i] = tex_height2[i];
+
+        if (comb->used_textures[i]) {
+            const float w = tex_width[i] != 0 ? (float)tex_width[i] : 1.0f;
+            const float h = tex_height[i] != 0 ? (float)tex_height[i] : 1.0f;
+            tricache.inv_w[i] = 1.0f / w;
+            tricache.inv_h[i] = 1.0f / h;
+            tricache.clamp_u[i] = (tex_width2[i] - 0.5f) / w;
+            tricache.clamp_v[i] = (tex_height2[i] - 0.5f) / h;
+        } else {
+            // defensive: the shader-side used_textures (vertex loop) should
+            // match comb's, but a mismatch must not read garbage
+            tricache.inv_w[i] = 1.0f;
+            tricache.inv_h[i] = 1.0f;
+            tricache.clamp_u[i] = 0.0f;
+            tricache.clamp_v[i] = 0.0f;
+        }
+    }
+    } // end derived-state recompute
+
     // Wireframe: depth-tested 3D geometry only (never the 2D HUD/menus, which
     // run with depth test off). depth_test is derived above, before this point.
     const uint32_t wf_on =
@@ -2326,9 +2397,32 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     uint8_t num_inputs;
     bool used_textures[2];
 
-    gfx_rapi->shader_get_info(prg, &num_inputs, used_textures);
+    // Both of these are constant per program / per framebuffer config; the
+    // indirect rapi calls cost more than the answers. Gen-keyed like the
+    // derived-state cache above (clear_shaders/reset and fb switches bump).
+    static struct {
+        uint64_t gen;
+        const struct ShaderProgram* prg;
+        uint8_t num_inputs;
+        bool used_textures[2];
+        struct GfxClipParameters clip;
+    } prginfocache;
 
-    struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
+    if (prginfocache.gen == g_TriStateGen && prginfocache.prg == prg) {
+        num_inputs = prginfocache.num_inputs;
+        used_textures[0] = prginfocache.used_textures[0];
+        used_textures[1] = prginfocache.used_textures[1];
+    } else {
+        gfx_rapi->shader_get_info(prg, &num_inputs, used_textures);
+        prginfocache.clip = gfx_rapi->get_clip_parameters();
+        prginfocache.gen = g_TriStateGen;
+        prginfocache.prg = prg;
+        prginfocache.num_inputs = num_inputs;
+        prginfocache.used_textures[0] = used_textures[0];
+        prginfocache.used_textures[1] = used_textures[1];
+    }
+
+    struct GfxClipParameters clip_parameters = prginfocache.clip;
 
     const size_t rec_tri_start = buf_vbo_len; // for the display-list cache tee
 
@@ -2387,17 +2481,17 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 }
             }
 
-            buf_vbo[buf_vbo_len++] = u / tex_width[t];
-            buf_vbo[buf_vbo_len++] = v / tex_height[t];
+            buf_vbo[buf_vbo_len++] = u * tricache.inv_w[t];
+            buf_vbo[buf_vbo_len++] = v * tricache.inv_h[t];
 
             bool clampS = tm & (1 << 2 * t);
             bool clampT = tm & (1 << (2 * t + 1));
 
             if (clampS) {
-                buf_vbo[buf_vbo_len++] = (tex_width2[t] - 0.5f) / tex_width[t];
+                buf_vbo[buf_vbo_len++] = tricache.clamp_u[t];
             }
             if (clampT) {
-                buf_vbo[buf_vbo_len++] = (tex_height2[t] - 0.5f) / tex_height[t];
+                buf_vbo[buf_vbo_len++] = tricache.clamp_v[t];
             }
         }
 
@@ -2597,6 +2691,7 @@ static inline void gfx_sp_tri4(Gfx *cmd) {
 static void gfx_sp_geometry_mode(uint32_t clear, uint32_t set) {
     rsp.geometry_mode &= ~clear;
     rsp.geometry_mode |= set;
+    g_TriStateGen++;
 }
 
 static inline void gfx_update_aspect_mode(void) {
@@ -2623,6 +2718,7 @@ static inline void gfx_update_aspect_mode(void) {
 static void gfx_sp_extra_geometry_mode(uint32_t clear, uint32_t set) {
     rsp.extra_geometry_mode &= ~clear;
     rsp.extra_geometry_mode |= set;
+    g_TriStateGen++;
     rsp.aspect_mode = (rsp.extra_geometry_mode & G_ASPECT_MODE_EXT);
     gfx_update_aspect_mode();
 }
@@ -2724,6 +2820,7 @@ static void gfx_sp_texture(uint16_t sc, uint16_t tc, uint8_t level, uint8_t tile
         rdp.textures_changed[0] = true;
         rdp.textures_changed[1] = true;
         rdp.first_tile_index = tile;
+        g_TriStateGen++;
     }
 }
 
@@ -2798,6 +2895,7 @@ static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t t
 
     rdp.textures_changed[0] = true;
     rdp.textures_changed[1] = true;
+    g_TriStateGen++;
 }
 
 static void gfx_dp_set_tile_size(uint8_t tile, uint16_t uls, uint16_t ult, uint16_t lrs, uint16_t lrt) {
@@ -2809,6 +2907,7 @@ static void gfx_dp_set_tile_size(uint8_t tile, uint16_t uls, uint16_t ult, uint1
     rdp.texture_tile[tile].height = (lrt - ult + 4) / 4;
     rdp.textures_changed[0] = true;
     rdp.textures_changed[1] = true;
+    g_TriStateGen++;
 }
 
 static void gfx_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -2846,6 +2945,7 @@ static void gfx_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     }
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    g_TriStateGen++;
 }
 
 static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt) {
@@ -2907,6 +3007,7 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
     }
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    g_TriStateGen++;
 }
 
 static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -2955,10 +3056,12 @@ static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     rdp.texture_tile[tile].height = ((lrt - ult) >> G_TEXTURE_IMAGE_FRAC) + 1;
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    g_TriStateGen++;
 }
 
 static void gfx_dp_set_combine_mode(uint32_t rgb, uint32_t alpha, uint32_t rgb_cyc2, uint32_t alpha_cyc2) {
     rdp.combine_mode = rgb | (alpha << 16) | ((uint64_t)rgb_cyc2 << 28) | ((uint64_t)alpha_cyc2 << 44);
+    g_TriStateGen++;
 }
 
 static inline uint32_t color_comb(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
@@ -3175,6 +3278,7 @@ static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
     if (saved_tile != tile) {
         rdp.textures_changed[0] = true;
         rdp.textures_changed[1] = true;
+        g_TriStateGen++;
     }
     rdp.first_tile_index = tile;
 
@@ -3182,6 +3286,7 @@ static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
     if (saved_tile != tile) {
         rdp.textures_changed[0] = true;
         rdp.textures_changed[1] = true;
+        g_TriStateGen++;
     }
     rdp.first_tile_index = saved_tile;
     rdp.combine_mode = saved_combine_mode;
@@ -3221,6 +3326,7 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
     if (saved_tile != tile) {
         rdp.textures_changed[0] = true;
         rdp.textures_changed[1] = true;
+        g_TriStateGen++;
     }
     rdp.first_tile_index = tile;
 
@@ -3228,6 +3334,7 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
     if (saved_tile != tile) {
         rdp.textures_changed[0] = true;
         rdp.textures_changed[1] = true;
+        g_TriStateGen++;
     }
     rdp.first_tile_index = saved_tile;
 
@@ -3287,6 +3394,7 @@ static void gfx_sp_set_other_mode(uint32_t shift, uint32_t num_bits, uint64_t mo
     rdp.palette_fmt = rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT);
     rdp.tex_lod = (rdp.other_mode_h & G_TL_LOD) != 0;
     rdp.tex_detail = (rdp.other_mode_h & (2U << G_MDSFT_TEXTDETAIL)) == G_TD_DETAIL;
+    g_TriStateGen++;
 }
 
 static void gfx_sp_set_vertex_colors(uint32_t count, const struct NormalColor *vcn) {
@@ -3302,6 +3410,7 @@ static void gfx_sp_set_vertex_colors(uint32_t count, const struct NormalColor *v
 static void gfx_dp_set_other_mode(uint32_t h, uint32_t l) {
     rdp.other_mode_h = h;
     rdp.other_mode_l = l;
+    g_TriStateGen++;
 }
 
 static inline void *seg_addr(uintptr_t w1) {
@@ -3706,6 +3815,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     rendering_state.textures[1] = NULL;
     rdp.textures_changed[0] = true;
     rdp.textures_changed[1] = true;
+    g_TriStateGen++;
     rendering_state.depth_mode = 0xff;
     rendering_state.viewport = {};
     rendering_state.scissor = {};
@@ -3950,6 +4060,7 @@ static void gfx_run_dl(Gfx* cmd) {
             }
             case G_SETGRAYSCALE_EXT:
                 rdp.grayscale = cmd->words.w1;
+                g_TriStateGen++;
                 break;
             case G_CHRWIREFRAME_EXT:
                 // scoped wireframe (chaos "wireframe enemies"): flush so the
@@ -4134,9 +4245,11 @@ static void gfx_run_dl(Gfx* cmd) {
                     // don't care about noise here
                     gfx_set_framebuffer(cmd->words.w1, 1.f);
                     fbActive = true;
+                    g_TriStateGen++;
                 } else {
                     gfx_reset_framebuffer();
                     fbActive = false;
+                    g_TriStateGen++;
                 }
                 break;
             case G_COPYFB_EXT:
@@ -4296,6 +4409,7 @@ extern "C" void gfx_start_frame(void) {
         if (want_key != grayscale_applied) {
             grayscale_applied = want_key;
             rdp.grayscale = want_on != 0;
+            g_TriStateGen++;
             rdp.grayscale_color.r = (want_col >> 16) & 0xff;
             rdp.grayscale_color.g = (want_col >> 8) & 0xff;
             rdp.grayscale_color.b = want_col & 0xff;
@@ -4390,6 +4504,7 @@ extern "C" void gfx_start_frame(void) {
     }
 
     fbActive = 0;
+    g_TriStateGen++;
 
     // update aspect scale and offset
     gfx_update_aspect_mode();
@@ -4530,6 +4645,9 @@ extern "C" void reset_texture_state() {
     gfx_rapi->clear_shaders();
     color_combiner_pool.clear();
     prev_combiner = color_combiner_pool.end();
+    // The tri1 derived-state cache holds ColorCombiner/ShaderProgram pointers
+    // into the pool just cleared - invalidate it.
+    g_TriStateGen++;
 }
 
 extern "C" void gfx_set_texture_filter(enum FilteringMode mode) {
@@ -4573,6 +4691,7 @@ extern "C" void gfx_resize_framebuffer(int fb, uint32_t width, uint32_t height, 
 
 extern "C" void gfx_set_framebuffer(int fb, float noise_scale) {
     gfx_rapi->start_draw_to_framebuffer(fb, noise_scale);
+    g_TriStateGen++;
     gfx_rapi->clear_framebuffer(true, true);
     active_fb = framebuffers.find(fb);
 }
@@ -4599,5 +4718,6 @@ extern "C" void gfx_copy_framebuffer(int fb_dst, int fb_src, int left, int top, 
 
 extern "C" void gfx_reset_framebuffer(void) {
     gfx_rapi->start_draw_to_framebuffer(0, (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
+    g_TriStateGen++;
     active_fb = framebuffers.end();
 }

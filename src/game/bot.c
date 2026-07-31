@@ -2057,6 +2057,14 @@ struct prop *botFindPickup(struct chrdata *chr, s32 criteria)
 	s32 ammotype;
 	s32 bestscore1;
 	bool done;
+	s32 slot;
+	// B7: weaponnum -> scored-slot reverse map, built once per call. The prop
+	// walk below used to rescan weaponnums[] (and the crate path 19x6) for
+	// every candidate prop; the map resolves the same FIRST-matching slot the
+	// scans broke at, in O(1). The RNG call sequence is untouched (rngRandom
+	// only ever ran inside a matched branch, which is reached identically),
+	// so this is bit-identical for netplay determinism. 0xff = no slot.
+	u8 slotbyweapon[256];
 
 	if (&aibot);
 	if (&criteria);
@@ -2092,6 +2100,17 @@ struct prop *botFindPickup(struct chrdata *chr, s32 criteria)
 		invitems[i] = botinvGetItem(chr, weaponnums[i]);
 	}
 
+	for (i = 0; i < (s32)sizeof(slotbyweapon); i++) {
+		slotbyweapon[i] = 0xff; // (GCC folds this to a memset)
+	}
+
+	for (i = 0; i < ARRAYCOUNT(weaponnums); i++) {
+		if (weaponnums[i] > WEAPON_UNARMED && weaponnums[i] < 256
+				&& slotbyweapon[weaponnums[i]] == 0xff) {
+			slotbyweapon[weaponnums[i]] = i; // first match wins, like the scans did
+		}
+	}
+
 	// Iterate all active props and populate the proplist and distlist arrays.
 	// Generally these arrays are populated with the closest prop of each weapon
 	// and ammotype, however there's a 1/16 chance that any prop will be skipped
@@ -2106,15 +2125,15 @@ struct prop *botFindPickup(struct chrdata *chr, s32 criteria)
 				if ((weapon->base.flags3 & OBJFLAG3_ISFETCHTARGET) == 0) {
 					sqdist1 = chrGetSquaredDistanceToCoord(chr, &prop->pos);
 
-					for (i = 0; i < ARRAYCOUNT(weaponnums); i++) {
-						if (weaponnums[i] > WEAPON_UNARMED && weaponnums[i] == weapon->weaponnum) {
-							if (rngRandom() % 16) {
-								if (weapproplist[i] == NULL || sqdist1 < weapdistlist[i] || rngRandom() % 16 == 0) {
-									weapproplist[i] = prop;
-									weapdistlist[i] = sqdist1;
-								}
+					slot = (weapon->weaponnum > 0 && weapon->weaponnum < 256)
+							? slotbyweapon[weapon->weaponnum] : 0xff;
+
+					if (slot != 0xff) {
+						if (rngRandom() % 16) {
+							if (weapproplist[slot] == NULL || sqdist1 < weapdistlist[slot] || rngRandom() % 16 == 0) {
+								weapproplist[slot] = prop;
+								weapdistlist[slot] = sqdist1;
 							}
-							break;
 						}
 					}
 
@@ -2142,15 +2161,14 @@ struct prop *botFindPickup(struct chrdata *chr, s32 criteria)
 								weaponnum = botactGetWeaponByAmmoType(ammotype);
 
 								if (weaponnum > 0) {
-									for (j = 0; j < ARRAYCOUNT(weaponnums); j++) {
-										if (weaponnums[j] > WEAPON_UNARMED && weaponnum == weaponnums[j]) {
-											if (rngRandom() % 16) {
-												if (weapproplist[j] == NULL || sqdist2 < weapdistlist[j] || rngRandom() % 16 == 0) {
-													weapproplist[j] = prop;
-													weapdistlist[j] = sqdist2;
-												}
+									slot = weaponnum < 256 ? slotbyweapon[weaponnum] : 0xff;
+
+									if (slot != 0xff) {
+										if (rngRandom() % 16) {
+											if (weapproplist[slot] == NULL || sqdist2 < weapdistlist[slot] || rngRandom() % 16 == 0) {
+												weapproplist[slot] = prop;
+												weapdistlist[slot] = sqdist2;
 											}
-											break;
 										}
 									}
 								}
@@ -2164,20 +2182,18 @@ struct prop *botFindPickup(struct chrdata *chr, s32 criteria)
 							}
 						}
 					} else if (obj->type == OBJTYPE_SHIELD) {
-						for (i = 0; i < ARRAYCOUNT(weaponnums); i++) {
-							if (weaponnums[i] == WEAPON_MPSHIELD) {
-								sqdist2 = chrGetSquaredDistanceToCoord(chr, &prop->pos);
+						// (WEAPON_MPSHIELD > WEAPON_UNARMED, so the map covers the
+						// scan's laxer match condition exactly.)
+						slot = slotbyweapon[WEAPON_MPSHIELD];
 
-								if (rngRandom() % 16 == 0) {
-									break;
+						if (slot != 0xff) {
+							sqdist2 = chrGetSquaredDistanceToCoord(chr, &prop->pos);
+
+							if (rngRandom() % 16 != 0) {
+								if (weapproplist[slot] == NULL || sqdist2 < weapdistlist[slot] || rngRandom() % 16 == 0) {
+									weapproplist[slot] = prop;
+									weapdistlist[slot] = sqdist2;
 								}
-
-								if (weapproplist[i] == NULL || sqdist2 < weapdistlist[i] || rngRandom() % 16 == 0) {
-									weapproplist[i] = prop;
-									weapdistlist[i] = sqdist2;
-								}
-
-								break;
 							}
 						}
 					}

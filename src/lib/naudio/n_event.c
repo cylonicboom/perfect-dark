@@ -3,6 +3,16 @@
 #include <os_internal.h>
 #include <ultraerror.h>
 
+#ifndef PLATFORM_N64
+// /sndpool diagnostics: live event-queue depth (all queues share these - the
+// sndplayer queue dominates), high-water mark, and the silent-drop counter.
+// A nonzero drop count means events (possibly STOPs, which leak their voice)
+// were discarded under load - the "mass sim fire kills gun sounds" class.
+s32 g_SndEvtqDepth = 0;
+s32 g_SndEvtqPeak = 0;
+s32 g_SndEvtqDrops = 0;
+#endif
+
 void n_alEvtqNew(ALEventQueue *evtq, N_ALEventListItem *items, s32 itemCount)
 {
 	s32 i;
@@ -33,6 +43,9 @@ ALMicroTime n_alEvtqNextEvent(ALEventQueue *evtq, N_ALEvent *evt)
 		bcopy(&item->evt, evt, sizeof(*evt));
 		alLink((ALLink *)item, &evtq->freeList);
 		delta = item->delta;
+#ifndef PLATFORM_N64
+		g_SndEvtqDepth--;
+#endif
 	} else {
 		/* sct 11/28/95 - If we get here, most like we overflowed the event queue */
 		/* with non-self-perpetuating events.  Eg. if we filled the evtq with volume */
@@ -61,17 +74,30 @@ void n_alEvtqPostEvent(ALEventQueue *evtq, N_ALEvent *evt, ALMicroTime delta, s3
 	item = (N_ALEventListItem *)evtq->freeList.next;
 
 	if (!item) {
+#ifndef PLATFORM_N64
+		g_SndEvtqDrops++;
+#endif
 		osSetIntMask(mask);
 		return;
 	}
 
 	if (!item->node.next && !arg3) {
+#ifndef PLATFORM_N64
+		g_SndEvtqDrops++;
+#endif
 		osSetIntMask(mask);
 		return;
 	}
 
 	alUnlink((ALLink *)item);
 	bcopy(evt, &item->evt, sizeof(*evt));
+
+#ifndef PLATFORM_N64
+	g_SndEvtqDepth++;
+	if (g_SndEvtqDepth > g_SndEvtqPeak) {
+		g_SndEvtqPeak = g_SndEvtqDepth;
+	}
+#endif
 
 	if (delta == AL_EVTQ_END) {
 		postAtEnd = -1;
@@ -128,6 +154,9 @@ void n_alEvtqFlushType(ALEventQueue *evtq, s16 type)
 
 			alUnlink(thisNode);
 			alLink(thisNode, &evtq->freeList);
+#ifndef PLATFORM_N64
+			g_SndEvtqDepth--;
+#endif
 		}
 
 		thisNode = nextNode;

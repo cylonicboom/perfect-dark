@@ -570,6 +570,16 @@ struct DlCacheSegment {
     int32_t batch_index;  // octree vtxbatch index within the leaf (k-th G_VTX); -1 = none
     size_t base_float; // float offset of this segment's first vertex
     size_t num_tris;
+    // Indexed replay (A5) — meaningful only when the owning entry uploaded
+    // indexed. idx_base_float = float offset of this segment's RUN (maximal
+    // same-program span) in the deduped vertex buffer: the attrib base shared
+    // by every segment of the run. first_index = this segment's first index
+    // (u32 units) in the entry's index buffer; index VALUES are run-local
+    // (0 = the run's first vertex). The index count stays 3 * num_tris —
+    // dedupe shrinks vertices, never indices — so the replay merge keeps
+    // summing num_tris exactly as the non-indexed path does.
+    size_t idx_base_float;
+    uint32_t first_index;
 };
 
 struct DlCacheEntry {
@@ -584,6 +594,15 @@ struct DlCacheEntry {
     uint32_t palette_tex;
     uintptr_t palette_w1; // raw G_COL w1, re-resolved against the live BG_COL segment
     int palette_count;
+    // Indexed upload (A5): buffer_id holds the DEDUPED vertex buffer and
+    // index_buffer_id the per-run-local u32 indices. When false, buffer_id
+    // holds the legacy non-indexed triangle-triple layout and index_buffer_id
+    // is 0. Each entry remembers its own layout, so flipping g_DlCacheIndexed
+    // live only affects NEW records.
+    bool indexed;
+    uint32_t index_buffer_id;
+    uint32_t idx_verts_in;  // source vertices staged (3 * tris), for dedup-ratio stats
+    uint32_t idx_verts_out; // unique vertices actually uploaded
 };
 
 static std::unordered_map<const void*, DlCacheEntry> g_DlCache;
@@ -621,6 +640,17 @@ static int g_DlCacheCullMode = 0;
 // (no muzzle-flash brightening) while off — that's expected. `/dlcache palette
 // on|off`; read live at replay, no re-record. Default on (palette active).
 static bool g_DlCachePaletteEnabled = true;
+// A5: dedupe identical cached vertices (full float-bit equality) at upload and
+// draw with a u32 index buffer when the backend provides the cache_*_index_*
+// entries. 0 = record/replay exactly as before (and backends without the
+// entries always do). Entries remember which layout they were uploaded with,
+// so a live flip only affects new records — /dlcache clear re-records all.
+// Never active under the wireframe cheat: bg.c gates dlcache off entirely
+// while gfx_wireframe_mode is set (the barycentric wireframe shader derives
+// edge coords from gl_VertexID % 3, which indexed drawing would break).
+// Non-static (plain global, the gfx_mirror_mode pattern): console wiring
+// lands separately.
+int32_t g_DlCacheIndexed = 1;
 static uint32_t g_DlCacheFrameSegments; // segments replayed last frame
 static uint32_t g_DlCacheFrameTris;     // tris replayed last frame
 static uint32_t g_DlCacheFrameDraws;    // cache_draw calls issued last frame
@@ -684,6 +714,8 @@ static void dlcacheCloseSegment(void) {
     seg.batch_index = g_DlCacheSegBatch;
     seg.base_float = g_DlCacheSegStartFloat;
     seg.num_tris = g_DlCacheSegTris;
+    seg.idx_base_float = 0; // set by dlcacheBuildIndexed iff the entry uploads indexed (A5)
+    seg.first_index = 0;
     g_DlCacheCur->segments.push_back(seg);
     g_DlCacheSegStartFloat = g_DlCacheStaging.size();
     g_DlCacheSegTris = 0;
@@ -718,6 +750,9 @@ extern "C" void gfx_dlcache_invalidate_range(const void* start, const void* end)
             if (it->second.buffer_id != 0) {
                 gfx_rapi->cache_delete_buffer(it->second.buffer_id);
             }
+            if (it->second.index_buffer_id != 0 && gfx_rapi->cache_delete_index_buffer != NULL) {
+                gfx_rapi->cache_delete_index_buffer(it->second.index_buffer_id);
+            }
             if (it->second.palette_tex != 0) {
                 gfx_rapi->cache_delete_palette(it->second.palette_tex);
             }
@@ -739,6 +774,9 @@ static void dlcacheInvalidateAll(void) {
     for (auto& kv : g_DlCache) {
         if (kv.second.buffer_id != 0) {
             gfx_rapi->cache_delete_buffer(kv.second.buffer_id);
+        }
+        if (kv.second.index_buffer_id != 0 && gfx_rapi->cache_delete_index_buffer != NULL) {
+            gfx_rapi->cache_delete_index_buffer(kv.second.index_buffer_id);
         }
         if (kv.second.palette_tex != 0) {
             gfx_rapi->cache_delete_palette(kv.second.palette_tex);
@@ -3515,6 +3553,10 @@ static void dlcacheBeginRecord(const void* key) {
     e.palette_tex = 0;
     e.palette_w1 = 0;
     e.palette_count = 0;
+    e.indexed = false;
+    e.index_buffer_id = 0;
+    e.idx_verts_in = 0;
+    e.idx_verts_out = 0;
     g_DlCacheCur = &e;
     g_DlCacheRecording = true;
     g_DlCacheAbort = false;
@@ -3533,6 +3575,110 @@ static void dlcacheBeginRecord(const void* key) {
     g_DlCacheGColMulti = false;
     g_DlCacheGColW1 = 0;
     g_DlCacheGColCount = 0;
+}
+
+// A5: build the deduped vertex buffer + u32 index buffer for a freshly
+// recorded entry and upload both. Dedupe scope is each maximal SAME-PROGRAM
+// segment run, not the whole entry: the vertex stride is a property of the
+// program, and the replay merge only ever spans same-program segments (a
+// program change goes through gfx_flush, which closes the segment AND bumps
+// the state group — the replay flushes its pending draw on both program and
+// state-group boundaries). Index values are run-local (0 = the run's first
+// vertex, whose float offset is stored in idx_base_float), which keeps merged
+// draws correct no matter which segment of the run they start at. Identity is
+// full float-bit equality over the segment's stride (memcmp — no epsilon), so
+// the uploaded geometry is bit-identical to the non-indexed layout.
+// Returns false with the entry untouched (segments' base_float still describe
+// g_DlCacheStaging) so the caller can fall back to the legacy upload.
+static bool dlcacheBuildIndexed(DlCacheEntry* e) {
+    std::vector<float> verts;
+    std::vector<uint32_t> indices;
+    size_t total_tris = 0;
+    for (const DlCacheSegment& seg : e->segments) {
+        total_tris += seg.num_tris;
+    }
+    verts.reserve(g_DlCacheStaging.size() / 2);
+    indices.reserve(total_tris * 3); // 3 indices per source tri, always
+    // hash of the vertex's raw bytes -> candidate run-local vertex indices;
+    // collisions share a bucket and are resolved by memcmp below
+    std::unordered_map<uint64_t, std::vector<uint32_t>> lut;
+    uint32_t unique = 0;
+
+    const size_t nsegs = e->segments.size();
+    size_t i = 0;
+    while (i < nsegs) {
+        // Stride in floats, derived from the segment's extent in the staging
+        // buffer (segments are staged contiguously). Same program => same
+        // stride; the divisibility checks are belt-and-braces against a
+        // layout the recorder didn't actually produce — bail to legacy.
+        const size_t end0 = (i + 1 < nsegs) ? e->segments[i + 1].base_float : g_DlCacheStaging.size();
+        const size_t nv0 = e->segments[i].num_tris * 3;
+        if (nv0 == 0 || end0 <= e->segments[i].base_float || (end0 - e->segments[i].base_float) % nv0 != 0) {
+            return false;
+        }
+        const size_t stride = (end0 - e->segments[i].base_float) / nv0;
+        // the run: maximal span of segments sharing this program
+        size_t j = i + 1;
+        while (j < nsegs && e->segments[j].prg == e->segments[i].prg) {
+            j++;
+        }
+
+        const size_t run_base = verts.size();
+        lut.clear(); // dedupe within the run only (indices are run-local)
+        for (size_t s = i; s < j; s++) {
+            DlCacheSegment& seg = e->segments[s];
+            const size_t seg_end = (s + 1 < nsegs) ? e->segments[s + 1].base_float : g_DlCacheStaging.size();
+            const size_t nv = seg.num_tris * 3;
+            if (seg_end - seg.base_float != nv * stride) {
+                return false; // stride varies within a same-program run
+            }
+            seg.idx_base_float = run_base;
+            seg.first_index = (uint32_t)indices.size();
+            for (size_t v = 0; v < nv; v++) {
+                const float* src = &g_DlCacheStaging[seg.base_float + v * stride];
+                // FNV-1a over the raw float bits
+                uint64_t h = 1469598103934665603ull;
+                const uint8_t* p = (const uint8_t*)src;
+                for (size_t b = 0; b < stride * sizeof(float); b++) {
+                    h = (h ^ p[b]) * 1099511628211ull;
+                }
+                uint32_t local = UINT32_MAX;
+                std::vector<uint32_t>& bucket = lut[h];
+                for (uint32_t cand : bucket) {
+                    if (memcmp(&verts[run_base + (size_t)cand * stride], src, stride * sizeof(float)) == 0) {
+                        local = cand;
+                        break;
+                    }
+                }
+                if (local == UINT32_MAX) {
+                    local = (uint32_t)((verts.size() - run_base) / stride);
+                    verts.insert(verts.end(), src, src + stride);
+                    bucket.push_back(local);
+                    unique++;
+                }
+                indices.push_back(local);
+            }
+        }
+        i = j;
+    }
+
+    // Index buffer first: a 0 return is also the backend's capability veto
+    // (e.g. GL ES < 3.0 has no u32 indices) -> caller uploads legacy.
+    const uint32_t ib = gfx_rapi->cache_create_index_buffer(indices.data(), indices.size());
+    if (ib == 0) {
+        return false;
+    }
+    const uint32_t vb = gfx_rapi->cache_create_buffer(verts.data(), verts.size());
+    if (vb == 0) {
+        gfx_rapi->cache_delete_index_buffer(ib);
+        return false;
+    }
+    e->buffer_id = vb;
+    e->index_buffer_id = ib;
+    e->indexed = true;
+    e->idx_verts_in = (uint32_t)(total_tris * 3);
+    e->idx_verts_out = unique;
+    return true;
 }
 
 static void dlcacheEndRecord(void) {
@@ -3555,11 +3701,24 @@ static void dlcacheEndRecord(void) {
         }
         return;
     }
-    e->buffer_id = gfx_rapi->cache_create_buffer(g_DlCacheStaging.data(), g_DlCacheStaging.size());
-    if (e->buffer_id == 0) {
-        e->bad = true;
-        e->segments.clear();
-        return;
+    // A5: try the indexed upload first (deduped vertices + u32 indices) when
+    // enabled and the backend implements the nullable index-buffer entries;
+    // any failure falls through to the legacy non-indexed upload, for which
+    // the segments' base_float/num_tris are still fully valid.
+    bool indexed_ok = false;
+    if (g_DlCacheIndexed && gfx_rapi->cache_create_index_buffer != NULL
+            && gfx_rapi->cache_delete_index_buffer != NULL
+            && gfx_rapi->cache_bind_index_buffer != NULL
+            && gfx_rapi->cache_draw_indexed != NULL) {
+        indexed_ok = dlcacheBuildIndexed(e);
+    }
+    if (!indexed_ok) {
+        e->buffer_id = gfx_rapi->cache_create_buffer(g_DlCacheStaging.data(), g_DlCacheStaging.size());
+        if (e->buffer_id == 0) {
+            e->bad = true;
+            e->segments.clear();
+            return;
+        }
     }
     e->ready = true;
 
@@ -3619,6 +3778,15 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     gfx_rapi->unload_shader(rendering_state.shader_program);
     gfx_rapi->cache_replay_begin(e->buffer_id);
 
+    // A5: indexed entries bind their index buffer for the whole replay; draws
+    // then reference each RUN's deduped vertex range (idx_base_float) with
+    // run-local indices. Entries recorded non-indexed (toggle off, backend
+    // veto, pre-toggle records) take the exact legacy path.
+    const bool indexed = e->indexed && gfx_rapi->cache_draw_indexed != NULL;
+    if (indexed) {
+        gfx_rapi->cache_bind_index_buffer(e->index_buffer_id);
+    }
+
     // Viewport + scissor are VIEW-dependent (the scissor is the room's portal-
     // clipped draw-slot box, which moves/shrinks as the camera turns), so use the
     // LIVE values set for this room this frame -- NOT the ones baked at record
@@ -3672,6 +3840,22 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     struct ShaderProgram* pend_prg = NULL;
     size_t pend_base = 0;
     size_t pend_tris = 0;
+    size_t pend_first_index = 0; // A5: pending draw's first index (indexed entries only)
+    // Emit + reset the pending merged draw. Merges sum num_tris across
+    // contiguous same-program segments; for indexed entries the index count
+    // is exactly 3 * tris (dedupe shrinks vertices, never indices) and a
+    // run's segment indices are contiguous by construction, so the same sum
+    // addresses the right index range.
+    auto pendFlush = [&]() {
+        if (indexed) {
+            gfx_rapi->cache_draw_indexed(pend_prg, pend_base, pend_first_index, pend_tris * 3);
+        } else {
+            gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
+        }
+        g_DlCacheFrameTris += (uint32_t)pend_tris;
+        g_DlCacheFrameDraws++;
+        pend_tris = 0;
+    };
     size_t gap_tris = 0;    // culled tris accumulated since the last visible segment
     uint32_t gap_batches = 0; // culled batches in that gap (stats only)
     uint32_t drawn_batches = 0;
@@ -3690,10 +3874,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             } else {
                 // different program = different vertex stride: the pending draw
                 // range can't span this segment, so the split is forced
-                gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
-                g_DlCacheFrameTris += (uint32_t)pend_tris;
-                g_DlCacheFrameDraws++;
-                pend_tris = 0;
+                pendFlush();
                 g_DlCacheFrameVisCulled += gap_batches + 1;
                 gap_tris = 0;
                 gap_batches = 0;
@@ -3702,10 +3883,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
         }
         if (seg.state_group != applied_group) {
             if (pend_tris > 0) {
-                gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
-                g_DlCacheFrameTris += (uint32_t)pend_tris;
-                g_DlCacheFrameDraws++;
-                pend_tris = 0;
+                pendFlush();
             }
             // a trailing hole before a state change is never drawn
             g_DlCacheFrameVisCulled += gap_batches;
@@ -3838,7 +4016,8 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
         }
         if (pend_tris == 0) {
             pend_prg = seg.prg;
-            pend_base = seg.base_float;
+            pend_base = indexed ? seg.idx_base_float : seg.base_float;
+            pend_first_index = seg.first_index;
             gap_tris = 0;
             gap_batches = 0;
         } else if (gap_tris > 0) {
@@ -3848,12 +4027,10 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
                 pend_tris += gap_tris;
                 g_DlCacheFrameVisAbsorbed += gap_batches;
             } else {
-                gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
-                g_DlCacheFrameTris += (uint32_t)pend_tris;
-                g_DlCacheFrameDraws++;
-                pend_tris = 0;
+                pendFlush();
                 pend_prg = seg.prg;
-                pend_base = seg.base_float;
+                pend_base = indexed ? seg.idx_base_float : seg.base_float;
+                pend_first_index = seg.first_index;
                 g_DlCacheFrameVisCulled += gap_batches;
             }
             gap_tris = 0;
@@ -3867,9 +4044,7 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     }
     g_DlCacheFrameVisCulled += gap_batches; // trailing hole at the end of the leaf
     if (pend_tris > 0) {
-        gfx_rapi->cache_draw(pend_prg, pend_base, pend_tris);
-        g_DlCacheFrameTris += (uint32_t)pend_tris;
-        g_DlCacheFrameDraws++;
+        pendFlush();
     }
     if (curprg != NULL) {
         gfx_rapi->unload_shader(curprg);
@@ -3983,6 +4158,24 @@ extern "C" void gfx_dlcache_get_stats(uint32_t* entries, uint32_t* bad, uint32_t
     if (reasons) *reasons = g_DlCacheAbortReasons;
 }
 
+// A5: live dedup ratio of the indexed entries — source (pre-dedupe, 3 per
+// recorded tri) vs unique (uploaded) vertices, summed over ready indexed
+// entries, plus how many ready entries are indexed. verts_in/verts_out gives
+// the vertex-memory shrink factor directly (stride is unchanged).
+extern "C" void gfx_dlcache_get_index_stats(uint32_t* verts_in, uint32_t* verts_out, uint32_t* indexed_entries) {
+    uint32_t vin = 0, vout = 0, n = 0;
+    for (const auto& kv : g_DlCache) {
+        if (kv.second.ready && kv.second.indexed) {
+            vin += kv.second.idx_verts_in;
+            vout += kv.second.idx_verts_out;
+            n++;
+        }
+    }
+    if (verts_in) *verts_in = vin;
+    if (verts_out) *verts_out = vout;
+    if (indexed_entries) *indexed_entries = n;
+}
+
 static void gfx_run_dl(Gfx* cmd) {
     // puts("dl");
     int dummy = 0;
@@ -4065,6 +4258,9 @@ static void gfx_run_dl(Gfx* cmd) {
                         // No palette path for this leaf: fall back to re-record.
                         if (it->second.buffer_id != 0) {
                             gfx_rapi->cache_delete_buffer(it->second.buffer_id);
+                        }
+                        if (it->second.index_buffer_id != 0 && gfx_rapi->cache_delete_index_buffer != NULL) {
+                            gfx_rapi->cache_delete_index_buffer(it->second.index_buffer_id);
                         }
                         g_DlCache.erase(it);
                         it = g_DlCache.end();

@@ -140,6 +140,25 @@ struct GfxRenderingAPI {
 	// alignment state it touches restored.
 	bool (*compact_texfmt_supported)(void);
 	void (*upload_texture_fmt)(const uint8_t* buf, uint32_t width, uint32_t height, bool gen_mipmaps, int fmt);
+
+	// --- Display-list cache index buffers (A5, port-only; PORT_DLCACHE.md) ---
+	// All four nullable: a backend that leaves any of them NULL keeps every
+	// entry on the non-indexed cache_draw path (gfx_pc checks before building
+	// an indexed entry, and each entry remembers which way it was uploaded).
+	// Indices are uint32 and LOCAL to the same-program segment RUN they were
+	// built from: index 0 addresses the vertex at cache_draw_indexed's
+	// base_float. Returning 0 from create (e.g. GL ES < 3.0, no u32 indices)
+	// makes gfx_pc upload that entry non-indexed instead.
+	uint32_t (*cache_create_index_buffer)(const uint32_t* data, size_t num_indices);
+	void (*cache_delete_index_buffer)(uint32_t id);
+	// Bind an entry's index buffer for the current replay run (called between
+	// cache_replay_begin and cache_replay_end; replay_end unbinds).
+	void (*cache_bind_index_buffer)(uint32_t id);
+	// Draw num_indices indices (triangles) starting at first_index (in u32
+	// units) from the bound index buffer; vertex attributes for prg start at
+	// base_float, exactly as cache_draw.
+	void (*cache_draw_indexed)(struct ShaderProgram* prg, size_t base_float, size_t first_index,
+	                           size_t num_indices);
 };
 
 #endif

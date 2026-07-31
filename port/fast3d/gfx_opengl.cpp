@@ -1850,12 +1850,13 @@ static void gfx_opengl_cache_bind_palette(uint32_t id, int count) {
     }
 }
 
-static void gfx_opengl_cache_draw(struct ShaderProgram* prg, size_t base_float, size_t num_tris) {
-    // Same attribute packing as buf_vbo (aVtxPos first, then tex/inputs), but the
-    // position is object-space and the run starts at base_float in the bound cached
-    // buffer. Cached vertices carry one extra float (the palette colour index) after
-    // the normal layout, so the stride is num_floats + 1. The vertex shader applies
-    // uMVP and (when enabled) the live palette lookup.
+// Point prg's attribs at the bound cached buffer starting at base_float.
+// Same attribute packing as buf_vbo (aVtxPos first, then tex/inputs), but the
+// position is object-space and cached vertices carry one extra float (the
+// palette colour index) after the normal layout, so the stride is
+// num_floats + 1. The vertex shader applies uMVP and (when enabled) the live
+// palette lookup. Shared by the non-indexed and indexed (A5) draws.
+static void gfx_opengl_cache_setup_attribs(struct ShaderProgram* prg, size_t base_float) {
     const size_t stride = (prg->num_floats + 1) * sizeof(float);
     size_t pos = base_float;
     for (int i = 0; i < prg->num_attribs; i++) {
@@ -1871,7 +1872,65 @@ static void gfx_opengl_cache_draw(struct ShaderProgram* prg, size_t base_float, 
         glVertexAttribPointer(prg->shade_idx_location, 1, GL_FLOAT, GL_FALSE, stride,
                               (void*)((base_float + prg->num_floats) * sizeof(float)));
     }
+}
+
+static void gfx_opengl_cache_draw(struct ShaderProgram* prg, size_t base_float, size_t num_tris) {
+    gfx_opengl_cache_setup_attribs(prg, base_float);
     glDrawArrays(GL_TRIANGLES, 0, 3 * num_tris);
+}
+
+// --- A5: indexed cached replay ---
+// One GL_ELEMENT_ARRAY_BUFFER per cache entry, u32 indices LOCAL to the
+// same-program segment run whose base is passed to cache_draw_indexed (index
+// 0 = the vertex at base_float). The element-array binding is VAO state and
+// everything runs in the single global VAO, so cache_replay_end restores it
+// to 0 — the immediate path only ever uses glDrawArrays, but a dangling
+// binding to a deleted buffer must not linger in the VAO.
+// NOT wireframe-safe by itself (the barycentric wireframe shader derives edge
+// coords from gl_VertexID % 3, and with glDrawElements gl_VertexID is the
+// INDEX value) — safe in practice because bg.c gates dlcache off entirely
+// while gfx_wireframe_mode is set, so no cached draw of either kind happens.
+
+static uint32_t gfx_opengl_cache_create_index_buffer(const uint32_t* data, size_t num_indices) {
+    if (num_indices == 0) {
+        return 0;
+    }
+    if (gl_es && gl_glsl_version < 300) {
+        // u32 indices need GL_OES_element_index_uint below ES 3.0; returning 0
+        // keeps the entry on the non-indexed path (the palette-gate pattern).
+        return 0;
+    }
+    GLuint buf = 0;
+    glGenBuffers(1, &buf);
+    if (buf == 0) {
+        return 0;
+    }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buf);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint32_t) * num_indices, data, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    return buf;
+}
+
+static void gfx_opengl_cache_delete_index_buffer(uint32_t id) {
+    if (id != 0) {
+        GLuint b = id;
+        glDeleteBuffers(1, &b);
+    }
+}
+
+static void gfx_opengl_cache_bind_index_buffer(uint32_t id) {
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, id);
+}
+
+static void gfx_opengl_cache_draw_indexed(struct ShaderProgram* prg, size_t base_float, size_t first_index,
+                                          size_t num_indices) {
+    // Attribs exactly as cache_draw (base_float = the segment RUN's first
+    // deduped vertex); indices are run-local, so only the byte offset of
+    // first_index selects the draw range. Requires the entry's index buffer
+    // bound via cache_bind_index_buffer.
+    gfx_opengl_cache_setup_attribs(prg, base_float);
+    glDrawElements(GL_TRIANGLES, (GLsizei)num_indices, GL_UNSIGNED_INT,
+                   (void*)(first_index * sizeof(uint32_t)));
 }
 
 static void gfx_opengl_cache_set_cull(int mode, bool front_ccw) {
@@ -1885,9 +1944,12 @@ static void gfx_opengl_cache_set_cull(int mode, bool front_ccw) {
 }
 
 static void gfx_opengl_cache_replay_end(void) {
-    // The immediate path culls on the CPU and expects opengl_vbo bound.
+    // The immediate path culls on the CPU and expects opengl_vbo bound. The
+    // element-array binding is VAO state (A5): clear it so the VAO never
+    // holds a dangling reference to an entry's deleted index buffer.
     glDisable(GL_CULL_FACE);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 typedef void (APIENTRY *DEBUGPROC)(GLenum source,
@@ -2517,4 +2579,8 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_shader_wireframe_supported,
     gfx_opengl_compact_texfmt_supported, // A19 compact texture uploads
     gfx_opengl_upload_texture_fmt,
+    gfx_opengl_cache_create_index_buffer, // A5 dlcache index buffers
+    gfx_opengl_cache_delete_index_buffer,
+    gfx_opengl_cache_bind_index_buffer,
+    gfx_opengl_cache_draw_indexed,
 };

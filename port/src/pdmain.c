@@ -680,6 +680,128 @@ void mainLoop(void)
 	}
 }
 
+// Death-state advance + UCMD_RESPAWN detect (incl. respawn delay/forced
+// respawn and the co-op buddy health-steal) for a remote pawn whose
+// render-tier death machine (playerRenderHud ~5598) did not run this pass.
+// Extracted verbatim from the headless mainTick block so the lvRender
+// /lvsplit dl-skip can share it; expects g_Vars.currentplayer = the pawn.
+// Sets dostartnewlife only - consumption is the caller's (the headless loop
+// consumes right after; lvRender's own consume sits below the skip region).
+void netMirrorRemotePawnDeath(void)
+{
+	{
+		struct player *pl_ds = g_Vars.currentplayer;
+		if (pl_ds && pl_ds->isremote && pl_ds->isdead) {
+			if (pl_ds->isdead == 1) {
+				pl_ds->isdead = 2;
+			}
+			pl_ds->deathanimfinished = true;
+			pl_ds->redbloodfinished = true;
+			if (pl_ds->colourfadetimemax60 >= 0) {
+				pl_ds->colourfadetimemax60 = -1;
+			}
+		}
+	}
+
+	// Respawn handling for headless. Two render-tier functions
+	// drive respawn normally: playerRenderHud sets
+	// dostartnewlife=true on UCMD_RESPAWN; lvRender's
+	// per-player loop reads it and calls playerStartNewLife.
+	// Both skipped in headless. Mirror the detect + consume.
+	struct player *p = g_Vars.currentplayer;
+	// Diagnostic: log every dead remote player's state once a
+	// second so we can see why the respawn gate isn't firing.
+	// Throttled to keep the log readable.
+	if (p && p->isremote && (g_NetTick % 60u) == 0u) {
+		const struct netclient *cl_ = p->client;
+		const u32 ucmd = cl_ ? cl_->inmove[cl_->inmove_head].ucmd : 0u;
+		netDiagLogf("respawn_dead_state",
+				"pnum=%d isdead=%d client=%p paused=%d endmatch=%d ucmd=0x%08x dostart=%d",
+				g_Vars.currentplayernum,
+				(s32)p->isdead, (void *)p->client,
+				(s32)mpIsPaused(), g_NumReasonsToEndMpMatch,
+				(unsigned)ucmd, (s32)p->dostartnewlife);
+	}
+	if (p && p->isremote && p->isdead && p->client && !mpIsPaused()
+			&& g_NumReasonsToEndMpMatch == 0) {
+		const struct netclient *cl_ = p->client;
+		bool wantrespawn = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
+		// Respawn Delay / Forced Respawn (proto 77): the player.c
+		// respawn grant (playerRenderHud, ~5615) is render-tier and
+		// never runs headless, so the delay lockout + forced respawn
+		// must be enforced here too or the dedicated server ignores
+		// them entirely. respawnallowtick is stamped in
+		// playerDieByShooter (runs server-side for remote-pawn deaths).
+		if ((u32)g_Vars.lvframe60 < p->respawnallowtick) {
+			wantrespawn = false;
+		}
+		if ((g_MpSetup.options & MPOPTION_FORCEDRESPAWN)
+				&& p->respawnallowtick
+				&& (u32)g_Vars.lvframe60 >= p->respawnallowtick + 600u) {
+			wantrespawn = true;
+		}
+		// §6.7 (PORT_HEADLESS_BLIND_SERVER): co-op buddy
+		// health-steal. The render-tier grant (playerRenderHud
+		// ~5610) halves the living buddy's health+shield into
+		// the respawner and VETOES the respawn when no buddy
+		// can afford it; headless skipped the whole block, so
+		// a dedicated co-op host granted free full-health
+		// respawns. Mirror the NTSC-final rules: first living
+		// non-dormant buddy pays (vanilla co-op has exactly
+		// one); total health <= 0.125 or the Deep Sea
+		// post-cutscene lockout vetoes. playerDisplayHealth
+		// (the buddy's HUD flash) is render-tier and skipped.
+		if (wantrespawn && g_Vars.coopplayernum >= 0) {
+			s32 buddynum = -1;
+			for (s32 bi = 0; bi < PLAYERCOUNT(); bi++) {
+				struct player *bp = g_Vars.players[bi];
+				if (bi != g_Vars.currentplayernum && bp && !bp->isdead
+						&& !bp->isdormant && bp->prop && bp->prop->chr) {
+					buddynum = bi;
+					break;
+				}
+			}
+			if (buddynum < 0
+					|| (mainGetStageNum() == STAGE_DEEPSEA
+						&& chrHasStageFlag(NULL, 0x00000200))) {
+				wantrespawn = false;
+			} else {
+				const s32 prevpnum_hs = g_Vars.currentplayernum;
+				f32 shield;
+				f32 totalhealth;
+				setCurrentPlayerNum(buddynum);
+				shield = chrGetShield(g_Vars.currentplayer->prop->chr) * 0.125f;
+				totalhealth = g_Vars.currentplayer->bondhealth + shield;
+				if (totalhealth > 0.125f) {
+					const f32 stealhealth = totalhealth * 0.5f;
+					if (stealhealth < shield) {
+						chrSetShield(g_Vars.currentplayer->prop->chr, (shield - stealhealth) * 8.0f);
+					} else {
+						chrSetShield(g_Vars.currentplayer->prop->chr, 0);
+						g_Vars.currentplayer->bondhealth -= stealhealth - shield;
+					}
+					setCurrentPlayerNum(prevpnum_hs);
+					p->stealhealth = stealhealth;
+					p->oldhealth = 0;
+					p->oldarmour = 0;
+					p->apparenthealth = 0;
+					p->apparentarmour = 0;
+				} else {
+					setCurrentPlayerNum(prevpnum_hs);
+					wantrespawn = false;
+				}
+			}
+		}
+		if (wantrespawn) {
+			netDiagLogf("respawn_ucmd_seen",
+					"pnum=%d cl=%u isdead=%d dostartnewlife=%d",
+					g_Vars.currentplayernum, (unsigned)cl_->id,
+					(s32)p->isdead, (s32)p->dostartnewlife);
+			p->dostartnewlife = true;
+		}
+	}
+}
+
 void mainTick(void)
 {
 	// Crash-hunt: mt_entry0 BEFORE any local variable declarations / function
@@ -1099,117 +1221,8 @@ void mainTick(void)
 					// terminal state directly the moment we see isdead set.
 					// On respawn (playerStartNewLife) all three reset to 0/-1
 					// via playerResetDefaults, so this won't re-fire.
-					{
-						struct player *pl_ds = g_Vars.currentplayer;
-						if (pl_ds && pl_ds->isremote && pl_ds->isdead) {
-							if (pl_ds->isdead == 1) {
-								pl_ds->isdead = 2;
-							}
-							pl_ds->deathanimfinished = true;
-							pl_ds->redbloodfinished = true;
-							if (pl_ds->colourfadetimemax60 >= 0) {
-								pl_ds->colourfadetimemax60 = -1;
-							}
-						}
-					}
-
-					// Respawn handling for headless. Two render-tier functions
-					// drive respawn normally: playerRenderHud sets
-					// dostartnewlife=true on UCMD_RESPAWN; lvRender's
-					// per-player loop reads it and calls playerStartNewLife.
-					// Both skipped in headless. Mirror the detect + consume.
+					netMirrorRemotePawnDeath();
 					struct player *p = g_Vars.currentplayer;
-					// Diagnostic: log every dead remote player's state once a
-					// second so we can see why the respawn gate isn't firing.
-					// Throttled to keep the log readable.
-					if (p && p->isremote && (g_NetTick % 60u) == 0u) {
-						const struct netclient *cl_ = p->client;
-						const u32 ucmd = cl_ ? cl_->inmove[cl_->inmove_head].ucmd : 0u;
-						netDiagLogf("respawn_dead_state",
-								"pnum=%d isdead=%d client=%p paused=%d endmatch=%d ucmd=0x%08x dostart=%d",
-								g_Vars.currentplayernum,
-								(s32)p->isdead, (void *)p->client,
-								(s32)mpIsPaused(), g_NumReasonsToEndMpMatch,
-								(unsigned)ucmd, (s32)p->dostartnewlife);
-					}
-					if (p && p->isremote && p->isdead && p->client && !mpIsPaused()
-							&& g_NumReasonsToEndMpMatch == 0) {
-						const struct netclient *cl_ = p->client;
-						bool wantrespawn = (cl_->inmove[cl_->inmove_head].ucmd & UCMD_RESPAWN) != 0;
-						// Respawn Delay / Forced Respawn (proto 77): the player.c
-						// respawn grant (playerRenderHud, ~5615) is render-tier and
-						// never runs headless, so the delay lockout + forced respawn
-						// must be enforced here too or the dedicated server ignores
-						// them entirely. respawnallowtick is stamped in
-						// playerDieByShooter (runs server-side for remote-pawn deaths).
-						if ((u32)g_Vars.lvframe60 < p->respawnallowtick) {
-							wantrespawn = false;
-						}
-						if ((g_MpSetup.options & MPOPTION_FORCEDRESPAWN)
-								&& p->respawnallowtick
-								&& (u32)g_Vars.lvframe60 >= p->respawnallowtick + 600u) {
-							wantrespawn = true;
-						}
-						// §6.7 (PORT_HEADLESS_BLIND_SERVER): co-op buddy
-						// health-steal. The render-tier grant (playerRenderHud
-						// ~5610) halves the living buddy's health+shield into
-						// the respawner and VETOES the respawn when no buddy
-						// can afford it; headless skipped the whole block, so
-						// a dedicated co-op host granted free full-health
-						// respawns. Mirror the NTSC-final rules: first living
-						// non-dormant buddy pays (vanilla co-op has exactly
-						// one); total health <= 0.125 or the Deep Sea
-						// post-cutscene lockout vetoes. playerDisplayHealth
-						// (the buddy's HUD flash) is render-tier and skipped.
-						if (wantrespawn && g_Vars.coopplayernum >= 0) {
-							s32 buddynum = -1;
-							for (s32 bi = 0; bi < PLAYERCOUNT(); bi++) {
-								struct player *bp = g_Vars.players[bi];
-								if (bi != g_Vars.currentplayernum && bp && !bp->isdead
-										&& !bp->isdormant && bp->prop && bp->prop->chr) {
-									buddynum = bi;
-									break;
-								}
-							}
-							if (buddynum < 0
-									|| (mainGetStageNum() == STAGE_DEEPSEA
-										&& chrHasStageFlag(NULL, 0x00000200))) {
-								wantrespawn = false;
-							} else {
-								const s32 prevpnum_hs = g_Vars.currentplayernum;
-								f32 shield;
-								f32 totalhealth;
-								setCurrentPlayerNum(buddynum);
-								shield = chrGetShield(g_Vars.currentplayer->prop->chr) * 0.125f;
-								totalhealth = g_Vars.currentplayer->bondhealth + shield;
-								if (totalhealth > 0.125f) {
-									const f32 stealhealth = totalhealth * 0.5f;
-									if (stealhealth < shield) {
-										chrSetShield(g_Vars.currentplayer->prop->chr, (shield - stealhealth) * 8.0f);
-									} else {
-										chrSetShield(g_Vars.currentplayer->prop->chr, 0);
-										g_Vars.currentplayer->bondhealth -= stealhealth - shield;
-									}
-									setCurrentPlayerNum(prevpnum_hs);
-									p->stealhealth = stealhealth;
-									p->oldhealth = 0;
-									p->oldarmour = 0;
-									p->apparenthealth = 0;
-									p->apparentarmour = 0;
-								} else {
-									setCurrentPlayerNum(prevpnum_hs);
-									wantrespawn = false;
-								}
-							}
-						}
-						if (wantrespawn) {
-							netDiagLogf("respawn_ucmd_seen",
-									"pnum=%d cl=%u isdead=%d dostartnewlife=%d",
-									g_Vars.currentplayernum, (unsigned)cl_->id,
-									(s32)p->isdead, (s32)p->dostartnewlife);
-							p->dostartnewlife = true;
-						}
-					}
 					if (p && p->dostartnewlife) {
 						netDiagLogf("respawn_invoke", "pnum=%d", g_Vars.currentplayernum);
 						playerStartNewLife();

@@ -249,6 +249,7 @@ static struct {
 
     // display-list cache replay state
     uint32_t cache_buf;          // bound cached buffer id (cache_replay_begin), 0 = none
+    uint32_t cache_idx_buf;      // bound cached index buffer id (cache_bind_index_buffer, A5), 0 = none
     uint8_t cull_mode;           // cache_set_cull: 0 none, 1 back, 2 front (cached draws only)
     bool front_ccw;
     SDL_GPUTexture *palette_tex; // bound shade palette (cache_bind_palette), NULL = none
@@ -2398,16 +2399,17 @@ static void gfx_sdlgpu_set_shade_routing(int packed) {
 // index consumed by the cached VS variant. Returning 0 from create marks the
 // leaf bad in gfx_pc -> per-leaf legacy fallback (also our error path).
 
-static uint32_t gfx_sdlgpu_cache_create_buffer(const float *data, size_t num_floats) {
-    if (!gpu.device || num_floats == 0) {
+// Common upload for cached vertex AND (A5) index buffers — same pooled
+// transfer + one-shot copy path, differing only in usage. Both live in the
+// cache_bufs pool, so ids share one space; gfx_pc keeps them apart.
+static uint32_t cache_buffer_create_common(const void *data, uint32_t size, SDL_GPUBufferUsageFlags usage) {
+    if (!gpu.device || size == 0) {
         return 0;
     }
 
-    const uint32_t size = (uint32_t)(num_floats * sizeof(float));
-
     SDL_GPUBufferCreateInfo bci;
     SDL_zero(bci);
-    bci.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+    bci.usage = usage;
     bci.size = size;
     SDL_GPUBuffer *buf = SDL_CreateGPUBuffer(gpu.device, &bci);
     if (!buf) {
@@ -2464,6 +2466,14 @@ static uint32_t gfx_sdlgpu_cache_create_buffer(const float *data, size_t num_flo
     return (uint32_t)cache_bufs.size();
 }
 
+static uint32_t gfx_sdlgpu_cache_create_buffer(const float *data, size_t num_floats) {
+    return cache_buffer_create_common(data, (uint32_t)(num_floats * sizeof(float)), SDL_GPU_BUFFERUSAGE_VERTEX);
+}
+
+static uint32_t gfx_sdlgpu_cache_create_index_buffer(const uint32_t *data, size_t num_indices) {
+    return cache_buffer_create_common(data, (uint32_t)(num_indices * sizeof(uint32_t)), SDL_GPU_BUFFERUSAGE_INDEX);
+}
+
 static void gfx_sdlgpu_cache_delete_buffer(uint32_t id) {
     if (id == 0 || id > cache_bufs.size()) {
         return;
@@ -2478,6 +2488,18 @@ static void gfx_sdlgpu_cache_delete_buffer(uint32_t id) {
     }
 }
 
+static void gfx_sdlgpu_cache_delete_index_buffer(uint32_t id) {
+    // same pool + same deferred release as vertex buffers (A5)
+    gfx_sdlgpu_cache_delete_buffer(id);
+    if (st.cache_idx_buf == id) {
+        st.cache_idx_buf = 0;
+    }
+}
+
+static void gfx_sdlgpu_cache_bind_index_buffer(uint32_t id) {
+    st.cache_idx_buf = (id > 0 && id <= cache_bufs.size() && cache_bufs[id - 1].buf) ? id : 0;
+}
+
 static void gfx_sdlgpu_cache_replay_begin(uint32_t id) {
     st.cache_buf = (id > 0 && id <= cache_bufs.size() && cache_bufs[id - 1].buf) ? id : 0;
 }
@@ -2487,13 +2509,14 @@ static void gfx_sdlgpu_cache_set_cull(int mode, bool front_ccw) {
     st.front_ccw = front_ccw;
 }
 
-static void gfx_sdlgpu_cache_draw(struct ShaderProgram *prg, size_t base_float, size_t num_tris) {
-    if (!prg || !gpu.render_cb || st.cache_buf == 0 || num_tris == 0) {
-        return;
-    }
+// Everything a cached draw needs bound short of the draw call itself:
+// cached-VS pipeline, vertex buffer at base_float, palette/tile samplers,
+// uniforms, debug counters. Shared by the non-indexed and indexed (A5)
+// draws. Returns false when the draw must be skipped.
+static bool gfx_sdlgpu_cache_draw_setup(struct ShaderProgram *prg, size_t base_float) {
     SDL_GPUBuffer *vb = cache_bufs[st.cache_buf - 1].buf;
     if (!vb) {
-        return;
+        return false;
     }
 
     // replay loads the segment's shader via load_shader, but be defensive
@@ -2501,7 +2524,7 @@ static void gfx_sdlgpu_cache_draw(struct ShaderProgram *prg, size_t base_float, 
 
     if (!prg->vs_cached) {
         if (!gfx_sdlgpu_shader_compile_cached_vs(gpu.device, prg)) {
-            return;
+            return false;
         }
         // A18: the cached-VS variant exists only from this point (lazy
         // compile), so the shader-creation warm-up skipped the cached
@@ -2512,12 +2535,12 @@ static void gfx_sdlgpu_cache_draw(struct ShaderProgram *prg, size_t base_float, 
 
     ensure_pass();
     if (!st.pass) {
-        return;
+        return false;
     }
 
     SDL_GPUGraphicsPipeline *pipe = pipeline_resolve(true);
     if (!pipe) {
-        return;
+        return false;
     }
     if (pipe != st.bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(st.pass, pipe);
@@ -2546,14 +2569,48 @@ static void gfx_sdlgpu_cache_draw(struct ShaderProgram *prg, size_t base_float, 
     } else {
         gpu.dbg_draws_1x++;
     }
+    return true;
+}
 
+static void gfx_sdlgpu_cache_draw(struct ShaderProgram *prg, size_t base_float, size_t num_tris) {
+    if (!prg || !gpu.render_cb || st.cache_buf == 0 || num_tris == 0) {
+        return;
+    }
+    if (!gfx_sdlgpu_cache_draw_setup(prg, base_float)) {
+        return;
+    }
     SDL_DrawGPUPrimitives(st.pass, (Uint32)(3 * num_tris), 1, 0, 0);
+}
+
+static void gfx_sdlgpu_cache_draw_indexed(struct ShaderProgram *prg, size_t base_float, size_t first_index,
+                                          size_t num_indices) {
+    // A5: base_float = the segment RUN's first deduped vertex; indices are
+    // run-local u32s, so vertex_offset stays 0 and first_index selects the
+    // range. The index buffer is (re)bound every draw: binds are pass state
+    // and ensure_pass may have started a fresh pass since the last draw —
+    // this mirrors the per-draw vertex-buffer bind above.
+    if (!prg || !gpu.render_cb || st.cache_buf == 0 || st.cache_idx_buf == 0 || num_indices == 0) {
+        return;
+    }
+    SDL_GPUBuffer *ib = cache_bufs[st.cache_idx_buf - 1].buf;
+    if (!ib) {
+        return;
+    }
+    if (!gfx_sdlgpu_cache_draw_setup(prg, base_float)) {
+        return;
+    }
+    SDL_GPUBufferBinding ibb;
+    ibb.buffer = ib;
+    ibb.offset = 0;
+    SDL_BindGPUIndexBuffer(st.pass, &ibb, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    SDL_DrawGPUIndexedPrimitives(st.pass, (Uint32)num_indices, 1, (Uint32)first_index, 0, 0);
 }
 
 static void gfx_sdlgpu_cache_replay_end(void) {
     // mirror GL: subsequent immediate draws are uncull-ed and re-bind their
     // own vertex buffer per draw
     st.cache_buf = 0;
+    st.cache_idx_buf = 0; // A5
     st.cull_mode = 0;
     st.front_ccw = true;
 }
@@ -3661,6 +3718,10 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_shader_wireframe_supported,
     NULL, // compact_texfmt_supported — SDL_GPU has no texture/sampler swizzle,
     NULL, // upload_texture_fmt         so A19 imports keep the RGBA32 expansion
+    gfx_sdlgpu_cache_create_index_buffer, // A5 dlcache index buffers
+    gfx_sdlgpu_cache_delete_index_buffer,
+    gfx_sdlgpu_cache_bind_index_buffer,
+    gfx_sdlgpu_cache_draw_indexed,
 };
 
 #endif // USE_SDLGPU

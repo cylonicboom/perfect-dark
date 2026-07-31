@@ -22,6 +22,7 @@
 #include "data.h"
 #include "bss.h"
 #include "lib/rng.h" // rngCosmeticRandom — F2 co-op body randomisation (unsynced, host-side)
+#include "lib/memp.h" // mempAlloc — lazy chrnetsnap ring allocation (netChrRecordSnapshot)
 #include "game/hudmsg.h"
 #include "game/menugfx.h"
 #include "game/playermgr.h"
@@ -4335,13 +4336,33 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
 	if (!chr || !pose) {
 		return;
 	}
+	// LAZY RING ALLOCATION (2026-07-31 chrdata diet): the pose ring lives
+	// out-of-line (struct chrnetsnap, types.h) so every chr on every machine no
+	// longer carries 516 inline bytes. Only clients record snapshots, so
+	// servers / single-player never allocate one. MEMPOOL_STAGE frees all rings
+	// wholesale at the stage-pool rewind (chrInit reuses a recycled slot's
+	// this-stage ring — chr.c). On alloc failure: log (tick-throttled) and drop
+	// the snapshot — netChrInterpolate early-returns on a NULL ring.
+	if (!chr->netsnaps) {
+		chr->netsnaps = mempAlloc(ALIGN16(NET_SNAPSHOT_COUNT * sizeof(struct chrnetsnap)), MEMPOOL_STAGE);
+		if (!chr->netsnaps) {
+			static u32 s_allocwarn_tick = 0xffffffffu;
+			if (g_NetTick != s_allocwarn_tick) {
+				s_allocwarn_tick = g_NetTick;
+				sysLogPrintf(LOG_WARNING, "NET: netChrRecordSnapshot: chrnetsnap ring alloc failed, snapshot dropped");
+			}
+			return;
+		}
+		memset(chr->netsnaps, 0, NET_SNAPSHOT_COUNT * sizeof(struct chrnetsnap));
+		chr->netsnaphead = 0;
+	}
 	// Corrupt-head recovery (see the invariant check in netChrInterpolate):
 	// re-seat an out-of-range head so the `prev` read below can't index outside
-	// the struct and the ring rebuilds with fresh snapshots.
+	// the ring and the ring rebuilds with fresh snapshots.
 	if (chr->netsnaphead >= NET_SNAPSHOT_COUNT) {
 		chr->netsnaphead = 0;
 	}
-	const u32 prev = chr->netsnap[chr->netsnaphead].tick;
+	const u32 prev = chr->netsnaps[chr->netsnaphead].tick;
 	if (prev && g_NetTick > prev) {
 		const f32 gap = (f32)(g_NetTick - prev);
 		if (gap < 60.f) { // ignore spawn / stall outliers
@@ -4350,19 +4371,19 @@ void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose)
 	}
 	const u32 h = (chr->netsnaphead + 1) % NET_SNAPSHOT_COUNT;
 	chr->netsnaphead = h;
-	chr->netsnap[h].tick           = g_NetTick ? g_NetTick : 1u; // 0 == empty
-	chr->netsnap[h].pos            = pose->pos;
-	chr->netsnap[h].yrot           = pose->yrot;
-	chr->netsnap[h].angleoffset    = pose->angleoffset;
-	chr->netsnap[h].aimupback      = pose->aimupback;
-	chr->netsnap[h].aimsideback    = pose->aimsideback;
-	chr->netsnap[h].aimuplshoulder = pose->aimuplshoulder;
-	chr->netsnap[h].aimuprshoulder = pose->aimuprshoulder;
-	chr->netsnap[h].animnum        = pose->animnum;
-	chr->netsnap[h].framea         = pose->framea;
-	chr->netsnap[h].speed          = pose->speed;
+	chr->netsnaps[h].tick           = g_NetTick ? g_NetTick : 1u; // 0 == empty
+	chr->netsnaps[h].pos            = pose->pos;
+	chr->netsnaps[h].yrot           = pose->yrot;
+	chr->netsnaps[h].angleoffset    = pose->angleoffset;
+	chr->netsnaps[h].aimupback      = pose->aimupback;
+	chr->netsnaps[h].aimsideback    = pose->aimsideback;
+	chr->netsnaps[h].aimuplshoulder = pose->aimuplshoulder;
+	chr->netsnaps[h].aimuprshoulder = pose->aimuprshoulder;
+	chr->netsnaps[h].animnum        = pose->animnum;
+	chr->netsnaps[h].framea         = pose->framea;
+	chr->netsnaps[h].speed          = pose->speed;
 	for (s32 ri = 0; ri < 8; ++ri) {
-		chr->netsnap[h].rooms[ri] = pose->rooms[ri];
+		chr->netsnaps[h].rooms[ri] = pose->rooms[ri];
 	}
 }
 
@@ -4433,15 +4454,24 @@ void netChrInterpolate(struct chrdata *chr)
 		return;
 	}
 
+	// Ring never allocated: no snapshot was ever recorded for this chr (the
+	// ring is lazily mempAlloc'd in netChrRecordSnapshot — clients only), so
+	// there is nothing to interpolate. Leave the receive-time pose in place.
+	// Must precede the head invariant check below: netsnaphead is meaningless
+	// while the ring is NULL.
+	if (!chr->netsnaps) {
+		return;
+	}
+
 	const u32 head = chr->netsnaphead;
 	// INVARIANT CHECK: netsnaphead is only ever advanced `% NET_SNAPSHOT_COUNT`
-	// (netChrRecordSnapshot), so out-of-range means this chr's ring was never
-	// initialised or its memory was trashed. The known source — the
-	// port-appended netsnap/netsnaphead fields never being cleared by chrInit
-	// over recycled stage-pool memory — is now fixed in chrInit (chr.c); this
-	// stays as a cheap guard so any future corruption logs and skips instead of
-	// indexing netsnap[garbage] (the original 0xc0000005 here) or silently
-	// freezing.
+	// (netChrRecordSnapshot), so out-of-range means this chr's ring state was
+	// trashed. The original source — the once-inline netsnap/netsnaphead fields
+	// never being cleared by chrInit over recycled stage-pool memory — is fixed
+	// (chrInit clears the head + ring ticks; the ring itself is now out-of-line
+	// and zeroed at allocation); this stays as a cheap guard so any future
+	// corruption logs and skips instead of indexing netsnaps[garbage] (the
+	// original 0xc0000005 here) or silently freezing.
 	if (head >= NET_SNAPSHOT_COUNT) {
 		static u32 s_corrupt_tick = 0xffffffffu;
 		if (g_NetTick != s_corrupt_tick) {
@@ -4451,7 +4481,7 @@ void netChrInterpolate(struct chrdata *chr)
 		}
 		return;
 	}
-	if (!chr->netsnap[head].tick) {
+	if (!chr->netsnaps[head].tick) {
 		return; // no snapshots yet — leave the receive-time pose in place
 	}
 
@@ -4469,10 +4499,10 @@ void netChrInterpolate(struct chrdata *chr)
 	s32 inewer = -1, iolder = -1;
 	for (s32 i = 0; i < NET_SNAPSHOT_COUNT; ++i) {
 		const s32 idx = (s32)((head + NET_SNAPSHOT_COUNT - (u32)i) % NET_SNAPSHOT_COUNT);
-		if (!chr->netsnap[idx].tick) {
+		if (!chr->netsnaps[idx].tick) {
 			break; // empty slot
 		}
-		if (chr->netsnap[idx].tick >= desired) {
+		if (chr->netsnaps[idx].tick >= desired) {
 			inewer = idx;
 		} else {
 			iolder = idx;
@@ -4494,53 +4524,53 @@ void netChrInterpolate(struct chrdata *chr)
 	if (inewer >= 0 && iolder >= 0) {
 		// Normal case: interpolate the WHOLE pose between the bracketing snapshots,
 		// so body, facing and aim all reconstruct for the same past instant.
-		const u32 span = chr->netsnap[inewer].tick - chr->netsnap[iolder].tick;
-		const f32 t = (span > 0) ? (f32)(desired - chr->netsnap[iolder].tick) / (f32)span : 1.f;
-		out.pos.x          = netLerpf(chr->netsnap[iolder].pos.x, chr->netsnap[inewer].pos.x, t);
-		out.pos.y          = netLerpf(chr->netsnap[iolder].pos.y, chr->netsnap[inewer].pos.y, t);
-		out.pos.z          = netLerpf(chr->netsnap[iolder].pos.z, chr->netsnap[inewer].pos.z, t);
-		out.yrot           = netAngleLerp(chr->netsnap[iolder].yrot, chr->netsnap[inewer].yrot, t);
-		out.angleoffset    = netAngleLerp(chr->netsnap[iolder].angleoffset, chr->netsnap[inewer].angleoffset, t);
-		out.aimupback      = netLerpf(chr->netsnap[iolder].aimupback, chr->netsnap[inewer].aimupback, t);
-		out.aimsideback    = netLerpf(chr->netsnap[iolder].aimsideback, chr->netsnap[inewer].aimsideback, t);
-		out.aimuplshoulder = netLerpf(chr->netsnap[iolder].aimuplshoulder, chr->netsnap[inewer].aimuplshoulder, t);
-		out.aimuprshoulder = netLerpf(chr->netsnap[iolder].aimuprshoulder, chr->netsnap[inewer].aimuprshoulder, t);
+		const u32 span = chr->netsnaps[inewer].tick - chr->netsnaps[iolder].tick;
+		const f32 t = (span > 0) ? (f32)(desired - chr->netsnaps[iolder].tick) / (f32)span : 1.f;
+		out.pos.x          = netLerpf(chr->netsnaps[iolder].pos.x, chr->netsnaps[inewer].pos.x, t);
+		out.pos.y          = netLerpf(chr->netsnaps[iolder].pos.y, chr->netsnaps[inewer].pos.y, t);
+		out.pos.z          = netLerpf(chr->netsnaps[iolder].pos.z, chr->netsnaps[inewer].pos.z, t);
+		out.yrot           = netAngleLerp(chr->netsnaps[iolder].yrot, chr->netsnaps[inewer].yrot, t);
+		out.angleoffset    = netAngleLerp(chr->netsnaps[iolder].angleoffset, chr->netsnaps[inewer].angleoffset, t);
+		out.aimupback      = netLerpf(chr->netsnaps[iolder].aimupback, chr->netsnaps[inewer].aimupback, t);
+		out.aimsideback    = netLerpf(chr->netsnaps[iolder].aimsideback, chr->netsnaps[inewer].aimsideback, t);
+		out.aimuplshoulder = netLerpf(chr->netsnaps[iolder].aimuplshoulder, chr->netsnaps[inewer].aimuplshoulder, t);
+		out.aimuprshoulder = netLerpf(chr->netsnaps[iolder].aimuprshoulder, chr->netsnaps[inewer].aimuprshoulder, t);
 		// Anim: take the OLDER snapshot's discrete animnum/frame (the value in
 		// effect at the instant we're rendering, [iolder, inewer)), and blend the
 		// continuous playback speed. This time-aligns the legs with the body
 		// position above — the whole point of the fix.
-		out.animnum        = chr->netsnap[iolder].animnum;
-		out.framea         = chr->netsnap[iolder].framea;
-		out.speed          = netLerpf(chr->netsnap[iolder].speed, chr->netsnap[inewer].speed, t);
+		out.animnum        = chr->netsnaps[iolder].animnum;
+		out.framea         = chr->netsnaps[iolder].framea;
+		out.speed          = netLerpf(chr->netsnaps[iolder].speed, chr->netsnaps[inewer].speed, t);
 		// Only switch the discrete anim when both bracket snapshots agree (see
 		// animstable above); otherwise hold the current anim through the toggle.
-		animstable = (chr->netsnap[inewer].animnum == chr->netsnap[iolder].animnum);
+		animstable = (chr->netsnaps[inewer].animnum == chr->netsnaps[iolder].animnum);
 	} else {
 		// Single-snapshot / extrapolation: facing + aim hold the newest values;
 		// position dead-reckons (bounded) when desired is ahead of all snapshots.
 		const s32 src = (inewer >= 0) ? inewer : (s32)head;
-		out.pos            = chr->netsnap[src].pos;
-		out.yrot           = chr->netsnap[head].yrot;
-		out.angleoffset    = chr->netsnap[head].angleoffset;
-		out.aimupback      = chr->netsnap[head].aimupback;
-		out.aimsideback    = chr->netsnap[head].aimsideback;
-		out.aimuplshoulder = chr->netsnap[head].aimuplshoulder;
-		out.aimuprshoulder = chr->netsnap[head].aimuprshoulder;
-		out.animnum        = chr->netsnap[head].animnum;
-		out.framea         = chr->netsnap[head].framea;
-		out.speed          = chr->netsnap[head].speed;
+		out.pos            = chr->netsnaps[src].pos;
+		out.yrot           = chr->netsnaps[head].yrot;
+		out.angleoffset    = chr->netsnaps[head].angleoffset;
+		out.aimupback      = chr->netsnaps[head].aimupback;
+		out.aimsideback    = chr->netsnaps[head].aimsideback;
+		out.aimuplshoulder = chr->netsnaps[head].aimuplshoulder;
+		out.aimuprshoulder = chr->netsnaps[head].aimuprshoulder;
+		out.animnum        = chr->netsnaps[head].animnum;
+		out.framea         = chr->netsnaps[head].framea;
+		out.speed          = chr->netsnaps[head].speed;
 		if (inewer < 0) {
 			const u32 prevh = (head + NET_SNAPSHOT_COUNT - 1u) % NET_SNAPSHOT_COUNT;
-			if (chr->netsnap[prevh].tick && chr->netsnap[head].tick > chr->netsnap[prevh].tick
-					&& desired > chr->netsnap[head].tick) {
-				u32 ahead = desired - chr->netsnap[head].tick;
+			if (chr->netsnaps[prevh].tick && chr->netsnaps[head].tick > chr->netsnaps[prevh].tick
+					&& desired > chr->netsnaps[head].tick) {
+				u32 ahead = desired - chr->netsnaps[head].tick;
 				if (ahead > g_NetExtrapMaxTicks) {
 					ahead = g_NetExtrapMaxTicks;
 				}
-				const f32 vscale = (f32)ahead / (f32)(chr->netsnap[head].tick - chr->netsnap[prevh].tick);
-				out.pos.x = chr->netsnap[head].pos.x + (chr->netsnap[head].pos.x - chr->netsnap[prevh].pos.x) * vscale;
-				out.pos.y = chr->netsnap[head].pos.y + (chr->netsnap[head].pos.y - chr->netsnap[prevh].pos.y) * vscale;
-				out.pos.z = chr->netsnap[head].pos.z + (chr->netsnap[head].pos.z - chr->netsnap[prevh].pos.z) * vscale;
+				const f32 vscale = (f32)ahead / (f32)(chr->netsnaps[head].tick - chr->netsnaps[prevh].tick);
+				out.pos.x = chr->netsnaps[head].pos.x + (chr->netsnaps[head].pos.x - chr->netsnaps[prevh].pos.x) * vscale;
+				out.pos.y = chr->netsnaps[head].pos.y + (chr->netsnaps[head].pos.y - chr->netsnaps[prevh].pos.y) * vscale;
+				out.pos.z = chr->netsnaps[head].pos.z + (chr->netsnaps[head].pos.z - chr->netsnaps[prevh].pos.z) * vscale;
 			}
 		}
 	}
@@ -4559,7 +4589,7 @@ void netChrInterpolate(struct chrdata *chr)
 	// early-returns when head is empty, and iolder/inewer only index recorded slots).
 	{
 		const s32 roomidx = (iolder >= 0) ? iolder : (inewer >= 0 ? inewer : (s32)head);
-		RoomNum *wantrooms = chr->netsnap[roomidx].rooms;
+		RoomNum *wantrooms = chr->netsnaps[roomidx].rooms;
 		if (!netChrRoomsEqual(wantrooms, chr->prop->rooms)) {
 			if (chr->prop->active) {
 				propDeregisterRooms(chr->prop);
@@ -6953,6 +6983,91 @@ s32 netConsoleCommand(const char *line)
 					g_CdSpatialIndexEnabled ? "ON" : "OFF",
 					g_CdSpatialIndexVerify ? "ON" : "OFF");
 		}
+	} else if (strcmp(cmd, "sndpool") == 0) {
+		// /sndpool [reset]  audio event-queue health: live depth / high-water
+		// vs SND_MAX_EVENTS, and the silent-drop counter. drops>0 during a
+		// mass-fire scene = the voice-leak class (a dropped STOP never frees
+		// its voice); if drops stay 0 and sounds still die, the exhaustion is
+		// in voices/states instead - report the numbers.
+		{
+			extern s32 g_SndEvtqDepth, g_SndEvtqPeak, g_SndEvtqDrops;
+
+			if (strcmp(arg, "reset") == 0) {
+				g_SndEvtqPeak = 0;
+				g_SndEvtqDrops = 0;
+			}
+
+			{
+				extern s32 g_SndNumPlaying;
+				extern s32 g_SndMostEverPlaying;
+				sysLogPrintf(LOG_CHAT, "SNDPOOL: evtq depth=%d peak=%d drops=%d (cap 1024)",
+						g_SndEvtqDepth, g_SndEvtqPeak, g_SndEvtqDrops);
+				sysLogPrintf(LOG_CHAT, "SNDPOOL: playing=%d peak=%d (psCreate gate 48, mixer cap 64)",
+						g_SndNumPlaying, g_SndMostEverPlaying);
+			}
+		}
+	} else if (strcmp(cmd, "envmix") == 0) {
+		// /envmix [simd|scalar]  A/B the envelope-mixer implementation
+		// (port/src/mixer.c aEnvMixerImpl). If quiet/crackly audio changes
+		// character when flipped, the SIMD path is implicated; if not, the
+		// bug is elsewhere (e.g. the retired sequencer-starving queue gate).
+		{
+			extern s32 g_MixerEnvSimd;
+
+			if (strcmp(arg, "simd") == 0) {
+				g_MixerEnvSimd = 1;
+			} else if (strcmp(arg, "scalar") == 0) {
+				g_MixerEnvSimd = 0;
+			} else if (arg[0]) {
+				g_MixerEnvSimd = atoi(arg) != 0;
+			}
+
+			sysLogPrintf(LOG_CHAT, "ENVMIX: %s (envelope mixer path)",
+					g_MixerEnvSimd ? "SIMD" : "SCALAR");
+		}
+	} else if (strcmp(cmd, "lvsplit") == 0) {
+		// /lvsplit [off|dl|glare|autoaim|view|lights|portals|all]
+		// Skip mask for netplay passes whose display list is discarded
+		// (remote pawns on a listen host). Default 0 = vanilla. Bits toggle;
+		// "all" = 0x3f, "off" = 0. Soak with the determinism trace before
+		// trusting a bit in real matches; config key Game.LvSplitMask.
+		{
+			extern s32 g_LvSplitMask;
+			s32 bit = -1;
+
+			if (strcmp(arg, "off") == 0) {
+				g_LvSplitMask = 0;
+			} else if (strcmp(arg, "all") == 0) {
+				g_LvSplitMask = 0x3f;
+			} else if (strcmp(arg, "dl") == 0) {
+				bit = 0x01;
+			} else if (strcmp(arg, "glare") == 0) {
+				bit = 0x02;
+			} else if (strcmp(arg, "autoaim") == 0) {
+				bit = 0x04;
+			} else if (strcmp(arg, "view") == 0) {
+				bit = 0x08;
+			} else if (strcmp(arg, "lights") == 0) {
+				bit = 0x10;
+			} else if (strcmp(arg, "portals") == 0) {
+				bit = 0x20;
+			} else if (arg[0]) {
+				g_LvSplitMask = atoi(arg) & 0x3f;
+			}
+
+			if (bit > 0) {
+				g_LvSplitMask ^= bit;
+			}
+
+			sysLogPrintf(LOG_CHAT, "LVSPLIT: mask=0x%02x [%s%s%s%s%s%s] (discarded-pass work skips)",
+					g_LvSplitMask,
+					(g_LvSplitMask & 0x01) ? " dl" : "",
+					(g_LvSplitMask & 0x02) ? " glare" : "",
+					(g_LvSplitMask & 0x04) ? " autoaim" : "",
+					(g_LvSplitMask & 0x08) ? " view" : "",
+					(g_LvSplitMask & 0x10) ? " lights" : "",
+					(g_LvSplitMask & 0x20) ? " portals" : "");
+		}
 	} else if (strcmp(cmd, "losmemo") == 0) {
 		// /losmemo [on|off]  toggle the per-chr per-frame AI line-of-sight memo
 		// (g_ChrLosMemoEnabled, chraction.c — Part B opt B1). Behaviour-adjacent:
@@ -7100,6 +7215,17 @@ s32 netConsoleCommand(const char *line)
 			}
 			sysLogPrintf(LOG_CHAT, "DLCACHE: replayed last frame: batches=%u tris=%u draws=%d (gap=%d)",
 					segments, tris, gfx_dlcache_get_frame_draws(), gfx_dlcache_get_gap_tris());
+			{
+				extern void gfx_dlcache_get_index_stats(u32 *verts_in, u32 *verts_out, u32 *indexed_entries);
+				extern s32 g_DlCacheIndexed;
+				u32 vin = 0, vout = 0, ients = 0;
+				gfx_dlcache_get_index_stats(&vin, &vout, &ients);
+				if (ients || !g_DlCacheIndexed) {
+					sysLogPrintf(LOG_CHAT, "DLCACHE: indexed=%s entries=%u verts %u->%u (%.1fx dedup)",
+							g_DlCacheIndexed ? "ON" : "OFF", ients, vin, vout,
+							vout ? (f32)vin / (f32)vout : 0.0f);
+				}
+			}
 			if (visdrawn || visculled || visabsorbed) {
 				sysLogPrintf(LOG_CHAT, "DLCACHE: octree at replay: drawn=%u culled=%u absorbed=%u",
 						visdrawn, visculled, visabsorbed);
@@ -7113,6 +7239,14 @@ s32 netConsoleCommand(const char *line)
 						(reasons & 0x08) ? " empty" : "",
 						(reasons & 0x10) ? " texgen" : "");
 			}
+		} else if (strcmp(arg, "indexed") == 0) {
+			// /dlcache indexed — toggle vertex-dedup + glDrawElements replay
+			// for newly recorded entries (existing entries keep their layout;
+			// /dlcache clear to re-record everything).
+			extern s32 g_DlCacheIndexed;
+			g_DlCacheIndexed = !g_DlCacheIndexed;
+			sysLogPrintf(LOG_CHAT, "DLCACHE: indexed recording %s (takes effect on new records; /dlcache clear to re-record)",
+					g_DlCacheIndexed ? "ON" : "OFF");
 		} else if (strcmp(arg, "clear") == 0) {
 			gfx_dlcache_clear();
 			sysLogPrintf(LOG_CHAT, "DLCACHE: cleared all cached buffers");
@@ -8052,6 +8186,10 @@ PD_CONSTRUCTOR static void netConfigInit(void)
 	configRegisterUInt("Net.Server.OutRate", &g_NetServerOutRate, 0, 10 * 1024 * 1024);
 	configRegisterUInt("Net.Server.UpdateFrames", &g_NetServerUpdateRate, 0, 60);
 	configRegisterInt("Net.Server.Relevancy", &g_NetRelevancy, 0, 1);
+	{
+		extern s32 g_LvSplitMask;
+		configRegisterInt("Game.LvSplitMask", &g_LvSplitMask, 0, 0x3f);
+	}
 	configRegisterFloat("Net.Server.RelevancyDist", &g_NetRelevancyDist, 500.0f, 1000000.0f);
 	configRegisterInt("Net.Server.PosQuant", &g_NetPosQuant, 0, 1);
 	configRegisterFloat("Net.Server.PosQuantScale", &g_NetPosQuantScale, 0.01f, 64.0f);

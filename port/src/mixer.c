@@ -21,6 +21,12 @@
 #define HAS_NEON 0
 #endif
 
+// /envmix runtime A/B: 1 = the SIMD envelope-mixer path (default), 0 = the
+// original scalar loop. Both are compiled; the toggle exists so a suspected
+// mixer regression can be isolated in-game in seconds. Bit-exactness of the
+// SIMD path is proven in comments below, but proofs meet reality here.
+int32_t g_MixerEnvSimd = 1;
+
 #pragma GCC optimize ("unroll-loops")
 
 #if HAS_SSE41
@@ -561,6 +567,7 @@ void aEnvMixerImpl(uint8_t flags, ENVMIX_STATE state, int16_t rvol) {
     #endif
 
 #if HAS_SSE41 || HAS_NEON
+    if (g_MixerEnvSimd) {
     // Two-segment split: a scalar prologue while the envelopes are still ramping
     // (the ramp clamps per sample and usually settles early in the frame), then a
     // vector segment once both envelopes are settled and all four gains are
@@ -687,7 +694,9 @@ void aEnvMixerImpl(uint8_t flags, ENVMIX_STATE state, int16_t rvol) {
             }
         }
     }
-#else
+    } else
+#endif
+    {
     for (int i = 0; i < nsamples; ++i) {
         int16_t gain[4];
         int16_t vol[2];
@@ -717,7 +726,7 @@ void aEnvMixerImpl(uint8_t flags, ENVMIX_STATE state, int16_t rvol) {
             *outptr[j] = clamp16(*outptr[j] + ((insamp * gain[j]) >> 15));
         }
     }
-#endif
+    }
 
     #undef XOR
 

@@ -128,6 +128,15 @@ s32 g_MpScoreLimit = 10;
 s32 g_MpTeamScoreLimit = 20;
 struct sndstate *g_MiscAudioHandle = NULL;
 s32 g_NumReasonsToEndMpMatch = 0;
+#ifndef PLATFORM_N64
+// /lvsplit: bitmask of per-pass work skipped for netplay passes whose display
+// list is discarded (remote pawns on a listen host). Default 0 = vanilla.
+// bit0 dl-build (gameplay islands mirrored), bit1 glares, bit2 autoaim,
+// bit3 view state (env/sky/edges/blur/artifactsClear), bit4 lightsTick,
+// bit5 bgTick->bgTickPortals. See the lv.c-split investigation record;
+// soak with the determinism trace before defaulting any bit on.
+s32 g_LvSplitMask = 0;
+#endif
 f32 g_StageTimeElapsed1f = 0;
 bool var80084040 = true;
 
@@ -1678,6 +1687,27 @@ Gfx *lvRender(Gfx *gdl)
 			}
 #endif
 
+#ifndef PLATFORM_N64
+			// Single source of truth for "this pass's display list will be
+			// rolled back" — shared by the /lvsplit gates below AND the
+			// rollback at the loop tail (computing it twice is how a
+			// skipped-but-displayed bug gets born). Keyed on the local
+			// binding, not slot 0 (co-op drop-in claimants bind at wire slot
+			// N). i >= MAX_LOCAL_PLAYERS (offline splitscreen path) stays out
+			// of the skip gates by design.
+			bool viewdiscarded = false;
+			if (g_NetMode) {
+				bool islocaliter;
+				if (g_NetLocalClient && g_NetLocalClient->player) {
+					islocaliter = playermgrGetPlayerAtOrder(i) == g_NetLocalClient->playernum;
+				} else {
+					islocaliter = (i == 0);
+				}
+				viewdiscarded = !islocaliter;
+			}
+			const s32 lvsplit = viewdiscarded ? g_LvSplitMask : 0;
+#endif
+
 			// Calculate bluramount - this will be used later
 			if (g_Vars.tickmode != TICKMODE_CUTSCENE) {
 				player = g_Vars.currentplayer;
@@ -1712,6 +1742,9 @@ Gfx *lvRender(Gfx *gdl)
 				}
 			}
 
+#ifndef PLATFORM_N64
+			if (!(lvsplit & 0x08))
+#endif
 			bviewSetMotionBlur(bluramount);
 
 			gSPDisplayList(gdl++, &var800613a0);
@@ -1726,12 +1759,30 @@ Gfx *lvRender(Gfx *gdl)
 			viSetFovAspectAndSize(g_Vars.currentplayer->fovy, g_Vars.currentplayer->aspect,
 					g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
 			mtx00016748(g_Vars.currentplayerstats->scale_bg2gfx);
+#ifndef PLATFORM_N64
+			// /lvsplit view (bit 3): envTick/artifactsClear are render-only.
+			// zbufSwap/viPrepareZbuf/vi0000b1d0 are KEPT: vi0000b1d0 computes
+			// the perspective matrix playerAllocateMatrices requires (the
+			// documented headless ordering trap), and zbufSwap's cursor
+			// semantics are unverified (investigation hold).
+			if (!(lvsplit & 0x08)) {
+				envTick();
+			}
+			zbufSwap();
+			gdl = viPrepareZbuf(gdl);
+			gdl = vi0000b1d0(gdl);
+			gdl = bgScissorToViewport(gdl);
+			if (!(lvsplit & 0x08)) {
+				artifactsClear();
+			}
+#else
 			envTick();
 			zbufSwap();
 			gdl = viPrepareZbuf(gdl);
 			gdl = vi0000b1d0(gdl);
 			gdl = bgScissorToViewport(gdl);
 			artifactsClear();
+#endif
 
 			if ((g_Vars.stagenum != STAGE_CITRAINING || (var80087260 <= 0 && g_MenuData.root != MENUROOT_MPSETUP))
 					&& g_Vars.lvframenum <= 5
@@ -1766,6 +1817,78 @@ Gfx *lvRender(Gfx *gdl)
 					gdl = playerUpdateShootRot(gdl);
 				}
 
+#ifndef PLATFORM_N64
+				if (!(lvsplit & 0x08)) {
+					gdl = viRenderViewportEdges(gdl);
+					gdl = skyRender(gdl);
+				}
+				if (lvsplit & 0x20) {
+					// /lvsplit portals (bit 5): the pdmain.c headless form �
+					// bgTickPortals is the load-bearing part (ROOMFLAG_ONSCREEN
+					// for the prop foreground gate + g_MpRoomVisibility for
+					// spawn avoidance / AI LOD); bgTickRooms is index-0-only
+					// anyway and the rest of bgTick is render-tier.
+					extern s32 g_CamRoom;
+					g_CamRoom = g_Vars.currentplayer->cam_room;
+					bgTickPortals();
+				} else {
+					bgTick();
+				}
+				if (!(lvsplit & 0x10)) {
+					lightsTick();
+				}
+				propsTickPlayer(islastplayer);
+				scenarioTickChr(NULL);
+				propsSort();
+				// /lvsplit autoaim (bit 2): sole consumer (bondmove.c crosshair
+				// swivel) is unreachable for remote pawns (bmoveProcessInput
+				// early-returns to the remote path).
+				if (!(lvsplit & 0x04)) {
+					autoaimTick();
+				}
+				if (lvsplit & 0x01) {
+					// /lvsplit dl (bit 0): this pass's chrRender never runs, so
+					// build every player pawn's body matrices in THIS pass's
+					// camera before handsTickAttack traces against them � the
+					// pdmain.c headless-mirror pattern (crash ledger #25 /
+					// blind-server �9). Sims are covered by propsTickPlayer.
+					extern Mtxf *camGetWorldToScreenMtxf(void);
+					extern void modelSetMatricesWithAnim(struct modelrenderdata *renderdata, struct model *model);
+					s32 pj;
+					for (pj = 0; pj < PLAYERCOUNT(); pj++) {
+						struct player *pp = g_Vars.players[pj];
+						struct model *bodymodel;
+						struct modelrenderdata mrd = {0, 1, 3};
+
+						if (!pp || !pp->haschrbody || !pp->prop || !pp->prop->chr) {
+							continue;
+						}
+
+						bodymodel = pp->prop->chr->model;
+
+						if (!bodymodel || !bodymodel->definition) {
+							continue;
+						}
+
+						mrd.unk10 = gfxAllocate(bodymodel->definition->nummatrices * sizeof(Mtxf));
+
+						if (!mrd.unk10) {
+							continue;
+						}
+
+						mrd.unk00 = camGetWorldToScreenMtxf();
+						modelSetMatricesWithAnim(&mrd, bodymodel);
+					}
+				}
+				handsTickAttack();
+
+				// glares calculated earlier on PC, before prop matrices turn into garbage
+				// /lvsplit glare (bit 1): render-only output (bgRenderArtifacts
+				// in the discarded DL); live only in net co-op.
+				if (!(lvsplit & 0x02)) {
+					bgCalculateGlaresForVisibleRooms();
+				}
+#else
 				gdl = viRenderViewportEdges(gdl);
 				gdl = skyRender(gdl);
 				bgTick();
@@ -1775,10 +1898,6 @@ Gfx *lvRender(Gfx *gdl)
 				propsSort();
 				autoaimTick();
 				handsTickAttack();
-
-#ifndef PLATFORM_N64
-				// glares calculated earlier on PC, before prop matrices turn into garbage
-				bgCalculateGlaresForVisibleRooms();
 #endif
 
 				// Calculate lookingatprop
@@ -1914,6 +2033,29 @@ Gfx *lvRender(Gfx *gdl)
 				}
 
 				propsTestForPickup();
+
+#ifndef PLATFORM_N64
+				if (lvsplit & 0x01) {
+					// /lvsplit dl (bit 0): the entire DL build below writes only
+					// into gdl, which the loop tail rolls back for this pass.
+					// Run the gameplay islands playerRenderHud would have run:
+					// bgunTickGameplay2 (gun master-load + muzzle spawn pos �
+					// the "client shoots nothing" class) and the remote-pawn
+					// death/respawn mirror (extracted from the pdmain.c
+					// headless loop; dostartnewlife is consumed just below,
+					// outside the skipped region). bgunLoadAll needs no island:
+					// unlike the headless loop, lv.c's own kick above the
+					// lockscreen chain still runs for this pass.
+					if (g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON
+							&& g_Vars.currentplayer->cameramode != CAMERAMODE_EYESPY) {
+						bgunTickGameplay2();
+					}
+					{
+						extern void netMirrorRemotePawnDeath(void);
+						netMirrorRemotePawnDeath();
+					}
+				} else {
+#endif
 
 				gdl = bgRender(gdl);
 				chr0f028498(var80075d68 == 15 || g_AnimHostEnabled);
@@ -2293,6 +2435,10 @@ Gfx *lvRender(Gfx *gdl)
 					gdl = mpRenderModalText(gdl);
 				}
 
+#ifndef PLATFORM_N64
+				} // end /lvsplit dl skip
+#endif
+
 				if (g_Vars.currentplayer->dostartnewlife) {
 #ifndef PLATFORM_N64
 					if (g_NetMode != NETMODE_CLIENT)
@@ -2314,16 +2460,11 @@ Gfx *lvRender(Gfx *gdl)
 			// slot there). The iteration is identified by
 			// playermgrGetPlayerAtOrder(i), NOT currentplayernum — the
 			// spectate redirect substitutes the latter.
-			{
-				bool islocaliter;
-				if (g_NetMode && g_NetLocalClient && g_NetLocalClient->player) {
-					islocaliter = playermgrGetPlayerAtOrder(i) == g_NetLocalClient->playernum;
-				} else {
-					islocaliter = (i == 0);
-				}
-				if ((g_NetMode && !islocaliter) || i >= MAX_LOCAL_PLAYERS) {
-					gdl = savedgdl;
-				}
+			// viewdiscarded is the shared computation from the top of the
+			// body (the /lvsplit gates consume the same value, so the skip
+			// gates and this rollback can never disagree).
+			if (viewdiscarded || i >= MAX_LOCAL_PLAYERS) {
+				gdl = savedgdl;
 			}
 #endif
 

@@ -1135,24 +1135,34 @@ void chrInit(struct prop *prop, u8 *ailist)
 	// Same for the chaos uniform-scale groundmult (giants/ants foot-snap).
 	chr->groundmult = 1.0f;
 
-	// Clear the netplay pose-snapshot ring. chrInit initialises fields one by
-	// one (no memset), and chr slots are recycled stage-pool memory, so the
-	// port-appended netsnap/netsnaphead otherwise inherit whatever the pool
-	// previously held. While connected (g_NetMode == NETMODE_CLIENT — e.g. the
-	// post-match front-end stage loading while still in the lobby), every chr
-	// runs netChrInterpolate, which trusts netsnap[netsnaphead].tick != 0:
-	// garbage here meant an OOB netsnap[head] read (0xc0000005, net.c) or —
-	// with an in-range head and a garbage nonzero tick — "interpolating" a
-	// garbage pose, including roomsCopy'ing garbage snapshot rooms into
-	// prop->rooms, which propRegisterRooms / portal00018148 then index with
-	// (the wild-write crash at lib_17ce0.c:214). First sessions appeared fine
-	// because fresh OS pages are zero; the crash needed a recycled pool —
-	// hence "leave AFTER a match ended" reproducing it. tick == 0 marks a
-	// netsnap entry empty (see netChrRecordSnapshot), so clearing the stamps
-	// and the head is sufficient.
+	// Reset the netplay pose-snapshot ring (now OUT-OF-LINE — struct chrnetsnap,
+	// types.h; lazily allocated by netChrRecordSnapshot from MEMPOOL_STAGE).
+	// chrInit initialises fields one by one (no memset) and chr slots are
+	// recycled stage-pool memory; historically the inline netsnap/netsnaphead
+	// inheriting stale pool bytes was a crash family — while connected
+	// (g_NetMode == NETMODE_CLIENT, e.g. the post-match front-end stage loading
+	// while still in the lobby), every chr runs netChrInterpolate, which trusts
+	// netsnaps[netsnaphead].tick != 0: garbage meant an OOB netsnaps[head] read
+	// (0xc0000005, net.c) or "interpolating" a garbage pose, including
+	// roomsCopy'ing garbage snapshot rooms into prop->rooms, which
+	// propRegisterRooms / portal00018148 then index with (the wild-write crash
+	// at lib_17ce0.c:214).
+	//
+	// With the pointer design, at this point netsnaps is one of exactly two
+	// things — (a) NULL: a fresh slot (chrmgrConfigure block-zeroes the whole
+	// g_ChrSlots array at stage load; the array itself is mempAlloc'd from
+	// MEMPOOL_STAGE *after* the stage-pool rewind, so a stale cross-stage
+	// pointer cannot survive into a new stage), or (b) a valid ring allocated
+	// THIS stage by this slot's previous occupant. KEEP and reuse (b) rather
+	// than nulling it — nulling would leak the old ring until stage end and
+	// force a fresh alloc. tick == 0 marks an entry empty (netChrRecordSnapshot)
+	// and netChrInterpolate early-returns on a NULL ring, so clearing the
+	// stamps + head is sufficient.
 	chr->netsnaphead = 0;
-	for (i = 0; i < ARRAYCOUNT(chr->netsnap); i++) {
-		chr->netsnap[i].tick = 0;
+	if (chr->netsnaps) {
+		for (i = 0; i < NET_SNAPSHOT_COUNT; i++) {
+			chr->netsnaps[i].tick = 0;
+		}
 	}
 #endif
 	chr->sumground = 0;

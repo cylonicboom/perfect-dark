@@ -40,7 +40,14 @@
 // sizes its walk buffers from them. Raising a pool without the other side is
 // what put a 192-entry list into a 64-entry stack array.
 #define SND_MAX_STATES 192
-#define SND_MAX_EVENTS 192
+// Events sized WAY above states: every playing sound queues several events
+// (play/volume/pan/stop) and the oldest-steal path queues more, so a mass
+// simultaneous start (32 armed sims opening fire on round start) could fill
+// a 192-entry queue; n_alEvtqPostEvent then DROPS events silently — and a
+// dropped STOP leaks its voice forever, which is why sim gunfire "died" and
+// stayed dead (user repro 2026-07-31). Items are ~50 bytes from the 2MB
+// sound heap; 1024 is noise. /sndpool shows live depth + drop counters.
+#define SND_MAX_EVENTS 1024
 #define SND_MAX_SOUNDS 64
 #else
 #define SND_MAX_STATES 64

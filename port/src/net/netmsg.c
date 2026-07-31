@@ -3072,13 +3072,18 @@ u32 netmsgSvcPropMoveRead(struct netbuf *src, struct netclient *srccl)
 		// (co-op SPAWN/FREE replication) a freed chr's syncid can be recycled by
 		// a weapon/obj prop while a stale unreliable chr-state move for the old
 		// chr is still in flight; applying the block below then writes a full
-		// chrdata's worth of state — including the netsnap ring near the end of chrdata (offset shifts with layout)
-		// onward (netChrRecordSnapshot) — far past the end of the much smaller
-		// objdata, trashing neighbouring stage-pool allocations. (The observed
-		// post-match crash family turned out to be the uninitialised netsnap
-		// ring, fixed in chrInit — but this union hazard is real and closed
-		// here.) All wire bytes were already consumed into locals above, so
-		// skipping the apply keeps the stream aligned.
+		// chrdata's worth of state far past the end of the much smaller
+		// objdata, trashing neighbouring stage-pool allocations. (The write
+		// surface used to include the 516-byte inline netsnap ring at the
+		// chrdata tail; since 2026-07-31 that ring is out-of-line — chrdata
+		// holds only a chrnetsnap pointer + head, so a mis-applied move writes
+		// less, and netChrRecordSnapshot on a garbage "chr" would follow /
+		// lazily set that pointer field rather than scribble 500+ inline bytes.
+		// Strictly smaller blast radius, but the union hazard itself stands —
+		// keep this gate.) (The observed post-match crash family turned out to
+		// be the uninitialised netsnap ring, fixed in chrInit — but this union
+		// hazard is real and closed here.) All wire bytes were already consumed
+		// into locals above, so skipping the apply keeps the stream aligned.
 		if (prop && prop->chr && prop->type != PROPTYPE_CHR) {
 			static u32 s_typewarn_tick = 0xffffffffu;
 			if (g_NetTick != s_typewarn_tick) {

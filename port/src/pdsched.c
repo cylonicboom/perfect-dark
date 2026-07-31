@@ -274,13 +274,16 @@ void schedAudioFrame(OSSched *sc)
 		}
 
 		for (i = 0; i < numpasses; i++) {
-			// Skip synthesis entirely while the output queue is already at
-			// its push limit — audioEndFrame would drop the freshly-mixed
-			// samples on the floor anyway (the queueLimit check in audio.c).
-			if (audioGetQueueLimit() > 0 && audioGetSamplesBuffered() >= audioGetQueueLimit()) {
-				break;
-			}
-
+			// NOTE: an earlier version skipped amgrFrame entirely while the
+			// output queue was at its push limit ("audioEndFrame would drop
+			// the samples anyway"). That was WRONG: amgrFrame also advances
+			// the SEQUENCER — new sound starts, envelope events, voice
+			// allocation. The old behaviour was synthesize-and-drop, which
+			// keeps event processing alive; skipping the whole call made
+			// freshly-started sounds (sim gunfire especially) late or lost
+			// and produced crackle whenever the queue hovered at its limit
+			// (user-reported 2026-07-31). The clamp above is the real
+			// hitch-amplification fix; the queue gate is retired.
 			amgrFrame();
 			audioEndFrame();
 		}

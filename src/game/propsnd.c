@@ -667,9 +667,24 @@ s16 psCreate(struct pschannel *channel, struct prop *prop, s16 soundnum, s16 pad
 	spac.packed = soundnum;
 
 	if (channel == NULL) {
+#ifndef PLATFORM_N64
+		// The N64's global polyphony guard was 12 — sized for a 20-sound
+		// mixer. The port mixes 64 (SND_MAX_SOUNDS) with oldest-steal, but
+		// this gate was never raised, so 32 armed sims opening fire pinned
+		// g_SndNumPlaying above 12 and EVERY positional sound (sim gunfire,
+		// explosions) was refused at the door while the battle raged —
+		// "weapon firing sounds die" (user repro 2026-07-31; ricochets
+		// survived because they don't route through psCreate). 48 leaves
+		// 16 sounds of headroom under the mixer cap for UI/music-adjacent
+		// starts; the mixer's own steal handles anything past that.
+		if (type != PSTYPE_FOOTSTEP && g_SndNumPlaying > 48) {
+			return -1;
+		}
+#else
 		if (type != PSTYPE_FOOTSTEP && g_SndNumPlaying > 12) {
 			return -1;
 		}
+#endif
 
 		for (i = CHANNEL_HEAP_FIRST; i < CHANNELCOUNT(); i++) {
 			if (g_PsChannels[i].flags & PSFLAG_FREE) {

@@ -1135,18 +1135,65 @@ struct act_skjump {
 	/*0x50*/ f32 ground;
 };
 
+#ifndef PLATFORM_N64
+// One entry of a networked chr's client-side POSE interpolation ring
+// (chrdata.netsnaps — Combat Sim bots now; campaign NPCs once online co-op
+// lands: same model — server runs the AI, replicates state, client
+// interpolates). Populated from SVC_PROP_MOVE (netmsg.c) stamped with the local
+// receive tick; consumed every frame by netChrInterpolate (net.c), which
+// reconstructs the WHOLE facing pose (position + body yaw + aim) for one
+// consistent past instant — like Source/Quake entity interpolation — so a sim's
+// body, facing and gun all agree instead of living in different time domains
+// (the old per-packet 50% blend made a strafing/firing bot look like it had its
+// back turned). The ring is NET_SNAPSHOT_COUNT (net.h) entries long, allocated
+// lazily OUT-OF-LINE on the first recorded snapshot (netChrRecordSnapshot,
+// MEMPOOL_STAGE) so the ~512-byte buffer is only paid for by chrs a CLIENT
+// actually interpolates — servers and single-player never allocate one.
+// Generic on chrdata (not aibot) so it serves any networked chr.
+struct chrnetsnap {
+	u32 tick;            // local g_NetTick when this snapshot arrived (0 = empty)
+	struct coord pos;    // wire world position
+	f32 yrot;            // body yaw (radians)
+	f32 angleoffset;     // waist twist decoupling facing from move dir (aibot)
+	f32 aimupback;       // upper-body aim joints (gun direction)
+	f32 aimsideback;
+	f32 aimuplshoulder;
+	f32 aimuprshoulder;
+	s16 animnum;         // leg/body animation at this instant (0 = none)
+	s16 framea;          // anim frame index at this instant
+	f32 speed;           // anim playback speed at this instant
+	RoomNum rooms[8];    // wire room membership at this instant; re-registered
+	                     // TIME-ALIGNED with the interpolated (past) pos in
+	                     // netChrInterpolate, so prop->rooms and the rendered pos
+	                     // share one time domain — otherwise they disagree at room
+	                     // boundaries (ledge/doorway) and the visibility/cull gate
+	                     // misfires (sim freeze/vanish on a quick off-ledge-and-back)
+};
+
+// Fixed-layout tripwire: net.c sizes the lazily-allocated ring from this
+// struct. Growing it is allowed but deliberate — each field costs
+// NET_SNAPSHOT_COUNT copies per interpolated chr. Update this assert with any
+// intentional change.
+#ifdef __cplusplus
+static_assert(sizeof(struct chrnetsnap) == 64, "chrnetsnap layout changed - audit netChrRecordSnapshot/netChrInterpolate and the ring alloc in net.c");
+#else
+_Static_assert(sizeof(struct chrnetsnap) == 64, "chrnetsnap layout changed - audit netChrRecordSnapshot/netChrInterpolate and the ring alloc in net.c");
+#endif
+#endif
+
 // CACHE-LOCALITY REPACK (2026-07-31, port-first policy): fields are ordered by
 // per-tick heat, not by N64 offset — the full-pool census in chraTickBg and the
 // chrTick dispatch set live in the first two 64-byte lines; the act_* union
 // (hot, opaque, internals untouched) starts at a line boundary; cold script/
 // splat/conversation fields and the streaming bdlist ring sit at the tail ahead
-// of the netsnap ring. The old /*0xNNN*/ comments were N64 offsets and were
-// already wrong on the port (pointers are 8 bytes); they are gone rather than
-// stale. Hard constraints honoured (see the repack investigation record):
+// of the netsnaps ring pointer. The old /*0xNNN*/ comments were N64 offsets and
+// were already wrong on the port (pointers are 8 bytes); they are gone rather
+// than stale. Hard constraints honoured (see the repack investigation record):
 // `geo` stays one contiguous geocyl (chrUpdateGeometry exports its raw byte
 // range), `bdlist` stays one contiguous s32[60] (ring-indexed via a raw
 // pointer), both bitfield blocks move as unsplit units, the union stays
-// 8-aligned with internals verbatim, netsnap[] length stays NET_SNAPSHOT_COUNT.
+// 8-aligned with internals verbatim; the pose ring is out-of-line (struct
+// chrnetsnap above) so chrdata carries only a pointer + head.
 // g_ChrSlots is now block-zeroed at allocation (chrmgrConfigure), so field
 // order can never change which stale bytes land in a late-initialised field.
 struct chrdata {
@@ -1418,37 +1465,19 @@ struct chrdata {
 	// base-scaled bodies. chrInit resets it to 1.0. Port-only.
 	f32 groundmult;
 
-	// Client-side POSE interpolation buffer for a network-replicated chr (Combat
-	// Sim bots now; campaign NPCs once online co-op lands — same model: server
-	// runs the AI, replicates state, client interpolates). Populated from
-	// SVC_PROP_MOVE (netmsg.c) stamped with the local receive tick; consumed every
-	// frame by netChrInterpolate (net.c), which reconstructs the WHOLE facing pose
-	// (position + body yaw + aim) for one consistent past instant — like
-	// Source/Quake entity interpolation — so a sim's body, facing and gun all
-	// agree instead of living in different time domains (the old per-packet 50%
-	// blend made a strafing/firing bot look like it had its back turned). Length
-	// must equal NET_SNAPSHOT_COUNT (net.h). Generic on chrdata (not aibot) so it
-	// serves any networked chr.
-	struct {
-		u32 tick;            // local g_NetTick when this snapshot arrived (0 = empty)
-		struct coord pos;    // wire world position
-		f32 yrot;            // body yaw (radians)
-		f32 angleoffset;     // waist twist decoupling facing from move dir (aibot)
-		f32 aimupback;       // upper-body aim joints (gun direction)
-		f32 aimsideback;
-		f32 aimuplshoulder;
-		f32 aimuprshoulder;
-		s16 animnum;         // leg/body animation at this instant (0 = none)
-		s16 framea;          // anim frame index at this instant
-		f32 speed;           // anim playback speed at this instant
-		RoomNum rooms[8];    // wire room membership at this instant; re-registered
-		                     // TIME-ALIGNED with the interpolated (past) pos in
-		                     // netChrInterpolate, so prop->rooms and the rendered pos
-		                     // share one time domain — otherwise they disagree at room
-		                     // boundaries (ledge/doorway) and the visibility/cull gate
-		                     // misfires (sim freeze/vanish on a quick off-ledge-and-back)
-	} netsnap[8];
-	u32 netsnaphead;         // index of the newest netsnap[] entry
+	// Client-side pose-interpolation ring — full semantics on struct chrnetsnap
+	// above chrdata. NULL until netChrRecordSnapshot lazily allocates
+	// NET_SNAPSHOT_COUNT entries from MEMPOOL_STAGE (clients only — servers and
+	// single-player never record snapshots, so they never pay for the ring).
+	// chrInit (chr.c) KEEPS a recycled slot's this-stage ring and just empties
+	// it (tick = 0); the stage-pool rewind frees all rings wholesale, and
+	// chrmgrConfigure's block-zero of g_ChrSlots at stage load nulls the
+	// pointers, so a stale cross-stage ring pointer cannot exist. Moved
+	// out-of-line 2026-07-31: the 516-byte inline ring dominated
+	// sizeof(chrdata) (~1496 -> ~984) on every machine while only
+	// client-interpolated chrs use it.
+	struct chrnetsnap *netsnaps;
+	u32 netsnaphead;         // index of the newest netsnaps[] entry (meaningless while netsnaps == NULL)
 #endif
 };
 

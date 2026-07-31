@@ -109,6 +109,7 @@ struct GpuFb {
 struct PipelineKey {
     struct ShaderProgram *prg;
     uint32_t flags; // blend(2) | test(1)<<2 | write(1)<<3 | func(2)<<4 | bias(1)<<6 | fill_line(1)<<7 | has_depth(1)<<8
+                    // | cached(1)<<9 | cull(2)<<10 | front_ccw(1)<<12 | sample_bits(2)<<13 | packed(1)<<15
     uint32_t color_fmt;
 
     bool operator==(const PipelineKey &o) const {
@@ -250,6 +251,7 @@ static struct {
     // display-list cache replay state
     uint32_t cache_buf;          // bound cached buffer id (cache_replay_begin), 0 = none
     uint32_t cache_idx_buf;      // bound cached index buffer id (cache_bind_index_buffer, A5), 0 = none
+    bool cache_packed;           // active entry's layout (cache_set_packed, A5 half 2)
     uint8_t cull_mode;           // cache_set_cull: 0 none, 1 back, 2 front (cached draws only)
     bool front_ccw;
     SDL_GPUTexture *palette_tex; // bound shade palette (cache_bind_palette), NULL = none
@@ -723,12 +725,17 @@ static SDL_GPUGraphicsPipeline *pipeline_create(const PipelineKey &k) {
     const uint32_t cull = (k.flags >> 10) & 3;
     const bool front_ccw = (k.flags >> 12) & 1;
     const uint32_t msaa = 1u << ((k.flags >> 13) & 3);
+    // A5 half 2: packed cached layout — fog/grayscale/input attributes stored
+    // as one normalized u8x4 slot each, fed to the same float shader inputs
+    // via UBYTE4_NORM (Vulkan/D3D12/Metal all allow the format to carry more
+    // components than the shader input consumes, e.g. u8x4 into a vec3).
+    const bool packed = cached && ((k.flags >> 15) & 1);
 
     // cached vertex layout has a trailing aShadeIdx float (palette index)
     SDL_GPUVertexBufferDescription vbd;
     SDL_zero(vbd);
     vbd.slot = 0;
-    vbd.pitch = ((Uint32)prg->num_floats + (cached ? 1 : 0)) * sizeof(float);
+    vbd.pitch = ((Uint32)(packed ? prg->num_floats_packed : prg->num_floats) + (cached ? 1 : 0)) * sizeof(float);
     vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
     SDL_GPUVertexAttribute attrs[17];
@@ -738,6 +745,12 @@ static SDL_GPUGraphicsPipeline *pipeline_create(const PipelineKey &k) {
         SDL_zero(attrs[i]);
         attrs[i].location = (Uint32)i;
         attrs[i].buffer_slot = 0;
+        if (packed && prg->attrib_packed[i]) {
+            attrs[i].format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM;
+            attrs[i].offset = off;
+            off += sizeof(float);
+            continue;
+        }
         switch (prg->attrib_sizes[i]) {
             case 1: attrs[i].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT; break;
             case 2: attrs[i].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; break;
@@ -860,7 +873,8 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = 
               ((uint32_t)cached << 9) |
               (cull << 10) |
               ((uint32_t)front_ccw << 12) |
-              (sample_bits << 13);
+              (sample_bits << 13) |
+              ((uint32_t)(cached && st.cache_packed) << 15); // A5 half 2 packed layout
     k.color_fmt = (uint32_t)gpu.fb_format;
 
     auto it = pipeline_cache.find(k);
@@ -2606,11 +2620,18 @@ static void gfx_sdlgpu_cache_draw_indexed(struct ShaderProgram *prg, size_t base
     SDL_DrawGPUIndexedPrimitives(st.pass, (Uint32)num_indices, 1, (Uint32)first_index, 0, 0);
 }
 
+static void gfx_sdlgpu_cache_set_packed(int packed) {
+    // A5 half 2: the active entry's vertex layout. Feeds the pipeline key
+    // (bit 15) + vertex-input build in pipeline_create; set per replay.
+    st.cache_packed = packed != 0;
+}
+
 static void gfx_sdlgpu_cache_replay_end(void) {
     // mirror GL: subsequent immediate draws are uncull-ed and re-bind their
     // own vertex buffer per draw
     st.cache_buf = 0;
     st.cache_idx_buf = 0; // A5
+    st.cache_packed = false; // A5 half 2 (immediate pipelines ignore it, but keep it clean)
     st.cull_mode = 0;
     st.front_ccw = true;
 }
@@ -3722,6 +3743,7 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_cache_delete_index_buffer,
     gfx_sdlgpu_cache_bind_index_buffer,
     gfx_sdlgpu_cache_draw_indexed,
+    gfx_sdlgpu_cache_set_packed, // A5 half 2 packed cached layout
 };
 
 #endif // USE_SDLGPU

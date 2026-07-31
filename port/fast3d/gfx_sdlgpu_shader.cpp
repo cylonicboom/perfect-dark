@@ -1095,27 +1095,40 @@ bool gfx_sdlgpu_shader_compile(SDL_GPUDevice *device, uint64_t shader_id0, uint3
     prg->tex_binding[1] = (int8_t)tex_binding[1];
 
     size_t cnt = 0;
+    prg->attrib_packed[cnt] = 0;
     prg->attrib_sizes[cnt++] = 4; // aVtxPos
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
+            prg->attrib_packed[cnt] = 0;
             prg->attrib_sizes[cnt++] = 2;
             for (int j = 0; j < 2; j++) {
                 if (cc_features.clamp[i][j]) {
+                    prg->attrib_packed[cnt] = 0;
                     prg->attrib_sizes[cnt++] = 1;
                 }
             }
         }
     }
     if (cc_features.opt_fog) {
+        prg->attrib_packed[cnt] = 1; // A5 half 2: u8x4 in the packed cached layout
         prg->attrib_sizes[cnt++] = 4;
     }
     if (cc_features.opt_grayscale) {
+        prg->attrib_packed[cnt] = 1;
         prg->attrib_sizes[cnt++] = 4;
     }
     for (int i = 0; i < cc_features.num_inputs; i++) {
+        prg->attrib_packed[cnt] = 1;
         prg->attrib_sizes[cnt++] = cc_features.opt_alpha ? 4 : 3;
     }
     prg->num_attribs = (uint8_t)cnt;
+    {
+        size_t nf_packed = 0;
+        for (size_t i = 0; i < cnt; i++) {
+            nf_packed += prg->attrib_packed[i] ? 1 : prg->attrib_sizes[i];
+        }
+        prg->num_floats_packed = (uint8_t)nf_packed;
+    }
 
     return true;
 }

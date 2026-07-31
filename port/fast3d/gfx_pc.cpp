@@ -603,6 +603,12 @@ struct DlCacheEntry {
     uint32_t index_buffer_id;
     uint32_t idx_verts_in;  // source vertices staged (3 * tris), for dedup-ratio stats
     uint32_t idx_verts_out; // unique vertices actually uploaded
+    // A5 half 2: recorded with the packed cached layout (fog/grayscale/input
+    // attributes as one normalized u8x4 slot each). Decided per record from
+    // g_DlCachePacked + backend capability; the entry remembers it so a live
+    // toggle flip only affects new records (the `indexed` pattern), and the
+    // replay tells the backend via cache_set_packed.
+    bool packed;
 };
 
 static std::unordered_map<const void*, DlCacheEntry> g_DlCache;
@@ -651,6 +657,17 @@ static bool g_DlCachePaletteEnabled = true;
 // Non-static (plain global, the gfx_mirror_mode pattern): console wiring
 // lands separately.
 int32_t g_DlCacheIndexed = 1;
+// A5 half 2: record entries with the packed cached layout (fog/grayscale/
+// combiner-input attributes as one normalized u8x4 slot instead of 3-4
+// floats — every packed source is u8-derived, so the pack is LOSSLESS).
+// Typical room vertex (pos + uv + fog + 1 input) shrinks 60 -> 40 bytes
+// (with the shade-idx trailer), on top of the indexed dedup. Same rules as
+// g_DlCacheIndexed: per-entry latch, live flip affects new records only,
+// backends without cache_set_packed record all-float. /dlcache packed.
+int32_t g_DlCachePacked = 1;
+// Layout latch for the entry currently being recorded: a mid-record toggle
+// flip must not tear the staging layout.
+static bool g_DlCacheRecPacked;
 static uint32_t g_DlCacheFrameSegments; // segments replayed last frame
 static uint32_t g_DlCacheFrameTris;     // tris replayed last frame
 static uint32_t g_DlCacheFrameDraws;    // cache_draw calls issued last frame
@@ -2747,16 +2764,61 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
 
         const size_t per_vtx = (buf_vbo_len - rec_tri_start) / 3;
+        // A5 half 2 (packed layout): fog / grayscale / combiner inputs are
+        // stored as one normalized-u8x4 slot each instead of 3-4 floats. All
+        // packed sources came out of u8s (RGBA structs, v->fog) divided by
+        // 255, so round-tripping through u8 is exact. The tex-coord float
+        // count is whatever remains of the immediate layout once the known
+        // tails are subtracted (uv + clamp composition varies per shader).
+        const size_t tail_floats = (use_fog ? 4u : 0u) + (use_grayscale ? 4u : 0u)
+                + (size_t)num_inputs * (use_alpha ? 4u : 3u);
+        const size_t tex_floats = per_vtx - 4 - tail_floats;
+        // u8x4 packer: n source floats in [0,1] -> one float-sized slot
+        // holding RGBA bytes in ascending byte order (little-endian hosts;
+        // matches GL_UNSIGNED_BYTE/UBYTE4_NORM component order). The raw bit
+        // pattern may be a NaN — it is only ever memcpy'd/memcmp'd (the
+        // dedup hashes raw bytes), never used arithmetically.
+        auto packUnorm8x4 = [](const float* f, int n) -> float {
+            uint32_t u = (n < 4) ? 0xFF000000u : 0u; // opaque w for vec3 inputs
+            for (int c = 0; c < n; c++) {
+                int b = (int)(f[c] * 255.0f + 0.5f);
+                if (b < 0) { b = 0; } else if (b > 255) { b = 255; }
+                u |= (uint32_t)b << (c * 8);
+            }
+            float out;
+            memcpy(&out, &u, sizeof(out));
+            return out;
+        };
         for (int i = 0; i < 3; i++) {
             const float* src = &buf_vbo[rec_tri_start + i * per_vtx];
             g_DlCacheStaging.push_back(v_arr[i]->ox);
             g_DlCacheStaging.push_back(v_arr[i]->oy);
             g_DlCacheStaging.push_back(v_arr[i]->oz);
             g_DlCacheStaging.push_back(1.0f);
-            for (size_t f = 4; f < per_vtx; f++) {
-                g_DlCacheStaging.push_back(src[f]);
+            if (!g_DlCacheRecPacked) {
+                for (size_t f = 4; f < per_vtx; f++) {
+                    g_DlCacheStaging.push_back(src[f]);
+                }
+            } else {
+                const float* p = src + 4;
+                for (size_t f = 0; f < tex_floats; f++) {
+                    g_DlCacheStaging.push_back(*p++);
+                }
+                if (use_fog) {
+                    g_DlCacheStaging.push_back(packUnorm8x4(p, 4));
+                    p += 4;
+                }
+                if (use_grayscale) {
+                    g_DlCacheStaging.push_back(packUnorm8x4(p, 4));
+                    p += 4;
+                }
+                for (int j = 0; j < num_inputs; j++) {
+                    const int n = use_alpha ? 4 : 3;
+                    g_DlCacheStaging.push_back(packUnorm8x4(p, n));
+                    p += n;
+                }
             }
-            // Trailing palette colour index (cached stride = buf num_floats + 1).
+            // Trailing palette colour index (cached stride = layout floats + 1).
             g_DlCacheStaging.push_back(v_arr[i]->colour_index);
         }
         g_DlCacheSegTris++;
@@ -3557,6 +3619,8 @@ static void dlcacheBeginRecord(const void* key) {
     e.index_buffer_id = 0;
     e.idx_verts_in = 0;
     e.idx_verts_out = 0;
+    e.packed = g_DlCachePacked && gfx_rapi->cache_set_packed != NULL;
+    g_DlCacheRecPacked = e.packed;
     g_DlCacheCur = &e;
     g_DlCacheRecording = true;
     g_DlCacheAbort = false;
@@ -3777,6 +3841,12 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
     // We drive GL directly during replay; disable the pre-replay shader's attribs.
     gfx_rapi->unload_shader(rendering_state.shader_program);
     gfx_rapi->cache_replay_begin(e->buffer_id);
+    // A5 half 2: tell the backend which vertex layout this entry was recorded
+    // with (packed u8x4 colours vs all-float) so strides/attribute formats
+    // match. Set every replay — entries of both layouts can coexist.
+    if (gfx_rapi->cache_set_packed != NULL) {
+        gfx_rapi->cache_set_packed(e->packed ? 1 : 0);
+    }
 
     // A5: indexed entries bind their index buffer for the whole replay; draws
     // then reference each RUN's deduped vertex range (idx_base_float) with
@@ -4174,6 +4244,17 @@ extern "C" void gfx_dlcache_get_index_stats(uint32_t* verts_in, uint32_t* verts_
     if (verts_in) *verts_in = vin;
     if (verts_out) *verts_out = vout;
     if (indexed_entries) *indexed_entries = n;
+}
+
+// A5 half 2: how many ready entries were recorded with the packed layout.
+extern "C" void gfx_dlcache_get_packed_stats(uint32_t* packed_entries) {
+    uint32_t n = 0;
+    for (const auto& kv : g_DlCache) {
+        if (kv.second.ready && kv.second.packed) {
+            n++;
+        }
+    }
+    if (packed_entries) *packed_entries = n;
 }
 
 static void gfx_run_dl(Gfx* cmd) {

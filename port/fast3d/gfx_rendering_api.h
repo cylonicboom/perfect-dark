@@ -159,6 +159,19 @@ struct GfxRenderingAPI {
 	// base_float, exactly as cache_draw.
 	void (*cache_draw_indexed)(struct ShaderProgram* prg, size_t base_float, size_t first_index,
 	                           size_t num_indices);
+
+	// --- Display-list cache packed attributes (A5 half 2, port-only) ---
+	// Nullable: a backend that leaves it NULL makes gfx_pc record every entry
+	// with the legacy all-float layout. When implemented, gfx_pc may record
+	// entries in the PACKED cached layout: the fog, grayscale and combiner-
+	// input attributes are stored as one normalized u8x4 (RGBA in ascending
+	// byte order) occupying a single float-sized slot each; position, UVs,
+	// clamp floats and the trailing aShadeIdx stay float. All cache float
+	// offsets (base_float etc.) remain in float-slot units. gfx_pc calls this
+	// once per replay (after cache_replay_begin) with the entry's layout so
+	// the backend sizes strides/attribute formats accordingly; 0 restores the
+	// all-float interpretation. Lossless: every packed source is u8-derived.
+	void (*cache_set_packed)(int packed);
 };
 
 #endif

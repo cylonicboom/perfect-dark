@@ -7242,13 +7242,17 @@ s32 netConsoleCommand(const char *line)
 					segments, tris, gfx_dlcache_get_frame_draws(), gfx_dlcache_get_gap_tris());
 			{
 				extern void gfx_dlcache_get_index_stats(u32 *verts_in, u32 *verts_out, u32 *indexed_entries);
+				extern void gfx_dlcache_get_packed_stats(u32 *packed_entries);
 				extern s32 g_DlCacheIndexed;
-				u32 vin = 0, vout = 0, ients = 0;
+				extern s32 g_DlCachePacked;
+				u32 vin = 0, vout = 0, ients = 0, pents = 0;
 				gfx_dlcache_get_index_stats(&vin, &vout, &ients);
+				gfx_dlcache_get_packed_stats(&pents);
 				if (ients || !g_DlCacheIndexed) {
-					sysLogPrintf(LOG_CHAT, "DLCACHE: indexed=%s entries=%u verts %u->%u (%.1fx dedup)",
+					sysLogPrintf(LOG_CHAT, "DLCACHE: indexed=%s entries=%u verts %u->%u (%.1fx dedup)  packed=%s entries=%u",
 							g_DlCacheIndexed ? "ON" : "OFF", ients, vin, vout,
-							vout ? (f32)vin / (f32)vout : 0.0f);
+							vout ? (f32)vin / (f32)vout : 0.0f,
+							g_DlCachePacked ? "ON" : "OFF", pents);
 				}
 			}
 			if (visdrawn || visculled || visabsorbed) {
@@ -7272,6 +7276,16 @@ s32 netConsoleCommand(const char *line)
 			g_DlCacheIndexed = !g_DlCacheIndexed;
 			sysLogPrintf(LOG_CHAT, "DLCACHE: indexed recording %s (takes effect on new records; /dlcache clear to re-record)",
 					g_DlCacheIndexed ? "ON" : "OFF");
+		} else if (strcmp(arg, "packed") == 0) {
+			// /dlcache packed — toggle the packed cached vertex layout
+			// (fog/grayscale/colour inputs as normalized u8x4; lossless) for
+			// newly recorded entries. Escape hatch if a driver misreads the
+			// packed attribute formats (geometry/colours wrong ONLY with
+			// /dlcache on): flip this + /dlcache clear.
+			extern s32 g_DlCachePacked;
+			g_DlCachePacked = !g_DlCachePacked;
+			sysLogPrintf(LOG_CHAT, "DLCACHE: packed recording %s (takes effect on new records; /dlcache clear to re-record)",
+					g_DlCachePacked ? "ON" : "OFF");
 		} else if (strcmp(arg, "clear") == 0) {
 			gfx_dlcache_clear();
 			sysLogPrintf(LOG_CHAT, "DLCACHE: cleared all cached buffers");

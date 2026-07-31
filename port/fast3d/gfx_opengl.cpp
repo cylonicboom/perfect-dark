@@ -33,6 +33,13 @@ struct ShaderProgram {
     GLint attrib_locations[16];
     uint8_t attrib_sizes[16];
     uint8_t num_attribs;
+    // A5 half 2 (cached PACKED layout only — the immediate path is always
+    // all-float): 1 = this attribute is stored as one normalized u8x4 slot
+    // (fog / grayscale / combiner inputs). num_floats_packed is the per-
+    // vertex float-slot count of that layout (excluding the aShadeIdx
+    // trailer), mirroring num_floats for the all-float one.
+    uint8_t attrib_packed[16];
+    uint8_t num_floats_packed;
     GLint frame_count_location;
     GLint noise_scale_location;
     GLint three_point_filter_locations[2];
@@ -1295,6 +1302,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     struct ShaderProgram* prg = &shader_program_pool[make_pair(shader_id0, shader_id1)];
     prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, "aVtxPos");
     prg->attrib_sizes[cnt] = 4;
+    prg->attrib_packed[cnt] = 0;
     ++cnt;
 
     for (int i = 0; i < 2; i++) {
@@ -1303,6 +1311,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             sprintf(name, "aTexCoord%d", i);
             prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, name);
             prg->attrib_sizes[cnt] = 2;
+            prg->attrib_packed[cnt] = 0;
             ++cnt;
 
             for (int j = 0; j < 2; j++) {
@@ -1310,6 +1319,7 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
                     sprintf(name, "aTexClamp%s%d", j == 0 ? "S" : "T", i);
                     prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, name);
                     prg->attrib_sizes[cnt] = 1;
+                    prg->attrib_packed[cnt] = 0;
                     ++cnt;
                 }
             }
@@ -1319,12 +1329,14 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     if (cc_features.opt_fog) {
         prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, "aFog");
         prg->attrib_sizes[cnt] = 4;
+        prg->attrib_packed[cnt] = 1;
         ++cnt;
     }
 
     if (cc_features.opt_grayscale) {
         prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, "aGrayscaleColor");
         prg->attrib_sizes[cnt] = 4;
+        prg->attrib_packed[cnt] = 1;
         ++cnt;
     }
 
@@ -1333,7 +1345,18 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         sprintf(name, "aInput%d", i + 1);
         prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, name);
         prg->attrib_sizes[cnt] = cc_features.opt_alpha ? 4 : 3;
+        prg->attrib_packed[cnt] = 1;
         ++cnt;
+    }
+
+    // A5 half 2: float-slot count of the packed cached layout (each packed
+    // attribute collapses to one slot).
+    {
+        size_t nf_packed = 0;
+        for (size_t i = 0; i < cnt; i++) {
+            nf_packed += prg->attrib_packed[i] ? 1 : prg->attrib_sizes[i];
+        }
+        prg->num_floats_packed = (uint8_t)nf_packed;
     }
 
     prg->opengl_program_id = shader_program;
@@ -1856,22 +1879,39 @@ static void gfx_opengl_cache_bind_palette(uint32_t id, int count) {
 // palette colour index) after the normal layout, so the stride is
 // num_floats + 1. The vertex shader applies uMVP and (when enabled) the live
 // palette lookup. Shared by the non-indexed and indexed (A5) draws.
+static int s_cache_packed = 0; // active entry's layout (cache_set_packed, per replay)
+
 static void gfx_opengl_cache_setup_attribs(struct ShaderProgram* prg, size_t base_float) {
-    const size_t stride = (prg->num_floats + 1) * sizeof(float);
+    // A5 half 2: in the packed layout, fog/grayscale/input attributes are one
+    // normalized u8x4 slot each — fed to the same float shader inputs via
+    // GL_UNSIGNED_BYTE + normalize (core since GL 2.0 / ES 2.0), so the
+    // shaders themselves are layout-agnostic.
+    const size_t nf = s_cache_packed ? prg->num_floats_packed : prg->num_floats;
+    const size_t stride = (nf + 1) * sizeof(float);
     size_t pos = base_float;
     for (int i = 0; i < prg->num_attribs; i++) {
+        const bool packed = s_cache_packed && prg->attrib_packed[i];
         if (prg->attrib_locations[i] >= 0) {
             glEnableVertexAttribArray(prg->attrib_locations[i]);
-            glVertexAttribPointer(prg->attrib_locations[i], prg->attrib_sizes[i], GL_FLOAT, GL_FALSE,
-                                  stride, (void*)(pos * sizeof(float)));
+            if (packed) {
+                glVertexAttribPointer(prg->attrib_locations[i], 4, GL_UNSIGNED_BYTE, GL_TRUE,
+                                      stride, (void*)(pos * sizeof(float)));
+            } else {
+                glVertexAttribPointer(prg->attrib_locations[i], prg->attrib_sizes[i], GL_FLOAT, GL_FALSE,
+                                      stride, (void*)(pos * sizeof(float)));
+            }
         }
-        pos += prg->attrib_sizes[i];
+        pos += packed ? 1 : prg->attrib_sizes[i];
     }
     if (prg->shade_idx_location >= 0) {
         glEnableVertexAttribArray(prg->shade_idx_location);
         glVertexAttribPointer(prg->shade_idx_location, 1, GL_FLOAT, GL_FALSE, stride,
-                              (void*)((base_float + prg->num_floats) * sizeof(float)));
+                              (void*)((base_float + nf) * sizeof(float)));
     }
+}
+
+static void gfx_opengl_cache_set_packed(int packed) {
+    s_cache_packed = packed;
 }
 
 static void gfx_opengl_cache_draw(struct ShaderProgram* prg, size_t base_float, size_t num_tris) {
@@ -1950,6 +1990,7 @@ static void gfx_opengl_cache_replay_end(void) {
     glDisable(GL_CULL_FACE);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    s_cache_packed = 0; // belt-and-braces: every replay sets it explicitly
 }
 
 typedef void (APIENTRY *DEBUGPROC)(GLenum source,
@@ -2583,4 +2624,5 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_cache_delete_index_buffer,
     gfx_opengl_cache_bind_index_buffer,
     gfx_opengl_cache_draw_indexed,
+    gfx_opengl_cache_set_packed, // A5 half 2 packed cached layout
 };

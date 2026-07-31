@@ -32,6 +32,12 @@ struct ShaderProgram {
     uint8_t num_floats;       // floats per vertex (immediate vertex layout)
     uint8_t num_attribs;
     uint8_t attrib_sizes[16]; // per-attribute float counts (1/2/3/4), in buffer order
+    // A5 half 2 (packed CACHED layout only): 1 = this attribute is stored as
+    // one normalized u8x4 slot (fog / grayscale / combiner inputs) there.
+    // num_floats_packed = per-vertex float-slot count of that layout
+    // (excluding the aShadeIdx trailer), mirroring num_floats.
+    uint8_t attrib_packed[16];
+    uint8_t num_floats_packed;
     uint8_t fs_sampler_count; // 0..2 compact fragment sampler bindings
     int8_t tex_binding[2];    // FS sampler binding for uTex0/uTex1, -1 if unused
 };

@@ -76,6 +76,11 @@ peers).
   post-transform cache) × oversized attributes (colour as 4 floats, constant fog rgb per
   vertex, full-float UVs) ≈ **6× vertex bandwidth**. Index buffer first (mechanical; wireframe
   cheat's `gl_VertexID%3` needs the legacy fallback), attribute packing second. **High / med.**
+  **DONE (both halves, same-day):** indexing = `/dlcache indexed` (per-run bit-equality dedup,
+  u32 indices, nullable `cache_*_index_*` rapi entries); packing = `/dlcache packed`
+  (fog/grayscale/inputs as normalized u8x4 — lossless, all u8-sourced; per-entry layout latch,
+  `cache_set_packed` rapi entry, SDL_GPU pipeline-key bit 15; UVs/pos stay float). Typical
+  vertex 60 → 40 B before dedup. Compile-verified, runtime PENDING.
 - **A6. Room palette texture reallocated per frame** (`gfx_pc.cpp:3798-3805` →
   `gfx_opengl.cpp:1200-1212`): `glTexImage2D` respecify + 4 param sets per dynamically-lit room
   per frame → allocate once, `glTexSubImage2D` per refresh. Verify the SDL_GPU twin

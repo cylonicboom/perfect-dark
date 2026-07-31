@@ -2318,6 +2318,55 @@ static int l_pd_buttons_pressed(lua_State *L)
  * special-cases its model scale). extrascale: 256 = full size; omitted uses
  * the per-kind default (copter 64 = quarter, interceptor 256 — its modeldef
  * is natively ~0.1 scale, don't shrink it further). Solo only. */
+/* pd.headshot_boost(on) -> bool. Chaos Birthday party: headshots land at x10
+ * and every head hit emits a "headshot" (chrnum, attackerplayernum) event. */
+static int l_pd_headshot_boost(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHeadshotBoost(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.text_scramble(on) -> bool. Text overload: every letter becomes a random
+ * other letter (stable per string; %-format specs preserved). */
+static int l_pd_text_scramble(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaTextScramble(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.sens_boost(mult) -> bool. Overly sensitive: multiply the user's mouse +
+ * stick sensitivity (config sliders untouched). 1 or no arg restores. */
+static int l_pd_sens_boost(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaSensBoost((f32)luaL_optnumber(L, 1, 1.0)) != 0);
+	return 1;
+}
+
+/* pd.fps_cap(fps) -> bool. OG mode: hard render-FPS override; the sim's
+ * variable tick soaks the low rate like the N64 did. 0 or no arg restores. */
+static int l_pd_fps_cap(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaFpsCap((s32)luaL_optinteger(L, 1, 0)) != 0);
+	return 1;
+}
+
+/* pd.gangsta(on) -> bool. Gangster: force the close-range sideways-pistol
+ * viewmodel pose on permanently (rides the vanilla gangsta animation). */
+static int l_pd_gangsta(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaGangsta(lua_toboolean(L, 1)) != 0);
+	return 1;
+}
+
+/* pd.internal_res(height) -> bool. OG mode: TRUE internal render resolution —
+ * the frame renders at this height and NEAREST-upscales to the window.
+ * 0 or no arg restores (the user's own Video setting stays untouched). */
+static int l_pd_internal_res(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaInternalRes((s32)luaL_optinteger(L, 1, 0)) != 0);
+	return 1;
+}
+
 static int l_pd_spawn_chopper(lua_State *L)
 {
 	lua_pushboolean(L, chraiLuaSpawnChopper(
@@ -3847,6 +3896,12 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_buttons);       lua_setfield(L, -2, "buttons");
 	lua_pushcfunction(L, l_pd_buttons_pressed); lua_setfield(L, -2, "buttons_pressed");
 	lua_pushcfunction(L, l_pd_spawn_chopper); lua_setfield(L, -2, "spawn_chopper");
+	lua_pushcfunction(L, l_pd_headshot_boost); lua_setfield(L, -2, "headshot_boost");
+	lua_pushcfunction(L, l_pd_text_scramble); lua_setfield(L, -2, "text_scramble");
+	lua_pushcfunction(L, l_pd_sens_boost);    lua_setfield(L, -2, "sens_boost");
+	lua_pushcfunction(L, l_pd_fps_cap);       lua_setfield(L, -2, "fps_cap");
+	lua_pushcfunction(L, l_pd_gangsta);       lua_setfield(L, -2, "gangsta");
+	lua_pushcfunction(L, l_pd_internal_res);  lua_setfield(L, -2, "internal_res");
 	lua_pushcfunction(L, l_pd_player_freeze); lua_setfield(L, -2, "player_freeze");
 	lua_pushcfunction(L, l_pd_chr_freeze);    lua_setfield(L, -2, "chr_freeze");
 	lua_pushcfunction(L, l_pd_no_drops);      lua_setfield(L, -2, "no_drops");
@@ -4092,6 +4147,14 @@ void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount)
 	a[1] = attackerplayernum;
 	a[2] = amount;
 	luaEventDispatchInts("damage", 3, a);
+}
+
+void luaEmitHeadshot(s32 chrnum, s32 attackerplayernum)
+{
+	lua_Integer a[2];
+	a[0] = chrnum;
+	a[1] = attackerplayernum;
+	luaEventDispatchInts("headshot", 2, a);
 }
 
 void luaEmitSpawn(s32 chrnum)

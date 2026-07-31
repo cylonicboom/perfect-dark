@@ -473,7 +473,7 @@ char g_ChaosLangOverrideStr[64] = { 0 };
 // through untransformed (both transforms expand text, so the slots leave
 // headroom; a pathological all-short-word string may truncate at the slot
 // cap rather than overflow).
-s32 g_ChaosUwuMode = 0; // 0 off, 1 uwu, 2 pig latin
+s32 g_ChaosUwuMode = 0; // 0 off, 1 uwu, 2 pig latin, 3 buttsbot, 4 scramble
 
 #define UWU_BUFS 32
 #define UWU_LEN  256
@@ -761,6 +761,69 @@ static char *langButtsify(char *src)
 // chaos's own Lua strings never touch langGet at all), so in-game text needs
 // the transform applied at its own choke points. Returns src unchanged when
 // the mode is off.
+// Chaos "Text overload" (pd.text_scramble, mode 4): every letter becomes a
+// random other letter (case preserved, %-specs verbatim, punctuation/digits
+// untouched). The randomness is seeded from the STRING'S OWN BYTES, not a
+// per-call RNG: menus re-fetch their text every draw, so per-call randomness
+// would strobe a new scramble every frame. Same string -> same garbage.
+static char *langScramble(char *src)
+{
+	char *dst;
+	s32 cap;
+	s32 i;
+	s32 o;
+	u32 seed;
+
+	if (src == NULL || src[0] == '\0') {
+		return src;
+	}
+
+	dst = langChaosGetBuf(src, &cap);
+
+	if (dst == NULL) {
+		return src; // absurdly long — leave untouched
+	}
+
+	seed = 2166136261u; // FNV-1a over the source bytes
+	for (i = 0; src[i]; i++) {
+		seed = (seed ^ (u8)src[i]) * 16777619u;
+	}
+
+	o = 0;
+
+	for (i = 0; src[i] && o < cap - 4; i++) {
+		char c = src[i];
+
+		if (c == '%') {
+			// copy the whole format spec verbatim: flags/width, then stop
+			// after the first letter (or %%)
+			dst[o++] = '%';
+			while (src[i + 1] && o < cap - 2) {
+				char n = src[i + 1];
+				dst[o++] = n;
+				i++;
+				if ((n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') || n == '%') {
+					break;
+				}
+			}
+			continue;
+		}
+
+		if (c >= 'a' && c <= 'z') {
+			seed = seed * 1664525u + 1013904223u;
+			dst[o++] = 'a' + (seed >> 16) % 26;
+		} else if (c >= 'A' && c <= 'Z') {
+			seed = seed * 1664525u + 1013904223u;
+			dst[o++] = 'A' + (seed >> 16) % 26;
+		} else {
+			dst[o++] = c;
+		}
+	}
+
+	dst[o] = '\0';
+	return dst;
+}
+
 char *langChaosTransform(char *src)
 {
 	if (g_ChaosUwuMode == 1) {
@@ -771,6 +834,9 @@ char *langChaosTransform(char *src)
 	}
 	if (g_ChaosUwuMode == 3) {
 		return langButtsify(src);
+	}
+	if (g_ChaosUwuMode == 4) {
+		return langScramble(src);
 	}
 	return src;
 }

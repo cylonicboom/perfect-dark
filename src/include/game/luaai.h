@@ -158,6 +158,7 @@ void luaEmitPunch(s32 weaponnum, s32 playernum);
 void luaEmitAlert(s32 chrnum, s32 playernum);
 void luaEmitKill(s32 chrnum, s32 killerplayernum);
 void luaEmitDamage(s32 chrnum, s32 attackerplayernum, s32 amount);
+void luaEmitHeadshot(s32 chrnum, s32 attackerplayernum); /* chaos Birthday party (chrDamage head hits) */
 void luaEmitSpawn(s32 chrnum);
 void luaEmitRoomEnter(s32 room, s32 fromroom);
 /* Archipelago check-detection emitters (port-only; no-op if nothing listens). */
@@ -467,6 +468,12 @@ s32 chraiLuaDoubleShots(s32 on);              /* every fire event takes twice th
 s32 chraiLuaQuadTop(s32 on);                  /* second pair of viewmodel guns at the top of the screen */
 u32 chraiLuaButtons(s32 pressed);             /* raw local-player pad buttons (held / pressed this frame) */
 s32 chraiLuaSpawnChopper(s32 kind, s32 extrascale); /* hostile chopper near the player: kind 0 = dD copter, 1 = A51 interceptor; extrascale 256 = full (<8 = per-kind default) */
+s32 chraiLuaTextScramble(s32 on);             /* langGet letters -> random letters (text mode 4) */
+s32 chraiLuaSensBoost(f32 mult);              /* multiply mouse+stick sensitivity; 1 = off */
+s32 chraiLuaFpsCap(s32 fps);                  /* hard render-FPS override; 0 = off */
+s32 chraiLuaInternalRes(s32 height);          /* true internal render height override; 0 = off */
+s32 chraiLuaGangsta(s32 on);                  /* force the sideways-pistol viewmodel pose */
+s32 chraiLuaHeadshotBoost(s32 on);            /* headshots x10 + "headshot" Lua events */
 
 /* External event ingress (luaai_api.c): generic {source, text} queue backing
  * pd.ext_poll(). Fed by the /chaos console command, the optional localhost

@@ -1018,6 +1018,19 @@ void inputSetChaosDeadzone(s32 dz)
 	chaosDeadzone = dz;
 }
 
+// Chaos "Overly sensitive" (pd.sens_boost): multiplies the user's mouse and
+// stick sensitivity WITHOUT touching the config-backed settings (quitting
+// mid-effect must never persist a maxed slider to pd.ini). Applied at the two
+// read sites: inputAxisScale (every stick axis, movement included) and
+// inputMouseGetScaledDelta. The Abs variant (crosshair/menu speed) is
+// deliberately left alone so menus stay navigable.
+static f32 chaosSensMult = 1.0f;
+
+void inputSetChaosSensMult(f32 mult)
+{
+	chaosSensMult = (mult > 0.0f) ? mult : 1.0f;
+}
+
 static inline s32 inputAxisScale(s32 x, const s32 deadzoneCfg, const f32 scale)
 {
 	const s32 deadzone = (chaosDeadzone > deadzoneCfg) ? chaosDeadzone : deadzoneCfg;
@@ -1032,8 +1045,8 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzoneCfg, const f32 scale)
 			x -= deadzone;
 		}
 		x = x * 32768 / (32768 - deadzone);
-		// scale with sensitivity
-		x *= scale;
+		// scale with sensitivity (chaosSensMult = Overly sensitive, normally 1)
+		x *= scale * chaosSensMult;
 		return (x > 32767) ? 32767 : ((x < -32768) ? -32768 : x);
 	}
 }
@@ -1697,8 +1710,8 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 		// to the right stick. Done here rather than at the call sites so
 		// every consumer is covered without per-site edits.
 		if (mouseLocked && !inputControllersOnlyActive()) {
-				mdx = mouseSensX * ((f32)mouseDX / 3.5f) * 0.022f;
-				mdy = mouseSensY * ((f32)mouseDY / 3.5f) * 0.022f;
+				mdx = chaosSensMult * mouseSensX * ((f32)mouseDX / 3.5f) * 0.022f;
+				mdy = chaosSensMult * mouseSensY * ((f32)mouseDY / 3.5f) * 0.022f;
 		}
 		// Gyro aim rides the same gameplay gate (mouseLocked = in-game, not
 		// in menus/console) but is controller input, so it is deliberately

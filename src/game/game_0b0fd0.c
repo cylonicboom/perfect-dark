@@ -523,8 +523,16 @@ void gsetPopulateFromCurrentPlayer(s32 handnum, struct gset *gset)
 			&& gset->weaponnum >= WEAPON_FALCON2 && gset->weaponnum <= WEAPON_CROSSBOW
 			&& gset->weaponnum != WEAPON_COMBATKNIFE
 			&& gset->weaponnum != g_ChaosAmmoSwapWeapon) {
-		gset->weaponnum = g_ChaosAmmoSwapWeapon;
-		gset->weaponfunc = FUNC_PRIMARY;
+		// Shoot-class live functions only: a THROW function (Dragon proxy,
+		// Laptop deploy) dispatches HANDATTACKTYPE_THROWPROJECTILE, and the
+		// throw path casts the gset's function to weaponfunc_throw — presenting
+		// the LX primary there reads a float as projectilemodelnum and crashes.
+		struct weaponfunc *livefunc = gsetGetWeaponFunction(gset);
+
+		if (livefunc != NULL && (livefunc->type & 0x00ff) == INVENTORYFUNCTYPE_SHOOT) {
+			gset->weaponnum = g_ChaosAmmoSwapWeapon;
+			gset->weaponfunc = FUNC_PRIMARY;
+		}
 	}
 #endif
 

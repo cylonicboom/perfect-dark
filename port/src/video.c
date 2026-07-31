@@ -63,6 +63,16 @@ static s32 vidAllowHiDpi = true;
 static s32 vidVsync = 1;
 static s32 vidMSAA = 1;
 static s32 vidFramerateLimit = 0;
+// Chaos "OG mode" (pd.fps_cap): a hard render-rate override that ignores the
+// user's configured limit and is never persisted (a quit mid-effect must not
+// clobber Video.FramerateLimit). Re-asserted every frame by videoCapFramerate.
+// 0 = off. The sim's variable tick absorbs the low rate like the N64 did.
+static s32 vidFpsOverride = 0;
+// True internal render resolution (Extended > Video "Internal Resolution"):
+// render height in lines, 0 = native. Pushed into the renderer's
+// gfx_internal_res_height; the chaos OG-mode override rides its own
+// gfx_internal_res_chaos so it never touches this persisted value.
+static s32 vidInternalRes = 0;
 // Netplay-only framerate ceiling. g_NetTick advances per render frame on the
 // client, so interpolation intervals, snapshot spacing and the lag-comp RTT->tick
 // math are all measured in render frames — letting fps run unbounded in netplay
@@ -263,6 +273,7 @@ s32 videoInit(void)
 	videoInitDisplayModes();
 	videoSetVsync(vidVsync);
 	videoSetFramerateLimit(vidFramerateLimit);
+	videoSetInternalResolution(vidInternalRes);
 
 	gfx_set_texture_filter((enum FilteringMode)texFilter);
 	gfx_set_mipmap_filter((enum MipmapFilteringMode)texMipmapFilter);
@@ -757,10 +768,41 @@ void videoCapFramerate(s32 limit)
 	if (!wmAPI) {
 		return;
 	}
+	if (vidFpsOverride > 0) {
+		// chaos override: hard cap regardless of the user limit / netplay ceiling
+		wmAPI->set_target_fps(vidFpsOverride);
+		return;
+	}
 	if (vidFramerateLimit > 0 && vidFramerateLimit < limit) {
 		limit = vidFramerateLimit;
 	}
 	wmAPI->set_target_fps(videoEffectiveLimit(limit ? limit : vidFramerateLimit));
+}
+
+s32 videoGetInternalResolution(void)
+{
+	return vidInternalRes;
+}
+
+void videoSetInternalResolution(const s32 height)
+{
+	vidInternalRes = (height > 0) ? height : 0;
+	gfx_internal_res_height = vidInternalRes;
+}
+
+void videoSetFpsOverride(s32 fps)
+{
+	vidFpsOverride = (fps > 0) ? fps : 0;
+	if (!wmAPI) {
+		return;
+	}
+	if (vidFpsOverride > 0) {
+		wmAPI->set_target_fps(vidFpsOverride);
+	} else {
+		// restore the user's own pacing immediately (videoCapFramerate would
+		// also do it next frame, but a menu-open frame may not tick the sched)
+		wmAPI->set_target_fps(videoEffectiveLimit(vidFramerateLimit));
+	}
 }
 
 void videoSetGlareBrightness(f32 bright)
@@ -1034,6 +1076,7 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.VSync", &vidVsync, -2, 10); // -2 = VRR mode
 	configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
 	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, 10000);
+	configRegisterInt("Video.InternalResolution", &vidInternalRes, 0, 4320);
 	configRegisterInt("Video.NetplayFramerateLimit", &vidNetplayFramerateLimit, 0, 10000);
 	configRegisterInt("Video.DisplayFPS", &vidDisplayFPS, 0, 1);
 	configRegisterFloat("Video.DisplayFPSInterval", &vidDisplayFPSInterval, 0.01f, 32.f);

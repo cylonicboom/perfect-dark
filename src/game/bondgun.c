@@ -5157,6 +5157,15 @@ struct defaultobj *bgunCreateThrownProjectile2(struct chrdata *chr, struct gset 
 		return false;
 	}
 
+#ifndef PLATFORM_N64
+	// A non-throw function here means the gset was substituted upstream (the
+	// chaos ammo-swap family): the cast above would read a float field as
+	// projectilemodelnum and index g_ModelStates wild. Refuse instead.
+	if ((basefunc->type & 0x00ff) != INVENTORYFUNCTYPE_THROW) {
+		return false;
+	}
+#endif
+
 	if (gset->weaponnum == WEAPON_COMBATKNIFE) {
 		guRotateF(mtx.m, 90.0f / (RANDOMFRAC() + 12.1f),
 				arg4->m[1][0], arg4->m[1][1], arg4->m[1][2]);
@@ -7740,12 +7749,22 @@ void bgunStartDetonateAnimation(s32 playernum)
  * rotation (reloading and equip/unequip do not). It also implements a delay on
  * reverting to the normal rotation.
  */
+#ifndef PLATFORM_N64
+// Chaos "Gangster" (pd.gangsta): force the sideways pose on permanently. ORed
+// with the autoaim-driven gunctrl.gangsta below so the existing rotate/revert
+// animation and state checks run unchanged. Cleared in lv.c's per-stage reset.
+s32 g_ChaosGangstaForce = 0;
+#endif
 void bgunUpdateGangsta(struct hand *hand, s32 handnum, struct coord *arg2, struct weaponfunc *funcdef, Mtxf *arg4, Mtxf *arg5)
 {
 	f32 tmp;
 	struct coord sp38 = {0, 0, 0};
 
-	if (g_Vars.currentplayer->gunctrl.gangsta
+	if ((g_Vars.currentplayer->gunctrl.gangsta
+#ifndef PLATFORM_N64
+				|| g_ChaosGangstaForce
+#endif
+			)
 			&& funcdef
 			&& (funcdef->type & 0xff) == INVENTORYFUNCTYPE_SHOOT
 			&& (hand->state == HANDSTATE_IDLE

@@ -117,6 +117,10 @@ s32 g_ChaosNoReload = 0;
 // Chaos "No Damage Except Headshots" (pd.headshots_only): chrDamage zeroes all
 // non-HITPART_HEAD damage to the local human. Cleared in lvInit.
 s32 g_ChaosHeadshotsOnly = 0;
+// Chaos "Birthday party" (pd.headshot_boost): headshots land at x10 total
+// instead of the vanilla x4 (x2 for Skedar), and every headshot emits a
+// "headshot" Lua event from chrDamage. Cleared in lv.c's per-stage reset.
+s32 g_ChaosHeadshotBoost = 0;
 
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))

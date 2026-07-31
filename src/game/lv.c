@@ -472,6 +472,10 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosFragOut;         // chaos Frag Out (enemies throw grenades)
 	extern s32 g_ChaosTemuMag;         // chaos Temu Magazine (partial reload)
 	extern void chraiLuaResetSentries(void); // chaos Sentries Out (per-stage count reset)
+	extern s32 g_ChaosHeadshotBoost;   // chaos Birthday party x10 headshots (bondmove.c)
+	extern s32 g_ChaosGangstaForce;    // chaos Gangster sideways pistols (bondgun.c)
+	extern void inputSetChaosSensMult(f32 mult); // chaos Overly Sensitive
+	extern void videoSetFpsOverride(s32 fps);    // chaos OG Mode render-rate cap
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
 	netDemoStop();     // demo: close any open recording on stage load (port-only)
@@ -541,6 +545,14 @@ void lvReset(s32 stagenum)
 	g_ChaosFragOut = 0;
 	g_ChaosTemuMag = 0;
 	chraiLuaResetSentries();
+	g_ChaosHeadshotBoost = 0;
+	g_ChaosGangstaForce = 0;
+	inputSetChaosSensMult(1.0f);
+	videoSetFpsOverride(0);
+	{
+		extern int gfx_internal_res_chaos; // chaos OG Mode true-res override
+		gfx_internal_res_chaos = 0;
+	}
 #endif
 
 	var80084014 = false;

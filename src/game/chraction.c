@@ -4461,6 +4461,7 @@ void playerUpdateDamageStats(struct prop *attacker, struct prop *victim, f32 dam
 #ifndef PLATFORM_N64
 bool chaosIsTwin(struct chrdata *chr); // chaos Evil twin — defined below
 extern s32 g_ChaosHeadshotsOnly;       // chaos Headshots Only (bondmove.c)
+extern s32 g_ChaosHeadshotBoost;       // chaos Birthday party x10 headshots (bondmove.c)
 #endif
 void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gset *gset,
 		struct prop *aprop, s32 hitpart, bool damageshield, struct prop *prop2,
@@ -4512,6 +4513,11 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	bool ismelee;
 	struct prop *vprop = chr->prop;
 	f32 headshotdamagescale = 1;
+#ifndef PLATFORM_N64
+	// Chaos "Birthday party": remembers a head hit so the luaEmitDamage site
+	// below (where the attacker is resolved) can emit the "headshot" event.
+	bool chaosheadshot = false;
+#endif
 	bool usedshield = false;
 	bool showshield = false;
 	bool showdamage = false;
@@ -5076,11 +5082,28 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		// Apply damage multipliers based on which body parts were hit,
 		// and flinch head if shot in the head
 		if (hitpart == HITPART_HEAD) {
+#ifndef PLATFORM_N64
+			// Chaos "Birthday party": remember the head hit for the Lua event
+			// emitted at the luaEmitDamage site (where the attacker resolves).
+			chaosheadshot = true;
+#endif
 			if (race == RACE_SKEDAR) {
 				damage += damage;
+#ifndef PLATFORM_N64
+				// Chaos "Birthday party": x2 vanilla -> x10 total
+				if (g_ChaosHeadshotBoost) {
+					damage *= 5.0f;
+				}
+#endif
 				chrFlinchHead(chr, angle);
 			} else {
 				damage *= 4;
+#ifndef PLATFORM_N64
+				// Chaos "Birthday party": x4 vanilla -> x10 total
+				if (g_ChaosHeadshotBoost) {
+					damage *= 2.5f;
+				}
+#endif
 
 				if (isshoot && !usedshield) {
 					chrFlinchHead(chr, angle);
@@ -5412,6 +5435,9 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				chr->chrflags |= CHRCFLAG_JUST_INJURED;
 #ifndef PLATFORM_N64
 				luaEmitDamage((s32)chr->chrnum, aplayernum, (s32)damage);
+				if (chaosheadshot) {
+					luaEmitHeadshot((s32)chr->chrnum, aplayernum);
+				}
 #endif
 
 #ifndef PLATFORM_N64
@@ -9073,6 +9099,76 @@ s32 chraiLuaPigLatin(s32 on)
 	extern s32 g_ChaosUwuMode;
 
 	g_ChaosUwuMode = on ? 2 : 0;
+	return 1;
+}
+
+// pd.text_scramble(on): Text overload — every letter becomes a random other
+// letter (lang.c mode 4, seeded per string so menus don't strobe). Same
+// shared text-mode global as uwuify/piglatin/buttsbot.
+s32 chraiLuaTextScramble(s32 on)
+{
+	extern s32 g_ChaosUwuMode;
+
+	g_ChaosUwuMode = on ? 4 : 0;
+	return 1;
+}
+
+// pd.sens_boost(mult): Overly sensitive — multiply the user's mouse + stick
+// sensitivity at the input read sites (input.c chaosSensMult). Deliberately
+// NOT a write to the config-backed sliders: quitting mid-effect must not
+// persist a maxed sensitivity to pd.ini. 1 (or no arg) restores.
+s32 chraiLuaSensBoost(f32 mult)
+{
+	extern void inputSetChaosSensMult(f32 mult);
+
+	inputSetChaosSensMult(mult);
+	return 1;
+}
+
+// pd.fps_cap(fps): OG mode — hard render-rate override (video.c
+// vidFpsOverride, re-asserted every frame by videoCapFramerate). The sim's
+// variable tick (lvupdate) absorbs the low rate exactly like the N64 did, so
+// no interpolation work is needed. 0 restores the user's own limit.
+s32 chraiLuaFpsCap(s32 fps)
+{
+	extern void videoSetFpsOverride(s32 fps);
+
+	videoSetFpsOverride(fps);
+	return 1;
+}
+
+// pd.internal_res(height): OG mode — TRUE internal render resolution: the
+// frame rasterizes into an offscreen target this many lines tall and is
+// NEAREST-upscaled to the window (fast3d gfx_internal_res_chaos). Separate
+// from the user's Video.InternalResolution setting, which it overrides while
+// active and never persists. 0 restores.
+s32 chraiLuaInternalRes(s32 height)
+{
+	extern int gfx_internal_res_chaos;
+
+	gfx_internal_res_chaos = (height > 0) ? height : 0;
+	return 1;
+}
+
+// pd.gangsta(on): Gangster — force the close-range sideways-pistol pose on
+// permanently. Rides bgunUpdateGangsta's own rotate/revert animation (bondgun.c
+// g_ChaosGangstaForce is ORed with the autoaim-driven gunctrl.gangsta), so the
+// gun still only tilts in states that allow it (not reloads/equips).
+s32 chraiLuaGangsta(s32 on)
+{
+	extern s32 g_ChaosGangstaForce;
+
+	g_ChaosGangstaForce = on ? 1 : 0;
+	return 1;
+}
+
+// pd.headshot_boost(on): Birthday party — headshots land at x10 and every
+// head hit emits a "headshot" (chrnum, attackerplayernum) Lua event.
+s32 chraiLuaHeadshotBoost(s32 on)
+{
+	extern s32 g_ChaosHeadshotBoost;
+
+	g_ChaosHeadshotBoost = on ? 1 : 0;
 	return 1;
 }
 

@@ -464,6 +464,15 @@ unsigned char gfx_rotate180_mode = 0;
 // rotated world; here the world stays put and the ghosts spin. 1-byte bool.
 unsigned char gfx_doublevision_mode = 0;
 float gfx_hdr_dazzle = 0.0f; // G_SETDAZZLE_EXT weight; see gfx_api.h
+// True internal render resolution ("Internal Resolution" Extended > Video
+// setting, plus the chaos OG-mode override): when set, the whole frame —
+// world, viewmodel and HUD — is rasterized into game_framebuffer at the
+// reduced size and upscaled to the window by a NEAREST blit at present time
+// (resolve_msaa_color_buffer scales on both backends). Unlike the retro
+// pixelate filter this is a real low-res render target: texturing, edges and
+// depth all happen at the low resolution, like real 240p output did.
+int gfx_internal_res_height = 0; // user setting; 0 = native
+int gfx_internal_res_chaos = 0;  // chaos override; wins while > 0
 int gfx_wireframe_wire_color_enabled = 0;
 float gfx_wireframe_wire_color[3] = {1.0f, 1.0f, 1.0f};
 float gfx_wireframe_line_width = 1.0f;
@@ -4172,6 +4181,25 @@ extern "C" void gfx_start_frame(void) {
     gfx_current_game_window_viewport.width = gfx_current_dimensions.width;
     gfx_current_game_window_viewport.height = gfx_current_dimensions.height;
 
+    // True internal render resolution: shrink the render dimensions while the
+    // window viewport keeps the real size — the existing different_size path
+    // then routes the frame into game_framebuffer at the low size, and the
+    // present blit in gfx_run upscales it (NEAREST) to the window. Width is
+    // derived from the window aspect so nothing stretches.
+    {
+        const int irh = gfx_internal_res_chaos > 0 ? gfx_internal_res_chaos : gfx_internal_res_height;
+        if (gfx_framebuffers_enabled && irh > 0 && (uint32_t)irh < gfx_current_window_dimensions.height) {
+            uint32_t h = irh < 120 ? 120u : (uint32_t)irh;
+            uint32_t w = (uint32_t)(h * gfx_current_window_dimensions.aspect_ratio + 0.5f);
+            if (w < 160) {
+                w = 160;
+            }
+            gfx_current_dimensions.width = w;
+            gfx_current_dimensions.height = h;
+            gfx_current_dimensions.aspect_ratio = (float)w / (float)h;
+        }
+    }
+
     if (gfx_current_dimensions.height != gfx_prev_dimensions.height) {
         for (auto& fb : framebuffers) {
             uint32_t width, height, msaa;
@@ -4316,11 +4344,18 @@ extern "C" void gfx_run(Gfx* commands) {
             if (different_size) {
                 gfx_rapi->resolve_msaa_color_buffer(game_framebuffer_msaa_resolved, game_framebuffer);
                 gfxFramebuffer = (uintptr_t)gfx_rapi->get_framebuffer_texture_id(game_framebuffer_msaa_resolved);
+                // Internal resolution: present the resolved low-res frame to the
+                // window (scaled NEAREST blit; GL can't scale from an MSAA source,
+                // hence via the resolved fb).
+                gfx_rapi->resolve_msaa_color_buffer(0, game_framebuffer_msaa_resolved);
             } else {
                 gfx_rapi->resolve_msaa_color_buffer(0, game_framebuffer);
             }
         } else {
             gfxFramebuffer = (uintptr_t)gfx_rapi->get_framebuffer_texture_id(game_framebuffer);
+            // Internal resolution, no MSAA: game_framebuffer only differs from the
+            // window by size — present it with the scaled NEAREST blit.
+            gfx_rapi->resolve_msaa_color_buffer(0, game_framebuffer);
         }
     }
 

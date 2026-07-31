@@ -63,6 +63,8 @@ extern float gfx_silhouette_wall_color[3];   // bright default fill (walls/sky),
 extern float gfx_silhouette_color[3];        // current fill scope colour (G_FLATFILL_EXT)
 extern int gfx_silhouette_edges;             // 1 = draw white wireframe edges (walls only)
 extern bool gfx_external_textures_enabled;   // data/ext_tex PNG substitution (rafccq/port-ext-textures)
+extern int gfx_internal_res_height;          // true internal render height (Video.InternalResolution); 0 = native
+extern int gfx_internal_res_chaos;           // chaos OG-mode internal-height override; wins while > 0
 
 void gfx_init(const struct GfxInitSettings *settings);
 void gfx_destroy(void);

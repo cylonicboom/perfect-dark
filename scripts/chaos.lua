@@ -2482,6 +2482,29 @@ local CLASSICS = { 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b } -- PP9i..RCP
 local GOGGLES  = { W.NIGHTVISION, W.XRAY, W.IR, W.CLOAK }
 local AMMO = { PSYCHOSIS=0x16, REMOTEMINE=0x0c, PROXYMINE=0x0d, TIMEDMINE=0x0e,
                MAGNUM=0x0a, ROCKET=0x08 }
+-- 2026-07-31 batch additions (ids from src/include/constants.h, same
+-- validation as the rest: WEAPON_*/AMMOTYPE_*/BODY_* literals).
+W.CALLISTO = 0x0c
+W.RCP120   = 0x0d
+W.RCP45    = 0x2b   -- classic weapon (GE RC-P45)
+AMMO.SMG   = 0x02   -- AMMOTYPE_SMG (CMP-150 pool)
+AMMO.RIFLE = 0x04   -- AMMOTYPE_RIFLE (AR34 / K7 / Sniper shared pool)
+BODY.CIAGUY  = 0x73 -- BODY_CIAGUY (trench-coat agent)
+BODY.DDSHOCK = 0x5e -- BODY_DDSHOCK (Crash Site shock trooper)
+-- Short display names for the choice/prize menus (no weapon-name getter in the
+-- Lua API; weapon_rename is set-only).
+local GUN_NAMES = {
+  [W.FALCON2]="Falcon 2", [W.FALCON2_SCOPE]="Falcon 2 (Scope)", [W.MAGSEC]="MagSec 4",
+  [W.MAULER]="Mauler", [W.PHOENIX]="Phoenix", [W.MAGNUM]="DY357 Magnum", [W.LX]="DY357-LX",
+  [W.CMP150]="CMP-150", [W.CYCLONE]="Cyclone", [W.CALLISTO]="Callisto NTG",
+  [W.RCP120]="RC-P120", [W.LAPTOP]="Laptop Gun", [W.DRAGON]="Dragon", [W.K7]="K7 Avenger",
+  [W.AR34]="AR34", [W.SUPERDRAGON]="SuperDragon", [W.SHOTGUN]="Shotgun", [W.REAPER]="Reaper",
+  [W.SNIPER]="Sniper Rifle", [W.FARSIGHT]="FarSight", [W.DEVASTATOR]="Devastator",
+  [W.ROCKET]="Rocket Launcher", [W.SLAYER]="Slayer", [W.KNIFE]="Combat Knife",
+  [W.CROSSBOW]="Crossbow", [W.TRANQ]="Tranquilizer", [W.GRENADE]="Grenade",
+  [W.RCP45]="RC-P45",
+}
+local function gun_name(w) return GUN_NAMES[w] or ("weapon " .. tostring(w)) end
 
 -- ---- interactive task library (EULA / CAPTCHA accept requirements) --------
 -- A task is a little sensor the player must satisfy: press FIRE, fire real
@@ -4499,6 +4522,748 @@ local alpha_effects = {
   -- the proportions don't read as intended yet. The C side and the /yassify
   -- console command are still there for development; re-add an entry here once
   -- the joint compensation is sorted. See docs/PORT_CHAOS.md.)
+
+  -- ================== 2026-07-31 suggestion batch (Chaos Alpha) ==============
+  -- All held in the Chaos Alpha folder via the HOLD list below until runtime-
+  -- proven. Second wave same day added the C hooks for Birthday party
+  -- (pd.headshot_boost + "headshot" event), Overly sensitive (pd.sens_boost),
+  -- Text overload (pd.text_scramble), OG-mode low FPS (pd.fps_cap) and the
+  -- Gangster sideways pose (pd.gangsta). Still needing NEW C hooks: Map
+  -- Invisible, The void, Control options scramble, Ammo exchange, NPC weapon
+  -- jam / NPC dual-wield, true invisible viewmodel.
+
+  -- Temunator: the Terminator's underachieving cousin — same tuxedo, same
+  -- sunglasses, same engine hum, but NO shield, and his gun jammed on the way
+  -- over so he's coming to do it BY HAND. (A real NPC weapon-jam needs a C
+  -- hook; until then unarmed-and-relentless is the bit.)
+  temunator  = { label="Temunator", w=3, dur=0,
+                 start=function()
+                   local c = spawn_body_near(BODY.DJBOND, W.UNARMED, 1200, true)
+                   if not c then error("no room for him here") end
+                   pd.chr_alert(c)
+                   if pd.chr_hum then
+                     st.hum_chrs = st.hum_chrs or {}
+                     st.hum_chrs[#st.hum_chrs + 1] = c
+                   end
+                 end },
+  -- Old reliable: a CMP-150 and exactly 100 rounds. No notes. It's a CMP-150.
+  old_reliable = { label="Old reliable", w=4, dur=0,
+                 start=function()
+                   pd.give_weapon(W.CMP150)
+                   if pd.set_ammo then pd.set_ammo(AMMO.SMG, 100)
+                   else pd.give_ammo(AMMO.SMG, 100) end
+                   force_switch(W.CMP150)
+                 end },
+  -- Thanks I guess: a Sniper Rifle and 10 rounds. (Rifle pool is shared with
+  -- the AR34/K7, so set_ammo pinning it to 10 is part of the joke.)
+  thanks_i_guess = { label="Thanks I guess", w=3, dur=0,
+                 start=function()
+                   pd.give_weapon(W.SNIPER)
+                   if pd.set_ammo then pd.set_ammo(AMMO.RIFLE, 10)
+                   else pd.give_ammo(AMMO.RIFLE, 10) end
+                   force_switch(W.SNIPER)
+                 end },
+  -- You should find this useful: an AR34 and a very serious 200 rounds.
+  useful_gift = { label="You should find this useful", w=3, dur=0,
+                 start=function()
+                   pd.give_weapon(W.AR34)
+                   if pd.set_ammo then pd.set_ammo(AMMO.RIFLE, 200)
+                   else pd.give_ammo(AMMO.RIFLE, 200) end
+                   force_switch(W.AR34)
+                 end },
+  -- It's holy: the trinity — Falcon 2 (Scope), Callisto NTG, Devastator.
+  its_holy   = { label="It's holy", w=3, dur=0,
+                 start=function()
+                   pd.give_weapon(W.FALCON2_SCOPE)
+                   pd.give_weapon(W.CALLISTO)
+                   pd.give_weapon(W.DEVASTATOR)
+                   give_ammo_mags()
+                 end },
+  -- Explosive free-cam: a Slayer. The secondary IS the free-cam.
+  explosive_freecam = { label="Explosive free-cam", w=3, dur=0,
+                 start=function()
+                   pd.give_weapon(W.SLAYER)
+                   give_ammo_mags()
+                   force_switch(W.SLAYER)
+                 end },
+  -- Daily reward: a decelerating prize wheel parked in the middle of the
+  -- screen. Whatever it lands on, you get. Yes, "1 HP" is on the wheel.
+  daily_reward = { label="Daily reward", w=3, fixeddur=true, dur=12, nobar=true,
+                 start=function()
+                   st.a_wheel = {
+                     items = {
+                       { label="2 magazines",       give=function() give_ammo_mags() end },
+                       { label="Full health",       give=function() pd.player_heal() end },
+                       { label="Full shield",       give=function() pd.player_set_shield(1) end },
+                       { label="A CMP-150",         give=function() pd.give_weapon(W.CMP150); give_ammo_mags() end },
+                       { label="Gold Magnum",       give=function() pd.give_weapon(W.LX); pd.give_ammo(AMMO.MAGNUM, 6) end },
+                       { label="Absolutely nothing", give=function() end },
+                       { label="1 HP",              give=function() pd.player_set_health(0.01) end },
+                       { label="A live grenade",    give=function()
+                           local x, y, z = pd.player_pos(0)
+                           if x and pd.grenade then pd.grenade(x, y, z) end
+                         end },
+                     },
+                     idx = math.random(8), t = 0, step = 4,
+                     spins = 24 + math.random(16), done = 0,
+                   }
+                 end,
+                 tick=function()
+                   local wh = st.a_wheel
+                   if not wh then return true end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   if wh.spins > 0 then
+                     wh.t = wh.t + dt
+                     if wh.t >= wh.step then
+                       wh.t = 0
+                       wh.idx = wh.idx % #wh.items + 1
+                       wh.spins = wh.spins - 1
+                       wh.step = wh.step + (wh.spins < 12 and 2 or 0) -- decelerate at the end
+                       if pd.sound then pd.sound(0x05dd) end
+                       if wh.spins == 0 then
+                         wh.done = 3 * TICKS
+                         local prize = wh.items[wh.idx]
+                         pcall(prize.give)
+                         pd.hud_message("CHAOS: daily reward - " .. prize.label)
+                       end
+                     end
+                   else
+                     wh.done = wh.done - dt
+                     if wh.done <= 0 then return true end
+                   end
+                 end,
+                 stop=function() st.a_wheel = nil end },
+  -- Roguelight: three offers, take ONE — any weapon, or a health pack.
+  -- AIM cycles, FIRE takes. Dither too long and the offer expires.
+  roguelight = { label="Roguelight", w=3, fixeddur=true, dur=20, nobar=true,
+                 start=function()
+                   if not pd.buttons_pressed then error("needs new exe") end
+                   local opts, used = {}, {}
+                   for i = 1, 3 do
+                     if math.random(4) == 1 and not used.hp then
+                       used.hp = true
+                       opts[i] = { label="Health pack", hp=true }
+                     else
+                       local g
+                       repeat g = GUNS[math.random(#GUNS)] until not used[g]
+                       used[g] = true
+                       opts[i] = { label=gun_name(g), g=g }
+                     end
+                   end
+                   st.a_rogue = { opts = opts, sel = 1, take = true }
+                   pd.button_block(0x2010)
+                 end,
+                 tick=function(left)
+                   local r = st.a_rogue
+                   if not r then return true end
+                   local pressed = pd.buttons_pressed()
+                   if pressed and (pressed & 0x0010) ~= 0 then
+                     r.sel = r.sel % #r.opts + 1
+                     if pd.sound then pd.sound(0x05dd) end
+                   elseif pressed and (pressed & 0x2000) ~= 0 then
+                     local o = r.opts[r.sel]
+                     if o.hp then pd.player_heal()
+                     else pd.give_weapon(o.g); give_ammo_mags(); force_switch(o.g) end
+                     pd.hud_message("CHAOS: taken - " .. o.label)
+                     return true
+                   elseif left <= 10 then
+                     pd.hud_message("CHAOS: offer expired")
+                     return true
+                   end
+                 end,
+                 stop=function() st.a_rogue = nil; pd.button_block(0) end },
+  -- Roguedark: same menu, opposite deal — choose one of YOUR weapons to lose.
+  roguedark  = { label="Roguedark", w=3, fixeddur=true, dur=20, nobar=true,
+                 start=function()
+                   if not pd.buttons_pressed then error("needs new exe") end
+                   local owned = {}
+                   for _, g in ipairs(GUNS) do
+                     if pd.has_weapon(g) then owned[#owned + 1] = g end
+                   end
+                   if #owned < 2 then error("nothing worth taking") end
+                   -- offer up to 3 distinct owned guns
+                   local opts = {}
+                   for i = 1, math.min(3, #owned) do
+                     local j = math.random(#owned)
+                     local g = table.remove(owned, j)
+                     opts[i] = { label=gun_name(g), g=g }
+                   end
+                   st.a_rogue = { opts = opts, sel = 1, take = false }
+                   pd.button_block(0x2010)
+                 end,
+                 tick=function(left)
+                   local r = st.a_rogue
+                   if not r then return true end
+                   local pressed = pd.buttons_pressed()
+                   if pressed and (pressed & 0x0010) ~= 0 then
+                     r.sel = r.sel % #r.opts + 1
+                     if pd.sound then pd.sound(0x05dd) end
+                   elseif pressed and (pressed & 0x2000) ~= 0 then
+                     pd.take_weapon(r.opts[r.sel].g)
+                     pd.hud_message("CHAOS: gone - " .. r.opts[r.sel].label)
+                     return true
+                   elseif left <= 10 then
+                     local o = r.opts[math.random(#r.opts)]
+                     pd.take_weapon(o.g)
+                     pd.hud_message("CHAOS: too slow - the house took " .. o.label)
+                     return true
+                   end
+                 end,
+                 stop=function() st.a_rogue = nil; pd.button_block(0) end },
+  -- Joycon drift: the camera creeps sideways and the walk picks up a diagonal
+  -- lean, exactly like that one controller you keep meaning to repair.
+  joycon_drift = { label="Joycon drift", w=4, dur=1,
+                 start=function()
+                   st.a_drift = { dir = (math.random(2) == 1) and 1 or -1, t = 0 }
+                 end,
+                 tick=function()
+                   local d = st.a_drift
+                   if not d then return end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   pd.player_add_yaw(0.035 * d.dir * dt)
+                   d.t = d.t + dt
+                   if d.t >= 30 then
+                     d.t = 0
+                     if pd.player_push then pd.player_push(1.2) end
+                   end
+                 end,
+                 stop=function() st.a_drift = nil end },
+  -- Living on a thread: health drops to 1 for the whole window. Survive it and
+  -- you're made whole — full health on the timer.
+  living_thread = { label="Living on a thread", w=3, fixeddur=true, dur=20,
+                 start=function()
+                   pd.player_set_health(0.01)
+                   if pd.show_health then pd.show_health() end
+                 end,
+                 stop=function() pd.player_heal() end },
+  -- Velma mode: "my glasses!" — heavy tranq blur unless you equip any goggles
+  -- (NVG / X-ray / IR), which count as glasses and clear it instantly.
+  velma      = { label="Velma mode", w=4, dur=1,
+                 start=function() pd.dizzy(3000) end,
+                 tick=function()
+                   local wearing = pd.device_active
+                       and (pd.device_active(W.NIGHTVISION) or pd.device_active(W.XRAY)
+                            or pd.device_active(W.IR))
+                   pd.dizzy(wearing and 0 or 3000)
+                 end,
+                 stop=function() pd.dizzy(0) end },
+  -- Buttery hands: every shot has a chance to squirt the gun out of your
+  -- hands (the drop is deferred to this tick — the re-entrancy rule).
+  buttery_hands = { label="Buttery hands", w=3, dur=1,
+                 start=function()
+                   if not pd.drop_weapon then error("needs new exe") end
+                   st.butter_pending = nil
+                 end,
+                 tick=function()
+                   if st.butter_cd then
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     st.butter_cd = st.butter_cd - dt
+                     if st.butter_cd <= 0 then st.butter_cd = nil end
+                   end
+                   if st.butter_pending then
+                     local wn = st.butter_pending
+                     st.butter_pending = nil
+                     pd.drop_weapon(wn)
+                     pd.hud_message("CHAOS: butterfingers!")
+                   end
+                 end,
+                 stop=function() st.butter_pending = nil; st.butter_cd = nil end },
+  -- Locked on: aim assist forced ON for every weapon. (True CMP-150 target
+  -- tracking on any gun needs a C hook; this is the aim-assist version.)
+  locked_on  = { label="Locked on", w=3, dur=1,
+                 start=function()
+                   if not pd.autoaim then error("needs new exe") end
+                   pd.autoaim(true)
+                 end,
+                 stop=function() pd.autoaim(false) end },
+  -- Birthday party: headshots hit at x10, throw confetti and go "Yayy!"
+  -- (scripts/chaos/sounds/yay.wav|mp3, user-supplied; Maian scream fallback).
+  birthday_party = { label="Birthday party", w=3, dur=1,
+                 start=function()
+                   if not pd.headshot_boost then error("needs new exe") end
+                   pd.headshot_boost(true)
+                 end,
+                 stop=function() pd.headshot_boost(false); st.bday_fx = nil end },
+  -- Overly sensitive: mouse AND stick sensitivity multiplied way past sense.
+  -- pd.sens_boost scales the applied input, never the config sliders, so a
+  -- quit mid-effect can't clobber the user's settings.
+  overly_sensitive = { label="Overly sensitive", w=3, dur=1,
+                 start=function()
+                   if not pd.sens_boost then error("needs new exe") end
+                   pd.sens_boost(8)
+                 end,
+                 stop=function() pd.sens_boost(1) end },
+  -- Text overload: every letter in the game becomes a random other letter
+  -- (stable per string, so it reads as corrupted text, not strobing).
+  text_overload = { label="Text overload", w=3, dur=1,
+                 start=function()
+                   if not pd.text_scramble then error("needs new exe") end
+                   pd.text_scramble(true)
+                 end,
+                 stop=function() pd.text_scramble(false) end },
+  -- Alert! Alert!: the stage alarm goes off and three Crash Site shock
+  -- troopers arrive to see what all the noise is about.
+  alert_alert = { label="Alert! Alert!", w=3, dur=1,
+                 start=function()
+                   local n = 0
+                   for _ = 1, 3 do
+                     local c = spawn_body_near(BODY.DDSHOCK, W.CMP150, 700)
+                     if c then n = n + 1; pd.chr_alert(c) end
+                   end
+                   if n == 0 then error("no room for the cavalry") end
+                   if pd.alarm then pd.alarm(true) end
+                 end,
+                 stop=function() if pd.alarm then pd.alarm(false) end end },
+  -- Aim Labs: an accuracy drill. Score appears in the HUD; land 8 hits at
+  -- 50%+ accuracy before the timer or fail the session (it hurts).
+  aim_labs   = { label="Aim Labs", w=3, fixeddur=true, dur=20, nobar=true,
+                 start=function()
+                   st.a_aimlab = { shots = 0, hits = 0, need = 8 }
+                 end,
+                 tick=function(left)
+                   local a = st.a_aimlab
+                   if not a then return true end
+                   if a.hits >= a.need and a.shots > 0 and a.hits / a.shots >= 0.5 then
+                     pd.player_set_shield(1)
+                     pd.hud_message("CHAOS: AIM LABS PASSED - shield restored")
+                     return true
+                   end
+                   if left <= 10 then
+                     pd.player_damage(3)
+                     pd.hud_message("CHAOS: AIM LABS FAILED")
+                     return true
+                   end
+                 end,
+                 stop=function() st.a_aimlab = nil end },
+  -- Jo teaches typing: spell the word. Each letter offers two candidates —
+  -- FIRE takes the left one, AIM the right. A typo restarts the word.
+  jo_typing  = { label="Jo teaches typing", w=3, fixeddur=true, dur=25, nobar=true,
+                 start=function()
+                   if not pd.buttons_pressed then error("needs new exe") end
+                   local WORDS = { "PERFECT", "DARK", "JOANNA", "DATADYNE",
+                                   "CARRINGTON", "SKEDAR", "MAIAN", "FARSIGHT",
+                                   "VELVET", "ELVIS" }
+                   st.a_type = { word = WORDS[math.random(#WORDS)], pos = 1 }
+                   pd.button_block(0x2010)
+                 end,
+                 tick=function(left)
+                   local t = st.a_type
+                   if not t then return true end
+                   if not t.opts then
+                     -- deal this letter: the correct one plus a decoy, random sides
+                     local correct = t.word:sub(t.pos, t.pos)
+                     local decoy
+                     repeat decoy = string.char(64 + math.random(26)) until decoy ~= correct
+                     if math.random(2) == 1 then t.opts = { correct, decoy }
+                     else t.opts = { decoy, correct } end
+                   end
+                   local pressed = pd.buttons_pressed()
+                   local pick = nil
+                   if pressed and (pressed & 0x2000) ~= 0 then pick = 1
+                   elseif pressed and (pressed & 0x0010) ~= 0 then pick = 2 end
+                   if pick then
+                     if t.opts[pick] == t.word:sub(t.pos, t.pos) then
+                       t.pos = t.pos + 1
+                       t.opts = nil
+                       if pd.sound then pd.sound(0x05dd) end
+                       if t.pos > #t.word then
+                         give_ammo_mags()
+                         pd.hud_message("CHAOS: nice typing - have some ammo")
+                         return true
+                       end
+                     else
+                       pd.player_damage(1.5)
+                       t.pos = 1
+                       t.opts = nil
+                       pd.hud_message("CHAOS: typo. start over")
+                     end
+                   elseif left <= 10 then
+                     pd.player_damage(3)
+                     pd.hud_message("CHAOS: class dismissed. you failed typing")
+                     return true
+                   end
+                 end,
+                 stop=function() st.a_type = nil; pd.button_block(0) end },
+  -- Wireframe world: the Wireframe experiment cheat as a timed effect.
+  wireframe_world = setmetatable({ label="Wireframe world", w=3 },
+                 {__index=cheat_effect(CHEAT.WIREFRAME, 30)}),
+  -- Darksim: something with combat-sim reflexes joins the lobby. (A true
+  -- DarkSim brain needs sim AI; this is the Dark Combat body, armoured and
+  -- already very interested in you.)
+  darksim    = { label="Darksim", w=2, dur=0,
+                 start=function()
+                   local pool = { W.AR34, W.K7, W.SHOTGUN, W.MAGNUM }
+                   local c = spawn_body_near(BODY.DARKCOMBAT, pool[math.random(#pool)], 900)
+                   if not c then error("no room") end
+                   if pd.chr_armor then pd.chr_armor(c, 4) end
+                   pd.chr_alert(c)
+                 end },
+  -- Unknown: fires a random effect and refuses to say which. The timer bar
+  -- and the wore-off line both read "???" (see the draw/expiry masking).
+  unknown    = { label="Unknown", w=3, dur=0,
+                 start=function()
+                   local pool = {}
+                   for name, e in pairs(chaos.effects) do
+                     if name ~= "unknown" and not e.alpha and (e.w or 0) > 0
+                         and effect_enabled(name) and not st.active[name] then
+                       pool[#pool + 1] = name
+                     end
+                   end
+                   if #pool == 0 then error("nothing to draw") end
+                   local name = pool[math.random(#pool)]
+                   st.unknown_mask = st.unknown_mask or {}
+                   st.unknown_mask[name] = true
+                   chaos.trigger(name, "unknown", nil, true)
+                   -- instant children never reach stop_effect, so drop the mask
+                   -- now (their ack bar already captured the "???" label)
+                   if not st.active[name] then st.unknown_mask[name] = nil end
+                 end },
+  -- OG mode: 240p at 17 FPS, like mother nature intended. pd.internal_res is
+  -- TRUE internal resolution (the frame rasterizes at 240 lines and upscales
+  -- NEAREST — real N64-style output, not the mosaic filter); older exes fall
+  -- back to the pixelate filter. pd.fps_cap is a render-rate override; the
+  -- sim's own variable tick absorbs the low rate exactly as N64 did.
+  og_mode    = { label="OG mode", w=3, dur=1,
+                 start=function()
+                   if pd.internal_res then pd.internal_res(240)
+                   else pd.pixelate(320, 240, 0) end
+                   if pd.fps_cap then pd.fps_cap(17) end
+                 end,
+                 stop=function()
+                   if pd.internal_res then pd.internal_res(0)
+                   else pd.pixelate() end
+                   if pd.fps_cap then pd.fps_cap(0) end
+                 end },
+  -- Mr Blonde's revenge: every guard in the level is suddenly Mr Blonde, and
+  -- every Mr Blonde has a Mauler. Weapons restore on the timer; the FACES
+  -- don't (no body-getter to restore from — they stay Blonde till respawn).
+  mr_blondes = { label="Mr Blonde's revenge", w=2, dur=1,
+                 start=function()
+                   if not pd.chr_set_body then error("needs new exe") end
+                   st.a_blonde = {}
+                   local n = 0
+                   for _, c in ipairs(pd.all_chrs() or {}) do
+                     local hp = pd.chr_health(c)
+                     if hp and hp > 0 and pd.chr_set_body(c, BODY.MRBLONDE, -1) then
+                       st.a_blonde[c] = pd.chr_weapon and pd.chr_weapon(c) or nil
+                       pd.chr_give_weapon(c, W.MAULER)
+                       n = n + 1
+                     end
+                   end
+                   if n == 0 then error("no chrs") end
+                 end,
+                 stop=function()
+                   for c, w in pairs(st.a_blonde or {}) do
+                     if w and w >= 0 then pd.chr_give_weapon(c, w) end
+                   end
+                   st.a_blonde = nil
+                 end },
+  -- Guns don't scare me: three guards become CIA agents. Kill one — anyone
+  -- kills one — and a random live objective fails for the rest of the effect.
+  guns_dont_scare = { label="Guns don't scare me", w=2, dur=1,
+                 start=function()
+                   if not (pd.chr_set_body and pd.objective_force) then error("needs new exe") end
+                   local picks = {}
+                   for _, c in ipairs(pd.all_chrs() or {}) do
+                     local hp = pd.chr_health(c)
+                     if hp and hp > 0 then picks[#picks + 1] = c end
+                   end
+                   if #picks == 0 then error("no chrs") end
+                   st.a_cia = { set = {}, forced = {} }
+                   local n = 0
+                   while n < 3 and #picks > 0 do
+                     local c = table.remove(picks, math.random(#picks))
+                     if pd.chr_set_body(c, BODY.CIAGUY, -1) then
+                       pd.chr_give_weapon(c, W.FALCON2)
+                       st.a_cia.set[c] = true
+                       n = n + 1
+                     end
+                   end
+                   if n == 0 then error("no swaps") end
+                   pd.hud_message("CHAOS: the men in suits are NOT to be harmed")
+                 end,
+                 stop=function()
+                   if st.a_cia then
+                     for i in pairs(st.a_cia.forced) do pd.objective_force(i, 0) end
+                   end
+                   st.a_cia = nil
+                 end },
+  -- Bag bomb: there's a live bomb in your inventory. Get it out and THROW it
+  -- before the fuse runs down, or wear it.
+  bag_bomb   = { label="Bag bomb", w=3, fixeddur=true, dur=14, nobar=true,
+                 start=function()
+                   pd.give_weapon(W.TIMEDMINE)
+                   pd.give_ammo(AMMO.TIMEDMINE, 1)
+                   force_switch(W.TIMEDMINE)
+                   st.a_bag = { beep = 0 }
+                   pd.hud_message("CHAOS: there's a BOMB in your bag - throw it!")
+                 end,
+                 tick=function(left)
+                   local b = st.a_bag
+                   if not b then return true end
+                   b.left = left
+                   if b.thrown or not pd.has_weapon(W.TIMEDMINE) then
+                     pd.hud_message("CHAOS: bomb away - crisis averted")
+                     return true
+                   end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   b.beep = b.beep - dt
+                   if b.beep <= 0 then
+                     b.beep = (left <= 4 * TICKS) and 15 or 45
+                     if pd.sound then pd.sound(0x05dd) end
+                   end
+                   if left <= 10 then
+                     local x, y, z = pd.player_pos(0)
+                     if x and pd.explosion_at then pd.explosion_at(x, y, z) end
+                     pd.player_damage(3)
+                     pd.hud_message("CHAOS: should have thrown the bag")
+                     return true
+                   end
+                 end,
+                 stop=function() st.a_bag = nil end },
+  -- Pinata party: dead guards burst into loose guns (spawned from this tick,
+  -- never from the kill callback — the re-entrancy rule).
+  pinata     = { label="Pinata party", w=3, dur=1,
+                 start=function()
+                   if not pd.spawn_at_chr then error("needs new exe") end
+                   st.a_pinata = { queue = {} }
+                 end,
+                 tick=function()
+                   local p = st.a_pinata
+                   if not (p and #p.queue > 0) then return end
+                   for _, c in ipairs(p.queue) do
+                     for _ = 1, 3 do
+                       pd.spawn_at_chr(c, GUNS[math.random(#GUNS)])
+                     end
+                   end
+                   p.queue = {}
+                 end,
+                 stop=function() st.a_pinata = nil end },
+  -- What if it was purple?: rooms, sky, clouds and blood. Purple.
+  purple     = { label="What if it was purple?", w=3, dur=1,
+                 start=function()
+                   if pd.room_tint then pd.room_tint(160, 60, 255, true) end
+                   if pd.env_colours then pd.env_colours(120, 40, 200, 200, 120, 255) end
+                   if pd.blood_colour then pd.blood_colour(200, 80, 255, true) end
+                 end,
+                 stop=function()
+                   if pd.room_tint then pd.room_tint() end
+                   if pd.env then pd.env() end
+                   if pd.blood_colour then pd.blood_colour(0, 0, 0, 0) end
+                 end },
+  -- The worst possible effect: it does nothing. The acknowledgement bar IS
+  -- the whole effect. Do not fix this.
+  worst_effect = { label="The worst possible effect", w=3, dur=0,
+                 start=function() end },
+  -- Back for more: every corpse in the level gets back up (cloned where it
+  -- fell, one per tick, capped by free chr slots — the Hydra mechanism).
+  back_for_more = { label="Back for more", w=2, fixeddur=true, dur=10,
+                 start=function()
+                   if not pd.clone_chr then error("needs new exe") end
+                   local q = {}
+                   for _, c in ipairs(pd.all_chrs() or {}) do
+                     local hp = pd.chr_health(c)
+                     if hp ~= nil and hp <= 0 then
+                       local x, y, z = pd.chr_pos(c)
+                       if x then q[#q + 1] = { c = c, x = x, y = y, z = z } end
+                     end
+                   end
+                   if #q == 0 then error("nobody to bring back") end
+                   st.a_encore = { queue = q }
+                 end,
+                 tick=function()
+                   local e = st.a_encore
+                   if not e or #e.queue == 0 then return true end
+                   if pd.chr_slots_free and pd.chr_slots_free() <= 6 then
+                     pd.log("[chaos] back_for_more: out of chr slots, stopping early")
+                     return true
+                   end
+                   local it = table.remove(e.queue)
+                   pd.clone_chr(it.c, it.x, it.y, it.z)
+                 end,
+                 stop=function() st.a_encore = nil end },
+  -- Loose lego: the floor is armed. Your very next step costs 3 HP and stings
+  -- for a few seconds after.
+  loose_lego = { label="Loose lego", w=3, fixeddur=true, dur=12,
+                 start=function() st.a_lego = { tripped = false, dot = 0, t = 0 } end,
+                 tick=function()
+                   local l = st.a_lego
+                   if not l then return true end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   if not l.tripped then
+                     local ms = pd.player_movespeed and pd.player_movespeed() or 0
+                     if ms > 0.12 then
+                       l.tripped = true
+                       l.dot = 5 * TICKS
+                       pd.player_damage(3)
+                       pd.hud_message("CHAOS: you stepped on a lego")
+                     end
+                   else
+                     l.dot = l.dot - dt
+                     l.t = l.t + dt
+                     if l.t >= 15 then l.t = 0; pd.player_damage(0.05) end
+                     if l.dot <= 0 then return true end
+                   end
+                 end,
+                 stop=function() st.a_lego = nil end },
+  -- Low battery: your controller battery is low. Deniable by design — just an
+  -- OS-style toast + scripts/chaos/sounds/lowbattery.wav|mp3 (user-supplied).
+  low_battery = { label="Low battery", w=3, dur=0, silent=true,
+                 start=function()
+                   local ok = pd.play_file("scripts/chaos/sounds/lowbattery.wav", false, false)
+                       or pd.play_file("scripts/chaos/sounds/lowbattery.mp3", false, false)
+                   if not ok then
+                     pd.log("[chaos] low_battery wants scripts/chaos/sounds/lowbattery.wav|mp3")
+                   end
+                   pd.hud_message("Controller battery low")
+                 end },
+  -- I didn't want to see anyways: three random visual effects at once.
+  didnt_want_to_see = { label="I didn't want to see anyways", w=3, dur=0,
+                 start=function()
+                   local POOL = { "untextured", "watercolour", "noir", "sepia",
+                     "disco", "bit8", "bit16", "gameboy", "crt", "vhs", "negative",
+                     "thermal", "fisheye", "tunnel_vision", "drunk", "virtualboy",
+                     "mirror", "wireframe_world", "purple", "og_mode", "velma",
+                     "full_bright" }
+                   local avail = {}
+                   for _, n in ipairs(POOL) do
+                     if chaos.effects[n] and not st.active[n] then avail[#avail + 1] = n end
+                   end
+                   if #avail == 0 then error("everything is already on") end
+                   local secs = st.trigdur or st.effectdur
+                   for _ = 1, math.min(3, #avail) do
+                     local n = table.remove(avail, math.random(#avail))
+                     chaos.trigger(n, "combo", secs, true)
+                   end
+                 end },
+  -- Blind bag: a mystery gun — renamed to ?????, viewmodel pushed out of
+  -- sight with an extreme gun FOV. What is it? Fire it and find out.
+  blind_bag  = { label="Blind bag", w=3, dur=1,
+                 start=function()
+                   local g = GUNS[math.random(#GUNS)]
+                   st.a_bbag = { g = g }
+                   pd.give_weapon(g)
+                   give_ammo_mags()
+                   force_switch(g)
+                   if pd.weapon_rename then pd.weapon_rename(g, "?????") end
+                   if pd.gun_fov then pd.gun_fov(160) end
+                 end,
+                 stop=function()
+                   local b = st.a_bbag
+                   if b and pd.weapon_rename then pd.weapon_rename(b.g) end
+                   if pd.gun_fov then pd.gun_fov(0) end
+                   st.a_bbag = nil
+                 end },
+  -- Full bright: room lighting saturated to white — the no-shading look.
+  full_bright = { label="Full bright", w=3, dur=1,
+                 start=function()
+                   if not pd.room_tint then error("needs new exe") end
+                   pd.room_tint(255, 255, 255, true)
+                 end,
+                 stop=function() pd.room_tint() end },
+  -- Eye drops: clears every visual effect and resets the renderer filters.
+  eye_drops  = { label="Eye drops", w=3, dur=0,
+                 start=function()
+                   local STOPS = { "untextured", "watercolour", "noir", "sepia",
+                     "disco", "bit8", "bit16", "gameboy", "crt", "vhs", "negative",
+                     "thermal", "fisheye", "tunnel_vision", "drunk", "virtualboy",
+                     "mirror", "wireframe_world", "purple", "og_mode", "velma",
+                     "full_bright", "blackout", "aqz", "peephole", "underwater",
+                     "widescreen", "tallscreen", "vertigo", "vertigo2", "blind",
+                     "fading_out", "jelly", "acid_trip", "pirate", "waytoodank",
+                     "rainbow_world", "prismatic", "ipod_ad", "hudvd", "dvd",
+                     "wireframe_enemies", "blooper" }
+                   for _, n in ipairs(STOPS) do
+                     if st.active[n] then stop_effect(n) end
+                   end
+                   if pd.dizzy then pd.dizzy(0) end
+                   if pd.flattex then pd.flattex(0) end
+                   if pd.grayscale then pd.grayscale(false) end
+                   if pd.shiny then pd.shiny(0) end
+                   if pd.pixelate then pd.pixelate() end
+                   if pd.screen_fx then pd.screen_fx(0x43f, false) end
+                   if pd.lens then pd.lens() end
+                   if pd.screen_tint then pd.screen_tint() end
+                   if pd.room_tint then pd.room_tint() end
+                   if pd.double_vision then pd.double_vision(false) end
+                   if pd.upside_down then pd.upside_down(false) end
+                   if pd.screen_roll then pd.screen_roll(0) end
+                   if pd.vertex_wobble then pd.vertex_wobble(0) end
+                   if pd.hall_of_mirrors then pd.hall_of_mirrors(false) end
+                   if pd.fov_scale then pd.fov_scale(1) end
+                   if pd.aspect_scale then pd.aspect_scale(1) end
+                   if pd.gun_fov then pd.gun_fov(0) end
+                   if pd.env then pd.env() end
+                   if pd.fade then pd.fade(0, 0, 0, 0, 0) end
+                 end },
+  -- Redacted: every chaos bar, toast and vote slate vanishes while it runs —
+  -- including its own. Effects keep firing; you just don't get told.
+  redacted   = { label="Redacted", w=3, dur=1, silent=true,
+                 start=function() end },
+  -- Quickswap: your weapon keeps changing to a random one you own, at an
+  -- annoying cadence.
+  quickswap  = { label="Quickswap", w=3, dur=1,
+                 start=function() st.a_qs = { t = 60 } end,
+                 tick=function()
+                   local q = st.a_qs
+                   if not q then return end
+                   local dt = pd.lvupdate and pd.lvupdate() or 1
+                   q.t = q.t - dt
+                   if q.t > 0 then return end
+                   q.t = 60 + math.random(60)
+                   local owned = {}
+                   local held = pd.weapon_held and pd.weapon_held()
+                   for _, g in ipairs(GUNS) do
+                     if g ~= held and pd.has_weapon(g) then owned[#owned + 1] = g end
+                   end
+                   if #owned > 0 then force_switch(owned[math.random(#owned)]) end
+                 end,
+                 stop=function() st.a_qs = nil end },
+  -- Vertical form content: the game, but portrait. Two black pillars leave a
+  -- 9:16 strip in the middle. Subscribe for part 2.
+  vertical_form = { label="Vertical form content", w=3, dur=1,
+                 start=function() end },
+  -- Anti Brainrot: the OPPOSITE — a 9:16 pillar blocks the middle of the
+  -- screen and you play around it.
+  anti_brainrot = { label="Anti Brainrot", w=3, dur=1,
+                 start=function() end },
+  -- Gangster: dual automatic MagSec 4s (rapid_fire makes the semis sing),
+  -- held SIDEWAYS (pd.gangsta forces the vanilla close-range pose on
+  -- permanently), and no switching away.
+  gangster   = { label="Gangster", w=3, dur=1,
+                 start=function()
+                   st.a_gang = { arm = 45 }
+                   pd.dual_wield(W.MAGSEC, 0)
+                   give_ammo_mags()
+                   if pd.rapid_fire then pd.rapid_fire(true) end
+                   if pd.gangsta then pd.gangsta(true) end
+                 end,
+                 tick=function()
+                   local g = st.a_gang
+                   if not g then return end
+                   if g.arm then
+                     local dt = pd.lvupdate and pd.lvupdate() or 1
+                     g.arm = g.arm - dt
+                     if g.arm <= 0 then
+                       g.arm = nil
+                       if pd.knife_lock then pd.knife_lock(true) end
+                     end
+                     return
+                   end
+                   local h = pd.weapon_held and pd.weapon_held()
+                   if h and h ~= W.MAGSEC then pd.dual_wield(W.MAGSEC, 0) end
+                 end,
+                 stop=function()
+                   if pd.knife_lock then pd.knife_lock(false) end
+                   if pd.rapid_fire then pd.rapid_fire(false) end
+                   if pd.gangsta then pd.gangsta(false) end
+                   pd.take_weapon(W.MAGSEC)
+                   st.a_gang = nil
+                 end },
+  -- Enemy RC-P120s / RC-P45s: the arm-everyone mechanism with the fancy SMGs.
+  -- (True NPC dual-wield needs a C hook — the RCP45s are single for now.)
+  enemy_rcp120 = arm_all_effect("Enemy RC-P120s", 3, W.RCP120),
+  enemy_rcp45  = arm_all_effect("Enemy Dual RCP45s", 3, W.RCP45),
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -4556,7 +5321,20 @@ end
 -- ⚠ That includes the ones from this session that are compile-verified only.
 -- The mechanism below is left intact precisely so anything that misbehaves in
 -- play can be parked again by adding one name.
+--
+-- 2026-07-31: the new suggestion batch starts life here (user request: new
+-- effects go to Chaos Alpha first). Remove a name to graduate it into the
+-- rotation at its authored weight.
 for _, n in ipairs({
+  "temunator", "old_reliable", "thanks_i_guess", "useful_gift", "its_holy",
+  "explosive_freecam", "daily_reward", "roguelight", "roguedark",
+  "joycon_drift", "living_thread", "velma", "buttery_hands", "locked_on",
+  "alert_alert", "aim_labs", "jo_typing", "wireframe_world", "darksim",
+  "unknown", "og_mode", "mr_blondes", "guns_dont_scare", "bag_bomb", "pinata",
+  "purple", "worst_effect", "back_for_more", "loose_lego", "low_battery",
+  "didnt_want_to_see", "blind_bag", "full_bright", "eye_drops", "redacted",
+  "quickswap", "vertical_form", "anti_brainrot", "gangster", "enemy_rcp120",
+  "enemy_rcp45", "birthday_party", "overly_sensitive", "text_overload",
 }) do
   local e = chaos.effects[n]
   if e then
@@ -4572,6 +5350,7 @@ local function stop_effect(name)
   st.active[name] = nil
   st.duration[name] = nil
   st.sticky[name] = nil
+  if st.unknown_mask then st.unknown_mask[name] = nil end -- Unknown: unmask on end
 end
 
 local function stop_all()
@@ -4685,6 +5464,7 @@ local function reset_all_modes()
     if st.active.mirror then pd.cheat(CHEAT.MIRROR, false) end
     if st.active.tonal     then pd.cheat(CHEAT.TONAL, false) end
     if st.active.goldeneye then pd.cheat(CHEAT.GOLDENEYE, false) end
+    if st.active.wireframe_world then pd.cheat(CHEAT.WIREFRAME, false) end
   end
   -- Run each active effect's own stop() cleanup, then drop bookkeeping and
   -- re-arm the timer so the first effect isn't instant on the next stage.
@@ -4844,6 +5624,25 @@ local function reset_all_modes()
   if pd.chr_wireframe then pd.chr_wireframe(false) end
   if pd.double_shots then pd.double_shots(false) end
   if pd.unpossess then pd.unpossess() end
+  -- 2026-07-31 suggestion batch: per-effect state + the C globals its stops
+  -- own (each stop() already ran via stop_all; these cover effects that never
+  -- made it into st.active).
+  st.a_wheel, st.a_rogue, st.a_type, st.a_aimlab = nil
+  st.a_bag, st.a_pinata, st.a_encore, st.a_lego = nil
+  st.a_cia, st.a_blonde, st.a_bbag, st.a_gang = nil
+  st.a_drift, st.a_qs = nil
+  st.butter_pending = nil
+  st.butter_cd = nil
+  st.unknown_mask = nil
+  st.bday_fx = nil
+  if pd.dizzy then pd.dizzy(0) end
+  if pd.rapid_fire then pd.rapid_fire(false) end
+  if pd.headshot_boost then pd.headshot_boost(false) end
+  if pd.sens_boost then pd.sens_boost(1) end
+  if pd.text_scramble then pd.text_scramble(false) end
+  if pd.fps_cap then pd.fps_cap(0) end
+  if pd.gangsta then pd.gangsta(false) end
+  if pd.internal_res then pd.internal_res(0) end
 end
 
 -- chaos.trigger(name, who, dur_override, quiet): fire an effect. dur_override
@@ -4893,7 +5692,8 @@ function chaos.trigger(name, who, dur_override, quiet)
     -- its own colour, so it reads as "this just happened" rather than as a
     -- duration that's still running down.
     st.oneoff[#st.oneoff + 1] = {
-      label = e.label or name,
+      -- Unknown-fired children must not name themselves on the ack bar.
+      label = (st.unknown_mask and st.unknown_mask[name]) and "???" or (e.label or name),
       life  = ONEOFF_BAR * TICKS,
       total = ONEOFF_BAR * TICKS,
     }
@@ -5214,6 +6014,12 @@ pd.on("tick", function()
     if st.toast.life <= 0 then st.toast = nil end
   end
 
+  -- Birthday party: age the confetti burst on game time.
+  if st.bday_fx then
+    st.bday_fx.t = st.bday_fx.t - dt
+    if st.bday_fx.t <= 0 then st.bday_fx = nil end
+  end
+
   -- Glass cannons: a fired gun shatters — remove it one tick after the shot
   -- (deferred so we don't change weapons re-entrantly inside the fire event).
   if st.glass_pending then
@@ -5407,9 +6213,13 @@ pd.on("tick", function()
     else
       left = left - dt
       if endnow or left <= 0 then
+        -- Unknown: mask the wore-off line too (read the mask BEFORE stop_effect
+        -- clears it).
+        local lbl = (st.unknown_mask and st.unknown_mask[name]) and "???"
+            or (e and e.label or name)
         stop_effect(name)
         if not (e and e.silent) then
-          announce((e and e.label or name) .. (endnow and " cleared" or " wore off"), true)
+          announce(lbl .. (endnow and " cleared" or " wore off"), true)
         end
       else
         st.active[name] = left
@@ -5546,6 +6356,25 @@ pd.on("weaponfire", function(weaponnum, playernum)
     end
     stop_effect("russian_roulette")
   end
+  -- 2026-07-31 alpha batch sensors:
+  -- Buttery hands: chance the gun squirts out — queued for the effect's tick
+  -- (dropping a pickup prop inside the fire event is the glass_pending
+  -- re-entrancy all over again). The cooldown keeps automatics from dumping
+  -- the gun every burst: 15% per fire EVENT would trip within ~7 rounds.
+  if st.active.buttery_hands and playernum == 0 and weaponnum and weaponnum > 1
+      and not st.butter_cd and math.random() < 0.15 then
+    st.butter_pending = weaponnum
+    st.butter_cd = 3 * TICKS
+  end
+  -- Bag bomb: throwing the mine IS the defusal.
+  if st.a_bag and playernum == 0 and weaponnum == W.TIMEDMINE then
+    st.a_bag.thrown = true
+  end
+  -- Aim Labs: count the shots (hits come from the damage hook).
+  if st.active.aim_labs and st.a_aimlab and playernum == 0
+      and weaponnum and weaponnum > 1 then
+    st.a_aimlab.shots = st.a_aimlab.shots + 1
+  end
 end)
 
 -- Pacifists, NPC half: any NPC/simulant gun discharge OR punch/kick kills
@@ -5600,6 +6429,22 @@ pd.on("damage", function(chrnum, attackerplayernum, amount)
   if st.active.karma and attackerplayernum == 0 then
     pd.player_damage(0.3)
   end
+  -- Aim Labs: a landed hit.
+  if st.active.aim_labs and st.a_aimlab and attackerplayernum == 0 then
+    st.a_aimlab.hits = st.a_aimlab.hits + 1
+  end
+end)
+
+-- Birthday party: every player headshot celebrates — confetti burst + the
+-- "Yayy!" (scripts/chaos/sounds/yay.wav|mp3, user-supplied; Maian scream
+-- fallback so old setups still get a cheer). New-exe event.
+pd.on("headshot", function(chrnum, attackerplayernum)
+  if st.active.birthday_party and attackerplayernum == 0 then
+    local ok = pd.play_file("scripts/chaos/sounds/yay.wav", false, false)
+        or pd.play_file("scripts/chaos/sounds/yay.mp3", false, false)
+    if not ok and pd.sound then pd.sound(0x05df) end
+    st.bday_fx = { t = 90, seed = math.random(10000) }
+  end
 end)
 
 -- Kill hook: death-reactive effects (martyrdom grenades, etc).
@@ -5615,6 +6460,29 @@ pd.on("kill", function(chrnum, killerplayernum)
     st.martyr_queue = st.martyr_queue or {}
     st.martyr_queue[#st.martyr_queue + 1] =
         { x = x, y = y, z = z, chrnum = chrnum, has = (x ~= nil) }
+  end
+  -- Pinata party: any corpse bursts into loose guns — queued for the effect's
+  -- tick (never spawn props from the kill callback).
+  if st.active.pinata and st.a_pinata then
+    st.a_pinata.queue[#st.a_pinata.queue + 1] = chrnum
+  end
+  -- Guns don't scare me: a dead agent fails a random LIVE objective (the
+  -- override itself is safe here — it only writes the objective-force table).
+  if st.active.guns_dont_scare and st.a_cia and st.a_cia.set[chrnum] then
+    st.a_cia.set[chrnum] = nil
+    local live = {}
+    for i = 0, 7 do
+      if pd.objective_status and pd.objective_status(i) >= 0
+          and not st.a_cia.forced[i] then
+        live[#live + 1] = i
+      end
+    end
+    if #live > 0 then
+      local i = live[math.random(#live)]
+      pd.objective_force(i, 1)
+      st.a_cia.forced[i] = true
+      pd.hud_message("CHAOS: OBJECTIVE FAILED - he was CIA")
+    end
   end
   if killerplayernum ~= 0 then return end
   -- (gun_game / gun_game2 kill-advance blocks removed 2026-07-19 with the
@@ -5732,6 +6600,10 @@ local C_TEXT, C_BAR, C_BARBG, C_VOTE = 0xffffffff, 0x40c0ffff, 0x00000090, 0xffe
 local C_BARONE = 0x60e080ff
 
 pd.on("draw", function()
+  -- Redacted: every chaos bar, toast and vote slate is suppressed while it
+  -- runs — including its own countdown. You find out when things stop.
+  if st.active.redacted then return end
+
   local y = 4
 
   -- active timed effects, stable order
@@ -5748,7 +6620,10 @@ pd.on("draw", function()
         local left = st.active[name]
         local total = st.duration[name] or left
         local frac = (total > 0) and (left / total) or 0
-        pd.draw_text(HUD_X, y, e and e.label or name, C_TEXT)
+        -- Unknown-fired effects run their countdown incognito.
+        local lbl = (st.unknown_mask and st.unknown_mask[name]) and "???"
+            or (e and e.label or name)
+        pd.draw_text(HUD_X, y, lbl, C_TEXT)
         pd.draw_box(HUD_X, y + 8, HUD_W, 4, C_BARBG)
         pd.draw_box(HUD_X, y + 8, math.max(1, math.floor(HUD_W * frac)), 4, C_BAR)
         y = y + 16
@@ -6026,6 +6901,101 @@ pd.on("draw", function()
   end
 
   -- (lore now opens the real CI Information menu — no popup.)
+end)
+
+-- ---- HUD: 2026-07-31 suggestion batch (third draw handler) -----------------
+pd.on("draw", function()
+  -- Vertical form content / Anti Brainrot: the 9:16 pillars. 320x240 canvas,
+  -- so a 9:16-of-height strip is 135px wide, centred.
+  if st.active.vertical_form then
+    pd.draw_box(0, 0, 92, 240, 0x000000ff)
+    pd.draw_box(228, 0, 92, 240, 0x000000ff)
+  end
+  if st.active.anti_brainrot then
+    pd.draw_box(92, 0, 136, 240, 0x000000ff)
+  end
+
+  -- Daily reward: the wheel card, dead centre, deliberately in the way.
+  if st.active.daily_reward and st.a_wheel then
+    local wh = st.a_wheel
+    local X, Y, W2, H = 90, 66, 140, 64
+    pd.draw_box(X, Y, W2, H, 0x000000c8)
+    pd.draw_box(X, Y, W2, 11, 0x202848f0)
+    centered_text(Y + 2, "DAILY REWARD", 0xffe040ff)
+    local n = #wh.items
+    local prev = wh.items[(wh.idx - 2) % n + 1]
+    local nxt  = wh.items[wh.idx % n + 1]
+    centered_text(Y + 16, prev.label, 0x707070ff)
+    centered_text(Y + 27, "> " .. wh.items[wh.idx].label .. " <",
+        (wh.spins == 0) and 0x40ff40ff or 0xffffffff)
+    centered_text(Y + 38, nxt.label, 0x707070ff)
+    if wh.spins == 0 then
+      centered_text(Y + 52, "YOU WON: " .. wh.items[wh.idx].label, 0x40ff40ff)
+    else
+      centered_text(Y + 52, "spinning...", 0x80c0ffff)
+    end
+  end
+
+  -- Roguelight / Roguedark: the three-offer card. AIM cycles, FIRE commits.
+  if st.a_rogue and (st.active.roguelight or st.active.roguedark) then
+    local r = st.a_rogue
+    local X, Y, W2 = 90, 66, 140
+    local H = 26 + #r.opts * 10 + 12
+    pd.draw_box(X, Y, W2, H, 0x000000c8)
+    pd.draw_box(X, Y, W2, 11, r.take and 0x202848f0 or 0x481010f0)
+    centered_text(Y + 2, r.take and "ROGUELIGHT - take ONE" or "ROGUEDARK - lose ONE", 0xffe040ff)
+    for i, o in ipairs(r.opts) do
+      centered_text(Y + 16 + (i - 1) * 10,
+          (i == r.sel and "> " or "  ") .. o.label .. (i == r.sel and " <" or ""),
+          i == r.sel and 0xffffffff or 0x909090ff)
+    end
+    centered_text(Y + H - 10, "AIM = next    FIRE = choose", 0x80c0ffff)
+  end
+
+  -- Jo teaches typing: the word so far + this letter's two candidates.
+  if st.active.jo_typing and st.a_type then
+    local t = st.a_type
+    pd.draw_box(80, 60, 160, 42, 0x000000c8)
+    centered_text(64, "JO TEACHES TYPING", 0xffe040ff)
+    local typed = t.word:sub(1, t.pos - 1)
+    centered_text(76, typed .. string.rep("-", #t.word - #typed), 0xffffffff)
+    if t.opts then
+      centered_text(90, "FIRE: " .. t.opts[1] .. "    AIM: " .. t.opts[2], 0x80c0ffff)
+    end
+  end
+
+  -- Aim Labs: the running score, top centre.
+  if st.active.aim_labs and st.a_aimlab then
+    local a = st.a_aimlab
+    local acc = (a.shots > 0) and math.floor(100 * a.hits / a.shots) or 0
+    centered_text(20, string.format("AIM LABS  hits %d/%d  acc %d%% (need 50%%)",
+        a.hits, a.need, acc), (a.hits >= a.need and acc >= 50) and 0x40ff40ff or 0xffe040ff)
+  end
+
+  -- Bag bomb: the fuse readout, red and insistent.
+  if st.a_bag and st.active.bag_bomb and st.a_bag.left then
+    local secs = math.max(0, math.ceil(st.a_bag.left / TICKS))
+    local col = (secs <= 4 and math.floor(st.a_bag.left / 6) % 2 == 0)
+        and 0xff4040ff or 0xffe040ff
+    centered_text(20, string.format("BAG BOMB  %ds - THROW IT", secs), col)
+  end
+
+  -- Birthday party: falling confetti + the cheer, ~1.5s per headshot.
+  if st.bday_fx then
+    local fx = st.bday_fx
+    local COLS = { 0xff4040ff, 0x40ff40ff, 0x4080ffff, 0xffe040ff,
+                   0xff40c0ff, 0x40ffe0ff }
+    local age = 90 - fx.t
+    for i = 1, 28 do
+      local sx = (fx.seed * 37 + i * 97) % 320
+      local fall = ((fx.seed * 13 + i * 41) % 40) + 40 -- per-flake fall speed
+      local yy = math.floor(age * fall / 30) + ((i * 53) % 60) - 60
+      if yy >= 0 and yy < 240 then
+        pd.draw_box(sx, yy, 3, 3, COLS[i % #COLS + 1])
+      end
+    end
+    centered_text(40, "YAYY!", 0xffe040ff)
+  end
 end)
 
 if pd.menu_add then

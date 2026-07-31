@@ -1040,6 +1040,48 @@ static MenuItemHandlerResult menuhandlerMSAA(s32 operation, struct menuitem *ite
 	return 0;
 }
 
+// True internal render resolution (fast3d gfx_internal_res_height): the frame
+// is rasterized into an offscreen target at the chosen height (width follows
+// the window aspect) and NEAREST-upscaled to the window at present time.
+// "Native" renders at window size as before.
+static MenuItemHandlerResult menuhandlerInternalResolution(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	static const s32 heights[] = { 0, 240, 288, 360, 480, 600, 720 };
+	static const char *opts[] = {
+		"Native",
+		"240p (N64)",
+		"288p",
+		"360p",
+		"480p",
+		"600p",
+		"720p",
+	};
+	s32 cur;
+	s32 i;
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		videoSetInternalResolution(heights[data->dropdown.value]);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		cur = videoGetInternalResolution();
+		data->dropdown.value = 0;
+		for (i = 0; i < ARRAYCOUNT(heights); i++) {
+			if (heights[i] == cur) {
+				data->dropdown.value = i;
+			}
+		}
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerResolution(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static char resstring[32];
@@ -1466,6 +1508,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		(uintptr_t)"Anti-aliasing",
 		0,
 		menuhandlerMSAA,
+	},
+	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Internal Resolution",
+		0,
+		menuhandlerInternalResolution,
 	},
 #ifdef USE_SDLGPU
 	{

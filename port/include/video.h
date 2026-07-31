@@ -95,6 +95,9 @@ void videoSetDisplayMode(const s32 index);
 void videoSetVsync(const s32 vsync);
 void videoSetFramerateLimit(const s32 limit);
 void videoSetNetplayFramerateLimit(const s32 limit);
+s32 videoGetInternalResolution(void);
+void videoSetInternalResolution(const s32 height); /* true internal render height, 0 = native */
+void videoSetFpsOverride(s32 fps);                 /* chaos OG-mode hard frame cap, 0 = off */
 void videoSetDisplayFPS(const s32 displayfps);
 void videoSetMSAA(const s32 msaa);
 void videoSetGlareBrightness(f32 bright);

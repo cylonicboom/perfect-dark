@@ -15,6 +15,13 @@ struct GfxClipParameters {
 enum FilteringMode { FILTER_NONE, FILTER_LINEAR, FILTER_THREE_POINT };
 enum MipmapFilteringMode { MIPMAP_DISABLED, MIPMAP_NEAREST, MIPMAP_LINEAR };
 
+// Compact texture-upload formats for upload_texture_fmt (A19, port-only).
+// The backend must make shaders read exactly what the old RGBA32 expansion
+// produced: R8 samples as RGBA = RRRR (I4/I8), RG8 as RGBA = RRRG (IA8/IA16)
+// — both via texture swizzle — and RGBA5551 is host-endian 5551 u16s uploaded
+// natively (N64 RGBA16 bit layout).
+enum GfxTexUploadFmt { GFX_TEXFMT_R8, GFX_TEXFMT_RG8, GFX_TEXFMT_RGBA5551 };
+
 struct GfxRenderingAPI {
     const char* (*get_name)(void);
     int (*get_max_texture_size)(void);
@@ -122,6 +129,17 @@ struct GfxRenderingAPI {
 	// the driver, so it is preferred wherever it works. GL returns false on GL ES
 	// and below GLSL 130 (no gl_VertexID), where the old glPolygonMode path stays.
 	bool (*shader_wireframe_supported)(void);
+
+	// --- Compact texture uploads (A19, port-only) ---
+	// Both nullable: a backend that cannot express texture swizzle (SDL_GPU has
+	// no sampler/texture swizzle) leaves them NULL and every N64-format import
+	// keeps the legacy RGBA32 expansion. compact_texfmt_supported reports the
+	// runtime probe (GL: desktop 3.3+, where ARB_texture_swizzle is core);
+	// upload_texture_fmt uploads a tightly row-packed buffer in fmt (enum
+	// GfxTexUploadFmt) to the currently selected texture, leaving any unpack
+	// alignment state it touches restored.
+	bool (*compact_texfmt_supported)(void);
+	void (*upload_texture_fmt)(const uint8_t* buf, uint32_t width, uint32_t height, bool gen_mipmaps, int fmt);
 };
 
 #endif

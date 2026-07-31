@@ -532,7 +532,6 @@ void aEnvMixerImpl(uint8_t flags, ENVMIX_STATE state, int16_t rvol) {
     rspa.vol[1] = rvol; // why the fuck is this here?
 
     // naudio uses a linear envelope
-    // TODO: sse/neon
 
     int32_t t[2], tgt[2], rate[2];
     int16_t voldry, volwet;
@@ -561,6 +560,134 @@ void aEnvMixerImpl(uint8_t flags, ENVMIX_STATE state, int16_t rvol) {
     #define XOR 1
     #endif
 
+#if HAS_SSE41 || HAS_NEON
+    // Two-segment split: a scalar prologue while the envelopes are still ramping
+    // (the ramp clamps per sample and usually settles early in the frame), then a
+    // vector segment once both envelopes are settled and all four gains are
+    // constant. The settle test is exact: once rate[j] == 0 and t[j] >= tgt[j],
+    // the per-sample ramp step is a no-op forever (t += 0, and the
+    // "t <= tgt -> snap to tgt" branch can't fire), so skipping it cannot change
+    // the output or the savedstate write-back. Note rate == 0 with t < tgt is NOT
+    // settled (the next step snaps t to tgt). If the envelopes never settle
+    // within the frame, the prologue runs all samples and is the scalar path.
+    int i = 0;
+
+    for (; i < nsamples; ++i) {
+        if ((i & 1) == 0 &&
+            rate[0] == 0 && t[0] >= tgt[0] &&
+            rate[1] == 0 && t[1] >= tgt[1]) {
+            break; // settled, and i is pair-aligned for the XOR swizzle
+        }
+
+        int16_t gain[4];
+        int16_t vol[2];
+        int16_t *outptr[4];
+
+        for (int j = 0; j < 2; ++j) {
+            t[j] += rate[j];
+            if ((rate[j] <= 0 && t[j] <= tgt[j]) || (rate[j] > 0 && t[j] >= tgt[j])) {
+                t[j] = tgt[j];
+                rate[j] = 0;
+            }
+            vol[j] = t[j] >> 16;
+        }
+
+        outptr[0] = dry[0] + (i^XOR);
+        outptr[1] = dry[1] + (i^XOR);
+        outptr[2] = wet[0] + (i^XOR);
+        outptr[3] = wet[1] + (i^XOR);
+
+        gain[0] = clamp16((vol[0] * voldry + 0x4000) >> 15);
+        gain[1] = clamp16((vol[1] * voldry + 0x4000) >> 15);
+        gain[2] = clamp16((vol[0] * volwet + 0x4000) >> 15);
+        gain[3] = clamp16((vol[1] * volwet + 0x4000) >> 15);
+
+        const int16_t insamp = in[i^XOR];
+        for (int j = 0; j < 4; ++j) {
+            *outptr[j] = clamp16(*outptr[j] + ((insamp * gain[j]) >> 15));
+        }
+    }
+
+    if (i < nsamples) {
+        // Envelopes settled: compute the four gains once, with the exact scalar
+        // expression (including its rounding shift and clamp16).
+        const int16_t vol0 = t[0] >> 16;
+        const int16_t vol1 = t[1] >> 16;
+        const int16_t gain[4] = {
+            clamp16((vol0 * voldry + 0x4000) >> 15),
+            clamp16((vol1 * voldry + 0x4000) >> 15),
+            clamp16((vol0 * volwet + 0x4000) >> 15),
+            clamp16((vol1 * volwet + 0x4000) >> 15),
+        };
+        int16_t *outbuf[4] = { dry[0], dry[1], wet[0], wet[1] };
+
+        // The XOR swizzle is a no-op in this segment: i -> i^XOR is a bijection
+        // on any pair-aligned even-length block, applied identically to in[] and
+        // all four out[] buffers, and with constant gains the per-sample op
+        // depends only on the values at the swizzled position — so walking memory
+        // positions in linear order lands bit-identical contents at every
+        // position. i is even here and nsamples (0xB8) is even, so the remaining
+        // block is pair-aligned. No shuffles needed.
+        //
+        // Fixed-point correspondence (bit-exactness proof):
+        //   scalar accumulate: *out = clamp16(*out + ((insamp * gain) >> 15))
+        //   - the >> 15 is a TRUNCATING arithmetic shift, so the ROUNDING forms
+        //     (_mm_mulhrs_epi16 / vqrdmulhq_s16, which aMix uses for its rounding
+        //     shift) do NOT match and are not used here;
+        //   - gain is never -0x8000: the most negative pre-clamp gain value is
+        //     (-32768*32767 + 0x4000) >> 15 = -32767, so clamp16's low bound
+        //     never produces -0x8000. Hence |insamp * gain| <= 32768*32767
+        //     = 32767 << 15, so (insamp*gain) >> 15 lies in [-32767, 32767] and
+        //     fits int16 exactly;
+        //   - clamp16(int16 + int16-ranged value) == 16-bit saturating add.
+#if HAS_SSE41
+        // (insamp*gain) >> 15 in 16-bit lanes: with P = (hi << 16) + (uint16)lo,
+        // P >> 15 == (hi << 1) + ((uint16)lo >> 15) exactly (every discarded bit
+        // comes from lo, and srli is the required logical shift); the true result
+        // fits int16 (above), so the mod-2^16 lane computation is exact.
+        const __m128i gvec[4] = {
+            _mm_set1_epi16(gain[0]), _mm_set1_epi16(gain[1]),
+            _mm_set1_epi16(gain[2]), _mm_set1_epi16(gain[3]),
+        };
+        for (; nsamples - i >= 8; i += 8) {
+            const __m128i insamp = _mm_loadu_si128((const __m128i *)(in + i));
+            for (int j = 0; j < 4; ++j) {
+                __m128i o = _mm_loadu_si128((const __m128i *)(outbuf[j] + i));
+                __m128i lo = _mm_mullo_epi16(insamp, gvec[j]);
+                __m128i hi = _mm_mulhi_epi16(insamp, gvec[j]);
+                o = _mm_adds_epi16(o, _mm_add_epi16(_mm_slli_epi16(hi, 1), _mm_srli_epi16(lo, 15)));
+                _mm_storeu_si128((__m128i *)(outbuf[j] + i), o);
+            }
+        }
+#elif HAS_NEON
+        // vqdmulhq_s16(a, b) = sat((2*a*b) >> 16), TRUNCATING (the rounding
+        // variant is vqrdmulhq): floor(2ab / 2^16) == floor(ab / 2^15)
+        // == (a*b) >> 15 exactly, and the saturation case (a == b == -0x8000)
+        // cannot occur because gain is never -0x8000 (see above).
+        const int16x8_t gvec[4] = {
+            vdupq_n_s16(gain[0]), vdupq_n_s16(gain[1]),
+            vdupq_n_s16(gain[2]), vdupq_n_s16(gain[3]),
+        };
+        for (; nsamples - i >= 8; i += 8) {
+            const int16x8_t insamp = vld1q_s16(in + i);
+            for (int j = 0; j < 4; ++j) {
+                int16x8_t o = vld1q_s16(outbuf[j] + i);
+                o = vqaddq_s16(o, vqdmulhq_s16(insamp, gvec[j]));
+                vst1q_s16(outbuf[j] + i, o);
+            }
+        }
+#endif
+        // scalar tail (< 8 samples): same constant-gain op, linear positions
+        // (the remaining block is still pair-aligned, so the swizzle no-op
+        // argument above still applies)
+        for (; i < nsamples; ++i) {
+            const int16_t insamp = in[i];
+            for (int j = 0; j < 4; ++j) {
+                outbuf[j][i] = clamp16(outbuf[j][i] + ((insamp * gain[j]) >> 15));
+            }
+        }
+    }
+#else
     for (int i = 0; i < nsamples; ++i) {
         int16_t gain[4];
         int16_t vol[2];
@@ -590,6 +717,7 @@ void aEnvMixerImpl(uint8_t flags, ENVMIX_STATE state, int16_t rvol) {
             *outptr[j] = clamp16(*outptr[j] + ((insamp * gain[j]) >> 15));
         }
     }
+#endif
 
     #undef XOR
 

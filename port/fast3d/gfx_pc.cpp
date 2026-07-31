@@ -1171,6 +1171,19 @@ static void gfx_upload_tex_filtered(uint32_t width, uint32_t height, bool gen_mi
     gfx_rapi->upload_texture(tex_upload_buffer, width, height, gen_mipmaps);
 }
 
+// A19 (port-only): when the backend accepts compact single/dual-channel or
+// 5551 uploads (GL desktop 3.3+; SDL_GPU has no texture swizzle and leaves the
+// entries NULL), skip the CPU RGBA32 expansion entirely. Disabled while any
+// chaos flat-texture mode is active: gfx_upload_tex_filtered munges the upload
+// buffer in place assuming 4 bytes per texel (the mode toggle clears the
+// texture cache both ways, so no stale-format textures survive a switch).
+static inline bool gfx_compact_upload_usable(void) {
+    return gfx_flattex_mode == 0
+        && gfx_rapi->upload_texture_fmt != NULL
+        && gfx_rapi->compact_texfmt_supported != NULL
+        && gfx_rapi->compact_texfmt_supported();
+}
+
 static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture, bool gen_mipmaps) {
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -1180,6 +1193,20 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
     // SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
     // TODO: this trips in some places with a garbage size in full_image_line_size_bytes
     // probably wherever framebuffer effects are used
+
+    if (gfx_compact_upload_usable()) {
+        // A19: the N64 RGBA16 bit layout (R 15-11, G 10-6, B 5-1, A 0) is
+        // exactly GL's UNSIGNED_SHORT_5_5_5_1 packing — byteswap the
+        // big-endian u16s to host order and upload 2 bytes/texel directly.
+        uint16_t* dest16 = (uint16_t*)tex_upload_buffer;
+        for (uint32_t i = 0; i < size_bytes / 2; i++) {
+            dest16[i] = (uint16_t)((addr[2 * i] << 8) | addr[2 * i + 1]);
+        }
+        const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
+        const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
+        gfx_rapi->upload_texture_fmt(tex_upload_buffer, width, height, gen_mipmaps, GFX_TEXFMT_RGBA5551);
+        return;
+    }
 
     uint8_t *dest = tex_upload_buffer;
     for (uint32_t i = 0; i < size_bytes / 2; i++, dest += 4) {
@@ -1260,6 +1287,20 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
+    if (gfx_compact_upload_usable()) {
+        // A19: expand the 4+4 nibbles to one RG8 pair per texel (2 bytes
+        // instead of 4); the backend swizzles RGBA = RRRG.
+        uint8_t* dest2 = tex_upload_buffer;
+        for (uint32_t i = 0; i < size_bytes; i++, dest2 += 2) {
+            dest2[0] = SCALE_4_8(addr[i] >> 4);
+            dest2[1] = SCALE_4_8(addr[i] & 0xf);
+        }
+        const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
+        const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
+        gfx_rapi->upload_texture_fmt(tex_upload_buffer, width, height, gen_mipmaps, GFX_TEXFMT_RG8);
+        return;
+    }
+
     uint8_t *dest = tex_upload_buffer;
     for (uint32_t i = 0; i < size_bytes; i++, dest += 4) {
         const uint8_t intensity = SCALE_4_8(addr[i] >> 4);
@@ -1285,6 +1326,16 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
         loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
+
+    if (gfx_compact_upload_usable()) {
+        // A19: IA16's byte pairs (intensity, alpha) already ARE tightly packed
+        // RG8 — upload straight from the source, zero CPU conversion; the
+        // backend swizzles RGBA = RRRG.
+        const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
+        const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
+        gfx_rapi->upload_texture_fmt(addr, width, height, gen_mipmaps, GFX_TEXFMT_RG8);
+        return;
+    }
 
     uint8_t *dest = tex_upload_buffer;
     for (uint32_t i = 0; i < size_bytes / 2; i++, dest += 4) {
@@ -1312,6 +1363,21 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
+    if (gfx_compact_upload_usable()) {
+        // A19: expand nibbles to one R8 byte per texel (1 byte instead of 4);
+        // the backend swizzles RGBA = RRRR (alpha = intensity, matching the
+        // legacy expansion below).
+        for (uint32_t i = 0; i < size_bytes * 2; i++) {
+            const uint8_t byte = addr[i / 2];
+            const uint8_t part = (byte >> (4 - (i % 2) * 4)) & 0xf;
+            tex_upload_buffer[i] = SCALE_4_8(part);
+        }
+        const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
+        const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
+        gfx_rapi->upload_texture_fmt(tex_upload_buffer, width, height, gen_mipmaps, GFX_TEXFMT_R8);
+        return;
+    }
+
     uint8_t *dest = tex_upload_buffer;
     for (uint32_t i = 0; i < size_bytes * 2; i++, dest += 4) {
         const uint8_t byte = addr[i / 2];
@@ -1338,6 +1404,16 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
         loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
+
+    if (gfx_compact_upload_usable()) {
+        // A19: I8 already IS tightly packed R8 — upload straight from the
+        // source, zero CPU conversion; the backend swizzles RGBA = RRRR
+        // (alpha = intensity, matching the legacy expansion below).
+        const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
+        const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
+        gfx_rapi->upload_texture_fmt(addr, width, height, gen_mipmaps, GFX_TEXFMT_R8);
+        return;
+    }
 
     uint8_t *dest = tex_upload_buffer;
     for (uint32_t i = 0; i < size_bytes; i++, dest += 4) {

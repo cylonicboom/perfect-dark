@@ -98,6 +98,8 @@ static char gl_glsl_version_str[16] = "130";
 static GLenum gl_mirror_clamp = GL_MIRROR_CLAMP_TO_EDGE;
 static bool gl_es = false;
 static bool gl_core_profile = false;
+// A19: compact texture uploads (R8/RG8/5551 + texture swizzle); probed at init.
+static bool gl_compact_texfmt = false;
 
 // Tracks whether the most recently set depth mode has depth testing enabled.
 // Used to restrict wireframe (CHEAT_WIREFRAME) to 3D geometry: depth-tested
@@ -582,6 +584,242 @@ static void append_formula(char* buf, size_t* len, uint8_t c[2][4], bool do_sing
     }
 }
 
+// ---------------------------------------------------------------------------
+// GL program binary disk cache (round-2 A18). Mirrors the SDL_GPU shader
+// cache (gfx_sdlgpu_shader.cpp): one versioned append-only file in the home
+// dir, loaded at init, appended after every fresh link. On later runs
+// glProgramBinary skips the driver's GLSL compile+link — the mid-gameplay
+// hitch when a new combiner permutation first appears. Disable with
+// --no-shader-cache (the same flag the SDL_GPU cache reads). BUMP
+// GL_PROGBIN_VERSION whenever the GLSL generator below changes — the file
+// header's driver hash catches GPU/driver/profile changes, the version
+// catches ours. Any load failure (missing GL 4.1/ES 3.0 entry points, zero
+// binary formats, stale binary the hash missed, driver refusal) falls back
+// silently to the source compile path.
+
+#define GL_PROGBIN_MAGIC 0x4C474450u // 'PDGL'
+#define GL_PROGBIN_VERSION 1u        // v1: initial (palette/uniform-cache era codegen)
+#define GL_PROGBIN_MAX_BYTES (1u << 24)
+
+struct GlProgBinKey {
+    uint64_t id0;
+    uint32_t id1;
+    uint8_t filter; // 1 = three-point (changes FS codegen), 0 = everything else
+    bool operator<(const GlProgBinKey &o) const {
+        if (id0 != o.id0) return id0 < o.id0;
+        if (id1 != o.id1) return id1 < o.id1;
+        return filter < o.filter;
+    }
+};
+
+struct GlProgBinRecHdr {
+    uint64_t id0;
+    uint32_t id1;
+    uint32_t binary_format; // GLenum reported by glGetProgramBinary
+    uint32_t bytes;
+    uint8_t filter;
+    uint8_t pad[3];
+};
+SDL_COMPILE_TIME_ASSERT(gl_progbin_rec_hdr, sizeof(struct GlProgBinRecHdr) == 24);
+
+struct GlProgBinBlob {
+    GLenum binary_format;
+    std::vector<uint8_t> data;
+};
+
+static std::map<GlProgBinKey, GlProgBinBlob> s_progbin_cache;
+static char s_progbin_path[1024];
+static bool s_progbin_enabled;
+static uint32_t s_progbin_driver_hash;
+
+static uint8_t gl_progbin_filter_tag(void) {
+    // Only FILTER_THREE_POINT changes the generated GLSL; LINEAR and NEAREST
+    // produce identical source (they differ in sampler params only).
+    return current_filter_mode == FILTER_THREE_POINT ? 1 : 0;
+}
+
+// FNV-1a over a string, plus a terminator mix so "ab"+"c" != "a"+"bc"
+static uint32_t gl_progbin_hash_str(uint32_t h, const char *s) {
+    for (; s && *s; ++s) {
+        h = (h ^ (uint8_t)*s) * 16777619u;
+    }
+    return (h ^ 0xffu) * 16777619u;
+}
+
+// rewrite the file from the in-memory map (fresh header + all records)
+static void gl_progbin_rewrite(void) {
+    FILE *f = fopen(s_progbin_path, "wb");
+    if (!f) {
+        sysLogPrintf(LOG_WARNING, "GL: cannot write program binary cache %s", s_progbin_path);
+        s_progbin_enabled = false;
+        return;
+    }
+    const uint32_t magic = GL_PROGBIN_MAGIC, ver = GL_PROGBIN_VERSION;
+    fwrite(&magic, sizeof(magic), 1, f);
+    fwrite(&ver, sizeof(ver), 1, f);
+    fwrite(&s_progbin_driver_hash, sizeof(s_progbin_driver_hash), 1, f);
+    for (const auto &it : s_progbin_cache) {
+        GlProgBinRecHdr h;
+        memset(&h, 0, sizeof(h));
+        h.id0 = it.first.id0;
+        h.id1 = it.first.id1;
+        h.binary_format = (uint32_t)it.second.binary_format;
+        h.bytes = (uint32_t)it.second.data.size();
+        h.filter = it.first.filter;
+        fwrite(&h, sizeof(h), 1, f);
+        if (!it.second.data.empty()) {
+            fwrite(it.second.data.data(), 1, it.second.data.size(), f);
+        }
+    }
+    fclose(f);
+}
+
+static void gl_progbin_load(void) {
+    bool valid = false;
+    bool tail_corrupt = false;
+
+    FILE *f = fopen(s_progbin_path, "rb");
+    if (f) {
+        uint32_t magic = 0, ver = 0, dhash = 0;
+        if (fread(&magic, sizeof(magic), 1, f) == 1 && fread(&ver, sizeof(ver), 1, f) == 1 &&
+            fread(&dhash, sizeof(dhash), 1, f) == 1 &&
+            magic == GL_PROGBIN_MAGIC && ver == GL_PROGBIN_VERSION && dhash == s_progbin_driver_hash) {
+            valid = true;
+            for (;;) {
+                GlProgBinRecHdr h;
+                if (fread(&h, sizeof(h), 1, f) != 1) {
+                    break; // clean EOF (or partial header: nothing usable follows)
+                }
+                if (h.bytes == 0 || h.bytes > GL_PROGBIN_MAX_BYTES) {
+                    tail_corrupt = true;
+                    break;
+                }
+                GlProgBinBlob b;
+                b.binary_format = (GLenum)h.binary_format;
+                b.data.resize(h.bytes);
+                if (fread(b.data.data(), 1, h.bytes, f) != h.bytes) {
+                    tail_corrupt = true; // truncated write (crash mid-append)
+                    break;
+                }
+                s_progbin_cache[{ h.id0, h.id1, h.filter }] = std::move(b);
+            }
+        }
+        fclose(f);
+    }
+
+    if (!valid || tail_corrupt) {
+        // missing/old-version/new-driver/corrupt: start (or compact to) a clean file
+        gl_progbin_rewrite();
+    }
+
+    if (!s_progbin_cache.empty()) {
+        sysLogPrintf(LOG_NOTE, "GL: program binary cache: %d entries", (int)s_progbin_cache.size());
+    }
+}
+
+// Returns a linked program built from a cached binary, or 0 on any failure
+// (miss, or the driver rejected the blob — then the entry is dropped so the
+// fresh link that follows re-stores a good one).
+static GLuint gl_progbin_try_load(uint64_t shader_id0, uint32_t shader_id1) {
+    if (!s_progbin_enabled) {
+        return 0;
+    }
+    const GlProgBinKey key = { shader_id0, shader_id1, gl_progbin_filter_tag() };
+    auto it = s_progbin_cache.find(key);
+    if (it == s_progbin_cache.end()) {
+        return 0;
+    }
+    GLuint prog = glCreateProgram();
+    glProgramBinary(prog, it->second.binary_format, it->second.data.data(), (GLsizei)it->second.data.size());
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        glDeleteProgram(prog);
+        s_progbin_cache.erase(it);
+        return 0;
+    }
+    return prog;
+}
+
+static void gl_progbin_store(uint64_t shader_id0, uint32_t shader_id1, GLuint prog) {
+    if (!s_progbin_enabled) {
+        return;
+    }
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        return; // never cache a broken link
+    }
+    GLint blen = 0;
+    glGetProgramiv(prog, GL_PROGRAM_BINARY_LENGTH, &blen);
+    if (blen <= 0 || (uint32_t)blen > GL_PROGBIN_MAX_BYTES) {
+        return;
+    }
+    GlProgBinBlob b;
+    b.data.resize((size_t)blen);
+    GLsizei got = 0;
+    GLenum fmt = 0;
+    glGetProgramBinary(prog, blen, &got, &fmt, b.data.data());
+    if (got <= 0 || got > blen) {
+        return;
+    }
+    b.data.resize((size_t)got);
+    b.binary_format = fmt;
+
+    const GlProgBinKey key = { shader_id0, shader_id1, gl_progbin_filter_tag() };
+
+    FILE *f = fopen(s_progbin_path, "ab");
+    if (f) {
+        GlProgBinRecHdr h;
+        memset(&h, 0, sizeof(h));
+        h.id0 = key.id0;
+        h.id1 = key.id1;
+        h.binary_format = (uint32_t)fmt;
+        h.bytes = (uint32_t)b.data.size();
+        h.filter = key.filter;
+        fwrite(&h, sizeof(h), 1, f);
+        fwrite(b.data.data(), 1, b.data.size(), f);
+        fclose(f);
+    }
+
+    s_progbin_cache[key] = std::move(b);
+}
+
+static void gl_progbin_init(void) {
+    s_progbin_enabled = false;
+    if (sysArgCheck("--no-shader-cache")) {
+        return; // shared flag with the SDL_GPU shader cache
+    }
+    // glad only loads these entry points on GL 4.1+ / ES 3.0+ contexts
+    // (ARB_get_program_binary's functions carry no suffix, so the loader's
+    // postfix fallback can't help on older contexts).
+    if (!glad_glGetProgramBinary || !glad_glProgramBinary || !glad_glProgramParameteri) {
+        return;
+    }
+    GLint numfmt = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &numfmt);
+    if (numfmt <= 0) {
+        return;
+    }
+
+    // Cache key namespace: bind the whole file to this driver + GPU + context
+    // flavour. gl_glsl_version_str also folds in core/compat/ES, which changes
+    // the generated GLSL for the same driver strings.
+    uint32_t h = 2166136261u;
+    h = gl_progbin_hash_str(h, (const char *)glGetString(GL_VENDOR));
+    h = gl_progbin_hash_str(h, (const char *)glGetString(GL_RENDERER));
+    h = gl_progbin_hash_str(h, (const char *)glGetString(GL_VERSION));
+    h = gl_progbin_hash_str(h, gl_glsl_version_str);
+    s_progbin_driver_hash = h;
+
+    char home[960];
+    home[0] = '\0';
+    sysGetHomePath(home, sizeof(home) - 1);
+    snprintf(s_progbin_path, sizeof(s_progbin_path), "%s/shadercache_gl.bin", home);
+    s_progbin_enabled = true;
+    gl_progbin_load();
+}
+
 static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
     struct CCFeatures cc_features = { 0 };
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
@@ -1004,41 +1242,53 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     const GLint lengths[2] = { (GLint)vs_len, (GLint)fs_len };
     GLint success;
 
-    GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertex_shader, 1, &sources[0], &lengths[0]);
-    glCompileShader(vertex_shader);
-    glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        GLint max_length = 1024;
-        glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &max_length);
-        char error_log[1024];
-        glGetShaderInfoLog(vertex_shader, max_length, &max_length, &error_log[0]);
-        sysLogPrintf(LOG_ERROR, "Failed to compile this vertex shader (ID %llx, %x):\n%s", shader_id0, shader_id1, vs_buf);
-        sysFatalError("Vertex shader compilation failed:\n%s", error_log);
+    // A18: program binary cache hit skips the driver compile+link entirely;
+    // 0 (miss or rejected binary) falls through to the source path.
+    GLuint shader_program = gl_progbin_try_load(shader_id0, shader_id1);
+    if (shader_program == 0) {
+        GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vertex_shader, 1, &sources[0], &lengths[0]);
+        glCompileShader(vertex_shader);
+        glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
+        if (!success) {
+            GLint max_length = 1024;
+            glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &max_length);
+            char error_log[1024];
+            glGetShaderInfoLog(vertex_shader, max_length, &max_length, &error_log[0]);
+            sysLogPrintf(LOG_ERROR, "Failed to compile this vertex shader (ID %llx, %x):\n%s", shader_id0, shader_id1, vs_buf);
+            sysFatalError("Vertex shader compilation failed:\n%s", error_log);
+        }
+
+        GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fragment_shader, 1, &sources[1], &lengths[1]);
+        glCompileShader(fragment_shader);
+        glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
+        if (!success) {
+            GLint max_length = 1024;
+            glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &max_length);
+            char error_log[1024];
+            glGetShaderInfoLog(fragment_shader, max_length, &max_length, &error_log[0]);
+            sysLogPrintf(LOG_ERROR, "Failed to compile this fragment shader (ID %llx, %x):\n%s", shader_id0, shader_id1, fs_buf);
+            sysFatalError("Fragment shader compilation failed:\n%s", error_log);
+        }
+
+        shader_program = glCreateProgram();
+        glAttachShader(shader_program, vertex_shader);
+        glAttachShader(shader_program, fragment_shader);
+        if (s_progbin_enabled) {
+            // must be set before the link for glGetProgramBinary to be
+            // guaranteed to return a usable blob
+            glProgramParameteri(shader_program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+        }
+        glLinkProgram(shader_program);
+
+        glDetachShader(shader_program, vertex_shader);
+        glDetachShader(shader_program, fragment_shader);
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+
+        gl_progbin_store(shader_id0, shader_id1, shader_program);
     }
-
-    GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragment_shader, 1, &sources[1], &lengths[1]);
-    glCompileShader(fragment_shader);
-    glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        GLint max_length = 1024;
-        glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &max_length);
-        char error_log[1024];
-        glGetShaderInfoLog(fragment_shader, max_length, &max_length, &error_log[0]);
-        sysLogPrintf(LOG_ERROR, "Failed to compile this fragment shader (ID %llx, %x):\n%s", shader_id0, shader_id1, fs_buf);
-        sysFatalError("Fragment shader compilation failed:\n%s", error_log);
-    }
-
-    GLuint shader_program = glCreateProgram();
-    glAttachShader(shader_program, vertex_shader);
-    glAttachShader(shader_program, fragment_shader);
-    glLinkProgram(shader_program);
-
-    glDetachShader(shader_program, vertex_shader);
-    glDetachShader(shader_program, fragment_shader);
-    glDeleteShader(vertex_shader);
-    glDeleteShader(fragment_shader);
 
     size_t cnt = 0;
 
@@ -1217,11 +1467,63 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, bool gen_mipmaps) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
+    if (gl_compact_texfmt) {
+        // A19: texture ids are recycled through gfx_pc's free pool, so a
+        // previous life as an R8/RG8 compact texture may have left a swizzle
+        // on this object — reset to identity on every RGBA upload.
+        static const GLint swz_ident[4] = { GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA };
+        glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swz_ident);
+    }
 	// Note: FILTER_THREE_POINT no longer forces mipmap generation — its
 	// min_filters row is all GL_NEAREST, so the chain was never sampled (A17).
 	if (gen_mipmaps) {
 		glGenerateMipmap(GL_TEXTURE_2D);
 	}
+}
+
+// A19: compact upload — buf is tightly row-packed in fmt (GfxTexUploadFmt);
+// the per-texture swizzle makes every shader read exactly what the legacy
+// RGBA32 expansion produced (R8 -> RRRR intensity, RG8 -> RRRG intensity+
+// alpha, 5551 native). Only called when compact_texfmt_supported() was true.
+static void gfx_opengl_upload_texture_fmt(const uint8_t* buf, uint32_t width, uint32_t height, bool gen_mipmaps,
+                                          int fmt) {
+    static const GLint swz_rrrr[4] = { GL_RED, GL_RED, GL_RED, GL_RED };
+    static const GLint swz_rrrg[4] = { GL_RED, GL_RED, GL_RED, GL_GREEN };
+    static const GLint swz_ident[4] = { GL_RED, GL_GREEN, GL_BLUE, GL_ALPHA };
+    GLint internal;
+    GLenum format, type;
+    const GLint* swz;
+    switch (fmt) {
+        case GFX_TEXFMT_R8:
+            internal = GL_R8;
+            format = GL_RED;
+            type = GL_UNSIGNED_BYTE;
+            swz = swz_rrrr;
+            break;
+        case GFX_TEXFMT_RG8:
+            internal = GL_RG8;
+            format = GL_RG;
+            type = GL_UNSIGNED_BYTE;
+            swz = swz_rrrg;
+            break;
+        default: // GFX_TEXFMT_RGBA5551
+            internal = GL_RGB5_A1;
+            format = GL_RGBA;
+            type = GL_UNSIGNED_SHORT_5_5_5_1;
+            swz = swz_ident; // still reset: the id may have been R8/RG8 before
+            break;
+    }
+    // Rows are tightly packed at 1/2 bytes per texel, so odd widths violate
+    // the default 4-byte GL_UNPACK_ALIGNMENT — drop it to 1 for the upload and
+    // restore the default (the RGBA/ext-PNG path has 4-byte texels and never
+    // notices either value).
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, width, height, 0, format, type, buf);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swz);
+    if (gen_mipmaps) {
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
 }
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -1790,6 +2092,18 @@ static void gfx_opengl_init(void) {
     }
     sysLogPrintf(LOG_NOTE, "GL: using GLSL version %s", gl_glsl_version_str);
 
+    // A18: program binary disk cache — after the GLSL version string is
+    // final (it is part of the cache's driver hash)
+    gl_progbin_init();
+
+    // A19: compact texture uploads need GL_TEXTURE_SWIZZLE_RGBA — core since
+    // desktop 3.3 (ARB_texture_swizzle; this glad build carries no flag for
+    // the extension, so the version check is the probe). GL ES only has the
+    // split per-channel swizzle enums — not worth a second path, so ES keeps
+    // the RGBA32 expansion.
+    gl_compact_texfmt = !gl_es && (GLVersion.major > 3 || (GLVersion.major == 3 && GLVersion.minor >= 3));
+    sysLogPrintf(LOG_NOTE, "GL: compact texture uploads (R8/RG8/5551): %s", gl_compact_texfmt ? "yes" : "no");
+
     glGenBuffers(1, &opengl_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
     gfx_opengl_vtx_ring_init(); // may promote opengl_vbo into the persistent-mapped ring (A4)
@@ -2140,6 +2454,11 @@ static bool gfx_opengl_shader_wireframe_supported(void) {
     return !gl_es && gl_glsl_version >= 130;
 }
 
+// A19: probed once in gfx_opengl_init (desktop GL 3.3+ = texture swizzle core).
+static bool gfx_opengl_compact_texfmt_supported(void) {
+    return gl_compact_texfmt;
+}
+
 struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_get_name,
     gfx_opengl_get_max_texture_size,
@@ -2195,5 +2514,7 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_set_shade_routing,
     gfx_opengl_rt_resolve,
     gfx_opengl_retro_filter,
-    gfx_opengl_shader_wireframe_supported
+    gfx_opengl_shader_wireframe_supported,
+    gfx_opengl_compact_texfmt_supported, // A19 compact texture uploads
+    gfx_opengl_upload_texture_fmt,
 };

@@ -706,45 +706,22 @@ static void ensure_pass(void) {
 // ---------------------------------------------------------------------------
 // pipelines
 
-static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = false) {
-    const GpuFb &fb = fbs[st.cur_fb];
-    const bool has_depth = fb.depth != NULL;
-    // Cached draws stay solid under the wireframe cheat (parity with GL,
-    // where glPolygonMode wireframe only wraps draw_triangles). force_line is
-    // the iPod-Ad white-edge second pass (line-mode over the flat fill).
-    // Wireframe is drawn by the SHADER (SHADER_OPT_WIREFRAME barycentric edge
-    // test), so geometry stays FILLED — hardware line mode can't do thickness
-    // here and would double up with the shader outline. force_line is the
-    // iPod-Ad white-edge second pass, which still uses real line mode.
-    const bool fill_line = !cached && st.depth_test && force_line;
-    // Backface culling exists only on the cached path (the immediate path is
-    // CPU-culled by gfx_pc); set by cache_set_cull per replay segment.
-    const uint32_t cull = cached ? st.cull_mode : 0;
-    const bool front_ccw = cached ? st.front_ccw : true;
-
-    const uint32_t sample_bits = fb.msaa >= 8 ? 3 : fb.msaa >= 4 ? 2 : fb.msaa >= 2 ? 1 : 0;
-
-    PipelineKey k;
-    k.prg = st.prg;
-    k.flags = (uint32_t)st.blend |
-              ((uint32_t)st.depth_test << 2) |
-              ((uint32_t)st.depth_write << 3) |
-              ((uint32_t)st.depth_func << 4) |
-              ((uint32_t)st.depth_bias << 6) |
-              ((uint32_t)fill_line << 7) |
-              ((uint32_t)has_depth << 8) |
-              ((uint32_t)cached << 9) |
-              (cull << 10) |
-              ((uint32_t)front_ccw << 12) |
-              (sample_bits << 13);
-    k.color_fmt = (uint32_t)gpu.fb_format;
-
-    auto it = pipeline_cache.find(k);
-    if (it != pipeline_cache.end()) {
-        return it->second;
-    }
-
-    struct ShaderProgram *prg = st.prg;
+// Build a pipeline for a fully-populated key. Every input is decoded from
+// the key itself (A18: the warm-up path creates pipelines for states that
+// are not currently bound in st), so this must never read st.
+static SDL_GPUGraphicsPipeline *pipeline_create(const PipelineKey &k) {
+    struct ShaderProgram *prg = k.prg;
+    const uint32_t blend = k.flags & 3;
+    const bool depth_test = (k.flags >> 2) & 1;
+    const bool depth_write = (k.flags >> 3) & 1;
+    const uint32_t depth_func = (k.flags >> 4) & 3;
+    const bool depth_bias = (k.flags >> 6) & 1;
+    const bool fill_line = (k.flags >> 7) & 1;
+    const bool has_depth = (k.flags >> 8) & 1;
+    const bool cached = (k.flags >> 9) & 1;
+    const uint32_t cull = (k.flags >> 10) & 3;
+    const bool front_ccw = (k.flags >> 12) & 1;
+    const uint32_t msaa = 1u << ((k.flags >> 13) & 3);
 
     // cached vertex layout has a trailing aShadeIdx float (palette index)
     SDL_GPUVertexBufferDescription vbd;
@@ -794,7 +771,7 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = 
                                   : cull == 2 ? SDL_GPU_CULLMODE_FRONT
                                               : SDL_GPU_CULLMODE_NONE;
     ci.rasterizer_state.front_face = front_ccw ? SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE : SDL_GPU_FRONTFACE_CLOCKWISE;
-    if (st.depth_bias) {
+    if (depth_bias) {
         // ZMODE_DEC decals; replaces glPolygonOffset(-2, -2)
         ci.rasterizer_state.enable_depth_bias = true;
         ci.rasterizer_state.depth_bias_constant_factor = -2.0f;
@@ -803,12 +780,12 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = 
     // depth clamp (GL_DEPTH_CLAMP equivalent) so near gun geometry isn't clipped
     ci.rasterizer_state.enable_depth_clip = false;
 
-    ci.multisample_state.sample_count = msaa_to_enum(fb.msaa);
+    ci.multisample_state.sample_count = msaa_to_enum(msaa);
 
-    const bool depth_on = st.depth_test && has_depth;
+    const bool depth_on = depth_test && has_depth;
     ci.depth_stencil_state.enable_depth_test = depth_on;
-    ci.depth_stencil_state.enable_depth_write = depth_on && st.depth_write;
-    switch (depth_on ? st.depth_func : DF_ALWAYS) {
+    ci.depth_stencil_state.enable_depth_write = depth_on && depth_write;
+    switch (depth_on ? depth_func : (uint32_t)DF_ALWAYS) {
         case DF_LEQUAL: ci.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL; break;
         case DF_LESS:   ci.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS; break;
         default:        ci.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS; break;
@@ -817,11 +794,11 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = 
     SDL_GPUColorTargetDescription ctd;
     SDL_zero(ctd);
     ctd.format = (SDL_GPUTextureFormat)k.color_fmt;
-    if (st.blend != 0) {
+    if (blend != 0) {
         ctd.blend_state.enable_blend = true;
         ctd.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         ctd.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        if (st.blend == 2) {
+        if (blend == 2) {
             // GL modulate: glBlendFunc(GL_DST_COLOR, GL_ZERO)
             ctd.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_DST_COLOR;
             ctd.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
@@ -845,12 +822,114 @@ static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = 
     if (!p) {
         sysLogPrintf(LOG_ERROR, "SDL_GPU: pipeline creation failed (ID %llx, %x, flags %x): %s",
                      (unsigned long long)prg->shader_id0, prg->shader_id1, k.flags, SDL_GetError());
-    } else if (fb.msaa > 1 && !gpu.dbg_msaa_pipeline_logged) {
+    } else if (msaa > 1 && !gpu.dbg_msaa_pipeline_logged) {
         gpu.dbg_msaa_pipeline_logged = true;
-        sysLogPrintf(LOG_NOTE, "SDL_GPU: first %ux-msaa pipeline created", fb.msaa);
+        sysLogPrintf(LOG_NOTE, "SDL_GPU: first %ux-msaa pipeline created", msaa);
     }
+    return p;
+}
+
+static SDL_GPUGraphicsPipeline *pipeline_resolve(bool cached, bool force_line = false) {
+    const GpuFb &fb = fbs[st.cur_fb];
+    const bool has_depth = fb.depth != NULL;
+    // Cached draws stay solid under the wireframe cheat (parity with GL,
+    // where glPolygonMode wireframe only wraps draw_triangles). force_line is
+    // the iPod-Ad white-edge second pass (line-mode over the flat fill).
+    // Wireframe is drawn by the SHADER (SHADER_OPT_WIREFRAME barycentric edge
+    // test), so geometry stays FILLED — hardware line mode can't do thickness
+    // here and would double up with the shader outline. force_line is the
+    // iPod-Ad white-edge second pass, which still uses real line mode.
+    const bool fill_line = !cached && st.depth_test && force_line;
+    // Backface culling exists only on the cached path (the immediate path is
+    // CPU-culled by gfx_pc); set by cache_set_cull per replay segment.
+    const uint32_t cull = cached ? st.cull_mode : 0;
+    const bool front_ccw = cached ? st.front_ccw : true;
+
+    const uint32_t sample_bits = fb.msaa >= 8 ? 3 : fb.msaa >= 4 ? 2 : fb.msaa >= 2 ? 1 : 0;
+
+    PipelineKey k;
+    k.prg = st.prg;
+    k.flags = (uint32_t)st.blend |
+              ((uint32_t)st.depth_test << 2) |
+              ((uint32_t)st.depth_write << 3) |
+              ((uint32_t)st.depth_func << 4) |
+              ((uint32_t)st.depth_bias << 6) |
+              ((uint32_t)fill_line << 7) |
+              ((uint32_t)has_depth << 8) |
+              ((uint32_t)cached << 9) |
+              (cull << 10) |
+              ((uint32_t)front_ccw << 12) |
+              (sample_bits << 13);
+    k.color_fmt = (uint32_t)gpu.fb_format;
+
+    auto it = pipeline_cache.find(k);
+    if (it != pipeline_cache.end()) {
+        return it->second;
+    }
+
+    SDL_GPUGraphicsPipeline *p = pipeline_create(k);
     pipeline_cache[k] = p;
     return p;
+}
+
+// A18: pre-create the pipeline permutations a fresh shader is overwhelmingly
+// likely to be drawn with, so SDL_CreateGPUGraphicsPipeline (a multi-ms PSO
+// compile on D3D12) runs once here — at shader creation — instead of as
+// scattered mid-frame hitches on each first use of a new state combo. Keyed
+// to the CURRENT framebuffer's sample count/depth and the current swapchain
+// format; everything else (fb-format/msaa changes, fill_line, depth-bias
+// decals, modulate blend, mirror-mode front_cw, front-cull) still resolves
+// lazily in pipeline_resolve exactly as before. DF_LESS is the dominant
+// depth func (ZMODE_OPA/XLU with pixel z-source); it is also the likeliest
+// stale func value carried in depth-off keys.
+static void pipeline_warmup(struct ShaderProgram *prg) {
+    if (fbs.empty() || !prg->vs || !prg->fs) {
+        return;
+    }
+    const GpuFb &fb = fbs[st.cur_fb];
+    const bool has_depth = fb.depth != NULL;
+    const uint32_t sample_bits = fb.msaa >= 8 ? 3 : fb.msaa >= 4 ? 2 : fb.msaa >= 2 ? 1 : 0;
+
+    // (blend, depth_test, depth_write) triplets that actually occur: opaque
+    // world, alpha-blended world, XLU (no z-write), and the 2D/HUD depth-off
+    // states. depth_write is a stale don't-care bit in the key when the test
+    // is off (set_depth_mode only writes it while testing), so both values
+    // show up — warm each.
+    static const struct { uint8_t blend, test, write; } combos[] = {
+        { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 },              // 3D
+        { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 0 }, { 0, 0, 1 }, // 2D/HUD
+    };
+
+    for (uint32_t cached = 0; cached <= 1; cached++) {
+        if (cached && !prg->vs_cached) {
+            continue;
+        }
+        // immediate draws are CPU-culled (cull always 0); dlcache replay uses
+        // none/back with CCW front (cache_set_cull)
+        const uint32_t num_culls = cached ? 2 : 1;
+        for (uint32_t cull = 0; cull < num_culls; cull++) {
+            for (const auto &c : combos) {
+                if (cached && !c.test) {
+                    continue; // dlcache replay is world geometry: always depth-tested
+                }
+                PipelineKey k;
+                k.prg = prg;
+                k.flags = (uint32_t)c.blend |
+                          ((uint32_t)c.test << 2) |
+                          ((uint32_t)c.write << 3) |
+                          ((uint32_t)DF_LESS << 4) |
+                          ((uint32_t)has_depth << 8) |
+                          (cached << 9) |
+                          (cull << 10) |
+                          (1u << 12) | // front_ccw
+                          (sample_bits << 13);
+                k.color_fmt = (uint32_t)gpu.fb_format;
+                if (pipeline_cache.find(k) == pipeline_cache.end()) {
+                    pipeline_cache[k] = pipeline_create(k);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +962,7 @@ static struct ShaderProgram *gfx_sdlgpu_create_and_load_new_shader(uint64_t shad
         sysFatalError("SDL_GPU: shader compilation failed (ID %llx, %x), see log",
                       (unsigned long long)shader_id0, shader_id1);
     }
+    pipeline_warmup(prg); // A18: pre-create the common pipeline permutations
     st.prg = prg;
     return prg;
 }
@@ -1368,9 +1448,10 @@ void gfx_sdlgpu_get_info(char *buf, unsigned int len) {
     } else {
         snprintf(hdrbuf, sizeof(hdrbuf), "hdr %s", gpu.hdr_requested ? "unavailable" : "off");
     }
-    snprintf(buf, len, "driver %s, shaders %s, msaa %ux (req %ux), vsync %d, %s, shader cache %s, %s, draws msaa/1x %u/%u",
+    snprintf(buf, len, "driver %s, shaders %s, msaa %ux (req %ux), vsync %d, %s, shader cache %s, pipelines %u, %s, draws msaa/1x %u/%u",
              SDL_GetGPUDeviceDriver(gpu.device), gfx_sdlgpu_shader_format_name(),
-             msaa_clamp(gfx_msaa_level), gfx_msaa_level, gpu.swap_interval, hdrbuf, cachebuf, xlate,
+             msaa_clamp(gfx_msaa_level), gfx_msaa_level, gpu.swap_interval, hdrbuf, cachebuf,
+             (unsigned)pipeline_cache.size(), xlate,
              gpu.dbg_last_msaa, gpu.dbg_last_1x);
 }
 
@@ -2418,8 +2499,15 @@ static void gfx_sdlgpu_cache_draw(struct ShaderProgram *prg, size_t base_float, 
     // replay loads the segment's shader via load_shader, but be defensive
     st.prg = prg;
 
-    if (!prg->vs_cached && !gfx_sdlgpu_shader_compile_cached_vs(gpu.device, prg)) {
-        return;
+    if (!prg->vs_cached) {
+        if (!gfx_sdlgpu_shader_compile_cached_vs(gpu.device, prg)) {
+            return;
+        }
+        // A18: the cached-VS variant exists only from this point (lazy
+        // compile), so the shader-creation warm-up skipped the cached
+        // pipeline set — pre-create it now in one go (the immediate set is
+        // already cached and skipped by the probe).
+        pipeline_warmup(prg);
     }
 
     ensure_pass();
@@ -3571,6 +3659,8 @@ struct GfxRenderingAPI gfx_sdlgpu_api = {
     gfx_sdlgpu_rt_resolve,   // screen-space raytracing suite (docs/PORT_RAYTRACING.md)
     gfx_sdlgpu_retro_filter, // chaos pixelate (docs/PORT_CHAOS.md)
     gfx_sdlgpu_shader_wireframe_supported,
+    NULL, // compact_texfmt_supported — SDL_GPU has no texture/sampler swizzle,
+    NULL, // upload_texture_fmt         so A19 imports keep the RGBA32 expansion
 };
 
 #endif // USE_SDLGPU

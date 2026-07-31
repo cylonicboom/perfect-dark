@@ -123,6 +123,10 @@ peers).
   1000+ glyphs → 1000+ draws. Build one atlas per `struct font` at load, emit texrects with
   atlas UVs. Gotchas: ext_tex per-glyph replacements (`ext_tex.c:51-52` — bake or fall back),
   JPN dynamic glyphs can't pre-atlas, 1px gutters. **High on menus/HUD / med.**
+  **DONE** (port/src/fontatlas.c + the textAtlasBeginString/EmitTiles machinery). The
+  once-mooted follow-up — atlasing the SCALED path `text0f1552d4`/`text0f154f38` (per-glyph
+  loads + triangle-quad glyphs) — is **DEBUNKED as a target**: its only callers are in
+  credits.c, a cold once-per-playthrough path; the UV-convention work isn't worth it.
 - **A13. Explosion render: 15-bucket texture loop regardless of occupancy**
   (`explosions.c:1406-1430`): 30 `gDPLoadBlock`s + up to 15 forced flushes per explosion per
   frame; pre-count parts per bucket in one O(40) pass and skip empty buckets (~15 lines,

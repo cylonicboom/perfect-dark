@@ -2429,8 +2429,21 @@ void gfx_opengl_resolve_msaa_color_buffer(int fb_id_target, int fb_id_source) {
     glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb_dst.fbo);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fb_src.fbo);
-    glBlitFramebuffer(0, 0, fb_src.width, fb_src.height, 0, 0, fb_dst.width, fb_dst.height, GL_COLOR_BUFFER_BIT,
-                      GL_NEAREST);
+    if (fb_src.invert_y != fb_dst.invert_y) {
+        // Orientation-correcting present: a source rendered with invert_y (the
+        // internal-resolution low-res fb — gfx_run's different_size branch)
+        // stores its image top-at-row-0, while a non-inverted dst (the window)
+        // is bottom-at-row-0 — a verbatim blit showed the whole frame upside
+        // down. Flip the dst rect when the orientations differ. This never
+        // fires on a multisample resolve (game_framebuffer -> msaa_resolved
+        // are both inverted, and MSAA resolve blits must not flip or scale)
+        // nor on the classic same-size MSAA present (both upright).
+        glBlitFramebuffer(0, 0, fb_src.width, fb_src.height, 0, fb_dst.height, fb_dst.width, 0,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    } else {
+        glBlitFramebuffer(0, 0, fb_src.width, fb_src.height, 0, 0, fb_dst.width, fb_dst.height, GL_COLOR_BUFFER_BIT,
+                          GL_NEAREST);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, current_framebuffer);
     glEnable(GL_SCISSOR_TEST);
 }

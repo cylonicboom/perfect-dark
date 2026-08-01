@@ -4040,12 +4040,18 @@ static void dlcacheReplay(DlCacheEntry* e, const uint8_t* vis) {
             } else if (g_DlCacheCullMode == 3) {
                 cm = 2;
             }
-            // CHEAT_MIRROR reflects the cached geometry (negated X in uMVP above),
-            // reversing winding — flip the front-face sense so GPU back-face
-            // culling keeps the same faces it would un-mirrored.
-            // (front_ccw is constant for the whole replay, so the mirror only
-            // needs to compare the cull mode.)
-            const bool front_ccw = gfx_mirror_mode ? !g_DlCacheFrontCcw : g_DlCacheFrontCcw;
+            // CHEAT_MIRROR reflects the cached geometry (negated X in uMVP
+            // above) and clip.invert_y negates its Y (the internal-resolution
+            // offscreen fb on GL, or --gpu-invert-y) — each reversal flips
+            // winding, and together they cancel (XOR). Flip the front-face
+            // sense to match so GPU back-face culling keeps the same faces
+            // the CPU-culled immediate path keeps — without the invert_y half,
+            // every cached room vanished when Internal Resolution forced the
+            // inverted fb.
+            // (front_ccw is constant for the whole replay, so the state cache
+            // below only needs to compare the cull mode.)
+            const bool windflip = (gfx_mirror_mode != 0) != clip.invert_y;
+            const bool front_ccw = windflip ? !g_DlCacheFrontCcw : g_DlCacheFrontCcw;
             if (!st_have_cull || st_cull != cm) {
                 gfx_rapi->cache_set_cull(cm, front_ccw);
                 st_have_cull = true;
@@ -4838,8 +4844,21 @@ extern "C" void gfx_start_frame(void) {
     if (gfx_framebuffers_enabled && (different_size || gfx_msaa_level > 1 || gfx_rt_enabled)) {
         game_renders_to_framebuffer = true;
         if (different_size) {
+            // invert_y=false — UPRIGHT, deliberately diverging from upstream's
+            // inverted offscreen convention. Upstream presents its low-res fb
+            // by sampling it as a texture (v0 = row 0 = top wants inverted
+            // content); this port presents via the resolve_msaa blit and
+            // nothing samples game_framebuffer (gfxFramebuffer has no
+            // consumers), so inverted rendering bought nothing and broke every
+            // ASYMMETRIC scissor/viewport: gfx_adjust_viewport_or_scissor
+            // always emits upright bottom-origin rects with no invert_y
+            // awareness, so the per-room portal scissors and the small menu
+            // model viewports (mission-select icons) landed vertically
+            // mirrored — clipping rooms wrongly and scissoring icons away.
+            // Upright keeps vertices, scissors, cull winding and the verbatim
+            // present blit all consistent with the classic same-size path.
             gfx_rapi->update_framebuffer_parameters(game_framebuffer, gfx_current_dimensions.width,
-                                                    gfx_current_dimensions.height, gfx_msaa_level, true, true, true,
+                                                    gfx_current_dimensions.height, gfx_msaa_level, false, true, true,
                                                     true);
         } else {
             // MSAA framebuffer needs to be resolved to an equally sized target when complete, which must therefore

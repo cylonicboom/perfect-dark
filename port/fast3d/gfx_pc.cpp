@@ -5079,8 +5079,16 @@ extern "C" void gfx_copy_framebuffer(int fb_dst, int fb_src, int left, int top, 
             // flip Y
             top = gfx_current_dimensions.height - top - 1;
         }
-        if (use_back && gfx_msaa_level > 1) {
-            // read from the framebuffer we've been rendering to
+        if (use_back && game_renders_to_framebuffer) {
+            // A back-buffer copy wants THIS frame's content — which lives in
+            // game_framebuffer whenever we render offscreen (MSAA, Internal
+            // Resolution, RT), not just under MSAA. Keying on MSAA alone left
+            // Internal Resolution reading fb0's stale back buffer: the GL
+            // unscaled-rect copy then grabbed a dst-sized (low-res) rect from
+            // the window-sized fb0 at the bottom-left origin — the camspy
+            // fisheye stretched that corner over the whole lens. Front-buffer
+            // copies (menu/pause blur) stay on fb0: its front IS the presented
+            // previous frame at any internal resolution.
             fb_src = game_framebuffer;
         }
     }

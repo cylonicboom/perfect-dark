@@ -1183,6 +1183,7 @@ s32 cdTestRampWall(struct geotilei *tile, struct coord *pos, f32 width, f32 y1, 
 static u16 g_CdRoomGeoFlagUnions[CD_GEOFLAG_UNION_MAXROOMS];
 static u8 g_CdRoomGeoFlagValid[CD_GEOFLAG_UNION_MAXROOMS];
 static u8 *g_CdRoomGeoFlagBase = NULL;
+static s32 g_CdRoomGeoFlagStage = -1;
 
 static u16 cdRoomGeoFlagUnion(s32 roomnum)
 {
@@ -1195,12 +1196,19 @@ static u16 cdRoomGeoFlagUnion(s32 roomnum)
 		return 0xffff;
 	}
 
-	if (g_CdRoomGeoFlagBase != g_TileFileData.u8) {
+	// The stage number matters, not just the base pointer: tilesReset is the
+	// first MEMPOOL_STAGE file load of every lvReset, so a new stage's tile
+	// file routinely lands at the SAME address — base alone kept the previous
+	// stage's unions alive across stage changes, and a room whose stale union
+	// lacked the queried bits was skipped entirely (players falling through
+	// floors/walls). Same invalidation pair as cdGridGetRoom below.
+	if (g_CdRoomGeoFlagBase != g_TileFileData.u8 || g_CdRoomGeoFlagStage != g_Vars.stagenum) {
 		for (i = 0; i < CD_GEOFLAG_UNION_MAXROOMS; i++) {
 			g_CdRoomGeoFlagValid[i] = 0;
 		}
 
 		g_CdRoomGeoFlagBase = g_TileFileData.u8;
+		g_CdRoomGeoFlagStage = g_Vars.stagenum;
 	}
 
 	if (g_CdRoomGeoFlagValid[roomnum]) {

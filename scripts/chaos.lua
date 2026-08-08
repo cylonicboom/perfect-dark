@@ -188,7 +188,7 @@ end
 -- ------------------------------------------------------------- effects -----
 -- duration in seconds (0 = instant). start/stop run under pcall.
 -- Weapon/cheat ids from src/include/constants.h.
-local W = { FALCON2=0x02, FALCON2_SCOPE=0x04, MAGSEC=0x05, MAULER=0x06, PHOENIX=0x07, MAGNUM=0x08, LX=0x09,
+local W = { SUITCASE=0x4d, FALCON2=0x02, FALCON2_SCOPE=0x04, MAGSEC=0x05, MAULER=0x06, PHOENIX=0x07, MAGNUM=0x08, LX=0x09,
   CMP150=0x0a, CYCLONE=0x0b, LAPTOP=0x0e, DRAGON=0x0f, K7=0x10, AR34=0x11,
   SUPERDRAGON=0x12, SHOTGUN=0x13, REAPER=0x14, SNIPER=0x15, FARSIGHT=0x16,
   DEVASTATOR=0x17, ROCKET=0x18, SLAYER=0x19, KNIFE=0x1a, CROSSBOW=0x1b,
@@ -254,11 +254,16 @@ local CHEAT = { FISTS=0, AMMO=4, NORELOAD=5, SLOMO=6, DK=7, SMALLJO=10, SMALLCHA
 -- plenty at 540. Returns the chrnum, or nil if the area really is full.
 local function spawn_body_near(bodynum, weaponnum, dist, sunglasses)
   if not pd.spawn_body then return nil end
+  -- mindist (6th arg, newer exes): the C placement SLIDES an invalid far
+  -- target back toward valid space, which could land the spawn on top of the
+  -- player ("Alert! Alert!" report). Passing 40% of the requested ring makes
+  -- such attempts FAIL so this retry loop rolls a fresh angle instead.
   for try = 1, 8 do
     local ang = math.random() * 2 * math.pi
     local d = (try <= 5) and dist or (dist * 0.6)
     local c = pd.spawn_body(bodynum, weaponnum,
-                            math.sin(ang) * d, math.cos(ang) * d, sunglasses)
+                            math.sin(ang) * d, math.cos(ang) * d, sunglasses,
+                            d * 0.4)
     if c and c >= 0 then return c end
   end
   return nil
@@ -442,11 +447,48 @@ local MENU_STAGES = {
   [0x5e] = true, -- STAGE_CREDITS
 }
 
+-- Cheats chaos turned on, remembered in the persist KV — which is C-owned and
+-- therefore survives the per-stage lua_State teardown (luaai.c:428 destroys the
+-- state on a stage-NUMBER change, BEFORE any Lua teardown could run). The
+-- Experiment cheats (Mirror / Evil music / GoldenEye / Wireframe) additionally
+-- ride the ENABLED cheat bank, which survives a level load — so without this
+-- record, starting a different mission left them on with nothing that would ever
+-- switch them back off. The record makes the cleanup EXACT: only ids chaos
+-- itself set, never a user's own menu-set experiment.
+local CHEATS_KEY = "~chaos_cheats"
+
+local function cheat_own(id, on)
+  if not (pd.persist_get and pd.persist_set) then return end
+  local ids = {}
+  for s in (pd.persist_get(CHEATS_KEY) or ""):gmatch("%d+") do ids[tonumber(s)] = true end
+  ids[id] = on or nil
+  local parts = {}
+  for k in pairs(ids) do parts[#parts + 1] = tostring(k) end
+  table.sort(parts)
+  pd.persist_set(CHEATS_KEY, #parts > 0 and table.concat(parts, ",") or nil)
+end
+
+-- Switch off every cheat chaos still owns. Called on a FRESH lua_State, where
+-- st.active is empty and reset_all_modes' own st.active-guarded cheat block
+-- therefore can't see what the previous mission left behind.
+local function cheat_release_all()
+  if not (pd.persist_get and pd.persist_set and pd.cheat) then return end
+  local blob = pd.persist_get(CHEATS_KEY)
+  if not blob or blob == "" then return end
+  local n = 0
+  for s in blob:gmatch("%d+") do
+    pd.cheat(tonumber(s), false)
+    n = n + 1
+  end
+  pd.persist_set(CHEATS_KEY, nil)
+  if n > 0 then pd.log(string.format("[chaos] released %d leftover cheat(s)", n)) end
+end
+
 local function cheat_effect(id, secs)
   return {
     dur = secs,
-    start = function() pd.cheat(id, true) end,
-    stop  = function() pd.cheat(id, false) end,
+    start = function() cheat_own(id, true); pd.cheat(id, true) end,
+    stop  = function() cheat_own(id, false); pd.cheat(id, false) end,
   }
 end
 
@@ -499,7 +541,7 @@ end
 -- per NPC (for the randomiser). Each returned effect owns its own `saved` table
 -- so concurrent arm effects don't clobber each other. Needs pd.chr_weapon to
 -- restore (degrades to give-only without it).
-local function arm_all_effect(label, weight, pick)
+local function arm_all_effect(label, weight, pick, dual)
   local saved = {}
   return {
     label = label, w = weight, dur = 1, -- dur>0 = timed; length is st.effectdur
@@ -510,7 +552,7 @@ local function arm_all_effect(label, weight, pick)
       for _, c in ipairs(list) do
         saved[c] = pd.chr_weapon and pd.chr_weapon(c) or nil
         local w = (type(pick) == "function") and pick(c) or pick
-        pd.chr_give_weapon(c, w)
+        pd.chr_give_weapon(c, w, dual)
       end
     end,
     stop = function()
@@ -897,7 +939,7 @@ chaos.effects = {
                      end },
   -- "Space Program": every bullet is a one-hit kill that launches the victim
   -- with massive knockback (one_punch, but for guns). See pd.space_program.
-  space_program = { label="Space Program", alpha=true, w=0, dur=20,
+  space_program = { label="Space Program", w=2, dur=20,
                     start=function()
                       if not pd.space_program then error("needs new exe") end
                       pd.space_program(true)
@@ -910,7 +952,7 @@ chaos.effects = {
   -- the target twitch on sequence loops / tempo wobble. 120-BPM fallback when
   -- no sequenced track is playing. Scored in the effect tick; the pulsing
   -- HUD is drawn in the alpha overlay hook. Both read beat_phase() off st.a_beat.
-  beat_game    = { label="BPM", alpha=true, w=0, dur=30,
+  beat_game    = { label="BPM", w=2, dur=30,
                    start=function()
                      if not pd.music_beat then error("needs new exe") end
                      st.a_beat = { freephase = 0, bpm = pd.music_bpm and pd.music_bpm() or 0,
@@ -1002,7 +1044,7 @@ chaos.effects = {
                    end,
                    stop=function() st.a_beat = nil end },
   -- "Frag Out": human enemies lob a grenade whenever they'd fire a weapon.
-  frag_out     = { label="Frag Out", alpha=true, w=0, dur=20,
+  frag_out     = { label="Frag Out", w=2, dur=20,
                    start=function()
                      if not pd.frag_out then error("needs new exe") end
                      pd.frag_out(true)
@@ -1010,7 +1052,7 @@ chaos.effects = {
                    stop=function() if pd.frag_out then pd.frag_out(false) end end },
   -- "Sentries Out": 2-8 hostile laptop sentry guns spawn in a ring around the
   -- player at random offsets. Instant (they stay until destroyed / stage end).
-  sentries_out = { label="Sentries Out", alpha=true, w=0, dur=0,
+  sentries_out = { label="Sentries Out", w=2, dur=0,
                    start=function()
                      if not pd.spawn_sentry then error("needs new exe") end
                      local n = math.random(2, 8)
@@ -1026,7 +1068,7 @@ chaos.effects = {
                    end },
   -- "Temu Magazine": reloads pay the full ammo cost but only partly refill the
   -- clip (a knockoff mag). See pd.temu_mag.
-  temu_mag     = { label="Temu Magazine", alpha=true, w=0, dur=25,
+  temu_mag     = { label="Temu Magazine", w=2, dur=25,
                    start=function()
                      if not pd.temu_mag then error("needs new exe") end
                      pd.temu_mag(true)
@@ -1035,7 +1077,7 @@ chaos.effects = {
   -- "Helpful son": a toddler on the second controller. At random intervals he
   -- grabs an input for 0.3-0.7s — a look sweep, holds fire, walks forward, or
   -- fumbles to a random weapon. Runs a small FSM off st.a_helpson.
-  helpful_son  = { label="Helpful son", alpha=true, w=0, dur=25,
+  helpful_son  = { label="Helpful son", w=2, dur=25,
                    start=function()
                      if not pd.player_add_yaw then error("needs new exe") end
                      st.a_helpson = { acting = false, next = 0, t = 0, act = nil, yaw = 0, pitch = 0 }
@@ -1271,10 +1313,9 @@ chaos.effects = {
   -- full-width runt (40% height) with half the HP, and when she falls she drags
   -- half of your REMAINING health down with her. The death penalty is watched in
   -- the main tick (st.a_son), independent of any effect timer, so it fires
-  -- whenever she eventually dies. alpha for now: needs a fresh exe for
-  -- pd.spawn_ally_clone + pd.chr_yscale — graduate by dropping alpha/w=0 and
-  -- giving it a real weight.
-  me_and_my_son = { label="Me and my son", alpha=true, w=0, dur=0,
+  -- whenever she eventually dies. Needs pd.spawn_ally_clone + pd.chr_yscale
+  -- (shipped). Certified 2026-08-08.
+  me_and_my_son = { label="Me and my son", w=2, dur=0,
                     start=function()
                       if not pd.spawn_ally_clone or not pd.chr_yscale then
                         error("needs new exe")
@@ -2212,7 +2253,7 @@ chaos.effects = {
   -- scene wobbles like jelly. The renderer displaces every vertex in eye space by
   -- sines of position (pd.vertex_wobble); this tick just advances the phase so it
   -- ripples. amp/freq are tuned here so they can be tweaked without a rebuild.
-  jelly        = { label="Jelly", alpha=true, w=0, dur=20,
+  jelly        = { label="Jelly", w=2, dur=20,
                    start=function()
                      if not pd.vertex_wobble then error("needs new exe") end
                      st.a_jelly = {}
@@ -2241,7 +2282,7 @@ chaos.effects = {
   -- "Acid trip": the works — walls and characters MELT (vertex wobble + a
   -- downward sag droop), the frame smears (hall-of-mirrors, no colour clear),
   -- and the colours cycle (Prismatic hue field). Melt phase is animated here.
-  acid_trip    = { label="Acid trip", alpha=true, w=0, dur=20,
+  acid_trip    = { label="Acid trip", w=2, dur=20,
                    start=function()
                      if not pd.vertex_wobble or not pd.hall_of_mirrors then
                        error("needs new exe")
@@ -2277,8 +2318,8 @@ chaos.effects = {
                    end },
   -- "Pirate": eyepatch — black out the left OR right half (random) as a
   -- post-process, so the HUD in that half goes dark too. Picks a side on start,
-  -- clears on stop. alpha for now: needs a fresh exe (pd.pirate).
-  pirate       = { label="Pirate", alpha=true, w=0, dur=20,
+  -- clears on stop. Needs pd.pirate (shipped). Certified 2026-08-08.
+  pirate       = { label="Pirate", w=2, dur=20,
                    start=function()
                      if not pd.pirate then error("needs new exe") end
                      pd.pirate(math.random(1, 2)) -- 1 = left half, 2 = right half
@@ -3227,8 +3268,8 @@ local alpha_effects = {
   -- routes through reset_all_modes, which runs stop() AND cancels the pending
   -- boom — so the timer/boom vanish cleanly. Duration comes from
   -- chaos.silo_seconds so a test harness can shrink it (scripts/silo_test.lua
-  -- sets 60s). alpha for now: needs a fresh exe (pd.stage_music) + Silo.mp3.
-  silo_countdown = { label="Silo Countdown", alpha=true, w=0, nobar=true,
+  -- sets 60s). Needs pd.stage_music + Silo.mp3 (shipped). Certified 2026-08-08.
+  silo_countdown = { label="Silo Countdown", w=2, nobar=true,
                      fixeddur=true, dur=function() return chaos.silo_seconds or 510 end,
                      start=function()
                        if not pd.stage_music then error("needs new exe") end
@@ -4296,7 +4337,7 @@ local alpha_effects = {
   -- The gun FOV is a genuinely separate slider from the world FOV
   -- (docs/PORT_GUN_FOV.md), so the fov_scale channel stacks with the 140 rather
   -- than fighting it.
-  waytoodank = { label="WAYTOODANK", dur=1,
+  waytoodank = { label="Perfect Dank", dur=1,
                  start=function()
                    if not pd.gun_fov then error("needs new exe") end
                    -- Read the fire length BEFORE triggering anything: the nested
@@ -4823,7 +4864,8 @@ local alpha_effects = {
                  tick=function(left)
                    local a = st.a_aimlab
                    if not a then return true end
-                   if a.hits >= a.need and a.shots > 0 and a.hits / a.shots >= 0.5 then
+                   a.left = left -- HUD countdown
+                   if a.hits >= a.need and a.shots > 0 and a.hits / a.shots >= 0.9 then
                      pd.player_set_shield(1)
                      pd.hud_message("CHAOS: AIM LABS PASSED - shield restored")
                      return true
@@ -4990,37 +5032,6 @@ local alpha_effects = {
                  end },
   -- Bag bomb: there's a live bomb in your inventory. Get it out and THROW it
   -- before the fuse runs down, or wear it.
-  bag_bomb   = { label="Bag bomb", w=3, fixeddur=true, dur=14, nobar=true,
-                 start=function()
-                   pd.give_weapon(W.TIMEDMINE)
-                   pd.give_ammo(AMMO.TIMEDMINE, 1)
-                   force_switch(W.TIMEDMINE)
-                   st.a_bag = { beep = 0 }
-                   pd.hud_message("CHAOS: there's a BOMB in your bag - throw it!")
-                 end,
-                 tick=function(left)
-                   local b = st.a_bag
-                   if not b then return true end
-                   b.left = left
-                   if b.thrown or not pd.has_weapon(W.TIMEDMINE) then
-                     pd.hud_message("CHAOS: bomb away - crisis averted")
-                     return true
-                   end
-                   local dt = pd.lvupdate and pd.lvupdate() or 1
-                   b.beep = b.beep - dt
-                   if b.beep <= 0 then
-                     b.beep = (left <= 4 * TICKS) and 15 or 45
-                     if pd.sound then pd.sound(0x05dd) end
-                   end
-                   if left <= 10 then
-                     local x, y, z = pd.player_pos(0)
-                     if x and pd.explosion_at then pd.explosion_at(x, y, z) end
-                     pd.player_damage(3)
-                     pd.hud_message("CHAOS: should have thrown the bag")
-                     return true
-                   end
-                 end,
-                 stop=function() st.a_bag = nil end },
   -- Pinata party: dead guards burst into loose guns (spawned from this tick,
   -- never from the kill callback — the re-entrancy rule).
   pinata     = { label="Pinata party", w=3, dur=1,
@@ -5146,12 +5157,35 @@ local alpha_effects = {
                    give_ammo_mags()
                    force_switch(g)
                    if pd.weapon_rename then pd.weapon_rename(g, "?????") end
-                   if pd.gun_fov then pd.gun_fov(160) end
+                   -- ?????-censor the manufacturer/description/fire-mode
+                   -- names too (inventory menu + HUD overlay - user pass 3)
+                   if pd.weapon_censor then pd.weapon_censor(g, true) end
+                   -- hide the viewmodel outright (gun_fov 160 still left it
+                   -- readable on screen - user report); firing still works.
+                   -- gun_hide also blanks the whole gun HUD (ammo counts
+                   -- identify a gun too - user pass 4)
+                   if pd.gun_hide then pd.gun_hide(true)
+                   elseif pd.gun_fov then pd.gun_fov(160) end
+                   -- unlimited ammo, no reloads (CHEAT_NORELOADS): the
+                   -- mystery gun just goes until the effect ends
+                   pd.cheat(CHEAT.NORELOAD, true)
+                   -- lock the switch (the Knife Fight pattern): cycle buttons
+                   -- + gadget menu blocked, tick snap-back catches direct select
+                   if pd.knife_lock then pd.knife_lock(true) end
+                 end,
+                 tick=function()
+                   local b = st.a_bbag
+                   local h = b and pd.weapon_held and pd.weapon_held()
+                   if b and h and h ~= b.g then pd.switch_weapon(b.g) end
                  end,
                  stop=function()
                    local b = st.a_bbag
                    if b and pd.weapon_rename then pd.weapon_rename(b.g) end
+                   if pd.weapon_censor then pd.weapon_censor(0, false) end
+                   if pd.gun_hide then pd.gun_hide(false) end
                    if pd.gun_fov then pd.gun_fov(0) end
+                   pd.cheat(CHEAT.NORELOAD, false)
+                   if pd.knife_lock then pd.knife_lock(false) end
                    st.a_bbag = nil
                  end },
   -- Full bright: room lighting saturated to white — the no-shading look.
@@ -5222,11 +5256,29 @@ local alpha_effects = {
   -- Vertical form content: the game, but portrait. Two black pillars leave a
   -- 9:16 strip in the middle. Subscribe for part 2.
   vertical_form = { label="Vertical form content", w=3, dur=1,
-                 start=function() end },
+                 -- post-process black SIDE pillars (pirate mode 4) + the 2D
+                 -- HUD squished into the centre band (pd.hud_squish - all
+                 -- HUD/text rects scale toward centre in the renderer).
+                 -- Subscribe for part 2.
+                 start=function()
+                   if not pd.pirate or not pd.hud_squish then error("needs new exe") end
+                   pd.pirate(4)
+                   pd.hud_squish(0.425)
+                 end,
+                 stop=function()
+                   if pd.pirate then pd.pirate(0) end
+                   if pd.hud_squish then pd.hud_squish(0) end
+                 end },
   -- Anti Brainrot: the OPPOSITE — a 9:16 pillar blocks the middle of the
   -- screen and you play around it.
   anti_brainrot = { label="Anti Brainrot", w=3, dur=1,
-                 start=function() end },
+                 -- post-process centre band (pirate mode 3) - a true black
+                 -- rectangle including the HUD, exactly like the eyepatch
+                 start=function()
+                   if not pd.pirate then error("needs new exe") end
+                   pd.pirate(3)
+                 end,
+                 stop=function() if pd.pirate then pd.pirate(0) end end },
   -- Gangster: dual automatic MagSec 4s (rapid_fire makes the semis sing),
   -- held SIDEWAYS (pd.gangsta forces the vanilla close-range pose on
   -- permanently), and no switching away.
@@ -5263,7 +5315,7 @@ local alpha_effects = {
   -- Enemy RC-P120s / RC-P45s: the arm-everyone mechanism with the fancy SMGs.
   -- (True NPC dual-wield needs a C hook — the RCP45s are single for now.)
   enemy_rcp120 = arm_all_effect("Enemy RC-P120s", 3, W.RCP120),
-  enemy_rcp45  = arm_all_effect("Enemy Dual RCP45s", 3, W.RCP45),
+  enemy_rcp45  = arm_all_effect("Enemy Dual RCP45s", 3, W.RCP45, true),
 }
 
 -- 2026-07-19: the original alpha batch GRADUATED — effects here join the main
@@ -5297,18 +5349,13 @@ for name, e in pairs(chaos.effects) do
   end
 end
 
--- Graduate the recent testbed effects into the main pool: clear their alpha flag
--- and give them a draw weight so they sit in the Test categories, the random
--- rotation, and the on/off list like every other effect (no separate Alpha area).
-for _, n in ipairs({ "space_program", "beat_game", "frag_out", "sentries_out",
-    "temu_mag", "helpful_son", "me_and_my_son", "jelly", "acid_trip", "pirate",
-    "silo_countdown" }) do
-  local e = chaos.effects[n]
-  if e then
-    e.alpha = nil
-    if not e.w or e.w == 0 then e.w = 2 end
-  end
-end
+-- (The 2026-07-30 force-graduation loop that lived here is gone: it cleared
+-- alpha and set w=2 on eleven effects whose OWN definitions still said
+-- alpha=true, w=0. Source said "Chaos Alpha", behaviour said "certified", and
+-- the folder they claimed to be in didn't list them. Those eleven now carry
+-- w=2 in their definitions and no alpha flag — same loaded result, one source
+-- of truth. Certification is expressed ONE way: presence in the HOLD list
+-- below. Never re-add a loop that overrides a definition's alpha flag.)
 
 -- HOLD list: names here stay in the Chaos Alpha test folder instead of joining
 -- normal play. alpha=true lists an effect in the "Chaos Alpha" menu (manual
@@ -5330,7 +5377,7 @@ for _, n in ipairs({
   "explosive_freecam", "daily_reward", "roguelight", "roguedark",
   "joycon_drift", "living_thread", "velma", "buttery_hands", "locked_on",
   "alert_alert", "aim_labs", "jo_typing", "wireframe_world", "darksim",
-  "unknown", "og_mode", "mr_blondes", "guns_dont_scare", "bag_bomb", "pinata",
+  "unknown", "og_mode", "mr_blondes", "guns_dont_scare", "pinata",
   "purple", "worst_effect", "back_for_more", "loose_lego", "low_battery",
   "didnt_want_to_see", "blind_bag", "full_bright", "eye_drops", "redacted",
   "quickswap", "vertical_form", "anti_brainrot", "gangster", "enemy_rcp120",
@@ -5607,7 +5654,9 @@ local function reset_all_modes()
   if pd.forced_march then pd.forced_march(false) end
   if pd.time_stop then pd.time_stop(false) end -- SUPERHOT tick freeze
   st.home_marked = false -- re-mark the start point on the next stage entered
-  st.worst_day = nil -- "Worst Day" ends on restart/completion
+  st.worst_day = nil -- "Worst Day" ends on restart/completion (and on death)
+  st.was_dead = nil  -- re-arm the death latch for the next life
+  -- NOT st.load_serial: it must survive a teardown to detect the NEXT reload.
   st.supersonic = nil; st.super_stack_timer = nil; st.super_window = nil -- "Supersonic" ends too
   -- Batch-2 C globals (new-exe bindings; guarded so old exes still run).
   if pd.force_secondary then pd.force_secondary(false) end
@@ -5628,7 +5677,7 @@ local function reset_all_modes()
   -- own (each stop() already ran via stop_all; these cover effects that never
   -- made it into st.active).
   st.a_wheel, st.a_rogue, st.a_type, st.a_aimlab = nil
-  st.a_bag, st.a_pinata, st.a_encore, st.a_lego = nil
+  st.a_pinata, st.a_encore, st.a_lego = nil
   st.a_cia, st.a_blonde, st.a_bbag, st.a_gang = nil
   st.a_drift, st.a_qs = nil
   st.butter_pending = nil
@@ -5958,6 +6007,67 @@ pd.on("tick", function()
     return
   end
   st.in_menu = false
+
+  -- Level-load detection (deterministic). The hub gate above only fires if a
+  -- tick happens to OBSERVE the pawn-less window of a reload — on a same-mission
+  -- restart the stage number doesn't change, so the lua_State survives
+  -- (luaai.c:428) and st rides straight through whenever that window is missed.
+  -- That race is why "Worst Day" sometimes outlived a restart. pd.load_serial()
+  -- is bumped by the C clear-on-load block (lv.c, beside g_ChaosTimeStop = 0),
+  -- so a changed value IS a reload, observed or not.
+  --
+  -- carry_save is called ONLY when something is actually live: with st.active
+  -- empty it would carry_clear() and destroy a snapshot the hub gate had just
+  -- taken on the way out, silently defeating the restart carry-over.
+  if pd.load_serial then
+    local serial = pd.load_serial()
+    if st.load_serial == nil then
+      -- FIRST sight of the counter = a fresh lua_State, i.e. we just started a
+      -- different mission (or booted). st.active is empty here, so this is not
+      -- about OUR effects — it is about what the PREVIOUS state left switched on
+      -- and could not clean up, because it was destroyed before it could run a
+      -- teardown. reset_all_modes' unconditional pd.*(false) sweep clears the
+      -- render/gameplay overrides; cheat_release_all covers the reload-surviving
+      -- cheat bank, which that sweep gates on st.active and so cannot see.
+      -- No carry_save: nothing is live to snapshot, and calling it here would
+      -- carry_clear() a snapshot the outgoing state had just written.
+      st.load_serial = serial
+      cheat_release_all()
+      reset_all_modes()
+    elseif serial ~= st.load_serial then
+      -- The counter MOVED under a surviving state: a same-mission restart, the
+      -- case the pawn-less-window gate above can miss entirely. Same teardown as
+      -- that gate, snapshot included so the restart carry-over still applies.
+      st.load_serial = serial
+      if next(st.active) ~= nil then carry_save(st.play_stage) end
+      reset_all_modes()
+    end
+  end
+
+  -- Escalators end on DEATH as well as on restart / the main menu (user call
+  -- 2026-08-08). Deliberately ABOVE the dt gate below: dying with a
+  -- tick-freezing effect pinned (SUPERHOT holds lvupdate at 0 while you give no
+  -- input, and Worst Day stops it ever expiring) leaves dt at 0, so a check
+  -- placed below that gate would never run — the escalator would outlive the
+  -- death that was meant to end it. Latched on the 0-crossing: fires once per
+  -- death, re-arms only once health is back.
+  local hp = pd.player_health and pd.player_health()
+  if hp then
+    if hp <= 0 then
+      if not st.was_dead then
+        st.was_dead = true
+        if st.worst_day or st.supersonic then
+          st.worst_day = nil
+          st.supersonic = nil
+          st.super_stack_timer = nil
+          st.super_window = nil
+          announce("escalator ended: you died")
+        end
+      end
+    else
+      st.was_dead = false
+    end
+  end
 
   -- Mission SUCCESS safeguard: the instant the game shows a COMPLETED mission
   -- endscreen (won, not failed/aborted), tear everything down — same as reaching
@@ -6367,9 +6477,6 @@ pd.on("weaponfire", function(weaponnum, playernum)
     st.butter_cd = 3 * TICKS
   end
   -- Bag bomb: throwing the mine IS the defusal.
-  if st.a_bag and playernum == 0 and weaponnum == W.TIMEDMINE then
-    st.a_bag.thrown = true
-  end
   -- Aim Labs: count the shots (hits come from the damage hook).
   if st.active.aim_labs and st.a_aimlab and playernum == 0
       and weaponnum and weaponnum > 1 then
@@ -6907,13 +7014,6 @@ end)
 pd.on("draw", function()
   -- Vertical form content / Anti Brainrot: the 9:16 pillars. 320x240 canvas,
   -- so a 9:16-of-height strip is 135px wide, centred.
-  if st.active.vertical_form then
-    pd.draw_box(0, 0, 92, 240, 0x000000ff)
-    pd.draw_box(228, 0, 92, 240, 0x000000ff)
-  end
-  if st.active.anti_brainrot then
-    pd.draw_box(92, 0, 136, 240, 0x000000ff)
-  end
 
   -- Daily reward: the wheel card, dead centre, deliberately in the way.
   if st.active.daily_reward and st.a_wheel then
@@ -6968,16 +7068,9 @@ pd.on("draw", function()
   if st.active.aim_labs and st.a_aimlab then
     local a = st.a_aimlab
     local acc = (a.shots > 0) and math.floor(100 * a.hits / a.shots) or 0
-    centered_text(20, string.format("AIM LABS  hits %d/%d  acc %d%% (need 50%%)",
-        a.hits, a.need, acc), (a.hits >= a.need and acc >= 50) and 0x40ff40ff or 0xffe040ff)
-  end
-
-  -- Bag bomb: the fuse readout, red and insistent.
-  if st.a_bag and st.active.bag_bomb and st.a_bag.left then
-    local secs = math.max(0, math.ceil(st.a_bag.left / TICKS))
-    local col = (secs <= 4 and math.floor(st.a_bag.left / 6) % 2 == 0)
-        and 0xff4040ff or 0xffe040ff
-    centered_text(20, string.format("BAG BOMB  %ds - THROW IT", secs), col)
+    local secs = a.left and math.max(0, math.ceil(a.left / TICKS)) or 0
+    centered_text(20, string.format("AIM LABS  hits %d/%d  acc %d%% (need 90%%)  %ds",
+        a.hits, a.need, acc, secs), (a.hits >= a.need and acc >= 90) and 0x40ff40ff or 0xffe040ff)
   end
 
   -- Birthday party: falling confetti + the cheer, ~1.5s per headshot.

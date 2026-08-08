@@ -69,6 +69,11 @@ PD_CONSTRUCTOR static void detConfigInit(void)
 {
 	configRegisterInt("Game.FixedTick", &g_FixedTickEnabled, 0, 1);
 	configRegisterInt("Game.FixedTickRate", &g_FixedTickRate, 1, 1000);
+	{
+		// fixed-tick camera interpolation (player.c; /tickinterp)
+		extern s32 g_TickCamInterpEnabled;
+		configRegisterInt("Game.FixedTickCamInterp", &g_TickCamInterpEnabled, 0, 1);
+	}
 }
 
 // Gameplay RNG streams (extern'd here to avoid pulling the rng headers).
@@ -276,14 +281,26 @@ s32 detTickPinActive(void)
 	return g_DetMode != DET_OFF || g_FixedTickEnabled || g_NetMode;
 }
 
+// Fixed-tick camera interpolation state (tickrate phase 2; consumed by
+// player.c playerUpdateShootRot). Alpha = fraction of real time elapsed
+// toward the NEXT fixed tick (the accumulator remainder over the per-tick
+// step), so a render frame between ticks knows exactly where it sits.
+// Advanced: 1 = this frame emitted >= 1 sim step (snapshot the fresh pose),
+// 0 = render-only frame between ticks (interpolate), -1 = paused (hold).
+f32 g_TickInterpAlpha = 1.0f;
+s32 g_TickThisFrameAdvanced = 1;
+
 void detPinTimestep(void)
 {
 	if (!detTickPinActive()) {
+		g_TickInterpAlpha = 1.0f;
+		g_TickThisFrameAdvanced = 1;
 		return;
 	}
 	// Respect pause: when the engine chose a zero step (paused / cutscene gate),
 	// leave it zero so a paused frame stays a no-op in both record and replay.
 	if (g_Vars.lvupdate240 <= 0) {
+		g_TickThisFrameAdvanced = -1; // paused: hold the view, no capture
 		return;
 	}
 	// Pick the per-tick step (in 1/240ths). This is called BEFORE lv.c derives
@@ -344,6 +361,11 @@ void detPinTimestep(void)
 				nsteps = 6;  // anti-spiral at very low fps
 				accum240 = 0; // drop backlog rather than chase it
 			}
+			// camera-interpolation inputs: `step` is still the per-tick size
+			// here (scaled by nsteps only below), so the remainder over it is
+			// the true progress fraction toward the next tick
+			g_TickInterpAlpha = (f32)accum240 / (f32)step;
+			g_TickThisFrameAdvanced = nsteps > 0 ? 1 : 0;
 			step *= nsteps;
 		}
 

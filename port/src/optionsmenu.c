@@ -13,6 +13,7 @@
 #include "game/cheats.h"
 #include "lib/joy.h"
 #include "video.h"
+#include "det.h"
 #include "input.h"
 #include "config.h"
 #ifdef PD_ENABLE_CPAK
@@ -1293,6 +1294,23 @@ static MenuItemHandlerResult menuhandlerDisplayFPS(s32 operation, struct menuite
 	return 0;
 }
 
+static MenuItemHandlerResult menuhandlerSkipIntro(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// Game.SkipIntro (main.c): boots straight past the intro/logo sequence to
+	// the main menu. Read at boot only, so a change takes effect next launch.
+	extern s32 g_SkipIntro;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return g_SkipIntro;
+	case MENUOP_SET:
+		g_SkipIntro = data->checkbox.value;
+		break;
+	}
+
+	return 0;
+}
+
 static MenuItemHandlerResult menuhandlerGeMuzzleFlashes(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -1314,6 +1332,55 @@ static MenuItemHandlerResult menuhandlerUncapTickrate(s32 operation, struct menu
 	case MENUOP_SET:
 		g_TickRateDiv = !data->checkbox.value;
 		break;
+	}
+
+	return 0;
+}
+
+static MenuItemHandlerResult menuhandlerLogicTickRate(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// Fixed logic tick rate (the /forcetick machinery, det.c): "Off" =
+	// vanilla variable-step sim at render rate; a rate pins the SIM to that
+	// many fixed steps per real second while RENDERING continues every frame
+	// (frames between ticks are no-advance frames — detPinTimestep's
+	// real-time accumulator). Config Game.FixedTick / Game.FixedTickRate;
+	// /forcetick <n> sets any exact rate. Netplay force-overrides to 60Hz in
+	// detPinTimestep regardless of this setting (sim-step contract).
+	// NOTE: visuals between ticks are NOT yet interpolated — at low rates the
+	// world updates at the tick rate even though frames keep presenting
+	// (interpolation is the planned phase 2).
+	static const s32 rates[] = { 0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 };
+	static const char *opts[] = {
+		"Off", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60"
+	};
+	s32 i;
+
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		if (data->checkbox.value == 0) {
+			g_FixedTickEnabled = 0;
+		} else {
+			g_FixedTickEnabled = 1;
+			g_FixedTickRate = rates[data->checkbox.value];
+		}
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = 0;
+		if (g_FixedTickEnabled) {
+			// nearest listed rate at or below the live value (an exact
+			// /forcetick 47 shows as 45; the console value stays in effect
+			// until the dropdown is changed)
+			for (i = 1; i < (s32)ARRAYCOUNT(rates); i++) {
+				if (g_FixedTickRate >= rates[i]) {
+					data->dropdown.value = i;
+				}
+			}
+		}
 	}
 
 	return 0;
@@ -1576,6 +1643,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		menuhandlerUncapTickrate,
 	},
 	{
+		MENUITEMTYPE_DROPDOWN,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Logic Tick Rate",
+		0,
+		menuhandlerLogicTickRate,
+	},
+	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT,
@@ -1670,6 +1745,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		(uintptr_t)"GE64-style Muzzle Flashes",
 		0,
 		menuhandlerGeMuzzleFlashes,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Skip Intro (next launch)",
+		0,
+		menuhandlerSkipIntro,
 	},
 	{
 		MENUITEMTYPE_SLIDER,
@@ -3323,6 +3406,29 @@ struct menudialogdef g_ExtendedColViewMenuDialog = {
 	NULL,
 };
 
+// Experiments: plain s32 runtime toggles (not cheats — no cheat-save bank),
+// persisted via Game.* config keys registered in port/src/main.c. Defined in
+// game TUs (bss.h externs), hence s32 not bool — the port/game TU bool-width
+// seam. All three take effect in single-player only; Unlimited Corpses and
+// Unlimited Bullet Holes grow their pools at the next mission load.
+extern s32 g_UnlimitedCorpses, g_UnlimitedWallhits, g_LaserScorchMarks;
+
+static MenuItemHandlerResult menuhandlerExperimentCheckbox(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	// param3 holds a pointer to the s32 toggle global.
+	s32 *flag = (s32 *)item->param3;
+
+	switch (operation) {
+	case MENUOP_GET:
+		return *flag != 0;
+	case MENUOP_SET:
+		*flag = data->checkbox.value;
+		break;
+	}
+
+	return 0;
+}
+
 // Extended Options > Experiments: the port-added cheats relocated out of the
 // original Cheats > Gameplay menu (they stay cheats under the hood — only
 // the menu moved), plus the Classic Options sub-menu. (The "Unlock All
@@ -3351,6 +3457,30 @@ struct menuitem g_ExtendedExperimentsMenuItems[] = {
 		(uintptr_t)&cheatGetNameIfUnlocked,
 		0,
 		cheatCheckboxMenuHandler,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Unlimited Corpses\n",
+		(uintptr_t)&g_UnlimitedCorpses,
+		menuhandlerExperimentCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Unlimited Bullet Holes\n",
+		(uintptr_t)&g_UnlimitedWallhits,
+		menuhandlerExperimentCheckbox,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Laser Scorch Marks\n",
+		(uintptr_t)&g_LaserScorchMarks,
+		menuhandlerExperimentCheckbox,
 	},
 	{
 		MENUITEMTYPE_SEPARATOR,

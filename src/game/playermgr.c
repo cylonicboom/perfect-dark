@@ -848,6 +848,12 @@ s32 playermgrGetModelOfWeapon(s32 weapon)
 	case WEAPON_COMBATBOOST:      model = -1; break;
 	case WEAPON_HAMMER:           model = MODEL_CHRLUMPHAMMER; break;
 	case WEAPON_SCREWDRIVER:      model = MODEL_CHRSONICSCREWER; break;
+#ifndef PLATFORM_N64
+	// The Area 51 suitcase (chaos Bag bomb). Without a mapping this fell to
+	// the default's -1 and weaponCreateForPlayerDrop indexed
+	// g_ModelStates[-1] — a garbage modeldef and a crash on drop.
+	case WEAPON_SUITCASE:         model = MODEL_SUITCASE; break;
+#endif
 	default:
 		model = weapon <= WEAPON_PSYCHOSISGUN ? MODEL_CHRSNIPERRIFLE : -1;
 		break;

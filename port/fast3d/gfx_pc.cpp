@@ -290,6 +290,16 @@ struct HudvdSlot {
 static HudvdSlot g_HudvdSlots[HUDVD_SLOTS];
 static int g_HudvdActiveSlot = -1;      // open bracket, or -1
 static bool g_HudvdOn = false;
+// Chaos Vertical Form 2D squish (gfx_draw_rectangle): 0 = off, else the
+// window-width fraction all HUD/text rects are scaled into (0.425 = the
+// portrait band the pirate-mode-4 pillars leave open). Set by the game via
+// gfx_set_hud_squish; reset with the other chaos renderer globals.
+float gfx_hud_squish = 0.0f;
+
+extern "C" void gfx_set_hud_squish(float frac) {
+    gfx_hud_squish = frac;
+}
+
 static int16_t gfx_hud_offset_x = 0;    // U10.2 = active slot px*4 (0 if none)
 static int16_t gfx_hud_offset_y = 0;
 
@@ -3351,6 +3361,17 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 
     ulxf = gfx_adjust_x_for_aspect_ratio(ulxf);
     lrxf = gfx_adjust_x_for_aspect_ratio(lrxf);
+
+    // Chaos Vertical Form: squish every 2D rect toward the horizontal centre
+    // so the HUD/text lives inside the portrait band. Applied in CLIP space
+    // AFTER the aspect adjust, so edge-aligned elements (HUD centering
+    // modes) get pulled in exactly like centred ones: clip -1..1 spans the
+    // window, and scaling by the band fraction lands everything within
+    // +/- frac — the same window fractions the pirate-mode-4 pillars black.
+    if (gfx_hud_squish > 0.0f) {
+        ulxf *= gfx_hud_squish;
+        lrxf *= gfx_hud_squish;
+    }
 
     struct LoadedVertex* ul = &rsp.loaded_vertices[MAX_VERTICES + 0];
     struct LoadedVertex* ll = &rsp.loaded_vertices[MAX_VERTICES + 1];

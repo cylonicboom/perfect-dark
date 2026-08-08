@@ -4,6 +4,9 @@
 #include "lib/memp.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "net/net.h"
+#endif
 
 u16 *g_WallhitCountsPerRoom;
 s32 g_WallhitsMax;
@@ -20,6 +23,15 @@ u32 var8009cc6c;
 s32 g_WallhitsCriticalSpareLimit;
 s32 g_WallhitsGoalSpareLimit;
 f32 g_WallhitTargetBloodRatio;
+
+#ifndef PLATFORM_N64
+// Experiments > Unlimited Bullet Holes (from Ben Colclough's branch): raise
+// the wallhit (bullet hole / blood splat / scorch mark) budgets far past the
+// N64 memory-era caps. Applied at stage load; ~10000 * sizeof(struct wallhit)
+// extra MEMPOOL_STAGE. Single-player only for consistency with the other
+// experiment toggles. Persisted as Game.UnlimitedBulletHoles.
+s32 g_UnlimitedWallhits = 0;
+#endif
 
 /**
  * Initialises an array of room numbers and a linked list of structs.
@@ -80,6 +92,19 @@ void wallhitReset(void)
 		g_WallhitTargetBloodRatio = 0.5f;
 		break;
 	}
+
+#ifndef PLATFORM_N64
+	if (g_UnlimitedWallhits && g_NetMode == NETMODE_NONE) {
+		// Ben's branch values: effectively unlimited in normal play. The
+		// spare-limit steal logic still functions as a backstop at the cap.
+		g_WallhitsMax = 10000;
+		g_MinPropWallhits = 50;
+		g_MaxPropWallhits = 1200;
+		g_MinBgWallhitsPerRoom = 10;
+		g_MaxBgWallhitsPerRoom = 1200;
+		var8009cc6c = 5000;
+	}
+#endif
 
 	g_WallhitCountsPerRoom = NULL;
 	g_WallhitsNumSettled = 0;

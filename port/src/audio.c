@@ -1020,7 +1020,7 @@ PD_CONSTRUCTOR static void audioConfigInit(void)
 		// audio, 2026-07-31 — then runtime-confirmed clean with the restored
 		// pull same day). Default ON; =0 saves ~10-15MB (the OG-Xbox lever).
 		extern s32 g_SndPredecodeEnabled;
-		configRegisterInt("Audio.Predecode", &g_SndPredecodeEnabled, 0, 1);
+		configRegisterInt("Audio.Predecode", &g_SndPredecodeEnabled, 0, 3);
 	}
 #ifndef DEDICATED_SERVER
 	configRegisterInt("Audio.ExtVolume", &extVolume, 0, 100);

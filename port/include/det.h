@@ -46,6 +46,10 @@ extern s32 g_FixedTickEnabled;
 // set. 60 = real-time; lower = slow-motion; higher = fast-forward. See det.c.
 extern s32 g_FixedTickRate;
 
+// Fixed-tick camera interpolation (tickrate phase 2, det.c)
+extern f32 g_TickInterpAlpha;
+extern s32 g_TickThisFrameAdvanced;
+
 // Compute the four sub-hashes (+ combined) over the current live sim state.
 // Walks entities in a deterministic order (by index / list order, never by
 // address) and folds only sim-authoritative value fields — never pointers,

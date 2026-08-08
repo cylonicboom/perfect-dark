@@ -16688,7 +16688,12 @@ void objHit(struct shotdata *shotdata, struct hit *hit)
 	if (!ismeleefunc
 			&& hit->hitthing.texturenum != 10000
 			&& shotdata->gset.weaponnum != WEAPON_UNARMED
+#ifndef PLATFORM_N64
+			&& (shotdata->gset.weaponnum != WEAPON_LASER
+				|| (g_LaserScorchMarks && g_NetMode == NETMODE_NONE))
+#else
 			&& shotdata->gset.weaponnum != WEAPON_LASER
+#endif
 			&& shotdata->gset.weaponnum != WEAPON_TRANQUILIZER
 			&& shotdata->gset.weaponnum != WEAPON_FARSIGHT) {
 		if (!hit->slowsbullet) {
@@ -16729,6 +16734,16 @@ void objHit(struct shotdata *shotdata, struct hit *hit)
 						|| (obj->model->definition->skel == &g_SkelCctv && hit->dlnode == modelGetPart(obj->model->definition, MODELPART_CCTV_LENS))) {
 					spcb = true;
 				}
+
+#ifndef PLATFORM_N64
+				// Laser Scorch Marks (Experiments): burn a dirt-family scorch
+				// into the prop instead of its surface's bullet hole. Mirrors
+				// the BG case in shotCalculateHits (prop.c).
+				if (shotdata->gset.weaponnum == WEAPON_LASER) {
+					surfacetype = g_SurfaceTypes[SURFACETYPE_DIRT];
+					spcc = rngRandom() % surfacetype->numwallhittexes;
+				}
+#endif
 
 				textureindex = surfacetype->wallhittexes[spcc];
 

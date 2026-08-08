@@ -461,6 +461,13 @@ s32 g_ChaosLangOverrideId2 = -1; // the weapon's SHORT name id (weapon wheel, sc
 s32 g_ChaosRenamedWeapon = -1;   // weaponnum being renamed — mainmenu hides its inventory model
 char g_ChaosLangOverrideStr[64] = { 0 };
 
+// Chaos multi-id censor (pd.weapon_censor — Blind bag): every listed text id
+// renders as "?????" wherever it appears. Covers the mystery gun's
+// MANUFACTURER, DESCRIPTION and FIRE-MODE names (inventory menu + the HUD
+// function overlay); the weapon NAME itself rides the single-override rename
+// above. -1 = empty slot; ids[0] < 0 short-circuits the whole check.
+s32 g_ChaosLangCensorIds[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+
 // Chaos text transforms (pd.uwuify / pd.piglatin): while set, every langGet
 // string is transformed — mode 1 = UwUify (r/l -> w, R/L -> W, n+vowel ->
 // ny+vowel), mode 2 = Pig Latin (leading consonants rotate to the tail +
@@ -853,6 +860,16 @@ char *langGet(s32 textid)
 	if (g_ChaosLangOverrideId >= 0
 			&& (textid == g_ChaosLangOverrideId || textid == g_ChaosLangOverrideId2)) {
 		return g_ChaosLangOverrideStr;
+	}
+
+	if (g_ChaosLangCensorIds[0] >= 0) {
+		s32 ci;
+
+		for (ci = 0; ci < (s32)ARRAYCOUNT(g_ChaosLangCensorIds); ci++) {
+			if (g_ChaosLangCensorIds[ci] == textid) {
+				return "?????";
+			}
+		}
 	}
 #endif
 

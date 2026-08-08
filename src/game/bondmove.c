@@ -3019,6 +3019,23 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		// when holding aim and moving stick
 		bgunSetAimType(0);
 #ifndef PLATFORM_N64
+		// Fixed-tick gate: bondmove also runs on render-only frames
+		// (lvupdate240 == 0 — the mlookscale zero-branch exists for them),
+		// and this crosshair add has NO dt factor — with the fixed tick's
+		// input BANK (input.c) it would re-apply the GROWING banked delta on
+		// every render frame between ticks: aim hyper-sensitive, scaling
+		// with fps (user report, 600fps vs 60). HOLD the crosshair on those
+		// frames (return, like the mouse path does) — falling through would
+		// hit the stick SwivelWithoutDamp and re-centre it every frame. The
+		// advancing tick then applies the whole bank once. Vanilla (no fixed
+		// tick) keeps the per-frame behaviour untouched.
+		{
+			extern s32 g_FixedTickEnabled;
+
+			if (g_FixedTickEnabled && g_NetMode == 0 && g_Vars.lvupdate240 <= 0) {
+				return;
+			}
+		}
 		if (allowmcross) {
 			// joystick is inactive, move crosshair using the mouse
 			const f32 xcoeff = 320.f / 1080.f;

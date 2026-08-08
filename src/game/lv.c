@@ -192,6 +192,7 @@ void lvResetChaosPerStage(void)
 	extern s32 g_ChaosKnifeLock;      // chaos Knife fight
 	extern s32 g_ChaosCloakLock;      // chaos Now you see me
 	extern s32 g_ChaosTimeStop;       // chaos SUPERHOT (defined below in this file)
+	extern s32 g_ChaosLoadSerial;     // chaos level-load serial (defined below)
 	extern s32 g_ChaosMagDump;        // chaos Mag Dump
 	extern s32 g_ChaosMagDumpArmed;   // chaos Mag Dump latch
 	extern s16 g_ChaosTwinChrnums[8]; // chaos Evil twin registry
@@ -225,6 +226,7 @@ void lvResetChaosPerStage(void)
 	g_ChaosGasOn = 0;
 	g_ChaosFakeCrash240 = 0;
 	g_ChaosTerminator = 0;
+	g_ChaosLoadSerial++; // pd.load_serial: lets chaos.lua DERIVE a reload (see decl)
 	audioSetHold(0); // a stage change mid-Fake-Crash must not strand the held audio
 	chraiLuaRoomHighlightReset();
 	chraiLuaDoorsHoldReset();
@@ -240,6 +242,16 @@ void lvResetChaosPerStage(void)
 // a hard sim freeze, in 240ths. Counted down in lvTick off diffframe240 and it
 // releases itself — see the hook for why the release cannot live in Lua.
 s32 g_ChaosFakeCrash240 = 0;
+
+// Chaos level-load serial (pd.load_serial). Bumped once per level load, in the
+// clear-on-load block above. chaos.lua's "did we leave gameplay" test used to be
+// "did a tick OBSERVE a NULL player prop", which a same-mission restart can hide
+// entirely: the stage number doesn't change, so the lua_State survives and the
+// script's whole state rides through the reload. A monotonic counter can't be
+// missed — the script compares it each tick and derives the reload instead of
+// trying to catch it. Deliberately NOT reset here: it must keep climbing for the
+// lifetime of the process, or a rollover to the same value reads as "no reload".
+s32 g_ChaosLoadSerial = 0;
 
 // Chaos "Terminator Vision" (pd.terminator): two render/aim overrides that have
 // no natural home in the effect's Lua half.
@@ -485,6 +497,7 @@ void lvReset(s32 stagenum)
 	extern s32 g_ChaosGangstaForce;    // chaos Gangster sideways pistols (bondgun.c)
 	extern void inputSetChaosSensMult(f32 mult); // chaos Overly Sensitive
 	extern void videoSetFpsOverride(s32 fps);    // chaos OG Mode render-rate cap
+	extern s32 g_BgunHideGun;          // chaos Blind bag hidden viewmodel (bondgun.c)
 	s32 chobj_i;
 	netKillcamReset(); // killcam: clear the recording ring on stage load (port-only)
 	netDemoStop();     // demo: close any open recording on stage load (port-only)
@@ -521,6 +534,21 @@ void lvReset(s32 stagenum)
 	g_ChaosLangOverrideId2 = -1;
 	g_ChaosRenamedWeapon = -1;
 	g_ChaosGameOverStatus = 0;  // chaos Game over? status override
+	g_BgunHideGun = 0;          // chaos Blind bag hidden viewmodel
+	{
+		// chaos Blind bag ?????-censor (lang.c) — never persists a stage change
+		extern s32 g_ChaosLangCensorIds[8];
+		s32 censor_i;
+
+		for (censor_i = 0; censor_i < 8; censor_i++) {
+			g_ChaosLangCensorIds[censor_i] = -1;
+		}
+	}
+	{
+		// chaos Vertical Form HUD squish (renderer global)
+		extern void gfx_set_hud_squish(f32 frac);
+		gfx_set_hud_squish(0.0f);
+	}
 	g_ChaosBeyblade = 0;
 	gfx_screen_roll = 0.0f;
 	gfx_vtx_wobble_amp = 0.0f;

@@ -1347,11 +1347,12 @@ ALADPCMloop *sndLoadAdpcmLoop(uintptr_t offset, u16 cacheindex)
 // raw-PCM sample path — Rare deleted alRaw16Pull, and n_alAdpcmPull parsed
 // the retyped tables' PCM as ADPCM frames (the RAW16 cases in n_load.c's
 // state switch were vestigial). n_alRaw16Pull is now RESTORED in n_load.c
-// (the dc_table->type branch at the top of n_alAdpcmPull). Runtime-confirmed
-// clean 2026-07-31 (music bank + lazy sfx + loop seams + one-shot tails), so
-// the default is ON; Audio.Predecode=0 restores per-frame ADPCM decode and
-// saves the ~10-15MB PCM working set (the OG-Xbox memory lever).
-s32 g_SndPredecodeEnabled = 1;
+// (the dc_table->type branch at the top of n_alAdpcmPull). Now a BITMASK for
+// fault isolation (the sustained-note investigation): bit 1 = sfx wavetables
+// (sndLoadWavetable), bit 2 = the music bank (sndPredecodeBank). 3 = both
+// (full feature), 1 = sfx only, 2 = music only, 0 = off (also the ~10-15MB
+// memory lever for OG-Xbox targets). Audio.Predecode.
+s32 g_SndPredecodeEnabled = 3;
 s32 g_SndPredecodeCount = 0;   // tables converted (stats, /sndpool)
 s32 g_SndPredecodeBytes = 0;   // PCM bytes allocated (stats)
 
@@ -1457,9 +1458,20 @@ static void sndPredecodeWavetable(ALWaveTable *tbl)
 	u8 *pcm = NULL;
 	s32 pcmlen = 0;
 
-	if (!g_SndPredecodeEnabled || tbl == NULL || tbl->type != AL_ADPCM_WAVE
+	if (g_SndPredecodeEnabled == 0 || tbl == NULL || tbl->type != AL_ADPCM_WAVE
 			|| tbl->base == NULL || tbl->len <= 0) {
 		return;
+	}
+
+	// Loop sanity: a loop that points past the decoded data (or is inverted)
+	// would cut sustains at the seam — leave such tables on the ADPCM path.
+	if (tbl->waveInfo.adpcmWave.loop != NULL) {
+		ALADPCMloop *lp = tbl->waveInfo.adpcmWave.loop;
+		s32 nsamples = tbl->len / 9 * 16;
+
+		if (lp->start >= lp->end || (s32)lp->end > nsamples) {
+			return;
+		}
 	}
 
 	key = (uintptr_t)tbl->base;
@@ -1504,6 +1516,27 @@ static void sndPredecodeWavetable(ALWaveTable *tbl)
 	osIntUnlock();
 }
 
+// Diag for the sustained-note hunt: log every LOOPED bank table's shape at
+// conversion so a bad loop translation is visible in one boot log. Insane
+// loops (end past the decoded data, start >= end) are SKIPPED (table stays
+// ADPCM) and logged loudly.
+extern void sysLogPrintf(s32 level, const char *fmt, ...);
+
+static void sndPredecodeLogTable(ALWaveTable *tbl, s32 converted)
+{
+	ALADPCMloop *loop = tbl->type == AL_RAW16_WAVE
+			? (ALADPCMloop *)tbl->waveInfo.rawWave.loop : tbl->waveInfo.adpcmWave.loop;
+
+	if (loop == NULL) {
+		return;
+	}
+
+	sysLogPrintf(0, "predecode: bank tbl %p %s len=%d nsamples=%d loop start=%u end=%u count=%d",
+			tbl, converted ? "RAW16" : "SKIPPED",
+			tbl->len, converted ? tbl->len / 2 : tbl->len / 9 * 16,
+			loop->start, loop->end, (s32)loop->count);
+}
+
 // Walk one instrument's sounds (music-bank path, called at sndInit before
 // the audio thread exists — the lock in the helper is then uncontended).
 static void sndPredecodeInstrument(ALInstrument *inst)
@@ -1516,7 +1549,11 @@ static void sndPredecodeInstrument(ALInstrument *inst)
 
 	for (i = 0; i < inst->soundCount; i++) {
 		if (inst->soundArray[i] != NULL) {
-			sndPredecodeWavetable(inst->soundArray[i]->wavetable);
+			ALWaveTable *tbl = inst->soundArray[i]->wavetable;
+			sndPredecodeWavetable(tbl);
+			if (tbl != NULL) {
+				sndPredecodeLogTable(tbl, tbl->type == AL_RAW16_WAVE);
+			}
 		}
 	}
 }
@@ -1602,7 +1639,9 @@ ALWaveTable *sndLoadWavetable(uintptr_t offset, u16 cacheindex)
 #ifndef PLATFORM_N64
 		// ADPCM predecode: retype this cache entry to raw PCM16 (decoded
 		// once per unique sample; repeats hit the address-keyed map).
-		sndPredecodeWavetable(tmp);
+		if (g_SndPredecodeEnabled & 1) {
+			sndPredecodeWavetable(tmp);
+		}
 #endif
 	}
 
@@ -1901,7 +1940,9 @@ void sndInit(void)
 		// wavetable in the freshly-rebased ctl image (writable, snd-heap
 		// copy) so sequenced music synthesis reads raw PCM too. Runs before
 		// amgrStartThread, so no synthesis is concurrent.
-		sndPredecodeBank(bankfile->bankArray[0]);
+		if (g_SndPredecodeEnabled & 2) {
+			sndPredecodeBank(bankfile->bankArray[0]);
+		}
 #endif
 
 		// Load the sequences table. To do this, load the header of the

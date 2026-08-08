@@ -65,6 +65,8 @@
     "    vec2 uv = vUV;\n" \
     "    if ((uFx & 2048) != 0 && vUV.x < 0.5) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
     "    if ((uFx & 4096) != 0 && vUV.x >= 0.5) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
+    "    if ((uFx & 32768) != 0 && vUV.x >= 0.2875 && vUV.x < 0.7125) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
+    "    if ((uFx & 65536) != 0 && (vUV.x < 0.2875 || vUV.x >= 0.7125)) { oCol = vec4(0.0, 0.0, 0.0, 1.0); return; }\n" \
     "    if ((uFx & 8192) != 0 && uv.x > 0.5) { uv.x = 1.0 - uv.x; }\n" \
     "    if ((uFx & 16384) != 0 && uv.x < 0.5) { uv.x = 1.0 - uv.x; }\n" \
     "    if ((uFx & 64) != 0) { uv = vec2(1.0) - uv; }\n" \

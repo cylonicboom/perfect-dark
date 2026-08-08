@@ -1227,12 +1227,44 @@ static inline void inputUpdateMouse(void)
 	f32 fdx = 0.f, fdy = 0.f;
 	SDL_GetRelativeMouseState(&fdx, &fdy);
 	if (mouseLocked) {
+		// Fixed-tick accumulation (Logic Tick Rate below the render rate):
+		// bondmove only consumes the look delta at SIM TICKS, so on the
+		// render-only frames between them nothing read last frame's value —
+		// overwriting it here DISCARDED that motion, and aim got slower the
+		// higher the fps ran over the tick rate (user report). Bank deltas
+		// until a tick consumes them; bondmove's mlookscale = 4/lvupdate240
+		// then normalizes the banked multi-frame total over the tick's
+		// larger step exactly.
+		//
+		// The bank condition is "anything EXCEPT a consumed tick"
+		// (g_TickThisFrameAdvanced != 1, det.c — at this point it still
+		// holds LAST frame's verdict): at very high fps most frames are
+		// shorter than the 240Hz timer resolution and report ZERO elapsed
+		// time, which detPinTimestep classifies as paused (-1) — the first
+		// version of this fix overwrote on those, still discarding most of
+		// the motion (user: "still slow at 600fps"). Gated to the OFFLINE
+		// fixed tick: without it every frame advances (old behaviour
+		// bit-identical), netplay keeps its own long-standing input timing,
+		// and the chaos TimeStop bank (lv.c) can't double-count.
+		extern s32 g_TickThisFrameAdvanced;
+		extern s32 g_FixedTickEnabled;
+		s32 ndx;
+		s32 ndy;
+
 		mouseRemX += fdx;
 		mouseRemY += fdy;
-		mouseDX = (s32)mouseRemX;
-		mouseDY = (s32)mouseRemY;
-		mouseRemX -= mouseDX;
-		mouseRemY -= mouseDY;
+		ndx = (s32)mouseRemX;
+		ndy = (s32)mouseRemY;
+		mouseRemX -= ndx;
+		mouseRemY -= ndy;
+
+		if (g_FixedTickEnabled && g_NetMode == 0 && g_TickThisFrameAdvanced != 1) {
+			mouseDX += ndx;
+			mouseDY += ndy;
+		} else {
+			mouseDX = ndx;
+			mouseDY = ndy;
+		}
 	} else {
 		mouseDX = mx - mouseX;
 		mouseDY = my - mouseY;

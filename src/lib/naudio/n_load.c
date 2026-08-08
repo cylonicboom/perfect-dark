@@ -24,16 +24,55 @@ Acmd *_decodeChunk(Acmd *ptr, N_PVoice *f, s32 tsam, s32 nbytes, s16 outp, s16 i
  * so *outp stays where the caller pointed it and loop wraps are plain
  * sequential loads. dc_lastsam stays 0 by construction.
  */
+// Diagnostics for the sustained-note hunt (/sndpool raw16 line, net.c):
+// wraps = loop restarts executed, ends = one-shot silence fills emitted.
+// A sustained note cutting short with wraps NOT advancing means the loop
+// never engages (dc_loop bad); wraps advancing but audio still cutting
+// means the post-wrap data is wrong (memin/base bad).
+s32 g_SndRaw16Wraps = 0;
+s32 g_SndRaw16Ends = 0;
+
 static Acmd *n_alRaw16Pull(N_PVoice *f, s16 *outp, s32 outCount, Acmd *p)
 {
 	Acmd *ptr = p;
-	s32 pos = *outp;
+	s32 pos;
 	s32 remaining = outCount;
+
+	// Start the data one ADPCM-frame (16 samples) into the caller's DMEM
+	// window, exactly where the ADPCM path's decoded stream starts after its
+	// state block, and advance *outp to match (the lastsam==0 adjustment).
+	// This is NOT cosmetic: the resampler's history splice writes 8 samples
+	// BEFORE its input pointer (aResampleImpl's `in - 8`), and with data at
+	// the window base that write lands OUTSIDE the window — clobbering
+	// whatever DMEM precedes it (adjacent voice/bus data; heard as sustained
+	// looped notes cutting short when this path first shipped without the
+	// offset).
+	*outp += ADPCMFSIZE << 1;
+	pos = *outp;
 
 	while (remaining > 0) {
 		s32 avail;
 		s32 n;
-		s32 looping = f->dc_loop.count != 0 && f->dc_sample < (s32)f->dc_loop.end;
+		s32 looping;
+
+		// Wrap FIRST, at the top of every segment — not only mid-pull. The
+		// original tail-only wrap (gated on remaining > 0) missed the case
+		// where a pull ends with dc_sample landing EXACTLY on loop.end: the
+		// next pull then saw sample < end as false, played the few samples
+		// of post-loop tail and went silent — a sustained note dying at the
+		// loop seam whenever the pull boundary aligned with it (the
+		// intermittent theremin/strings cutoff, diagnosed via the bank loop
+		// log: every loop was well-formed, so the fault had to be here).
+		if (f->dc_loop.count != 0 && f->dc_sample >= (s32)f->dc_loop.end) {
+			g_SndRaw16Wraps++;
+			if (f->dc_loop.count != -1) {
+				f->dc_loop.count--;
+			}
+			f->dc_sample = f->dc_loop.start;
+			f->dc_memin = (intptr_t)f->dc_table->base + ((s32)f->dc_loop.start << 1);
+		}
+
+		looping = f->dc_loop.count != 0 && f->dc_sample < (s32)f->dc_loop.end;
 
 		if (looping) {
 			avail = f->dc_loop.end - f->dc_sample;
@@ -44,6 +83,22 @@ static Acmd *n_alRaw16Pull(N_PVoice *f, s16 *outp, s32 outCount, Acmd *p)
 		if (avail <= 0) {
 			// ran off the end (one-shot finished): the consumer still reads
 			// outCount samples, so the tail must be silence, not garbage
+			g_SndRaw16Ends++;
+#ifndef PLATFORM_N64
+			// TRIPWIRE: with the top-of-segment wrap, a voice with a live
+			// loop (count != 0) can never reach this fill — looping is
+			// always re-established before avail is computed. If this line
+			// ever prints, that proof is wrong and the residual sustained-
+			// note cutoff is still a decoder escape; the state dump says how.
+			// Silence here otherwise means a residual cut is EXTERNAL to the
+			// decoder (voice steal / envelope) — check /sndpool steals.
+			if (f->dc_loop.count != 0) {
+				extern void sysLogPrintf(s32 level, const char *fmt, ...);
+				sysLogPrintf(1, "raw16: LOOP ESCAPE sample=%d start=%u end=%u count=%d len2=%d",
+						f->dc_sample, f->dc_loop.start, f->dc_loop.end,
+						(s32)f->dc_loop.count, (s32)(f->dc_table->len >> 1));
+			}
+#endif
 			aClearBuffer(ptr++, pos, remaining << 1);
 			return ptr;
 		}
@@ -56,14 +111,6 @@ static Acmd *n_alRaw16Pull(N_PVoice *f, s16 *outp, s32 outCount, Acmd *p)
 		remaining -= n;
 		f->dc_sample += n;
 		f->dc_memin += n << 1;
-
-		if (remaining > 0 && looping && f->dc_sample >= (s32)f->dc_loop.end) {
-			if (f->dc_loop.count != -1 && f->dc_loop.count != 0) {
-				f->dc_loop.count--;
-			}
-			f->dc_sample = f->dc_loop.start;
-			f->dc_memin = (intptr_t)f->dc_table->base + ((s32)f->dc_loop.start << 1);
-		}
 	}
 
 	return ptr;

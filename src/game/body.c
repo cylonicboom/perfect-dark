@@ -26,6 +26,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "system.h" // sysLogPrintf for the bodyAllocateModel NULL-definition guard
+#include "net/net.h" // g_NetMode gate on the all-heads guard head pool
 #endif
 
 #ifndef PLATFORM_N64
@@ -703,6 +704,18 @@ s32 bodyChooseHead(s32 bodynum)
 	s32 head;
 
 	if (g_HeadsAndBodies[bodynum].ismale) {
+#ifndef PLATFORM_N64
+		// From Ben Colclough's branch: male guards pick from all 42 heads in
+		// the ROM instead of the 8 per-stage "active" heads the N64 chose at
+		// load (a memory-era limit — every head modeldef stays resident on PC
+		// anyway). Single-player only: the extra rngRandom draw would shift
+		// the shared RNG stream in net co-op, where clients keep the vanilla
+		// round-robin. Team Heads Only keeps its curated list via the
+		// vanilla path too.
+		if (g_NetMode == NETMODE_NONE && !cheatIsActive(CHEAT_TEAMHEADSONLY)) {
+			return g_MaleGuardHeads[rngRandom() % g_NumMaleGuardHeads];
+		}
+#endif
 		head = g_ActiveMaleHeads[g_ActiveMaleHeadsIndex++];
 
 		if (g_ActiveMaleHeadsIndex == g_NumActiveHeadsPerGender) {

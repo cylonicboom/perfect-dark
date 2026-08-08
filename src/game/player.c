@@ -5193,6 +5193,113 @@ void playerAllocateMatrices(struct coord *cam_pos, struct coord *cam_look, struc
 	playerSetGlobalDrawCameraOffset();
 }
 
+#ifndef PLATFORM_N64
+// Fixed-tick camera interpolation (tickrate phase 2). With the Logic Tick
+// Rate capped below the render rate, the camera pose (cam_pos/look/up) only
+// changes on sim ticks; rendering the raw pose steps the view at the tick
+// rate no matter how high the fps. This renders lerp(prev, cur, alpha)
+// EVERY frame instead — prev/cur snapshotted here at each advancing tick,
+// alpha from detPinTimestep's real-time accumulator — so the view is a
+// smooth continuum with no jump at tick boundaries. Costs up to one tick of
+// VISUAL look latency (sim aim is untouched: bullets go where the sim's
+// angles point, which sampled your input at the tick — the tick INTERVAL is
+// the inherent input latency of the feature, interp adds none to the sim).
+// /tickinterp off renders the raw freshest pose instead (steppy but zero
+// visual lag) for A/B. Teleport guard: a pose jump > ~4m snaps instead of
+// sweeping the camera through the map (respawns, cutscene cuts). Gated off
+// under netplay (its own view conventions; the pin runs 60Hz there anyway).
+s32 g_TickCamInterpEnabled = 1;
+
+static void playerTickCamInterp(struct coord *campos, struct coord *camlook, struct coord *camup)
+{
+	extern s32 g_FixedTickEnabled;
+	extern f32 g_TickInterpAlpha;
+	extern s32 g_TickThisFrameAdvanced;
+
+	static struct coord prevpos[4], prevlook[4], prevup[4];
+	static struct coord curpos[4], curlook[4], curup[4];
+	static s32 primed[4];
+
+	s32 pn = g_Vars.currentplayernum;
+	f32 a;
+	f32 dx, dy, dz;
+	f32 mag;
+
+	if (!g_TickCamInterpEnabled || !g_FixedTickEnabled || g_NetMode
+			|| pn < 0 || pn > 3) {
+		return;
+	}
+
+	if (g_TickThisFrameAdvanced == 1 || !primed[pn]) {
+		if (primed[pn]) {
+			prevpos[pn] = curpos[pn];
+			prevlook[pn] = curlook[pn];
+			prevup[pn] = curup[pn];
+		} else {
+			prevpos[pn] = *campos;
+			prevlook[pn] = *camlook;
+			prevup[pn] = *camup;
+			primed[pn] = 1;
+		}
+		curpos[pn] = *campos;
+		curlook[pn] = *camlook;
+		curup[pn] = *camup;
+	}
+
+	if (g_TickThisFrameAdvanced == -1) {
+		return; // paused: render the live pose untouched
+	}
+
+	dx = curpos[pn].x - prevpos[pn].x;
+	dy = curpos[pn].y - prevpos[pn].y;
+	dz = curpos[pn].z - prevpos[pn].z;
+
+	if (dx * dx + dy * dy + dz * dz > 400.0f * 400.0f) {
+		prevpos[pn] = curpos[pn]; // teleport/cut: snap, don't sweep
+		prevlook[pn] = curlook[pn];
+		prevup[pn] = curup[pn];
+	}
+
+	a = g_TickInterpAlpha;
+
+	if (a < 0.0f) {
+		a = 0.0f;
+	} else if (a > 1.0f) {
+		a = 1.0f;
+	}
+
+	campos->x = prevpos[pn].x + (curpos[pn].x - prevpos[pn].x) * a;
+	campos->y = prevpos[pn].y + (curpos[pn].y - prevpos[pn].y) * a;
+	campos->z = prevpos[pn].z + (curpos[pn].z - prevpos[pn].z) * a;
+
+	camlook->x = prevlook[pn].x + (curlook[pn].x - prevlook[pn].x) * a;
+	camlook->y = prevlook[pn].y + (curlook[pn].y - prevlook[pn].y) * a;
+	camlook->z = prevlook[pn].z + (curlook[pn].z - prevlook[pn].z) * a;
+
+	camup->x = prevup[pn].x + (curup[pn].x - prevup[pn].x) * a;
+	camup->y = prevup[pn].y + (curup[pn].y - prevup[pn].y) * a;
+	camup->z = prevup[pn].z + (curup[pn].z - prevup[pn].z) * a;
+
+	// nlerp renormalization (a lerped direction shortens; the matrix builder
+	// wants unit-ish vectors)
+	mag = sqrtf(camlook->x * camlook->x + camlook->y * camlook->y + camlook->z * camlook->z);
+
+	if (mag > 0.0001f) {
+		camlook->x /= mag;
+		camlook->y /= mag;
+		camlook->z /= mag;
+	}
+
+	mag = sqrtf(camup->x * camup->x + camup->y * camup->y + camup->z * camup->z);
+
+	if (mag > 0.0001f) {
+		camup->x /= mag;
+		camup->y /= mag;
+		camup->z /= mag;
+	}
+}
+#endif
+
 Gfx *playerUpdateShootRot(Gfx *gdl)
 {
 	struct coord sp3c;
@@ -5202,9 +5309,22 @@ Gfx *playerUpdateShootRot(Gfx *gdl)
 	f32 rotx;
 	f32 roty;
 
+#ifndef PLATFORM_N64
+	{
+		// interpolate a COPY of the pose — the sim's own cam_* fields must
+		// never see interpolated values
+		struct coord ipos = g_Vars.currentplayer->cam_pos;
+		struct coord ilook = g_Vars.currentplayer->cam_look;
+		struct coord iup = g_Vars.currentplayer->cam_up;
+
+		playerTickCamInterp(&ipos, &ilook, &iup);
+		playerAllocateMatrices(&ipos, &ilook, &iup);
+	}
+#else
 	playerAllocateMatrices(&g_Vars.currentplayer->cam_pos,
 			&g_Vars.currentplayer->cam_look,
 			&g_Vars.currentplayer->cam_up);
+#endif
 	bgun0f0a0c08(&sp30, &sp3c);
 	y = sp3c.y;
 

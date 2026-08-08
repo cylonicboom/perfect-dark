@@ -8,6 +8,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "video.h"
+#include "net/net.h"
 #endif
 
 void chrmgrReset(void)
@@ -49,12 +50,26 @@ void chrmgrReset(void)
 	resetSomeStageThings();
 }
 
+#ifndef PLATFORM_N64
+// Experiments > Unlimited Corpses (from Ben Colclough's branch): corpses are
+// exempt from the count-based fade passes in chraTickBg, and the chr slot
+// pool grows so spawner stages don't run out of slots while corpses linger.
+// Single-player only (slot count and fade RNG affect netplay determinism);
+// the slot growth applies at stage load. Persisted as Game.UnlimitedCorpses.
+s32 g_UnlimitedCorpses = 0;
+#endif
+
 void chrmgrConfigure(s32 numchrs)
 {
 	s32 i;
 
 #ifndef PLATFORM_N64
 	g_NumChrSlots = PLAYERCOUNT() + numchrs + MAX_BOTS;
+
+	if (g_UnlimitedCorpses && g_NetMode == NETMODE_NONE) {
+		// Ben's branch uses +400 spare slots outright; keep his headroom.
+		g_NumChrSlots += 400;
+	}
 #else
 	g_NumChrSlots = PLAYERCOUNT() + numchrs + 10;
 #endif

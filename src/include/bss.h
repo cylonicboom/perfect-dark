@@ -213,6 +213,13 @@ extern u8 *var800a41a0;
 extern struct wallhit *g_Wallhits;
 extern struct wallhit *g_FreeWallhits;
 extern struct wallhit *g_ActiveWallhits;
+#ifndef PLATFORM_N64
+// Experiments toggles (Extended Options > Experiments; Game.* in pd.ini).
+// SP-only behaviour — each use site gates on g_NetMode == NETMODE_NONE.
+extern s32 g_UnlimitedCorpses;    // chrmgr.c; fade guards in chraction.c
+extern s32 g_UnlimitedWallhits;   // wallhitreset.c
+extern s32 g_LaserScorchMarks;    // prop.c; prop-side in propobj.c
+#endif
 extern s32 g_MaxShards;
 extern struct shard *g_Shards;
 extern Gfx *var800a4634;

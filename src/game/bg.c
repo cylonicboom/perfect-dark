@@ -4916,13 +4916,54 @@ bool bgTestLineIntersectsBbox(struct coord *arg0, struct coord *arg1, struct coo
 	return true;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Nothing at or below 256MB can be a host pointer, so a G_VTX/G_SETTIMG address
+ * word that small is either an unmarked segmented address or (far more often)
+ * not an address at all - see the comment in bgTestHitOnObj.
+ */
+#define BGHIT_MIN_HOST_PTR 0x10000000ULL
+
+/**
+ * Upper bound on the commands walked in one bgTestHitOnObj call. Object model
+ * display lists are a few dozen commands; this only ever fires when the walk
+ * has escaped into memory that has no G_ENDDL in it.
+ */
+#define BGHIT_MAX_CMDS 8192
+#endif
+
+/**
+ * Walk a model display list and find the closest triangle the given line hits.
+ *
+ * Port note - the gdl handed to us is not always the model file's own display
+ * list. func0f0849dc passes rwdata->dl.gdl, and several renderers repoint that
+ * at per-frame gfx-pool memory (tvscreenRender's TV screens, doorTick's sliding
+ * door quads). Those pointers are ALWAYS at least one frame stale by the time
+ * we run: propFindAimingAt is called from lvRender well before this frame's
+ * bgRender/props pass, so once the double-buffered master DL wraps back to the
+ * buffer the pointer was taken from, we walk whatever the current frame has
+ * written at that offset instead of a display list.
+ *
+ * Raw Vtx blocks read as GBI commands regularly fake a G_VTX - a vertex whose
+ * Y high byte happens to be 0x04 - and its "address" word is really the s/t +
+ * RGBA pair, e.g. s=0x0400 t=0x0400 with zero colours = 0x0000000004000400.
+ * That is even, so the address heuristic below took it for a linear host
+ * pointer and dereferenced it. Three separate user crash reports on
+ * a23830210, all "read at 0000000004000400" here.
+ */
 bool bgTestHitOnObj(struct coord *arg0, struct coord *arg1, struct coord *arg2, Gfx *gdl,
 		Gfx *gdl2, Vtx *vertices, struct hitthing *hitthing)
 {
 	s16 stack;
 	s16 triref;
 	s32 trisremaining;
+#ifdef PLATFORM_N64
 	bool intersectsbbox;
+#else
+	// a valid list always sets this from a G_VTX before the first G_TRI, but a
+	// skipped/absent vertex batch must not leave the tri branch reading garbage
+	bool intersectsbbox = false;
+#endif
 	f32 *ptr;
 	f32 tmp;
 	f32 sqdist;
@@ -4943,8 +4984,23 @@ bool bgTestHitOnObj(struct coord *arg0, struct coord *arg1, struct coord *arg2, 
 	struct coord sp8c;
 	struct coord sp80;
 	s32 points[3];
+#ifndef PLATFORM_N64
+	s32 cmdsremaining = BGHIT_MAX_CMDS;
+
+	// Every vertex address below resolves against this, and the segmented
+	// branch would turn a NULL one into a small absolute address.
+	if (vertices == NULL) {
+		return false;
+	}
+#endif
 
 	while (true) {
+#ifndef PLATFORM_N64
+		if (--cmdsremaining < 0) {
+			break;
+		}
+#endif
+
 		if (gdl->dma.cmd == G_ENDDL) {
 			imggdl = NULL;
 
@@ -4963,6 +5019,35 @@ bool bgTestHitOnObj(struct coord *arg0, struct coord *arg1, struct coord *arg2, 
 			if (gdl->words.w1 & 1) {
 				// segmented address
 				offset = (UNSEGADDR(gdl->words.w1) & 0xffffff);
+			} else if ((u64)gdl->words.w1 < BGHIT_MIN_HOST_PTR) {
+				// Not a host pointer, so this is not a display list we can
+				// trust (see the function comment). Skip the batch instead of
+				// dereferencing it: resolving it against the vertex array
+				// wouldn't help either, since the 24-bit "offset" can be up to
+				// 16MB past a vertex array that is only a few KB long.
+				// intersectsbbox stays false, so the G_TRI branch below bails
+				// out rather than indexing a vertex batch we never loaded.
+				static s32 warned = 0;
+
+				if (warned < 8) {
+					const u8 *bytegdl = (const u8 *)gdl;
+					const char *where = "unknown";
+
+					if (bytegdl >= g_GfxBuffers[0] && bytegdl < g_GfxBuffers[NUM_GFXTASKS]) {
+						where = "master-dl pool";
+					} else if (bytegdl >= g_VtxBuffers[0] && bytegdl < g_VtxBuffers[NUM_GFXTASKS]) {
+						where = "vtx pool";
+					}
+
+					warned++;
+					sysLogPrintf(LOG_WARNING,
+							"bgTestHitOnObj: bad vtx addr 0x%llx at gdl %p (%s), vertices %p - not a display list",
+							(unsigned long long)gdl->words.w1, gdl, where, vertices);
+				}
+
+				intersectsbbox = false;
+				gdl++;
+				continue;
 			} else {
 				// linear address
 				offset = gdl->words.w1 - (uintptr_t)vertices;
@@ -5172,7 +5257,10 @@ bool bgTestHitOnObj(struct coord *arg0, struct coord *arg1, struct coord *arg2, 
 										|| (imggdl->words.w1 & 0x0f000000) == 0x0f000000
 										|| (imggdl->words.w1 & 0x05000000) == 0x05000000) {
 #else // not sure if the above check even works right on N64, but we can test easily for seg addresses
-										|| (imggdl->words.w1 & 1)) {
+										// the size test is the same non-pointer guard as the G_VTX
+										// branch above: this dereferences w1 - 8 raw
+										|| (imggdl->words.w1 & 1)
+										|| (u64)imggdl->words.w1 < BGHIT_MIN_HOST_PTR) {
 #endif
 										texturenum = -1;
 									} else {

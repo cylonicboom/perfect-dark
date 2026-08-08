@@ -7018,9 +7018,11 @@ s32 netConsoleCommand(const char *line)
 						g_SndNumPlaying, g_SndMostEverPlaying);
 				{
 					extern s32 g_SndPredecodeEnabled, g_SndPredecodeCount, g_SndPredecodeBytes;
-					sysLogPrintf(LOG_CHAT, "SNDPOOL: predecode=%s tables=%d pcm=%dKB",
-							g_SndPredecodeEnabled ? "ON" : "OFF",
-							g_SndPredecodeCount, g_SndPredecodeBytes / 1024);
+					extern s32 g_SndRaw16Wraps, g_SndRaw16Ends;
+					sysLogPrintf(LOG_CHAT, "SNDPOOL: predecode=%d (1=sfx 2=music) tables=%d pcm=%dKB raw16 wraps=%d ends=%d",
+							g_SndPredecodeEnabled,
+							g_SndPredecodeCount, g_SndPredecodeBytes / 1024,
+							g_SndRaw16Wraps, g_SndRaw16Ends);
 				}
 				{
 					extern s32 g_SndUnderruns;
@@ -7038,6 +7040,24 @@ s32 netConsoleCommand(const char *line)
 					}
 				}
 			}
+		}
+	} else if (strcmp(cmd, "tickinterp") == 0) {
+		// /tickinterp [on|off]  fixed-tick camera interpolation (tickrate
+		// phase 2): with the Logic Tick Rate capped, render lerp(prev,cur)
+		// of the camera pose every frame instead of stepping at tick rate.
+		// off = raw freshest pose (steppy, zero visual lag) for A/B.
+		{
+			extern s32 g_TickCamInterpEnabled;
+
+			if (strcmp(arg, "on") == 0) {
+				g_TickCamInterpEnabled = 1;
+			} else if (strcmp(arg, "off") == 0) {
+				g_TickCamInterpEnabled = 0;
+			} else if (arg[0]) {
+				sysLogPrintf(LOG_CHAT, "usage: /tickinterp [on|off]");
+			}
+
+			sysLogPrintf(LOG_CHAT, "TICKINTERP: camera %s", g_TickCamInterpEnabled ? "ON" : "OFF");
 		}
 	} else if (strcmp(cmd, "sndthread") == 0) {
 		// /sndthread [on|off]  audio synthesis on its own device-paced thread

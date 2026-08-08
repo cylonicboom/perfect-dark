@@ -59,6 +59,12 @@ s32 g_ChaosWireframeChrs = 0;
 // bright wall colour (0..255 RGB), synced to the renderer in bgTickPortals.
 s32 g_ChaosIpodAd = 0;
 u8 g_ChaosIpodWall[3] = { 0, 217, 140 };
+
+// Experiments > Laser Scorch Marks (from Ben Colclough's branch): the laser
+// leaves dirt-family scorch wallhits on BG and props instead of no mark.
+// Single-player only — the extra rngRandom draws would shift the shared RNG
+// stream in netplay. Persisted as Game.LaserScorchMarks.
+s32 g_LaserScorchMarks = 0;
 #endif
 
 s16 *g_RoomPropListChunkIndexes;
@@ -1395,7 +1401,12 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 			if (surfacetype->numwallhittexes > 0 && (!func || (func->type & 0xff) != INVENTORYFUNCTYPE_MELEE)) {
 				if (shotdata.gset.weaponnum != WEAPON_UNARMED
+#ifndef PLATFORM_N64
+						&& (shotdata.gset.weaponnum != WEAPON_LASER
+							|| (g_LaserScorchMarks && g_NetMode == NETMODE_NONE))
+#else
 						&& shotdata.gset.weaponnum != WEAPON_LASER
+#endif
 						&& shotdata.gset.weaponnum != WEAPON_TRANQUILIZER
 						&& shotdata.gset.weaponnum != WEAPON_FARSIGHT) {
 					texnum = rngRandom() % surfacetype->numwallhittexes;
@@ -1405,6 +1416,20 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 						// Use bulletproof glass hit textures instead
 						texnum += 10;
 					}
+
+#ifndef PLATFORM_N64
+					// Laser Scorch Marks (Experiments, from Ben Colclough's
+					// branch): the laser burns, so put a dirt-family scorch on
+					// whatever it hit instead of the surface's bullet hole —
+					// except water, which keeps its splash textures.
+					if (shotdata.gset.weaponnum == WEAPON_LASER
+							&& surfacetype != g_SurfaceTypes[SURFACETYPE_SHALLOWWATER]
+							&& surfacetype != g_SurfaceTypes[SURFACETYPE_DEEPWATER]) {
+						surfacetype = g_SurfaceTypes[SURFACETYPE_DIRT];
+						texnum = rngRandom() % surfacetype->numwallhittexes;
+						texnum = surfacetype->wallhittexes[texnum];
+					}
+#endif
 
 					if (texnum) {
 						wallhitCreate(&sp694.pos, &sp694.unk0c, &shotdata.gunpos3d, 0, 0, texnum, room, 0, -1, 0, g_Vars.currentplayer->prop->chr, sp694.unk2c == 2);
@@ -1635,8 +1660,11 @@ bool shotTestLos(struct coord *gunpos2d, struct coord *gundir2d, struct coord *g
 			if (shotdata.hits[0].prop) {
 				texturenum = (prop->type == PROPTYPE_CHR || prop->type == PROPTYPE_PLAYER) ? -1 : shotdata.hits[0].hitthing.texturenum;
 				surfacetype = (texturenum >= 0 && texturenum < NUM_TEXTURES) ? g_Textures[texturenum].surfacetype : SURFACETYPE_DEFAULT;
-				// ignore some glass parts and shields
+				// ignore some glass parts and shields; textures 88/89 are the
+				// lift glass used in CI and dataDyne — they are see-through but
+				// not typed as glass in g_Textures (from Ben Colclough's branch)
 				if (shotdata.hits[0].slowsbullet && texturenum != 10000 &&
+				    texturenum != 88 && texturenum != 89 &&
 				    surfacetype != SURFACETYPE_GLASS && surfacetype != SURFACETYPE_GLASSXLU) {
 					return false;
 				}

@@ -326,7 +326,11 @@ s32 chraiLuaTeleportToChr(s32 chrnum);        /* snap player to a chr (server-si
 s32 chraiLuaFlatTex(s32 mode);                /* 0 normal, 1 white/vertex-only, 2 avg-colour textures */
 s32 chraiLuaGrayscale(s32 on);                /* force the renderer grayscale path */
 s32 chraiLuaShiny(s32 mode);                  /* 0 off, 1 fake-chrome UVs everywhere, 2 + gold tint */
-s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum); /* replace an NPC's held weapons with this one */
+s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum, s32 dual); /* replace an NPC's held weapons with this one (dual = one per hand) */
+s32 chraiLuaBagBoom(void); /* Bag bomb: detonate + free the dropped suitcase at its resting spot */
+s32 chraiLuaBagConvert(void); /* Bag bomb: thrown+armed dragon -> defused suitcase pickup */
+s32 chraiLuaWeaponCensor(s32 weaponnum, s32 on); /* Blind bag: manufacturer/description/fire-modes -> "?????" */
+s32 chraiLuaHudSquish(f32 frac); /* Vertical Form: squish 2D HUD rects into a centre band (0 = off) */
 s32 chraiLuaChrWeapon(s32 chrnum); /* the NPC's current weaponnum (-1 if invalid) */
 f32 chraiLuaPlayerHealth(void);               /* current health fraction 0..1 */
 f32 chraiLuaPlayerShield(void);               /* current shield fraction 0..1 */
@@ -417,7 +421,7 @@ s32 chraiLuaPlaySong(s32 slot, f32 frac);     /* play an unlocked MP track over 
 s32 chraiLuaChrSlotsFree(void);                /* free chr slots this stage (corpses still hold theirs) */
 s32 chraiLuaChrSlotsTotal(void);               /* total chr slots, fixed at stage load */
 s32 chraiLuaCloneChr(s32 chrnum, f32 x, f32 y, f32 z); /* copy a chr (body/head/ailist/team/weapon) at a position; call from a TICK, never the kill event */
-s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses); /* hostile chr at player + offset */
+s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses, f32 mindist); /* hostile chr at player + offset (mindist > 0: fail if placement slid closer than this) */
 s32 chraiLuaBodySnatch(s32 chrnum);           /* lite Counter-Op takeover of a chr (solo) */
 s32 chraiLuaBodyUnsnatch(void);               /* end body_snatch: un-disguise + teleport home */
 s32 chraiLuaChrTarget(s32 chrnum, s32 victimchrnum); /* point a chr's combat AI at another chr */

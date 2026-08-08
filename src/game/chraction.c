@@ -9063,6 +9063,69 @@ s32 chraiLuaMetronomeClick(void)
 	return 1;
 }
 
+// pd.bag_convert(): Bag bomb's throw conversion. The player throws a DRAGON
+// on its proximity-self-destruct secondary (the only real hand-throw
+// animation that leaves a placeable object), and this turns the landed ARMED
+// dragon into the inert Area 51 suitcase: find it in the proxy registry
+// (only thrown-and-armed dragons register there — a floor pickup never
+// does, so no collateral), defuse it by unregistering, free the prop, and
+// spawn the suitcase pickup at its resting spot. Returns 1 once converted;
+// the Lua tick polls this after the throw (registration happens when the
+// thrown dragon settles and arms, so 0 just means "still in the air").
+s32 chraiLuaBagConvert(void)
+{
+	extern void weaponUnregisterProxy(struct weaponobj *weapon);
+	s32 i;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+
+	for (i = 0; i < (s32)ARRAYCOUNT(g_Proxies); i++) {
+		struct weaponobj *weapon = g_Proxies[i];
+
+		if (weapon != NULL && weapon->weaponnum == WEAPON_DRAGON && weapon->base.prop != NULL) {
+			struct coord pos = weapon->base.prop->pos;
+
+			weaponUnregisterProxy(weapon);
+			objFreePermanently(&weapon->base, true);
+			return chraiLuaSpawnAtPos(-1, WEAPON_SUITCASE, pos.x, pos.y, pos.z);
+		}
+	}
+
+	return 0;
+}
+
+// pd.bag_boom(): Bag bomb's timer-end detonation — find the DROPPED Area 51
+// suitcase (the "bag": WEAPON_SUITCASE tossed via pd.drop_weapon, so nothing
+// lingers in the inventory — a mine left its weapon entry behind, user
+// report), free it, and detonate at its resting spot via the explosion
+// helper below (which re-derives rooms from the position). Scan-based — no
+// stored prop pointer to dangle; SP chaos only ever has the one dropped
+// case (Area 51's own mission suitcase is a held/stage prop, not a dropped
+// pickup, and the effect is single-player chaos anyway).
+s32 chraiLuaBagBoom(void)
+{
+	struct prop *prop;
+	struct coord pos;
+
+	if (apLuaPlayerChr() == NULL || g_NetMode == NETMODE_CLIENT) {
+		return 0;
+	}
+
+	for (prop = g_Vars.activeprops; prop != NULL; prop = prop->next) {
+		if (prop->type == PROPTYPE_WEAPON && prop->weapon != NULL
+				&& prop->weapon->weaponnum == WEAPON_SUITCASE
+				&& prop->parent == NULL) {
+			pos = prop->pos;
+			objFreePermanently(&prop->weapon->base, true);
+			return chraiLuaExplodeAtPos(pos.x, pos.y, pos.z, 0);
+		}
+	}
+
+	return 0;
+}
+
 // pd.explosion_at(x, y, z [, type]): detonate at an arbitrary position,
 // attributed to the local player. Rooms are portal-walked from the player's
 // (known-valid) rooms to the real floor room at the target — the same
@@ -10452,7 +10515,7 @@ static s32 chaosSpawnFindClearPos(struct coord *pos, RoomNum *rooms, f32 angle)
 }
 #endif
 
-s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses)
+s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses, f32 mindist)
 {
 	struct prop *prop;
 	struct chrdata *chr;
@@ -10513,6 +10576,20 @@ s32 chraiLuaSpawnBody(s32 bodynum, s32 weaponnum, f32 dx, f32 dz, s32 sunglasses
 #ifndef PLATFORM_N64
 	if (!chaosSpawnFindClearPos(&pos, spawnrooms, atan2f(dx, dz))) {
 		return -1;
+	}
+
+	// Minimum spawn distance: chrAdjustPosForSpawn (inside FindClearPos)
+	// SLIDES an invalid far target back toward valid space, which can land it
+	// right on top of the player ("Alert! Alert! spawns them on me", user
+	// 2026-07-31). Rather than accepting a slid-onto-you spot, FAIL the
+	// attempt so the Lua retry loop rolls a fresh angle/distance.
+	if (mindist > 0.0f) {
+		f32 mdx = pos.x - g_Vars.currentplayer->prop->pos.x;
+		f32 mdz = pos.z - g_Vars.currentplayer->prop->pos.z;
+
+		if (mdx * mdx + mdz * mdz < mindist * mindist) {
+			return -1;
+		}
 	}
 #endif
 
@@ -12196,7 +12273,7 @@ s32 chraiLuaShiny(s32 mode)
 //  - Campaign guards (non-bot): chrTickShoot fires straight from the prop in
 //    weapons_held[hand], so replacing the held weapon models is enough. The old
 //    hand props are marked DELETING so they vanish rather than drop.
-s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum)
+s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum, s32 dual)
 {
 	struct chrdata *chr = chrFindByLiteralId(chrnum);
 	s32 h;
@@ -12231,12 +12308,21 @@ s32 chraiLuaChrGiveWeapon(s32 chrnum, s32 weaponnum)
 	// for a chr that was originally unarmed.
 	{
 		s32 model = playermgrGetModelOfWeapon(weaponnum);
+		struct prop *wp;
 
 		if (model < 0) {
 			return 1;
 		}
 
-		return chrGiveWeapon(chr, model, weaponnum, 0) != NULL;
+		wp = chrGiveWeapon(chr, model, weaponnum, 0);
+
+		// dual: a second copy in the left hand (the netplay client's
+		// weapons-held pattern) — "Enemy Dual RCP45s" actually means duals.
+		if (wp != NULL && dual) {
+			chrGiveWeapon(chr, model, weaponnum, OBJFLAG_WEAPON_LEFTHANDED);
+		}
+
+		return wp != NULL;
 	}
 }
 
@@ -12628,6 +12714,53 @@ s32 chraiLuaWeaponRename(s32 weaponnum, const char *name)
 	return 1;
 }
 
+// pd.weapon_censor(weaponnum, on): render the weapon's MANUFACTURER,
+// DESCRIPTION and FIRE-MODE names as "?????" everywhere (inventory menu +
+// the HUD function overlay) via the langGet censor list. Pairs with
+// pd.weapon_rename for the name itself — together the Blind bag mystery gun
+// leaks nothing. on=false (or an invalid weapon) clears the list.
+s32 chraiLuaWeaponCensor(s32 weaponnum, s32 on)
+{
+	extern s32 g_ChaosLangCensorIds[8];
+	struct weapon *wdef;
+	struct gset gset = {0};
+	s32 n = 0;
+	s32 i;
+
+	for (i = 0; i < 8; i++) {
+		g_ChaosLangCensorIds[i] = -1;
+	}
+
+	if (!on) {
+		return 1;
+	}
+
+	if (weaponnum < 0 || weaponnum > WEAPON_SUICIDEPILL) {
+		return 0;
+	}
+
+	wdef = g_Weapons[weaponnum];
+
+	if (wdef == NULL) {
+		return 0;
+	}
+
+	g_ChaosLangCensorIds[n++] = wdef->manufacturer;
+	g_ChaosLangCensorIds[n++] = wdef->description;
+
+	gset.weaponnum = weaponnum;
+
+	for (i = 0; i < 2; i++) {
+		struct weaponfunc *func = weaponGetFunction(&gset, i);
+
+		if (func != NULL && n < 8) {
+			g_ChaosLangCensorIds[n++] = func->name;
+		}
+	}
+
+	return 1;
+}
+
 // pd.chr_speed(mult): scale every non-player chr's anim playback (movement +
 // attack cadence ride along). 1 = off. chr.c consumes it in chr0f0220ec.
 s32 chraiLuaChrSpeed(f32 mult)
@@ -12918,12 +13051,30 @@ s32 chraiLuaScreenFx(s32 bits, s32 on)
 // side is ever set at a time.
 s32 chraiLuaPirate(s32 side)
 {
-	gfx_retro_fx &= ~(0x800 | 0x1000); // clear both pirate bits first
+	gfx_retro_fx &= ~(0x800 | 0x1000 | 0x8000 | 0x10000); // clear all pirate bits first
 	if (side == 1) {
 		gfx_retro_fx |= 0x800;  // black the LEFT half
 	} else if (side == 2) {
 		gfx_retro_fx |= 0x1000; // black the RIGHT half
+	} else if (side == 3) {
+		// black the CENTER 9:16 band (Anti Brainrot) — same post-process as
+		// the eyepatch halves, so the HUD inside the band goes dark too
+		gfx_retro_fx |= 0x8000;
+	} else if (side == 4) {
+		// black the SIDES, leaving the centre band (Vertical Form Content)
+		gfx_retro_fx |= 0x10000;
 	}
+	return 1;
+}
+
+// pd.hud_squish(frac): scale every 2D HUD/text rect toward the horizontal
+// centre so it fits a portrait band (Vertical Form Content pairs it with
+// pirate mode 4). 0/absent = off; 0.425 matches the mode-4 pillars.
+extern void gfx_set_hud_squish(f32 frac);
+
+s32 chraiLuaHudSquish(f32 frac)
+{
+	gfx_set_hud_squish(frac);
 	return 1;
 }
 
@@ -19761,6 +19912,13 @@ void chraTickBg(void)
 #endif
 	s32 writeindex;
 	s32 maxdeadonscreen;
+#ifndef PLATFORM_N64
+	// Experiments > Unlimited Corpses: skip every count-based fade below.
+	// Corpses still fade for slot pressure (the low-memory reap in
+	// chrsGetNextUnusedChrnum) and aibot corpses still fade (MP respawn
+	// reuses the bot's chr). SP only — the fade decisions consume rngRandom.
+	s32 corpsesunlimited = g_UnlimitedCorpses && g_NetMode == NETMODE_NONE;
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	static u32 var80068454 = 0;
@@ -19879,7 +20037,14 @@ void chraTickBg(void)
 #if VERSION >= VERSION_NTSC_1_0
 				if (chr->actiontype == ACT_DEAD
 						|| (chr->actiontype == ACT_DRUGGEDKO && (chr->chrflags & CHRCFLAG_KEEPCORPSEKO) == 0)) {
+#ifndef PLATFORM_N64
+					// Unlimited Corpses: don't cap spawned-guard corpses at 10.
+					// The append is skipped along with the eviction so the
+					// spawns[] stack array can't overflow.
+					if (!corpsesunlimited && (chr->hidden2 & CHRH2FLAG_SPAWNED)) {
+#else
 					if (chr->hidden2 & CHRH2FLAG_SPAWNED) {
+#endif
 						spawns[spawnslen] = chr;
 						spawnslen++;
 
@@ -19919,7 +20084,11 @@ void chraTickBg(void)
 
 #if VERSION >= VERSION_JPN_FINAL
 	// JPN fades corpses immediately
-	if (numdeadonscreen && g_Vars.stagenum != STAGE_CITRAINING) {
+	if (
+#ifndef PLATFORM_N64
+			!corpsesunlimited &&
+#endif
+			numdeadonscreen && g_Vars.stagenum != STAGE_CITRAINING) {
 		for (i = 0; i < numchrs; i++) {
 			struct chrdata *chr = &g_ChrSlots[i];
 
@@ -19965,10 +20134,19 @@ void chraTickBg(void)
 							numdeadonscreen++;
 
 							// If there's too many corpses on screen, start fading.
+#ifndef PLATFORM_N64
+							// Unlimited Corpses: only aibot corpses still fade
+							// (an MP bot's respawn reuses its chr slot).
+							if ((numdeadonscreen > maxdeadonscreen && !corpsesunlimited) || chr->aibot) {
+								chrFadeCorpse(chr);
+								numdeadonscreen--;
+							} else if (!corpsesunlimited && !chr->act_dead.fadewheninvis) {
+#else
 							if (numdeadonscreen > maxdeadonscreen || chr->aibot) {
 								chrFadeCorpse(chr);
 								numdeadonscreen--;
 							} else if (!chr->act_dead.fadewheninvis) {
+#endif
 								// If there are 2 or more corpses on screen,
 								// start marking them to be removed once off screen
 								onscreen[onscreenlen] = chr;
@@ -19984,7 +20162,13 @@ void chraTickBg(void)
 						}
 					} else {
 						// Off-screen
+#ifndef PLATFORM_N64
+						// Unlimited Corpses: no off-screen cap either; skip the
+						// append so offscreen[] can't overflow.
+						if (!corpsesunlimited && !chr->act_dead.fadewheninvis) {
+#else
 						if (!chr->act_dead.fadewheninvis) {
+#endif
 							offscreen[offscreenlen] = chr;
 							offscreenlen++;
 

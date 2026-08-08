@@ -12353,9 +12353,21 @@ glabel var7f1aca90
 #endif
 #else
 // Mismatch: Goal uses different codegen for accessing vertices
+// Chaos gun-hide (pd.gun_hide — Blind bag's mystery weapon): skip the whole
+// viewmodel render pass. Render-only — bgunTick* still runs, so firing,
+// reloads and ammo behave normally; the gun and hands are just not drawn.
+// Reset with the other chaos C globals in lv.c's stage reset.
+s32 g_BgunHideGun = 0;
+
 void bgunRender(Gfx **gdlptr)
 {
 	Gfx *gdl = *gdlptr;
+
+#ifndef PLATFORM_N64
+	if (g_BgunHideGun && !g_Vars.currentplayer->isremote) {
+		return;
+	}
+#endif
 	struct modelrenderdata renderdata = {NULL, true, 3}; // 10c
 	struct player *player;
 	s32 i;
@@ -14404,6 +14416,16 @@ Gfx *bgunDrawHud(Gfx *gdl)
 {
 	struct player *player = g_Vars.currentplayer;
 	s32 bottom = viGetViewTop() + viGetViewHeight() - 13;
+
+#ifndef PLATFORM_N64
+	// Chaos Blind bag: the whole gun HUD block (ammo counter/gauge + the
+	// function overlay) is hidden with the viewmodel — ammo counts and clip
+	// sizes identify a gun as surely as its silhouette. The inventory menu's
+	// ?????-censor (pd.weapon_censor) covers the info screens instead.
+	if (g_BgunHideGun && !g_Vars.currentplayer->isremote) {
+		return gdl;
+	}
+#endif
 	s32 playercount = LOCALPLAYERCOUNT();
 	s32 playernum = g_Vars.currentplayernum;
 	struct gunctrl *ctrl;

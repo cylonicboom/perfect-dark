@@ -1900,6 +1900,17 @@ static int l_pd_lvupdate(lua_State *L)
 	return 1;
 }
 
+/* pd.load_serial() -> int. Counter bumped once per level load (lv.c). A CHANGE
+ * means a reload happened — the reliable form of "did we leave gameplay", which
+ * a same-mission restart otherwise hides (same stage number, so the lua_State
+ * and the script's state both survive). Compare, don't try to catch the window. */
+static int l_pd_load_serial(lua_State *L)
+{
+	extern s32 g_ChaosLoadSerial;
+	lua_pushinteger(L, g_ChaosLoadSerial);
+	return 1;
+}
+
 /* pd.mission_complete() -> bool. True once the game has pushed a COMPLETED solo/
  * co-op mission endscreen (mission won, not failed/aborted); cleared on the next
  * stage load. Lets chaos.lua tear down effects on success, before the hub. */
@@ -2006,13 +2017,61 @@ static int l_pd_shiny(lua_State *L)
 	return 1;
 }
 
-/* pd.chr_give_weapon(chrnum, weaponnum) -> bool. Replace an NPC's held
- * weapons with this one (right hand). */
+/* pd.chr_give_weapon(chrnum, weaponnum [, dual]) -> bool. Replace an NPC's
+ * held weapons with this one (right hand; dual = one in each hand). */
 static int l_pd_chr_give_weapon(lua_State *L)
 {
 	s32 chrnum = (s32)luaL_checkinteger(L, 1);
 	s32 weaponnum = (s32)luaL_checkinteger(L, 2);
-	lua_pushboolean(L, chraiLuaChrGiveWeapon(chrnum, weaponnum) != 0);
+	s32 dual = lua_toboolean(L, 3);
+	lua_pushboolean(L, chraiLuaChrGiveWeapon(chrnum, weaponnum, dual) != 0);
+	return 1;
+}
+
+/* pd.gun_hide(on) -> bool. Hide the player's viewmodel entirely (render-only;
+ * firing/reloads still work). Blind bag's mystery weapon. */
+static int l_pd_gun_hide(lua_State *L)
+{
+	extern s32 g_BgunHideGun;
+	g_BgunHideGun = lua_toboolean(L, 1);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* pd.bag_boom() -> bool. Bag bomb: detonate + free the dropped suitcase at
+ * its resting position (see chraiLuaBagBoom). */
+static int l_pd_bag_boom(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaBagBoom() != 0);
+	return 1;
+}
+
+/* pd.bag_convert() -> bool. Bag bomb: turn the player's thrown+armed dragon
+ * into the defused suitcase pickup at its resting spot (see
+ * chraiLuaBagConvert; 0 while the throw is still airborne). */
+static int l_pd_bag_convert(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaBagConvert() != 0);
+	return 1;
+}
+
+/* pd.weapon_censor(weaponnum, on) -> bool. Render the weapon's manufacturer,
+ * description and fire-mode names as "?????" everywhere (Blind bag). Pairs
+ * with pd.weapon_rename for the name; on=false clears. */
+static int l_pd_weapon_censor(lua_State *L)
+{
+	s32 weaponnum = (s32)luaL_optinteger(L, 1, -1);
+	s32 on = lua_toboolean(L, 2);
+	lua_pushboolean(L, chraiLuaWeaponCensor(weaponnum, on) != 0);
+	return 1;
+}
+
+/* pd.hud_squish(frac) -> bool. Scale every 2D HUD/text rect toward the
+ * horizontal centre (Vertical Form Content; 0.425 matches the pirate-mode-4
+ * pillars). 0/absent = off. */
+static int l_pd_hud_squish(lua_State *L)
+{
+	lua_pushboolean(L, chraiLuaHudSquish((f32)luaL_optnumber(L, 1, 0.0)) != 0);
 	return 1;
 }
 
@@ -3555,7 +3614,8 @@ static int l_pd_spawn_body(lua_State *L)
 	f32 dx = (f32)luaL_optnumber(L, 3, 0.0);
 	f32 dz = (f32)luaL_optnumber(L, 4, 0.0);
 	s32 sunglasses = lua_toboolean(L, 5);
-	lua_pushinteger(L, chraiLuaSpawnBody(bodynum, weaponnum, dx, dz, sunglasses));
+	f32 mindist = (f32)luaL_optnumber(L, 6, 0.0); /* > 0: fail a placement that slid closer than this */
+	lua_pushinteger(L, chraiLuaSpawnBody(bodynum, weaponnum, dx, dz, sunglasses, mindist));
 	return 1;
 }
 
@@ -3809,6 +3869,7 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_device_active);    lua_setfield(L, -2, "device_active");
 	lua_pushcfunction(L, l_pd_lvupdate);         lua_setfield(L, -2, "lvupdate");
 	lua_pushcfunction(L, l_pd_mission_complete); lua_setfield(L, -2, "mission_complete");
+	lua_pushcfunction(L, l_pd_load_serial);      lua_setfield(L, -2, "load_serial");
 	lua_pushcfunction(L, l_pd_invincible);       lua_setfield(L, -2, "invincible");
 	lua_pushcfunction(L, l_pd_spawn_ally);       lua_setfield(L, -2, "spawn_ally");
 	lua_pushcfunction(L, l_pd_spawn_ally_clone); lua_setfield(L, -2, "spawn_ally_clone");
@@ -3864,6 +3925,11 @@ void luaApiRegister(lua_State *L)
 	lua_pushcfunction(L, l_pd_flattex);       lua_setfield(L, -2, "flattex");
 	lua_pushcfunction(L, l_pd_shiny);         lua_setfield(L, -2, "shiny");
 	lua_pushcfunction(L, l_pd_chr_give_weapon); lua_setfield(L, -2, "chr_give_weapon");
+	lua_pushcfunction(L, l_pd_gun_hide);      lua_setfield(L, -2, "gun_hide");
+	lua_pushcfunction(L, l_pd_bag_boom);      lua_setfield(L, -2, "bag_boom");
+	lua_pushcfunction(L, l_pd_bag_convert);   lua_setfield(L, -2, "bag_convert");
+	lua_pushcfunction(L, l_pd_weapon_censor); lua_setfield(L, -2, "weapon_censor");
+	lua_pushcfunction(L, l_pd_hud_squish);    lua_setfield(L, -2, "hud_squish");
 	lua_pushcfunction(L, l_pd_chr_weapon);    lua_setfield(L, -2, "chr_weapon");
 	lua_pushcfunction(L, l_pd_player_health); lua_setfield(L, -2, "player_health");
 	lua_pushcfunction(L, l_pd_player_shield); lua_setfield(L, -2, "player_shield");

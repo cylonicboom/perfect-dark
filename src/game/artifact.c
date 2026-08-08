@@ -203,10 +203,24 @@ bool artifactTestLos(struct coord *spec, struct coord *roompos, s32 xi, s32 yi)
 	struct coord gundir3d;
 	struct coord gunpos3d = g_Vars.currentplayer->cam_pos;
 	f32 crosspos[2] = { (f32)xi, (f32)yi };
+	bool prevxludisabled;
+	bool los;
 	cam0f0b4c3c(crosspos, &gundir2d, 1.f);
 	mtx4RotateVec(camGetProjectionMtxF(), &gundir2d, &gundir3d);
 
-	return shotTestLos(&gunpos2d, &gundir2d, &gunpos3d, &gundir3d, &endpos);
+	// Transparent BG surfaces must never block a glare's LOS. The room-glare
+	// caller (bgCalculateGlaresForVisibleRooms) already sets this flag around
+	// its whole pass; setting it here too extends the exemption to every
+	// artifactTestLos caller — notably the sun glares in sky.c, which
+	// otherwise vanish behind windows.
+	prevxludisabled = g_BgHitXluDisabled;
+	g_BgHitXluDisabled = true;
+
+	los = shotTestLos(&gunpos2d, &gundir2d, &gunpos3d, &gundir3d, &endpos);
+
+	g_BgHitXluDisabled = prevxludisabled;
+
+	return los;
 }
 
 #endif
@@ -710,9 +724,9 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
 					f0 = s3[2] * (1.0f / 255.0f);
 #ifndef PLATFORM_N64
 					f0 *= (60.f / pfov);
-#endif
-
+#else
 					skySetOverexposure((s32) ((f32)f0 * r), (s32) ((f32)f0 * g), (s32) ((f32)f0 * b));
+#endif
 
 					for (l = 0; l < 3; l++) {
 						lightroompos[l] = (light->bbox[0].s[l] + light->bbox[1].s[l] + light->bbox[2].s[l] + light->bbox[3].s[l]) / 4;
@@ -785,6 +799,16 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
 						}
 
 						colour[3] = alpha;
+
+#ifndef PLATFORM_N64
+						// Only bloom the sky when the glare sprite itself is
+						// meaningfully visible; a near-invisible glare (light
+						// fading in, or barely in view) shouldn't flash the
+						// whole screen (from Ben Colclough's branch).
+						if (alpha > 10.0f) {
+							skySetOverexposure((s32) ((f32)f0 * r), (s32) ((f32)f0 * g), (s32) ((f32)f0 * b));
+						}
+#endif
 
 						gDPSetEnvColor(gdl++, colour[0], colour[1], colour[2], colour[3]);
 

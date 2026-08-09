@@ -26,6 +26,13 @@ void bodiesReset(s32 stagenum)
 		g_HeadsAndBodies[i].modeldef = NULL;
 	}
 
+#ifndef PLATFORM_N64
+	// Chaos model-swap: the modeldefs parked for the inactive model source live
+	// in MEMPOOL_STAGE too, so they dangle from here — drop them with the live
+	// ones above.
+	modelSwapResetDefCache();
+#endif
+
 	var80062c80 = rngRandom() % g_NumBondBodies;
 	var80062b14 = 0;
 	var80062b18 = 0;

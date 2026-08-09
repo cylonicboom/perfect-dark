@@ -25,6 +25,7 @@ void bodyCalculateHeadOffset(struct modeldef *headmodeldef, s32 headnum, s32 bod
 #ifndef PLATFORM_N64
 void modelSwapSetActive(bool on); // Chaos live character-model swap (overlay ROM)
 bool modelSwapRomLoaded(void);     // an --model-rom overlay is available
+void modelSwapResetDefCache(void); // drop the parked base/overlay modeldefs (stage load)
 #endif
 
 #endif

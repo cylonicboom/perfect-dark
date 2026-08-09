@@ -2166,7 +2166,23 @@ void chr0f022214(struct chrdata *chr, struct prop *prop, bool fulltick)
 
 	if (model->attachedtomodel && model->attachedtonode
 			&& (obj->hidden & OBJHFLAG_GONE) == 0
-			&& (obj->flags2 & OBJFLAG2_INVISIBLE) == 0) {
+			&& (obj->flags2 & OBJFLAG2_INVISIBLE) == 0
+#ifndef PLATFORM_N64
+			// A child prop can outlive the model it hangs off: the Chaos model
+			// swap replaces a live chr's body model, and modelmgrFreeModel
+			// leaves attachedtomodel dangling in any child that wasn't
+			// re-pointed. A freed model has definition == NULL, and a model
+			// that hasn't had modelSetMatrices run has matrices == NULL — which
+			// makes modelFindNodeMtx hand back &NULL[index], a near-null matrix
+			// pointer that mtx00015be4 reads straight through (crash: "read at
+			// 0x100"). Skip the attachment for this tick instead.
+			&& model->attachedtomodel->definition != NULL
+			&& model->attachedtomodel->matrices != NULL
+			// ...and the attach node must actually carry a matrix, or
+			// modelFindNodeMtx returns NULL and every branch below derefs it.
+			&& modelFindNodeMtxIndex(model->attachedtonode, 0) >= 0
+#endif
+			) {
 		Mtxf *sp104 = modelFindNodeMtx(model->attachedtomodel, model->attachedtonode, 0);
 		struct modelrenderdata thing = {NULL, 1, 3};
 		u32 stack;

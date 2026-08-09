@@ -206,50 +206,111 @@ static bool g_ModelSwapTexPoolReady = false;
 // (they keep the base model). Reported by the model-swap toggle log.
 static s32 g_ModelSwapNullLoads = 0;
 
-// A chr's held items (weapons_held[0]=right gun, [1]=left gun, [2]=hat) are
-// child props whose model is ATTACHED to the chr's body model — attachedtomodel
-// points at chr->model and attachedtonode at a node inside that model's
-// definition (see chrEquipWeapon / hatApplyToChr in propobj.c). When we swap the
-// body to a fresh model with a DIFFERENT definition, those two pointers dangle
-// into the old (freed) definition; chr0f022214's per-child modelFindNodeMtx then
-// reads freed memory and crashes. Re-point each held item at the new body model
-// and re-resolve its attach node against the new definition (same bodynum, so the
-// skeleton — and thus the hand/hat parts — is identical). Called after the body
-// re-link but before the old model is freed.
-static void modelSwapReattachHeld(struct chrdata *chr)
+// Per-stage modeldef cache for the two model sources: [0] = base ROM,
+// [1] = overlay ROM. g_HeadsAndBodies[].modeldef holds whichever source is live
+// and the other one parks here, so a toggle SWAPS pointers instead of reloading
+// every body/head. It used to just NULL the cache and let the next load re-read
+// the file — but every modeldef load comes out of MEMPOOL_STAGE, which has no
+// free, so each toggle leaked a full set of body+head modeldefs until mempAlloc
+// started returning NULL mid-stage (fileLoadToNew then DMA'd to a near-null
+// address: crash "write at 0xb9c0"). Now each source loads at most once per
+// stage. Cleared by modelSwapResetDefCache() from bodiesReset — MEMPOOL_STAGE is
+// wiped at stage load, so every cached pointer dangles across a stage change.
+static struct modeldef *g_ModelSwapDefCache[2][ARRAYCOUNT(g_HeadsAndBodies)];
+
+void modelSwapResetDefCache(void)
+{
+	s32 i;
+
+	for (i = 0; i < ARRAYCOUNT(g_ModelSwapDefCache[0]); i++) {
+		g_ModelSwapDefCache[0][i] = NULL;
+		g_ModelSwapDefCache[1][i] = NULL;
+	}
+}
+
+// A chr's child props can have their model ATTACHED to the chr's body model —
+// attachedtomodel points at chr->model and attachedtonode at a node inside that
+// model's definition. When we swap the body to a fresh model with a DIFFERENT
+// definition, those two pointers dangle into the old (freed) model;
+// chr0f022214's per-child modelFindNodeMtx then reads freed/recycled memory and
+// crashes. Re-point every affected child at the new body model and re-resolve
+// its attach node against the new definition (same bodynum, so the skeleton is
+// identical). Called after the body re-link but before the old model is freed.
+//
+// Walk the chr's ACTUAL child list rather than weapons_held[]: chr0f022214 ticks
+// every child, and props get attached to a body model from more places than the
+// gun/hat slots — objEmbed (propobj.c) reparents a knife/dart that sticks into a
+// guard and hangs it off whichever body node was hit. Those were left pointing
+// at the freed model and crashed on the next tick, in the OBJHFLAG_EMBEDDED
+// branch of chr0f022214 ("read at 0x100" inside mtx00015be4).
+static void modelSwapReattachHeld(struct chrdata *chr, struct model *old)
 {
 	struct model *body = chr->model;
+	struct prop *child;
 	bool skedar;
-	s32 h;
 
-	if (body == NULL || body->definition == NULL) {
+	if (body == NULL || body->definition == NULL || chr->prop == NULL) {
 		return;
 	}
 
 	skedar = (body->definition->skel == &g_SkelSkedar);
 
-	for (h = 0; h < 3; h++) {
-		struct prop *held = chr->weapons_held[h];
+	for (child = chr->prop->child; child != NULL; child = child->next) {
+		struct defaultobj *obj;
 		struct modelnode *node = NULL;
+		struct model *childmodel;
 
-		if (held == NULL || held->obj == NULL || held->obj->model == NULL) {
+		// prop->obj is a union member — only read it for the types that
+		// actually have one, or a chr child would be reinterpreted as an obj
+		// and we'd write through a garbage model pointer.
+		if (child->type != PROPTYPE_OBJ && child->type != PROPTYPE_WEAPON
+				&& child->type != PROPTYPE_DOOR) {
 			continue;
 		}
 
-		if (h == HAND_RIGHT) {
+		obj = child->obj;
+
+		if (obj == NULL || obj->model == NULL) {
+			continue;
+		}
+
+		childmodel = obj->model;
+
+		if (childmodel->attachedtomodel != old && childmodel->attachedtomodel != NULL) {
+			continue; // hangs off something else entirely — leave it alone
+		}
+
+		if (child == chr->weapons_held[HAND_RIGHT]) {
 			node = modelGetPart(body->definition,
 					skedar ? MODELPART_SKEDAR_RIGHTHAND : MODELPART_CHR_RIGHTHAND);
-		} else if (h == HAND_LEFT) {
+		} else if (child == chr->weapons_held[HAND_LEFT]) {
 			node = modelGetPart(body->definition,
 					skedar ? MODELPART_SKEDAR_LEFTHAND : MODELPART_CHR_LEFTHAND);
-		} else if (!skedar) {
+		} else if (child == chr->weapons_held[2] && !skedar) {
 			// Hat slot — skedar has no hats (hatApplyToChr is g_SkelChr-only).
 			node = modelGetPart(body->definition, MODELPART_CHR_0006);
+		} else if (childmodel->attachedtonode) {
+			// Anything else (embedded projectiles) hangs off an arbitrary body
+			// node, so there's no part number to look up: both definitions are
+			// the same bodynum and share a skeleton, so map the old attach node
+			// onto the new one by matrix index.
+			s32 mtxindex = modelFindNodeMtxIndex(childmodel->attachedtonode, 0);
+
+			if (mtxindex >= 0) {
+				node = modelFindNodeByMtxIndex(body, mtxindex);
+			}
 		}
 
 		if (node) {
-			held->obj->model->attachedtomodel = body;
-			held->obj->model->attachedtonode = node;
+			childmodel->attachedtomodel = body;
+			childmodel->attachedtonode = node;
+		} else {
+			// No equivalent node in the new definition. Detaching is the only
+			// safe outcome — chr0f022214 skips a child that has no attachment,
+			// so the item stops being drawn on the body instead of walking the
+			// freed model.
+			childmodel->attachedtomodel = NULL;
+			childmodel->attachedtonode = NULL;
 		}
 	}
 }
@@ -324,9 +385,9 @@ static s32 modelSwapRebuildLiveChrs(void)
 		neu = bodyAllocateModel(chr->bodynum, chr->headnum, 0);
 		if (neu) {
 			chr0f020b14(chr->prop, neu, &pos, rooms, faceangle, NULL);
-			// chr0f020b14 set chr->model = neu; re-hang the held items on it
-			// before the old model (their current attach target) is freed.
-			modelSwapReattachHeld(chr);
+			// chr0f020b14 set chr->model = neu; re-hang the attached children on
+			// it before the old model (their current attach target) is freed.
+			modelSwapReattachHeld(chr, old);
 
 			// chr0f020b14 is the spawn-time linker: it leaves the fresh model
 			// with a zeroed anim (T-pose) and a default-initialised chrinfo
@@ -402,6 +463,8 @@ void modelSwapSetActive(bool on)
 		s32 rebuilt;
 		s32 probefile;
 		s32 probecn;
+		s32 leaving = on ? 0 : 1;   // model source we're switching away from
+		s32 entering = on ? 1 : 0;  // model source we're switching to
 
 		// Ensure the private overlay-texture pool exists (allocated once, from
 		// PERMANENT memory so it survives stage changes and acts as a persistent
@@ -415,10 +478,13 @@ void modelSwapSetActive(bool on)
 			}
 		}
 
-		// Drop the shared modeldef cache + the file cache so the next load
-		// re-reads the (now redirected) file data.
-		for (i = 0; g_HeadsAndBodies[i].filenum; i++) {
-			g_HeadsAndBodies[i].modeldef = NULL;
+		// Park the modeldefs of the source we're leaving and adopt the ones we
+		// already loaded for the source we're entering (NULL the first time, so
+		// they load on demand). Drop the file cache too, so any load that does
+		// happen re-reads the (now redirected) file data.
+		for (i = 0; i < ARRAYCOUNT(g_ModelSwapDefCache[0]) && g_HeadsAndBodies[i].filenum; i++) {
+			g_ModelSwapDefCache[leaving][i] = g_HeadsAndBodies[i].modeldef;
+			g_HeadsAndBodies[i].modeldef = g_ModelSwapDefCache[entering][i];
 			g_FileInfo[g_HeadsAndBodies[i].filenum].loadedsize = 0;
 			if (g_HeadsAndBodies[i].handfilenum) {
 				g_FileInfo[g_HeadsAndBodies[i].handfilenum].loadedsize = 0;

@@ -4363,6 +4363,24 @@ void *fileLoadToNew(s32 filenum, u32 method, u32 loadtype)
 		}
 
 		ptr = mempAlloc(info->loadedsize, MEMPOOL_STAGE);
+
+#ifndef PLATFORM_N64
+		// mempAlloc returns NULL when the pool is full, and fileLoad doesn't
+		// check its dst: it computes the inflate scratch as
+		// dst + allocationlen - romsize and DMAs into it, so a NULL dst is a
+		// memcpy to a near-null address (crash "write at 0xb9c0", MEMPOOL_STAGE
+		// exhausted mid-stage by repeated Chaos model-swap toggles). Every
+		// caller of this function already copes with NULL — modeldefLoad
+		// propagates it and the body/bot spawn paths skip the model — so refuse
+		// the load instead of scribbling over low memory.
+		if (ptr == NULL) {
+			sysLogPrintf(LOG_ERROR,
+					"fileLoadToNew: out of MEMPOOL_STAGE for file %d (%u bytes) — refusing load",
+					filenum, info->loadedsize);
+			return NULL;
+		}
+#endif
+
 		info->allocsize = info->loadedsize;
 		fileLoad(ptr, info->loadedsize, (uintptr_t*)&g_FileTable[filenum], info);
 

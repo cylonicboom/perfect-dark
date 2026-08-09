@@ -4925,11 +4925,54 @@ bool bgTestLineIntersectsBbox(struct coord *arg0, struct coord *arg1, struct coo
 #define BGHIT_MIN_HOST_PTR 0x10000000ULL
 
 /**
+ * A real G_VTX in a model's own display list points INTO the vertex block we
+ * were handed, so the distance between the two is at most the size of that
+ * block - models are a few KB. Anything further away is not this model's vertex
+ * data no matter how pointer-shaped it looks.
+ */
+#define BGHIT_MAX_VTX_SPAN 0x100000ULL
+
+/**
  * Upper bound on the commands walked in one bgTestHitOnObj call. Object model
  * display lists are a few dozen commands; this only ever fires when the walk
  * has escaped into memory that has no G_ENDDL in it.
  */
 #define BGHIT_MAX_CMDS 8192
+
+/**
+ * Is this G_VTX address word too far from the vertex block to be part of it?
+ */
+static bool bgHitVtxAddrIsFarFromBlock(uintptr_t addr, Vtx *vertices)
+{
+	const s64 delta = (s64)(addr - (uintptr_t)vertices);
+
+	return delta > (s64)BGHIT_MAX_VTX_SPAN || delta < -(s64)BGHIT_MAX_VTX_SPAN;
+}
+
+/**
+ * Once-per-run-ish complaint about a G_VTX whose address word can't be a vertex
+ * pointer. Shared by both rejection tests below.
+ */
+static void bgHitWarnBadVtxAddr(Gfx *gdl, Vtx *vertices)
+{
+	static s32 warned = 0;
+
+	if (warned < 8) {
+		const u8 *bytegdl = (const u8 *)gdl;
+		const char *where = "unknown";
+
+		if (bytegdl >= g_GfxBuffers[0] && bytegdl < g_GfxBuffers[NUM_GFXTASKS]) {
+			where = "master-dl pool";
+		} else if (bytegdl >= g_VtxBuffers[0] && bytegdl < g_VtxBuffers[NUM_GFXTASKS]) {
+			where = "vtx pool";
+		}
+
+		warned++;
+		sysLogPrintf(LOG_WARNING,
+				"bgTestHitOnObj: bad vtx addr 0x%llx at gdl %p (%s), vertices %p - not a display list",
+				(unsigned long long)gdl->words.w1, gdl, where, vertices);
+	}
+}
 #endif
 
 /**
@@ -5027,23 +5070,20 @@ bool bgTestHitOnObj(struct coord *arg0, struct coord *arg1, struct coord *arg2, 
 				// 16MB past a vertex array that is only a few KB long.
 				// intersectsbbox stays false, so the G_TRI branch below bails
 				// out rather than indexing a vertex batch we never loaded.
-				static s32 warned = 0;
+				bgHitWarnBadVtxAddr(gdl, vertices);
 
-				if (warned < 8) {
-					const u8 *bytegdl = (const u8 *)gdl;
-					const char *where = "unknown";
-
-					if (bytegdl >= g_GfxBuffers[0] && bytegdl < g_GfxBuffers[NUM_GFXTASKS]) {
-						where = "master-dl pool";
-					} else if (bytegdl >= g_VtxBuffers[0] && bytegdl < g_VtxBuffers[NUM_GFXTASKS]) {
-						where = "vtx pool";
-					}
-
-					warned++;
-					sysLogPrintf(LOG_WARNING,
-							"bgTestHitOnObj: bad vtx addr 0x%llx at gdl %p (%s), vertices %p - not a display list",
-							(unsigned long long)gdl->words.w1, gdl, where, vertices);
-				}
+				intersectsbbox = false;
+				gdl++;
+				continue;
+			} else if (bgHitVtxAddrIsFarFromBlock(gdl->words.w1, vertices)) {
+				// Pointer-shaped but nowhere near the vertex block, so it is
+				// the same misread-as-a-display-list case as above. The 256MB
+				// floor alone is far too weak on a 64-bit host, where real heap
+				// pointers sit above 4GB and every misread 32-bit word clears
+				// it: a raw Vtx read as a G_VTX puts its s/t texture
+				// coordinates in this word, and s=0xb100 t=0x6232 reads as
+				// 0xb1006232 (co-op crash report, "read at 0xb1006232").
+				bgHitWarnBadVtxAddr(gdl, vertices);
 
 				intersectsbbox = false;
 				gdl++;

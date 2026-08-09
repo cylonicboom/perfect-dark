@@ -480,6 +480,13 @@ void mainLoop(void)
 
 		mempResetPool(MEMPOOL_7);
 		mempResetPool(MEMPOOL_STAGE);
+		// g_TexSharedPool's head/rightpos describe MEMPOOL_STAGE memory that
+		// the reset above just handed back, and lvReset's surfaceReset - the
+		// only thing that clears them - doesn't run until ~150 lines below.
+		// Anything that looks a texture up in that window walks a list whose
+		// nodes have already been reallocated. Clear the descriptor at the same
+		// moment the memory goes, not later.
+		surfaceReset();
 		filesStop(4);
 
 		if (argFindByPrefix(1, "-ma")) {
@@ -669,6 +676,10 @@ void mainLoop(void)
 		lvStop();
 		netDiagLogf("ml_lvstop_done", "");
 		mempDisablePool(MEMPOOL_STAGE);
+		// Same reason as the mempResetPool above: mempDisablePool rolls the
+		// pool's right side back to the end, which is exactly where the shared
+		// texture pool's nodes live, so the tex list is dangling from here on.
+		surfaceReset();
 		mempDisablePool(MEMPOOL_7);
 		filesStop(4);
 		netDiagLogf("ml_cleanup_done", "");

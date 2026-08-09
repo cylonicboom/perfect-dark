@@ -13,6 +13,7 @@
 #ifndef PLATFORM_N64
 #include "mod.h"
 #include "platform.h"
+#include "system.h" // sysLogPrintf for the tex-pool list guard
 #endif
 
 struct texture *g_Textures;
@@ -2114,6 +2115,41 @@ void texInitPool(struct texpool *pool, u8 *start, s32 len)
 	pool->rightpos = (struct tex *)((uintptr_t)start + len);
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Upper bound on the shared pool's tex list. It only ever holds as many entries
+ * as fit in MEMPOOL_STAGE, which is nowhere near this; the cap exists so a
+ * looping ->next can't spin forever.
+ */
+#define TEXPOOL_MAX_NODES 65536
+
+/**
+ * The shared pool's tex nodes live in MEMPOOL_STAGE and are reached by following
+ * ->next from node to node, so one bad link takes the walk straight out of the
+ * heap and the next field read is a wild dereference (a co-op crash report came
+ * back with the link holding 0xc4d05000c412e000 - non-canonical, which Windows
+ * reports as "read at 0xffffffffffffffff"). Callers treat a rejected node as the
+ * end of the list, i.e. a cache miss, which just reloads the texture.
+ */
+static bool texPoolNodeIsSane(const struct tex *node, const char *where)
+{
+	static s32 warned = 0;
+
+	if (mempIsInPool(node, MEMPOOL_STAGE)) {
+		return true;
+	}
+
+	if (warned < 8) {
+		warned++;
+		sysLogPrintf(LOG_ERROR,
+				"%s: tex pool node %p is outside MEMPOOL_STAGE - list corrupt, dropping the rest",
+				where, node);
+	}
+
+	return false;
+}
+#endif
+
 struct tex *texFindInPool(s32 texturenum, struct texpool *pool)
 {
 	struct tex *end;
@@ -2125,9 +2161,18 @@ struct tex *texFindInPool(s32 texturenum, struct texpool *pool)
 	}
 
 	if (pool == &g_TexSharedPool) {
+#ifndef PLATFORM_N64
+		s32 guard = TEXPOOL_MAX_NODES;
+#endif
 		cur = pool->head;
 
 		while (cur) {
+#ifndef PLATFORM_N64
+			if (--guard < 0 || !texPoolNodeIsSane(cur, "texFindInPool")) {
+				return NULL;
+			}
+#endif
+
 			if (cur->texturenum == texturenum) {
 				return cur;
 			}
@@ -2358,7 +2403,24 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 				pool->rightpos = (struct tex *) ((((uintptr_t) buffer5kb + 0xf) >> 4 << 4) + sizeof(struct tex));
 				pool->leftpos = ((u8 *) pool->rightpos + sizeof(struct tex));
 
+#ifndef PLATFORM_N64
+				s32 tailguard = TEXPOOL_MAX_NODES;
+#endif
+
 				while (tail) {
+#ifndef PLATFORM_N64
+					// Same walk as texFindInPool, but here we're about to WRITE
+					// tail->next. Rather than write through a bad pointer, drop
+					// the whole list and let this texture become the new head:
+					// the cached entries are only a cache, so the pool rebuilds
+					// itself from the next load onwards.
+					if (--tailguard < 0 || !texPoolNodeIsSane(tail, "texLoad")) {
+						pool->head = NULL;
+						tail = NULL;
+						break;
+					}
+#endif
+
 					if (tail->next == 0) {
 						break;
 					}
@@ -2390,6 +2452,20 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 			// the stack and into the heap.
 			if (usingsharedpool) {
 				u8 *ptr = mempAllocFromRight(ALIGN16(bytesout + 2 * sizeof(struct tex)), MEMPOOL_STAGE);
+
+#ifndef PLATFORM_N64
+				// The free-space test above only demands 4300/2600 bytes, but
+				// this allocation is bytesout + two nodes, so it can still come
+				// back NULL - and everything below writes through it (bcopy to
+				// NULL, then pool->rightpos->data). Fall back to the same
+				// pool->start garbage-texture path the pool-full case uses.
+				if (ptr == NULL) {
+					pool->rightpos = tail;
+					*updateword = osVirtualToPhysical(pool->start);
+					return;
+				}
+#endif
+
 				pool->rightpos = (struct tex *) ptr;
 
 				bcopy(tex, ptr, sizeof(struct tex));

@@ -404,6 +404,34 @@ void mempDisablePool(u8 pool)
 	g_MempExpansionPools[pool].rightpos = g_MempExpansionPools[pool].end;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Is this pointer inside the given pool's address range (either bank)?
+ *
+ * For validating pointers that were handed out by memp and are reached later by
+ * following a chain - the shared texture pool's tex list is the only one, and a
+ * single bad link there used to walk straight out of the heap.
+ */
+bool mempIsInPool(const void *ptr, u8 poolnum)
+{
+	const u8 *p = ptr;
+
+	if (p == NULL) {
+		return false;
+	}
+
+	if (p >= g_MempOnboardPools[poolnum].start && p < g_MempOnboardPools[poolnum].end) {
+		return true;
+	}
+
+	if (p >= g_MempExpansionPools[poolnum].start && p < g_MempExpansionPools[poolnum].end) {
+		return true;
+	}
+
+	return false;
+}
+#endif
+
 void *mempAllocFromBankRight(struct memorypool *pool, u32 size, u8 poolnum)
 {
 	u8 *allocation;
